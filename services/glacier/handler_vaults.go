@@ -134,13 +134,25 @@ func (h *Handler) handleListVaults(c *echo.Context, accountID string) error {
 }
 
 // toDescribeVaultResponse converts a vault to a describe vault response.
+//
+// NumberOfArchives/SizeInBytes report the as-of-last-inventory snapshot, not
+// the live counters -- LastInventoryDate empty means no inventory has ever
+// run, so both stay nil/omitted rather than reporting a live count as if it
+// were an inventory result (gopherstack-zpo5).
 func toDescribeVaultResponse(v *Vault) describeVaultResponse {
-	return describeVaultResponse{
+	resp := describeVaultResponse{
 		VaultARN:          v.VaultARN,
 		VaultName:         v.VaultName,
 		CreationDate:      v.CreationDate,
 		LastInventoryDate: v.LastInventoryDate,
-		NumberOfArchives:  v.NumberOfArchives,
-		SizeInBytes:       v.SizeInBytes,
 	}
+
+	if v.LastInventoryDate != "" {
+		numArchives := v.NumberOfArchivesAtLastInventory
+		sizeBytes := v.SizeInBytesAtLastInventory
+		resp.NumberOfArchives = &numArchives
+		resp.SizeInBytes = &sizeBytes
+	}
+
+	return resp
 }

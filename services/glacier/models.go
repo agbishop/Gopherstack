@@ -30,6 +30,11 @@ type Vault struct {
 	// api_op_DeleteVault.go's doc comment, DeleteVault checks this -- "no
 	// archives ... as of the last inventory" -- rather than live NumberOfArchives.
 	NumberOfArchivesAtLastInventory int64 `json:"numberOfArchivesAtLastInventory,omitempty"`
+	// SizeInBytesAtLastInventory is SizeInBytes captured at the same point as
+	// NumberOfArchivesAtLastInventory: DescribeVaultOutput.SizeInBytes carries
+	// the identical "as of the last inventory date" qualification
+	// (gopherstack-zpo5).
+	SizeInBytesAtLastInventory int64 `json:"sizeInBytesAtLastInventory,omitempty"`
 	// WriteSinceLastInventory tracks DeleteVault's other documented condition,
 	// "no writes ... since the last inventory": set on any archive add/remove,
 	// cleared when LastInventoryDate is refreshed.
@@ -143,13 +148,18 @@ type createVaultResponse struct {
 }
 
 // describeVaultResponse is the response body for DescribeVault / ListVaults item.
+//
+// NumberOfArchives and SizeInBytes are pointers: both are documented as
+// returning null until an inventory has run on the vault (gopherstack-zpo5),
+// and int64 cannot express that -- omitempty on a zero int64 would also drop
+// a genuine "inventory found zero archives" result.
 type describeVaultResponse struct {
+	NumberOfArchives  *int64 `json:"NumberOfArchives,omitempty"`
+	SizeInBytes       *int64 `json:"SizeInBytes,omitempty"`
 	VaultARN          string `json:"VaultARN"`
 	VaultName         string `json:"VaultName"`
 	CreationDate      string `json:"CreationDate"`
 	LastInventoryDate string `json:"LastInventoryDate,omitempty"`
-	NumberOfArchives  int64  `json:"NumberOfArchives"`
-	SizeInBytes       int64  `json:"SizeInBytes"`
 }
 
 // listVaultsResponse is the response body for ListVaults.

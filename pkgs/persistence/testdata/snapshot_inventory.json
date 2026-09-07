@@ -12179,6 +12179,7 @@
       "Vault.NumberOfArchivesAtLastInventory int64 `json:\"numberOfArchivesAtLastInventory,omitempty\"`",
       "Vault.Region string `json:\"region\"`",
       "Vault.SizeInBytes int64 `json:\"sizeInBytes\"`",
+      "Vault.SizeInBytesAtLastInventory int64 `json:\"sizeInBytesAtLastInventory,omitempty\"`",
       "Vault.Tags map[string]string `json:\"tags,omitempty\"`",
       "Vault.VaultARN string `json:\"vaultARN\"`",
       "Vault.VaultName string `json:\"vaultName\"`",

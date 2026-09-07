@@ -783,14 +783,58 @@ func TestCreateVault_Idempotent(t *testing.T) {
 // 6. Vault stats (SizeInBytes, NumberOfArchives)
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestVaultStats_UploadAndDelete(t *testing.T) {
+func TestDescribeVault_ArchiveStatsAsOfInventory(t *testing.T) {
 	t.Parallel()
 
+	const archiveDataLen = len("archive-data")
+
 	tests := []struct {
-		name    string
-		content []byte
+		setup        func(t *testing.T, h *glacier.Handler, vaultName string)
+		name         string
+		wantAbsent   bool
+		wantArchives float64
+		wantBytes    float64
 	}{
-		{name: "stats_update_correctly", content: []byte("hello")},
+		{
+			name:       "no_inventory_ever_run",
+			wantAbsent: true,
+		},
+		{
+			// Archives exist, but no inventory has run since -- still absent, per
+			// DescribeVaultOutput's "will return null if an inventory has not yet
+			// run on the vault" (gopherstack-zpo5): presence of archives alone
+			// does not make the field reportable.
+			name: "archives_uploaded_no_inventory_since",
+			setup: func(t *testing.T, h *glacier.Handler, vaultName string) {
+				t.Helper()
+				uploadArchiveHTTP(t, h, vaultName)
+			},
+			wantAbsent: true,
+		},
+		{
+			name: "inventory_run_with_archives_present",
+			setup: func(t *testing.T, h *glacier.Handler, vaultName string) {
+				t.Helper()
+				uploadArchiveHTTP(t, h, vaultName)
+				uploadArchiveHTTP(t, h, vaultName)
+				initiateInventoryJobHTTP(t, h, vaultName)
+			},
+			wantArchives: 2,
+			wantBytes:    float64(2 * archiveDataLen),
+		},
+		{
+			// This is the case that actually distinguishes the fix from the bug:
+			// a write after the inventory must not move the reported numbers.
+			name: "archives_added_after_inventory_still_shows_inventory_time_numbers",
+			setup: func(t *testing.T, h *glacier.Handler, vaultName string) {
+				t.Helper()
+				uploadArchiveHTTP(t, h, vaultName)
+				initiateInventoryJobHTTP(t, h, vaultName)
+				uploadArchiveHTTP(t, h, vaultName)
+			},
+			wantArchives: 1,
+			wantBytes:    float64(archiveDataLen),
+		},
 	}
 
 	for _, tt := range tests {
@@ -798,37 +842,29 @@ func TestVaultStats_UploadAndDelete(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler()
-			createVault(t, h, "stats-vault")
+			const vaultName = "stats-vault"
+			createVault(t, h, vaultName)
 
-			// Initial state.
-			descVault := func() map[string]any {
-				rec := doRequestWithHeaders(t, h, http.MethodGet,
-					"/"+testAccountID+"/vaults/stats-vault", "", nil)
-				require.Equal(t, http.StatusOK, rec.Code)
-				var v map[string]any
-				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &v))
-
-				return v
+			if tt.setup != nil {
+				tt.setup(t, h, vaultName)
 			}
 
-			v0 := descVault()
-			assert.EqualValues(t, 0, v0["NumberOfArchives"])
-			assert.EqualValues(t, 0, v0["SizeInBytes"])
+			rec := doRequest(t, h, http.MethodGet, "/"+testAccountID+"/vaults/"+vaultName, "")
+			require.Equal(t, http.StatusOK, rec.Code)
+			var v map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &v))
 
-			// Upload.
-			archiveID := uploadArchiveData(t, h, "stats-vault", tt.content)
-			v1 := descVault()
-			assert.EqualValues(t, 1, v1["NumberOfArchives"])
-			assert.EqualValues(t, len(tt.content), v1["SizeInBytes"])
+			if tt.wantAbsent {
+				_, hasArchives := v["NumberOfArchives"]
+				_, hasSize := v["SizeInBytes"]
+				assert.False(t, hasArchives, "NumberOfArchives must be absent, not 0, before any inventory has run")
+				assert.False(t, hasSize, "SizeInBytes must be absent, not 0, before any inventory has run")
 
-			// Delete.
-			rec := doRequestWithHeaders(t, h, http.MethodDelete,
-				"/"+testAccountID+"/vaults/stats-vault/archives/"+archiveID, "", nil)
-			require.Equal(t, http.StatusNoContent, rec.Code)
+				return
+			}
 
-			v2 := descVault()
-			assert.EqualValues(t, 0, v2["NumberOfArchives"])
-			assert.EqualValues(t, 0, v2["SizeInBytes"])
+			assert.InDelta(t, tt.wantArchives, v["NumberOfArchives"], 0)
+			assert.InDelta(t, tt.wantBytes, v["SizeInBytes"], 0)
 		})
 	}
 }
@@ -919,8 +955,11 @@ func TestVault_CrossAccountIsolation(t *testing.T) {
 			vl := listResp["VaultList"].([]any)
 			require.Len(t, vl, 1, tt.name)
 			v := vl[0].(map[string]any)
-			// account-b vault has 0 archives (not account-a's archive).
-			assert.EqualValues(t, 0, v["NumberOfArchives"])
+			// account-b's vault never had an inventory run, so
+			// NumberOfArchives must be absent, not present-as-0
+			// (gopherstack-zpo5) -- and definitely not account-a's archive.
+			_, hasCount := v["NumberOfArchives"]
+			assert.False(t, hasCount, "NumberOfArchives must be absent before any inventory has run")
 		})
 	}
 }

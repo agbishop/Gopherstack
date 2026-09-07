@@ -1203,7 +1203,14 @@ func TestMultipartUpload_FullLifecycle(t *testing.T) {
 			uploads := listUploads["UploadsList"].([]any)
 			assert.Empty(t, uploads)
 
-			// Vault now has the archive.
+			// Vault now has the archive. NumberOfArchives only reports the
+			// as-of-last-inventory count (gopherstack-zpo5), so an inventory
+			// must run before the completed archive is wire-visible.
+			invRec := doRequestWithHeaders(t, h, http.MethodPost,
+				"/"+testAccountID+"/vaults/mp-lifecycle-"+tt.name+"/jobs",
+				`{"Type":"inventory-retrieval"}`, nil)
+			require.Equal(t, http.StatusAccepted, invRec.Code)
+
 			descVault := doRequestWithHeaders(t, h, http.MethodGet,
 				"/"+testAccountID+"/vaults/mp-lifecycle-"+tt.name, "", nil)
 			require.Equal(t, http.StatusOK, descVault.Code)

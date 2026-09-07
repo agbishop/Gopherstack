@@ -618,3 +618,122 @@ rejected -- asserted immediately, before any further write, so only the
 snapshotted count can be driving it). Each neutered line was hand-reverted
 individually, confirmed to fail only its matching new test (all others
 green), and restored.
+
+## 2026-09-07 DescribeVault/ListVaults as-of-last-inventory numbers (gopherstack-zpo5)
+
+`types.DescribeVaultOutput` doc comments, quoted verbatim:
+
+- `NumberOfArchives`: "The number of archives in the vault as of the last
+  inventory date. This field will return null if an inventory has not yet
+  run on the vault, for example if you just created the vault."
+- `SizeInBytes`: "Total size, in bytes, of the archives in the vault as of
+  the last inventory date. This field will return null if an inventory has
+  not yet run on the vault, for example if you just created the vault."
+- `LastInventoryDate`: "The Universal Coordinated Time (UTC) date when
+  Amazon Glacier completed the last vault inventory. This value should be a
+  string in the ISO 8601 date format, for example 2012-03-20T17:03:43.221Z ."
+  (no explicit null qualifier in the doc text, but it is a `*string`, unset
+  until an inventory runs).
+- `CreationDate`: "The Universal Coordinated Time (UTC) date when the vault
+  was created. This value should be a string in the ISO 8601 date format,
+  for example 2012-03-20T17:03:43.221Z ." (no null qualifier; always set).
+
+Only `NumberOfArchives`/`SizeInBytes` carry the explicit "will return null"
+text. `handler_vaults.go:143`'s `toDescribeVaultResponse` returned the live
+`v.NumberOfArchives`/`v.SizeInBytes` unconditionally instead -- every vault,
+inventoried or not, reported a live count as if it were an inventory result.
+
+Ops affected: `DescribeVault` and `ListVaults` both -- `ListVaultsOutput.
+VaultList` is `[]types.DescribeVaultOutput`, the identical shape, and both
+go through the same `toDescribeVaultResponse` conversion, so one fix covers
+both.
+
+Wire representation of null: the SDK client models both fields as plain
+`int64` (not pointers) despite the null doc text -- deserializers.go's
+`awsRestjson1_deserializeDocumentDescribeVaultOutput` only assigns them
+`if value != nil`, so an absent/null JSON key leaves the client-side zero
+value indistinguishable from "inventory found zero archives"; the real
+wire signal is the JSON key being absent, which the SDK's own type can't
+re-expose. gopherstack's `describeVaultResponse` previously had no
+`omitempty` on either field (always present, even 0). Changed both to
+`*int64` with `omitempty`.
+
+Fix: `Vault` gained `SizeInBytesAtLastInventory` (models.go), a symmetric
+counterpart to gopherstack-x8em's `NumberOfArchivesAtLastInventory`,
+snapshotted at the same point in `jobs.go`'s `applyJobTypeSpecifics`
+inventory-retrieval branch. `toDescribeVaultResponse` (handler_vaults.go)
+now leaves `NumberOfArchives`/`SizeInBytes` nil unless `v.LastInventoryDate
+!= ""`, in which case it reports the two `AtLastInventory` snapshots, never
+the live counters. No inventory schedule was invented -- the only trigger
+remains `InitiateJob(inventory-retrieval)`, per x8em.
+
+Files changed:
+- `models.go`: added `Vault.SizeInBytesAtLastInventory`; `describeVaultResponse.
+  NumberOfArchives`/`SizeInBytes` changed `int64` -> `*int64,omitempty`.
+- `jobs.go`: `applyJobTypeSpecifics`'s inventory-retrieval branch now also
+  snapshots `v.SizeInBytesAtLastInventory = v.SizeInBytes`.
+- `handler_vaults.go`: `toDescribeVaultResponse` only populates the two
+  pointer fields when `LastInventoryDate` is set, from the `AtLastInventory`
+  snapshots instead of the live counters.
+- `handler_vaults_test.go`: added `TestDescribeVault_ArchiveStatsAsOfInventory`
+  (4 subtests, table-driven); corrected `TestVault_CrossAccountIsolation`'s
+  assertion; replaced `TestVaultStats_UploadAndDelete` (its premise -- live
+  counts wire-visible without an inventory -- was the bug itself).
+- `handler_multipart_uploads_test.go`: `TestMultipartUpload_FullLifecycle`
+  now runs an inventory job before checking `NumberOfArchives`.
+- `sdk_vault_lock_enforcement_test.go`: added a `runInventory` helper;
+  `TestVaultLockPolicy_DeleteEnforcement`'s "archive survives" subtest now
+  runs an inventory before reading `vaultArchiveCount`.
+
+New regression tests (`TestDescribeVault_ArchiveStatsAsOfInventory`, HTTP-
+driven, asserting on the JSON body): `no_inventory_ever_run` and
+`archives_uploaded_no_inventory_since` (both fail against unmodified code --
+fields present as `0` instead of absent); `inventory_run_with_archives_
+present` (passes both before and after -- old code's live count happens to
+equal the inventory-time count when nothing changed since, so it doesn't by
+itself distinguish the fix); `archives_added_after_inventory_still_shows_
+inventory_time_numbers` (the case that actually distinguishes the fix --
+fails against unmodified code, which reports the live post-write count
+instead of the frozen inventory-time one). Confirmed by reverting `models.go`/
+`jobs.go`/`handler_vaults.go` to HEAD, keeping the tests, running the full
+`services/glacier` suite (3 of 4 new subtests failed, plus the corrected
+`TestVault_CrossAccountIsolation`; the other two corrected tests
+(`TestMultipartUpload_FullLifecycle`, `TestVaultLockPolicy_DeleteEnforcement`)
+still passed against unmodified code -- they no longer exercise the bug, they
+just no longer rely on it), then restoring the fix.
+
+Per-line neuter (each hand-reverted individually, confirmed to still
+compile, confirmed a test failure, then restored): the `jobs.go`
+`SizeInBytesAtLastInventory` snapshot line commented out -> compiles, breaks
+`inventory_run_with_archives_present` and `..._after_inventory...` (wrong
+`SizeInBytes`); the `handler_vaults.go` null-guard (`if v.LastInventoryDate
+!= ""`) replaced with `if true` -> compiles, breaks `no_inventory_ever_run`
+and `archives_uploaded_no_inventory_since`; the two `AtLastInventory` reads
+inside that guard swapped back to the live `v.NumberOfArchives`/`v.
+SizeInBytes` -> compiles, breaks only `archives_added_after_inventory_
+still_shows_inventory_time_numbers` -- the distinguishing case.
+
+Persisted-field guard: `Vault` gained `SizeInBytesAtLastInventory`. Ran
+`go test ./pkgs/persistence/... -run TestSnapshotVersionGuard` read-only (no
+`-update`, no version bump): it reports "glacier: backendSnapshot fields
+changed without a version bump; golden is out of date, run with -update to
+refresh it (this is bookkeeping, not a version-bump case: every old field is
+still present unchanged, so the diff is additive only and needs no bump)" --
+same purely-additive verdict as x8em's guard run, golden refresh left for the
+golden owner. Same known consequence as gopherstack-c8sa: a `Vault` snapshot
+persisted before this change decodes with `SizeInBytesAtLastInventory` at its
+Go zero value (0) via plain `encoding/json` unmarshal (`persistence.go`'s
+`Restore` -> `store.Registry.RestoreAll`, no custom decode) -- not fixed
+here, behaves identically to the existing `NumberOfArchivesAtLastInventory`
+case.
+
+Gates: `go build ./services/glacier/...` clean; `go test -race -count=1
+./services/glacier/...` PASS; `golangci-lint run services/glacier/...` 0
+issues (one `fieldalignment` finding on the new `*int64` fields in
+`describeVaultResponse`, fixed by hand-reordering fields -- pointers before
+strings; one `revive` unused-parameter on a no-op table-test closure, fixed
+by making that subtest's `setup` nil and guarding the call; two
+`testifylint` float-compare findings on `assert.EqualValues` against a
+`map[string]any` JSON value, fixed with `assert.InDelta(..., 0)` matching
+this file's existing convention for the same JSON-float pattern -- no
+automated `-fix` used for any of them).

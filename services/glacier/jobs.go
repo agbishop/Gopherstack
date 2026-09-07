@@ -215,6 +215,7 @@ func applyJobTypeSpecifics(
 	case jobTypeInventoryRetrieval:
 		v.LastInventoryDate = formatDate(now)
 		v.NumberOfArchivesAtLastInventory = v.NumberOfArchives
+		v.SizeInBytesAtLastInventory = v.SizeInBytes
 		v.WriteSinceLastInventory = false
 
 		if invParams != nil {
