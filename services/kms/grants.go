@@ -99,6 +99,11 @@ func (b *InMemoryBackend) CreateGrant(
 		)
 	}
 
+	// CreateGrant does not declare UnsupportedOperationException (5rjn's CreateKey
+	// KeySpec/KeyUsage remedy doesn't transfer here) or ValidationException. But
+	// GrantOperation is a plain enum-constrained string shape (api-2.json), the same
+	// single-field structural class as q9bs's GetPublicKey precedent, not a cross-field
+	// business rule like KeySpec/KeyUsage -- so ErrValidation is kept (gopherstack-jyi3).
 	for _, op := range input.Operations {
 		if !isValidGrantOperation(op) {
 			return nil, fmt.Errorf(

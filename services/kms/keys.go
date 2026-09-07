@@ -276,14 +276,10 @@ func (b *InMemoryBackend) DescribeKey(
 		return nil, err
 	}
 
-	// DescribeKey is a grant operation with no encryption context, so validate
-	// grant-token presence only (existence + TTL) -- consistent with Sign/Verify/
-	// GetPublicKey/DeriveSharedSecret. Empty GrantTokens is a no-op, which is the
-	// only case Terraform ever exercises.
-	if err = b.validateGrantTokenPresence(input.GrantTokens, "DescribeKey"); err != nil {
-		return nil, err
-	}
-
+	// GrantTokens is a real DescribeKeyInput field (round-tripped for wire parity) but,
+	// unlike Sign/Verify/GetPublicKey/GenerateMac/VerifyMac/DeriveSharedSecret, DescribeKey
+	// does not declare InvalidGrantTokenException (kms@v1.54.0 and v1.55.4 deserializers.go
+	// agree) -- not validated (gopherstack-k3ww).
 	meta := b.keyToMetadata(key)
 	meta.MultiRegionConfiguration = b.buildMultiRegionConfig(ctx, key)
 
