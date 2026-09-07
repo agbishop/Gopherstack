@@ -21,7 +21,7 @@ func TestGenerateMac_WrongAlgorithm_HMAC256KeyWithSHA512(t *testing.T) {
 		MacAlgorithm: "HMAC_SHA_512", // wrong for HMAC_256
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAlgorithmException")
+	assert.Contains(t, err.Error(), "InvalidKeyUsageException")
 }
 
 func TestGenerateMac_WrongAlgorithm_HMAC512KeyWithSHA256(t *testing.T) {
@@ -35,7 +35,7 @@ func TestGenerateMac_WrongAlgorithm_HMAC512KeyWithSHA256(t *testing.T) {
 		MacAlgorithm: "HMAC_SHA_256", // wrong for HMAC_512
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAlgorithmException")
+	assert.Contains(t, err.Error(), "InvalidKeyUsageException")
 }
 
 func TestVerifyMac_WrongAlgorithm(t *testing.T) {
@@ -50,7 +50,7 @@ func TestVerifyMac_WrongAlgorithm(t *testing.T) {
 		MacAlgorithm: "HMAC_SHA_256", // wrong for HMAC_384
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAlgorithmException")
+	assert.Contains(t, err.Error(), "InvalidKeyUsageException")
 }
 
 func TestGenerateMac_CorrectAlgorithm_AllSpecs(t *testing.T) {

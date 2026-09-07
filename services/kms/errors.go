@@ -100,8 +100,6 @@ var (
 	// exceeded"), a length constraint -- CreateKey's Description and CreateGrant's
 	// Name length checks reuse it for exactly that (gopherstack-i4q8).
 	ErrLimitExceeded = errors.New("LimitExceededException")
-	// ErrInvalidAlgorithm is returned when an algorithm is not valid for the key spec.
-	ErrInvalidAlgorithm = errors.New("InvalidAlgorithmException")
 	// ErrAccessDenied is returned when a grant token is valid but its Operations list
 	// does not authorize the operation being performed.
 	ErrAccessDenied = errors.New("AccessDeniedException")

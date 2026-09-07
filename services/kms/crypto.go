@@ -822,7 +822,7 @@ func validateMacAlgorithm(macAlgorithm, keySpec string) error {
 
 	return fmt.Errorf(
 		"%w: MAC algorithm %q is not supported for key spec %q; supported: %v",
-		ErrInvalidAlgorithm, macAlgorithm, keySpec, supported,
+		ErrInvalidKeyUsage, macAlgorithm, keySpec, supported,
 	)
 }
 
