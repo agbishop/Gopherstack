@@ -1410,3 +1410,45 @@ passing after the fix.
 
 Gates: `go test -race -count=1 ./services/medialive/...`,
 `golangci-lint run services/medialive/...` -- both clean.
+
+## 2026-09-07 (gopherstack-f6dz)
+
+The b668 fix above honored a caller-supplied `PurchaseOfferingInput.Start`
+but never bounded it. `api_op_PurchaseOffering.go`'s doc comment on `Start`
+continues past the "default is now" sentence already quoted above: "The
+specified time must be between the first day of the current month and one
+year from now." A well-formed but out-of-window `Start` was accepted, so a
+caller could pin a reservation term start years in the future or in the
+past.
+
+Fixed: `PurchaseOffering` (`reservations.go`) now rejects an explicit
+`start` outside `[firstOfMonthUTC(b.now()), b.now().AddDate(1, 0, 0)]`
+(new `firstOfMonthUTC` helper) with `BadRequestException`
+(`ErrInvalidParameter`, already declared for this op). Both bounds read as
+inclusive and are computed from `b.now()`, the same `nowFunc` seam b668
+added -- not wall-clock, not a fixed date. A `start` of `""` (the "default
+is now" path) is unaffected: `b.now()` trivially satisfies its own window.
+
+Added `SetNow` to `export_test.go` (overrides `nowFunc`, following
+`ForceReservationEnd`'s existing pattern) so the boundary can be exercised
+against a controlled clock instead of wall-clock.
+
+`TestPurchaseOffering_HonorsExplicitStart` previously asserted a hardcoded
+`start: "2030-03-01T00:00:00Z"` -- a well-formed date, but one this fix
+newly rejects as more than a year out, and would have started failing again
+on its own well before 2030 as wall-clock caught up. Corrected to derive
+`start` from `time.Now()` (+7 days) instead of a fixed year, matching
+b668's own rationale for killing frozen dates.
+
+Tests: 1 new, `TestPurchaseOffering_StartWindow`
+(`handler_reservations_test.go`), table-driven over all four boundary
+points against a `SetNow`-pinned clock -- first instant of the current
+month (accepted), the previous month's last second (rejected), exactly one
+year from now (accepted), one second past that (rejected). Rejections
+assert both `http.StatusBadRequest` and the `X-Amzn-Errortype:
+BadRequestException` response header, not just that an error occurred.
+Confirmed failing (both rejection cases) against the guard-less code, then
+passing after the fix.
+
+Gates: `go test -race -count=1 ./services/medialive/...`,
+`golangci-lint run services/medialive/...` -- both clean.

@@ -1,5 +1,15 @@
 package medialive
 
+import "time"
+
+// SetNow overrides the backend's time source, for tests exercising
+// PurchaseOffering's Start window relative to a controlled clock.
+func SetNow(b *InMemoryBackend, now func() time.Time) {
+	b.mu.Lock("SetNow")
+	defer b.mu.Unlock()
+	b.nowFunc = now
+}
+
 // ChannelCount returns the number of stored channels.
 func ChannelCount(b *InMemoryBackend) int {
 	b.mu.RLock("ChannelCount")

@@ -209,21 +209,83 @@ func TestPurchaseOffering_DerivesTermFromDuration(t *testing.T) {
 // PurchaseOfferingInput.Start (api_op_PurchaseOffering.go: "Requested
 // reservation start time ... If no value is given, the default is now")
 // lets a caller pin the term start; the fabricated Start/End ignored it
-// entirely.
+// entirely. The chosen start is 7 days out from the current wall clock, not
+// a fixed date -- api_op_PurchaseOffering.go also bounds Start to "the first
+// day of the current month and one year from now" (gopherstack-f6dz), so a
+// frozen date eventually falls outside that window and starts failing.
 func TestPurchaseOffering_HonorsExplicitStart(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
 
+	offRec := doRequest(t, h, http.MethodGet, "/prod/offerings/87654321", nil)
+	require.Equal(t, http.StatusOK, offRec.Code)
+	offering := decodeBody(t, offRec.Body.Bytes())
+	duration := int(offering["duration"].(float64))
+
+	start := time.Now().UTC().AddDate(0, 0, 7).Truncate(time.Second)
+
 	rec := doRequest(t, h, http.MethodPost, "/prod/offerings/87654321/purchase", map[string]any{
 		"name":  "explicit-start-test",
-		"start": "2030-03-01T00:00:00Z",
+		"start": start.Format(time.RFC3339),
 	})
 	require.Equal(t, http.StatusCreated, rec.Code)
 	resv := decodeBody(t, rec.Body.Bytes())["reservation"].(map[string]any)
 
-	assert.Equal(t, "2030-03-01T00:00:00Z", resv["start"])
-	assert.Equal(t, "2031-03-01T00:00:00Z", resv["end"], "12-month term derived from Duration/DurationUnits")
+	assert.Equal(t, start.Format(time.RFC3339), resv["start"])
+	assert.Equal(
+		t, start.AddDate(0, duration, 0).Format(time.RFC3339), resv["end"],
+		"12-month term derived from Duration/DurationUnits",
+	)
+}
+
+// TestPurchaseOffering_StartWindow covers gopherstack-f6dz:
+// api_op_PurchaseOffering.go documents Start as "The specified time must be
+// between the first day of the current month and one year from now", but
+// PurchaseOffering accepted any well-formed RFC3339 value regardless of
+// window. Both bounds are read as inclusive and relative to the backend's
+// clock (nowFunc), not wall-clock, so each case pins nowFunc via SetNow and
+// derives its Start from that same fixed instant -- never a hardcoded date.
+func TestPurchaseOffering_StartWindow(t *testing.T) {
+	t.Parallel()
+
+	fixedNow := time.Date(2026, time.June, 15, 12, 0, 0, 0, time.UTC)
+	lowerBound := time.Date(2026, time.June, 1, 0, 0, 0, 0, time.UTC)
+	upperBound := fixedNow.AddDate(1, 0, 0)
+
+	tests := []struct {
+		start      time.Time
+		name       string
+		wantAccept bool
+	}{
+		{name: "first instant of current month accepted", start: lowerBound, wantAccept: true},
+		{name: "last instant of previous month rejected", start: lowerBound.Add(-time.Second), wantAccept: false},
+		{name: "exactly one year from now accepted", start: upperBound, wantAccept: true},
+		{name: "one second past one year from now rejected", start: upperBound.Add(time.Second), wantAccept: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			medialive.SetNow(h.Backend.(*medialive.InMemoryBackend), func() time.Time { return fixedNow })
+
+			rec := doRequest(t, h, http.MethodPost, "/prod/offerings/87654321/purchase", map[string]any{
+				"name":  "start-window-test",
+				"start": tc.start.Format(time.RFC3339),
+			})
+
+			if tc.wantAccept {
+				assert.Equal(t, http.StatusCreated, rec.Code)
+
+				return
+			}
+
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Equal(t, "BadRequestException", rec.Header().Get("X-Amzn-Errortype"))
+		})
+	}
 }
 
 // TestReservations_DeleteRequiresExpired locks in a fix for

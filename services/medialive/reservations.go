@@ -44,7 +44,10 @@ func (b *InMemoryBackend) DescribeOffering(offeringID string) (*Offering, error)
 // PurchaseOffering creates a Reservation from an Offering. start is the
 // caller's requested term start (PurchaseOfferingInput.Start, ISO-8601); an
 // empty string means "now", matching the SDK doc ("If no value is given,
-// the default is now").
+// the default is now"). A non-empty start must fall within the SDK's
+// documented window -- "between the first day of the current month and one
+// year from now" -- both ends read as inclusive and both relative to the
+// request time (b.now()), not any fixed date.
 func (b *InMemoryBackend) PurchaseOffering(
 	offeringID, name, start string,
 	count int32,
@@ -68,13 +71,22 @@ func (b *InMemoryBackend) PurchaseOffering(
 	if count <= 0 {
 		count = 1
 	}
-	startTime := b.now()
+	now := b.now()
+	startTime := now
 	if start != "" {
 		parsed, err := time.Parse(time.RFC3339, start)
 		if err != nil {
 			return nil, fmt.Errorf("%w: start %q is not RFC3339", ErrInvalidParameter, start)
 		}
 		startTime = parsed.UTC()
+		lower := firstOfMonthUTC(now)
+		upper := now.AddDate(1, 0, 0)
+		if startTime.Before(lower) || startTime.After(upper) {
+			return nil, fmt.Errorf(
+				"%w: start %q must be between the first day of the current month (%s) and one year from now (%s)",
+				ErrInvalidParameter, start, lower.Format(time.RFC3339), upper.Format(time.RFC3339),
+			)
+		}
 	}
 	endTime := addOfferingTerm(startTime, off.Duration, off.DurationUnits)
 	id := newID()
@@ -102,6 +114,13 @@ func (b *InMemoryBackend) PurchaseOffering(
 	b.reservations.Put(r)
 
 	return r.toReservation(), nil
+}
+
+// firstOfMonthUTC returns 00:00:00 UTC on the first day of t's UTC month.
+func firstOfMonthUTC(t time.Time) time.Time {
+	y, m, _ := t.Date()
+
+	return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
 }
 
 // addOfferingTerm adds a lease term to t. OfferingDurationUnits
