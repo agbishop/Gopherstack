@@ -362,7 +362,12 @@ func classifyError(reqErr error) (string, int) {
 		{ErrInvalidExecutionInput, "InvalidExecutionInput", http.StatusBadRequest},
 		{ErrInvalidName, "InvalidName", http.StatusBadRequest},
 		{ErrInvalidRoleArn, "InvalidArn", http.StatusBadRequest},
-		{ErrInvalidRoutingConfiguration, "InvalidRoutingConfiguration", http.StatusBadRequest},
+		// AWS: Create/UpdateStateMachineAlias both model ValidationException,
+		// not "InvalidRoutingConfiguration" (names no type anywhere in this
+		// SDK) -- AWS represents this exact condition as
+		// ValidationExceptionReasonInvalidRoutingConfiguration
+		// ("INVALID_ROUTING_CONFIGURATION", sfn@v1.45.4 types/enums.go:491).
+		{ErrInvalidRoutingConfiguration, "ValidationException", http.StatusBadRequest},
 		{ErrTagPolicyViolation, "TagPolicyViolation", http.StatusBadRequest},
 		// AWS: TagResource models TooManyTags for exceeding the per-resource tag
 		// limit.

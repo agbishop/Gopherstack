@@ -59,7 +59,7 @@ var (
 	// ActivateEventSource/CreateEventBus/DeactivateEventSource, ErrInvalidState's
 	// legitimate callers) -- verified against eventbridge deserializers.go.
 	ErrReplayNotCancellable  = errors.New("IllegalStatusException")
-	ErrResourceLimitExceeded = errors.New("ResourceLimitExceededException")
+	ErrResourceLimitExceeded = errors.New("LimitExceededException")
 	// ErrForbiddenOperation is returned when an operation is forbidden (e.g., modifying built-in registries).
 	ErrForbiddenOperation = errors.New("ForbiddenException")
 	// ErrManagedRule is returned when an operation attempts to modify a rule

@@ -18,7 +18,7 @@ var (
 	ErrStateMachineTypeNotSupported    = errors.New("StateMachineTypeNotSupported")
 	ErrInvalidRoleArn                  = errors.New("InvalidArn")
 	ErrInvalidName                     = errors.New("InvalidName")
-	ErrInvalidRoutingConfiguration     = errors.New("InvalidRoutingConfiguration")
+	ErrInvalidRoutingConfiguration     = errors.New("ValidationException")
 	ErrTagPolicyViolation              = errors.New("TagPolicyViolation")
 	ErrActivityAlreadyExists           = errors.New("ActivityAlreadyExists")
 	ErrActivityDoesNotExist            = errors.New("ActivityDoesNotExist")

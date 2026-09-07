@@ -463,7 +463,10 @@ func (h *Handler) handleError(
 		errType = "InvalidStateException"
 		statusCode = http.StatusBadRequest
 	case errors.Is(reqErr, ErrResourceLimitExceeded):
-		errType = "ResourceLimitExceededException"
+		// AWS: PutRule and CreateEventBus (this sentinel's only two raisers)
+		// both model LimitExceededException -- "ResourceLimitExceededException"
+		// names no type anywhere in eventbridge@v1.48.4.
+		errType = "LimitExceededException"
 		statusCode = http.StatusBadRequest
 	case errors.Is(reqErr, ErrForbiddenOperation):
 		errType = "ForbiddenException"
