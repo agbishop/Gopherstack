@@ -1522,3 +1522,105 @@ func TestScan_UnknownShape_ReportedBlindNotZero(t *testing.T) {
 	require.Contains(t, sr.Warnings[0], "BLIND")
 	require.Empty(t, sr.Findings, "nothing was detected, so there is nothing to find")
 }
+
+// noOpFuncsFixture is a trivial package -- its content does not matter,
+// because the module ground truth below has an empty PerOp/OpFuncs, so
+// opUniverse is empty and nothing in this source is ever walked. This is
+// cloudwatch's own real shape: types/errors.go models real error types
+// (AllCodes non-empty) but deserializers.go does not exist at all, so
+// deser.go's OpFuncs for this module is empty regardless of what this
+// tool's parsing logic is taught -- the per-operation information simply
+// is not present anywhere in the module's Go source.
+const noOpFuncsFixture = `
+package fixture
+
+type Handler struct{}
+`
+
+// TestScan_ModuleWithoutOpFuncs_ReportedUntraceable is gopherstack-zkpi's
+// load-bearing case: a resolved module with real error types but zero
+// per-operation ones must surface as a distinct, loud UNTRACEABLE warning --
+// never as a silent 0/0 that reads as "nothing to audit". Before this fix,
+// scan.go computed no ModulesNoOpFuncs at all and report.go's
+// coverageWarnings returned immediately on OpsGroundTruth==0, so this exact
+// fixture produced zero warnings.
+func TestScan_ModuleWithoutOpFuncs_ReportedUntraceable(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, noOpFuncsFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{}, // no operation has a deserializeOpError-shaped function
+		map[string]bool{"ConcurrentModificationException": true, "ResourceNotFoundException": true},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Zero(t, sr.OpsGroundTruth, "a module with no OpFuncs contributes no ground-truth ops")
+	require.Equal(t, []string{"fixture"}, sr.ModulesNoOpFuncs,
+		"the module must be recorded as contributing real error types but zero per-op ground truth")
+	require.NotEmpty(t, sr.Warnings, "must not silently read as 0/0 clean")
+	require.Contains(t, sr.Warnings[0], "UNTRACEABLE")
+	require.Empty(t, sr.Findings, "nothing was scanned, so there is nothing to find")
+	require.True(t, worthReporting(sr), "run() must not drop this service before its warning is ever printed")
+}
+
+// TestScan_ModuleWithOpFuncs_NotFlaggedUntraceable proves the fix above
+// EXTENDS this tool rather than replacing its existing behavior: a normal
+// module (real per-op ground truth present, the shape every other test in
+// this file already exercises) must never be recorded in ModulesNoOpFuncs
+// or warned about, and its findings must be exactly what
+// TestScan_SharedSentinel_AttributedPerOperation already expects.
+func TestScan_ModuleWithOpFuncs_NotFlaggedUntraceable(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, sharedSentinelFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{
+			"GetThing":    {"ResourceNotFoundException": true},
+			"DeleteThing": {"UnmappedFailureCode": true},
+		},
+		map[string]bool{"ResourceNotFoundException": true, "UnmappedFailureCode": true},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Empty(t, sr.ModulesNoOpFuncs, "a module with real OpFuncs must never be flagged untraceable")
+
+	for _, w := range sr.Warnings {
+		require.NotContains(t, w, "UNTRACEABLE")
+	}
+
+	require.Equal(t, "ResourceNotFoundException", findingCodes(sr.Findings)["DeleteThing"],
+		"the already-supported shared-sentinel finding must survive unchanged")
+}
+
+// TestCoverageWarnings_UntraceableModule_FiresEvenAtZeroGroundTruth checks
+// report.go's own unit directly: untraceableModuleWarnings must fire ahead
+// of coverageWarnings' OpsGroundTruth==0 early return, not after it -- a
+// module recorded in ModulesNoOpFuncs necessarily has OpsGroundTruth==0
+// (it contributes no ops), so the ordering is the entire fix.
+func TestCoverageWarnings_UntraceableModule_FiresEvenAtZeroGroundTruth(t *testing.T) {
+	t.Parallel()
+
+	sr := serviceScan{OpsGroundTruth: 0, OpsResolved: 0, ModulesNoOpFuncs: []string{"cloudwatch"}}
+
+	warnings := coverageWarnings(sr)
+
+	require.NotEmpty(t, warnings, "a service in this state must never report zero warnings")
+	require.Contains(t, warnings[0], "UNTRACEABLE")
+	require.Contains(t, warnings[0], `"cloudwatch"`)
+}
+
+// TestWorthReporting_KeepsZeroGroundTruthServiceWithWarnings is main.go's
+// run() filter, unit-tested directly since no existing test drives run()
+// against the real filesystem/module cache.
+func TestWorthReporting_KeepsZeroGroundTruthServiceWithWarnings(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, worthReporting(serviceScan{OpsGroundTruth: 0, Warnings: []string{"UNTRACEABLE"}}),
+		"a zero-ground-truth service with a warning must still be reported")
+	require.False(t, worthReporting(serviceScan{OpsGroundTruth: 0}),
+		"a service with truly nothing to report must still be dropped")
+	require.True(t, worthReporting(serviceScan{OpsGroundTruth: 5}),
+		"a normal scanned service must still be reported")
+}

@@ -39,14 +39,22 @@ type finding struct {
 // artifact (module attributed for shared types only, e.g. dax's dataplane
 // importing services/dynamodb) no longer pads the denominator.
 type serviceScan struct {
-	Dir                    string    `json:"dir"`
-	Modules                []string  `json:"modules"`
-	Findings               []finding `json:"findings,omitempty"`
-	Warnings               []string  `json:"warnings,omitempty"`
-	OpsGroundTruth         int       `json:"opsGroundTruth"`
-	OpsGroundTruthBorrowed int       `json:"opsGroundTruthBorrowed,omitempty"`
-	OpsResolved            int       `json:"opsResolved"`
-	OpsWithEmission        int       `json:"opsWithEmission"`
+	Dir      string    `json:"dir"`
+	Modules  []string  `json:"modules"`
+	Findings []finding `json:"findings,omitempty"`
+	Warnings []string  `json:"warnings,omitempty"`
+	// ModulesNoOpFuncs is every resolved module (deser.go's smt.Modules)
+	// that models real, service-wide error types but zero per-operation
+	// ones -- gopherstack-zkpi: cloudwatch's own pinned SDK module has no
+	// deserializers.go file at all (a newer smithy schema-based codegen),
+	// so it can never contribute an OpFuncs entry no matter how deser.go
+	// is taught to parse deserializers.go, because that file does not
+	// exist. See report.go's untraceableModuleWarnings.
+	ModulesNoOpFuncs       []string `json:"modulesNoOpFuncs,omitempty"`
+	OpsGroundTruth         int      `json:"opsGroundTruth"`
+	OpsGroundTruthBorrowed int      `json:"opsGroundTruthBorrowed,omitempty"`
+	OpsResolved            int      `json:"opsResolved"`
+	OpsWithEmission        int      `json:"opsWithEmission"`
 }
 
 // scanServiceDir resolves dir's pinned SDK module(s), builds their per-op
@@ -85,6 +93,27 @@ func scanServiceDir(dir, repoRoot, cache string, goModVersions map[string]string
 	return scanWithIndex(name, mods, repoRoot, idx, smt), nil
 }
 
+// modulesWithoutOpFuncs returns every mod in mods whose ground truth
+// resolved into smt.Modules but has zero OpFuncs -- by buildServiceModuleTruth's
+// own inclusion rule (deser.go), a module only reaches smt.Modules at all
+// when OpFuncs or AllCodes is non-empty, so an OpFuncs-empty entry here
+// always has real AllCodes: a module with error types but no per-operation
+// ground truth to check them against at all, never a module with nothing.
+func modulesWithoutOpFuncs(mods []string, smt *serviceModuleTruth) []string {
+	var out []string
+
+	for _, mod := range mods {
+		mgt, ok := smt.Modules[mod]
+		if !ok || len(mgt.OpFuncs) > 0 {
+			continue
+		}
+
+		out = append(out, mod)
+	}
+
+	return out
+}
+
 // findingKey groups evidence sites into one finding per (operation, domain,
 // code) triple.
 type findingKey struct {
@@ -108,6 +137,7 @@ func scanWithIndex(name string, mods []string, repoRoot string, idx *pkgIndex, s
 		Modules:                mods,
 		OpsGroundTruth:         len(groundTruthOps),
 		OpsGroundTruthBorrowed: len(opUniverse) - len(groundTruthOps),
+		ModulesNoOpFuncs:       modulesWithoutOpFuncs(mods, smt),
 	}
 
 	allCodes := smt.allServiceCodes()

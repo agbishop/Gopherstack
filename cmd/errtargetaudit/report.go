@@ -20,7 +20,7 @@ const lowResolutionThreshold = 0.5
 const minOpsForResolutionGuard = 5
 
 func coverageWarnings(sr serviceScan) []string {
-	var warnings []string
+	warnings := untraceableModuleWarnings(sr)
 
 	if sr.OpsGroundTruth == 0 {
 		return warnings
@@ -48,6 +48,31 @@ func coverageWarnings(sr serviceScan) []string {
 	}
 
 	warnings = append(warnings, emissionCoverageWarnings(sr)...)
+
+	return warnings
+}
+
+// untraceableModuleWarnings flags gopherstack-zkpi's outcome: a resolved
+// module (ModulesNoOpFuncs) defines real, service-wide error types but has
+// no per-operation ground truth at all, because its pinned SDK version
+// generates no deserializers.go file (a newer smithy schema-based codegen --
+// confirmed live only for cloudwatch's own module, out of every module this
+// repo's go.mod pins). Fired UNCONDITIONALLY, ahead of the OpsGroundTruth==0
+// short-circuit below, so this service is never silently indistinguishable
+// from "nothing to audit" -- the same "zero reads as clean" failure
+// emissionCoverageWarnings' BLIND case already exists to catch, for a
+// different mechanism.
+func untraceableModuleWarnings(sr serviceScan) []string {
+	warnings := make([]string, 0, len(sr.ModulesNoOpFuncs))
+
+	for _, mod := range sr.ModulesNoOpFuncs {
+		warnings = append(warnings, fmt.Sprintf(
+			"module %q defines real error types but NO per-operation deserializeOpError<Op>-shaped "+
+				"function was found for ANY operation (likely a newer SDK codegen with no deserializers.go "+
+				"file at all) -- treat this service as UNTRACEABLE, not clean; this tool has no "+
+				"per-operation ground truth for it, so a report of zero class A findings below proves nothing",
+			mod))
+	}
 
 	return warnings
 }
