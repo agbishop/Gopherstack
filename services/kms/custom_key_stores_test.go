@@ -577,3 +577,36 @@ func TestCustomKeyStore_StateGuards_WireErrorType(t *testing.T) {
 		assert.Equal(t, "CustomKeyStoreInvalidStateException", errResp.Type)
 	})
 }
+
+// TestDeleteCustomKeyStore_HasKeys_WireErrorType drives the full HTTP handler path for
+// gopherstack-ylkc: DeleteCustomKeyStore's still-has-keys precondition (custom_key_stores.go)
+// must surface as the real AWS CustomKeyStoreHasCMKsException (extraction-confirmed in
+// deserializeOpErrorDeleteCustomKeyStore, kms@v1.55.4 deserializers.go), not the generic
+// KMSInternalException 500 default that kmsErrorTable fell through to when this sentinel
+// had no row.
+func TestDeleteCustomKeyStore_HasKeys_WireErrorType(t *testing.T) {
+	t.Parallel()
+
+	h := ab2NewHandler(t)
+
+	createRec := doKMSRequest(t, h, "CreateCustomKeyStore", `{"CustomKeyStoreName":"wire-has-keys"}`)
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	var createOut kms.CreateCustomKeyStoreOutput
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createOut))
+
+	idBody := `{"CustomKeyStoreId":"` + createOut.CustomKeyStoreID + `"}`
+	require.Equal(t, http.StatusOK, doKMSRequest(t, h, "ConnectCustomKeyStore", idBody).Code)
+
+	createKeyBody := `{"CustomKeyStoreId":"` + createOut.CustomKeyStoreID + `"}`
+	require.Equal(t, http.StatusOK, doKMSRequest(t, h, "CreateKey", createKeyBody).Code)
+
+	require.Equal(t, http.StatusOK, doKMSRequest(t, h, "DisconnectCustomKeyStore", idBody).Code)
+
+	rec := doKMSRequest(t, h, "DeleteCustomKeyStore", idBody)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp kms.ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "CustomKeyStoreHasCMKsException", errResp.Type)
+}
