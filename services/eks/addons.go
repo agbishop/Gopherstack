@@ -6,9 +6,17 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
 	"github.com/blackbirdworks/gopherstack/pkgs/tags"
 )
+
+// addonPodIdentityNamespace is the Kubernetes namespace EKS installs
+// AWS-managed add-ons into by default (vpc-cni, coredns, kube-proxy, etc).
+// This backend does not track a per-addon NamespaceConfig override, so
+// addon-owned pod identity associations always land here.
+const addonPodIdentityNamespace = "kube-system"
 
 // addonTransitionDelay is the async delay before a CREATING addon reaches ACTIVE.
 const addonTransitionDelay = 100 * time.Millisecond
@@ -182,8 +190,14 @@ func (b *InMemoryBackend) ListAddons(clusterName string) ([]string, error) {
 }
 
 // UpdateAddon updates an existing add-on.
+//
+// podIdentityAssociations implements UpdateAddonInput's tri-state field: nil
+// means "left blank, no change"; a non-nil pointer to an empty slice deletes
+// every association owned by the add-on; a non-nil pointer to a populated
+// slice replaces them.
 func (b *InMemoryBackend) UpdateAddon(
 	clusterName, addonName, addonVersion, serviceAccountRoleARN, configuration, resolveConflicts string,
+	podIdentityAssociations *[]PodIdentityAssociationSpec,
 ) (*Addon, error) {
 	b.mu.Lock("UpdateAddon")
 	defer b.mu.Unlock()
@@ -204,6 +218,17 @@ func (b *InMemoryBackend) UpdateAddon(
 		)
 	}
 
+	if podIdentityAssociations != nil {
+		for _, s := range *podIdentityAssociations {
+			if s.RoleARN == "" || s.ServiceAccount == "" {
+				return nil, fmt.Errorf(
+					"%w: podIdentityAssociations roleArn and serviceAccount are required",
+					ErrValidation,
+				)
+			}
+		}
+	}
+
 	if addonVersion != "" {
 		addon.AddonVersion = addonVersion
 	}
@@ -220,9 +245,57 @@ func (b *InMemoryBackend) UpdateAddon(
 		addon.ResolveConflicts = resolveConflicts
 	}
 
+	if podIdentityAssociations != nil {
+		b.replaceAddonPodIdentityAssociationsLocked(clusterName, addon, *podIdentityAssociations)
+	}
+
 	cp := *addon
 
 	return &cp, nil
+}
+
+// replaceAddonPodIdentityAssociationsLocked deletes every pod identity
+// association owned by addon (OwnerARN == addon.ARN) and creates one per
+// spec. Caller must hold b.mu for writing and must have already validated
+// specs.
+func (b *InMemoryBackend) replaceAddonPodIdentityAssociationsLocked(
+	clusterName string, addon *Addon, specs []PodIdentityAssociationSpec,
+) {
+	for _, a := range b.podIdentityAssociationsByCluster.Get(clusterName) {
+		if a.OwnerARN != addon.ARN {
+			continue
+		}
+
+		if a.Tags != nil {
+			a.Tags.Close()
+		}
+
+		b.podIdentityAssociations.Delete(podIdentityAssociationKey(clusterName, a.AssociationID))
+	}
+
+	ids := make([]string, 0, len(specs))
+	now := time.Now().UTC()
+
+	for _, s := range specs {
+		assocID := uuid.NewString()
+		assoc := &PodIdentityAssociation{
+			ClusterName:    clusterName,
+			AssociationID:  assocID,
+			ARN:            arn.Build("eks", b.region, b.accountID, "podidentityassociation/"+clusterName+"/"+assocID),
+			Namespace:      addonPodIdentityNamespace,
+			ServiceAccount: s.ServiceAccount,
+			RoleARN:        s.RoleARN,
+			OwnerARN:       addon.ARN,
+			CreatedAt:      now,
+			ModifiedAt:     now,
+			ExternalID:     uuid.NewString(),
+			Tags:           tags.New("eks.podidentity." + clusterName + "." + assocID + ".tags"),
+		}
+		b.podIdentityAssociations.Put(assoc)
+		ids = append(ids, assocID)
+	}
+
+	addon.PodIdentityAssociations = ids
 }
 
 // DescribeAddonVersions returns static addon version metadata.

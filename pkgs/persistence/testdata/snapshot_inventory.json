@@ -10320,6 +10320,7 @@
       "Addon.CreatedAt time.Time `json:\"createdAt\"`",
       "Addon.Health *AddonHealth `json:\"health,omitempty\"`",
       "Addon.MarketplaceVersion string `json:\"marketplaceVersion,omitempty\"`",
+      "Addon.PodIdentityAssociations []string `json:\"podIdentityAssociations,omitempty\"`",
       "Addon.ResolveConflicts string `json:\"resolveConflicts,omitempty\"`",
       "Addon.ServiceAccountRoleARN string `json:\"serviceAccountRoleArn,omitempty\"`",
       "Addon.Status string `json:\"status\"`",

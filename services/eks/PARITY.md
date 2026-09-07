@@ -48,7 +48,7 @@ ops:
   DescribeAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "see CreateAddon's gopherstack-y1zn note -- same addonToJSON fix."}
   ListAddons: {wire: fixed, errors: ok, state: ok, persist: ok, note: "now supports maxResults/nextToken pagination"}
   DeleteAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "see CreateAddon's gopherstack-y1zn note -- same addonToJSON fix."}
-  UpdateAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "was PUT to bare addon path; real op is POST .../addons/{addonName}/update"}
+  UpdateAddon: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was PUT to bare addon path; real op is POST .../addons/{addonName}/update. 2026-09-07 (gopherstack-tu95): PodIdentityAssociations was declared on the wire but never read -- its documented tri-state (absent=no change, []=delete all, populated=replace) was unimplemented. Addon also never surfaced its owned associations back (types.Addon.PodIdentityAssociations), so a delete could not be observed. See PodIdentityAssociation tri-state entry below."}
   DescribeAddonVersions: {wire: fixed, errors: ok, state: n/a, persist: n/a, note: "path was /addon-versions; real path is /addons/supported-versions — was completely unreachable by the real SDK client"}
   DescribeAddonConfiguration: {wire: fixed, errors: ok, state: n/a, persist: n/a, note: "path was /addon-configuration; real path is /addons/configuration-schemas — was completely unreachable. gopherstack-g479 (2026-08-21): configurationSchema was ALSO a nested JSON object where the real member (deserializers.go, case \"configurationSchema\": value.(string)) is the schema as a raw JSON string; failed with 'expected String to be of type string, got map[string]interface {} instead' pre-fix. Found via a new go/types-based map-literal kind scanner."}
   CreateAccessEntry: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -475,3 +475,58 @@ Gates: no source changes to eks; `go build ./services/eks/...`, `go vet
 ./services/eks/...`, `go test -race -count=1 ./services/eks/...`,
 `golangci-lint run ./services/eks/...` all re-confirmed clean (unchanged from
 before this pass).
+
+## 2026-09-07 (gopherstack-tu95): UpdateAddon.PodIdentityAssociations tri-state was unimplemented
+
+`UpdateAddonInput.PodIdentityAssociations` (aws-sdk-go-v2/service/eks@v1.90.4
+`api_op_UpdateAddon.go`) is documented tri-state: "If this value is left
+blank, no change. If an empty array is provided, existing associations owned
+by the add-on are deleted." `updateAddonBody` in `handler_addons.go` never
+declared the field at all, so it was silently dropped on every request
+regardless of value. `types.Addon.PodIdentityAssociations []string` (the
+association IDs owned by the add-on) was also never surfaced by `Addon` or
+`addonToJSON`, so even a correct delete could not have been observed via
+DescribeAddon.
+
+Fixed both. `updateAddonBody.PodIdentityAssociations` is now
+`[]addonPodIdentityAssociationBody` (roleArn/serviceAccount, matching
+`types.AddonPodIdentityAssociations` -- no namespace member); its absent-vs-
+`[]`-vs-populated tri-state is read directly off Go's `encoding/json`
+nil-vs-non-nil-slice unmarshal behavior (a `[]T` field is left nil when its
+JSON key is absent, and set to a non-nil, possibly-empty slice when the key
+is present), the same idiom already used by
+`services/backup/handler_frameworks.go`'s `UpdateFramework`/
+`FrameworkControls`. The handler converts a non-nil `[]addonPodIdentityAssociationBody`
+into `*[]PodIdentityAssociationSpec` (nil pointer = no change) and passes it
+to `Backend.UpdateAddon`, which -- when non-nil -- deletes every
+`PodIdentityAssociation` with `OwnerARN == addon.ARN` and creates one per
+spec, recording the resulting association IDs on `addon.PodIdentityAssociations`.
+`addonToJSON` now always emits `podIdentityAssociations` (empty array when
+nil) so DescribeAddon can observe the result.
+
+Addon-owned associations always land in the `kube-system` namespace
+(`addonPodIdentityNamespace` const): this backend does not track a per-addon
+`NamespaceConfig` override (CreateAddon's own `NamespaceConfig` field is
+separately unwired -- see open item below), so there is no per-addon
+namespace to use instead. `CreateAddon`'s own `PodIdentityAssociations`
+field remains unwired (it has no tri-state semantics on Create, just a plain
+create-time list) -- out of scope for gopherstack-tu95, filed as a follow-up.
+
+Regression tests (`addon_pod_identity_test.go`), all HTTP-handler-driven,
+each proven failing against unmodified code before this fix (reverted the
+three production files, ran, confirmed 4 failures, restored):
+- `TestAddon_UpdateAddon_PodIdentityAssociations_AbsentLeavesUnchanged`
+- `TestAddon_UpdateAddon_PodIdentityAssociations_EmptyDeletesOnlyThisAddon`
+  (creates associations on two addons, deletes one via `[]`, asserts the
+  other addon's associations survive unchanged and ListPodIdentityAssociations
+  returns exactly the survivor)
+- `TestAddon_UpdateAddon_PodIdentityAssociations_PopulatedReplaces`
+- `TestAddon_UpdateAddon_PodIdentityAssociations_RejectsMissingFields`
+  (a populated entry missing roleArn/serviceAccount is rejected
+  InvalidParameterException, no partial associations created)
+
+`Addon` gained the `PodIdentityAssociations []string` field; the
+`pkgs/persistence` snapshot-version guard confirms this is additive-only
+(every existing field unchanged) and needs no `eksSnapshotVersion` bump --
+only its golden `testdata/snapshot_inventory.json` fixture needs a
+`-update` refresh, deliberately left for a separate pass.

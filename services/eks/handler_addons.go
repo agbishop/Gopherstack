@@ -108,6 +108,13 @@ func addonToJSON(a *Addon) map[string]any {
 		m["configurationValues"] = a.Configuration
 	}
 
+	podAssocs := a.PodIdentityAssociations
+	if podAssocs == nil {
+		podAssocs = []string{}
+	}
+
+	m["podIdentityAssociations"] = podAssocs
+
 	return m
 }
 
@@ -178,11 +185,19 @@ func (h *Handler) handleListAddons(c *echo.Context, clusterName string) error {
 	return c.JSON(http.StatusOK, eksPageResponse("addons", p))
 }
 
+// addonPodIdentityAssociationBody mirrors types.AddonPodIdentityAssociations
+// (roleArn + serviceAccount only, no namespace).
+type addonPodIdentityAssociationBody struct {
+	RoleArn        string `json:"roleArn"`
+	ServiceAccount string `json:"serviceAccount"`
+}
+
 type updateAddonBody struct {
-	AddonVersion          string `json:"addonVersion"`
-	ServiceAccountRoleArn string `json:"serviceAccountRoleArn"`
-	ConfigurationValues   string `json:"configurationValues"`
-	ResolveConflicts      string `json:"resolveConflicts"`
+	AddonVersion            string                            `json:"addonVersion"`
+	ServiceAccountRoleArn   string                            `json:"serviceAccountRoleArn"`
+	ConfigurationValues     string                            `json:"configurationValues"`
+	ResolveConflicts        string                            `json:"resolveConflicts"`
+	PodIdentityAssociations []addonPodIdentityAssociationBody `json:"podIdentityAssociations"`
 }
 
 func (h *Handler) handleUpdateAddon(c *echo.Context, clusterName, addonName string, body []byte) error {
@@ -193,9 +208,24 @@ func (h *Handler) handleUpdateAddon(c *echo.Context, clusterName, addonName stri
 		}
 	}
 
+	// in.PodIdentityAssociations is nil iff the JSON key was absent -- Go's
+	// json.Unmarshal leaves a []T field untouched (nil) when its key is
+	// missing, but sets it to a non-nil empty slice for `[]` (verified in
+	// this session; same tri-state idiom as services/backup/handler_frameworks.go's
+	// UpdateFramework/FrameworkControls).
+	var podIdentityAssociations *[]PodIdentityAssociationSpec
+	if in.PodIdentityAssociations != nil {
+		specs := make([]PodIdentityAssociationSpec, len(in.PodIdentityAssociations))
+		for i, a := range in.PodIdentityAssociations {
+			specs[i] = PodIdentityAssociationSpec{RoleARN: a.RoleArn, ServiceAccount: a.ServiceAccount}
+		}
+
+		podIdentityAssociations = &specs
+	}
+
 	addon, err := h.Backend.UpdateAddon(
 		clusterName, addonName, in.AddonVersion, in.ServiceAccountRoleArn,
-		in.ConfigurationValues, in.ResolveConflicts,
+		in.ConfigurationValues, in.ResolveConflicts, podIdentityAssociations,
 	)
 	if err != nil {
 		return h.handleError(c, err)

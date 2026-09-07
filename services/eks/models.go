@@ -271,18 +271,19 @@ type AddonHealth struct {
 
 // Addon represents an EKS managed add-on.
 type Addon struct {
-	CreatedAt             time.Time    `json:"createdAt"`
-	Tags                  *tags.Tags   `json:"tags,omitempty"`
-	Health                *AddonHealth `json:"health,omitempty"`
-	ClusterName           string       `json:"clusterName"`
-	AddonName             string       `json:"addonName"`
-	ARN                   string       `json:"addonArn"`
-	AddonVersion          string       `json:"addonVersion,omitempty"`
-	MarketplaceVersion    string       `json:"marketplaceVersion,omitempty"`
-	Status                string       `json:"status"`
-	ServiceAccountRoleARN string       `json:"serviceAccountRoleArn,omitempty"`
-	Configuration         string       `json:"configurationValues,omitempty"`
-	ResolveConflicts      string       `json:"resolveConflicts,omitempty"`
+	CreatedAt               time.Time    `json:"createdAt"`
+	Health                  *AddonHealth `json:"health,omitempty"`
+	Tags                    *tags.Tags   `json:"tags,omitempty"`
+	ARN                     string       `json:"addonArn"`
+	ClusterName             string       `json:"clusterName"`
+	AddonName               string       `json:"addonName"`
+	AddonVersion            string       `json:"addonVersion,omitempty"`
+	MarketplaceVersion      string       `json:"marketplaceVersion,omitempty"`
+	Status                  string       `json:"status"`
+	ServiceAccountRoleARN   string       `json:"serviceAccountRoleArn,omitempty"`
+	Configuration           string       `json:"configurationValues,omitempty"`
+	ResolveConflicts        string       `json:"resolveConflicts,omitempty"`
+	PodIdentityAssociations []string     `json:"podIdentityAssociations,omitempty"`
 }
 
 // CapabilityIssue represents a single health issue affecting a Capability.
@@ -389,6 +390,14 @@ type PodIdentityAssociation struct {
 	ExternalID         string     `json:"externalId,omitempty"`
 	Policy             string     `json:"policy,omitempty"`
 	DisableSessionTags bool       `json:"disableSessionTags"`
+}
+
+// PodIdentityAssociationSpec is one entry of UpdateAddonInput's
+// PodIdentityAssociations, matching types.AddonPodIdentityAssociations
+// (RoleArn + ServiceAccount only -- no namespace).
+type PodIdentityAssociationSpec struct {
+	RoleARN        string
+	ServiceAccount string
 }
 
 // Insight represents an EKS cluster insight.

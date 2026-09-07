@@ -98,7 +98,7 @@ func TestAddon_UpdateAddon_InvalidResolveConflicts_Rejected(t *testing.T) {
 	_, err = b.CreateAddon("c1", "vpc-cni", "", "", "", "", nil)
 	require.NoError(t, err)
 
-	_, err = b.UpdateAddon("c1", "vpc-cni", "", "", "", "BAD")
+	_, err = b.UpdateAddon("c1", "vpc-cni", "", "", "", "BAD", nil)
 	require.ErrorIs(t, err, eks.ErrValidation)
 }
 
