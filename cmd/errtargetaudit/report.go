@@ -39,9 +39,10 @@ func coverageWarnings(sr serviceScan) []string {
 		ratio := float64(sr.OpsResolved) / float64(sr.OpsGroundTruth)
 		if ratio < lowResolutionThreshold {
 			warnings = append(warnings, fmt.Sprintf(
-				"only %d/%d (%.0f%%) of operations with SDK ground truth resolved to a handler -- "+
-					"treat this service's coverage as UNVERIFIED, not clean; likely a resolution gap "+
-					"in this tool, not a service this thin",
+				"only %d/%d (%.0f%%) of operations with SDK ground truth (borrowed-module ops already "+
+					"excluded) resolved to a handler -- treat this service's coverage as UNVERIFIED, not "+
+					"clean; this tool cannot tell whether that's a resolution gap in itself or a genuine "+
+					"gap in this service's own implementation",
 				sr.OpsResolved, sr.OpsGroundTruth, pct(sr.OpsResolved, sr.OpsGroundTruth)))
 		}
 	}
@@ -126,6 +127,11 @@ func printServiceScan(sr serviceScan) {
 
 	fmt.Fprintf(os.Stdout, "operations with SDK ground truth: %d, resolved: %d, with an emission found: %d\n",
 		sr.OpsGroundTruth, sr.OpsResolved, sr.OpsWithEmission)
+
+	if sr.OpsGroundTruthBorrowed > 0 {
+		fmt.Fprintf(os.Stdout, "  (%d further ops belong to an imported SDK module never assigned to a "+
+			"resolved handler here -- excluded from ground truth as borrowed-type-only)\n", sr.OpsGroundTruthBorrowed)
+	}
 
 	if len(sr.Findings) == 0 {
 		fmt.Fprintln(os.Stdout, "no class A findings (real code, wrong operation)")

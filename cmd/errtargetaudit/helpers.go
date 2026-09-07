@@ -17,6 +17,40 @@ func unionOpFuncs(smt *serviceModuleTruth) map[string]bool {
 	return out
 }
 
+// assignedGroundTruth narrows opUniverse to the operations belonging to a
+// module domainModule actually assigned to some resolved domain
+// (moduleassign.go) -- a module this dir only imports for shared types
+// (dax's dataplane importing services/dynamodb, stepfunctions importing
+// dynamodb and s3) is never assigned any domain, so its op count no longer
+// pads ground truth for a service that never dispatches it. Falls back to
+// the full union when domainModule is empty -- nothing resolved at all yet,
+// so which module is real is genuinely unknown and coverageWarnings' "ZERO
+// resolved" wording still needs the original denominator.
+func assignedGroundTruth(
+	smt *serviceModuleTruth,
+	domainModule map[string]string,
+	opUniverse map[string]bool,
+) map[string]bool {
+	assigned := map[string]bool{}
+	for _, mod := range domainModule {
+		assigned[mod] = true
+	}
+
+	if len(assigned) == 0 {
+		return opUniverse
+	}
+
+	out := map[string]bool{}
+
+	for mod := range assigned {
+		for op := range smt.Modules[mod].OpFuncs {
+			out[op] = true
+		}
+	}
+
+	return out
+}
+
 // buildDomainOps groups, across every resolved operation, which domains
 // (receiver-type names) resolved at least one root for it -- moduleassign.go's
 // input for picking which module governs each domain.

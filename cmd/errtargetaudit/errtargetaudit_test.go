@@ -172,6 +172,145 @@ func TestScan_ClassB_NotFabricated_NoFinding(t *testing.T) {
 	require.Empty(t, sr.Findings, "a code no operation ever declares is class B, out of this tool's scope")
 }
 
+// TestScan_BorrowedModule_NotCountedInGroundTruth is gopherstack-2kud's dax
+// and stepfunctions case: this fixture only dispatches GetThing/DeleteThing
+// (its own module's ops), but its dir also imports a second SDK module
+// (dynamodb-shaped: PutItem/Query/Scan) purely for shared types. That
+// borrowed module's 3 ops must never inflate ground truth -- resolveOpRoots
+// finds no handler named PutItem/Query/Scan, so no domain ever gets assigned
+// the borrowed module (moduleassign.go), and assignedGroundTruth excludes it.
+func TestScan_BorrowedModule_NotCountedInGroundTruth(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, sharedSentinelFixture)
+	smt := &serviceModuleTruth{
+		Modules: map[string]*moduleGroundTruth{
+			"own": newTestModuleGroundTruth(
+				map[string]map[string]bool{
+					"GetThing":    {"ResourceNotFoundException": true},
+					"DeleteThing": {"UnmappedFailureCode": true},
+				},
+				map[string]bool{"ResourceNotFoundException": true, "UnmappedFailureCode": true},
+			),
+			"borrowed": newTestModuleGroundTruth(
+				map[string]map[string]bool{
+					"PutItem": {"ConditionalCheckFailedException": true},
+					"Query":   {"ResourceNotFoundException": true},
+					"Scan":    {"ResourceNotFoundException": true},
+				},
+				map[string]bool{"ConditionalCheckFailedException": true, "ResourceNotFoundException": true},
+			),
+		},
+	}
+
+	sr := scanWithIndex("fixture", []string{"own", "borrowed"}, "/repo", idx, smt)
+
+	require.Equal(t, 2, sr.OpsGroundTruth, "borrowed module's 3 ops must not inflate ground truth")
+	require.Equal(t, 3, sr.OpsGroundTruthBorrowed)
+	require.Equal(t, 2, sr.OpsResolved)
+
+	codes := findingCodes(sr.Findings)
+	require.NotContains(t, codes, "GetThing")
+	require.Equal(t, "ResourceNotFoundException", codes["DeleteThing"])
+	require.Len(t, sr.Findings, 1, "class A findings must not move when a borrowed module is present")
+}
+
+// TestScan_SingleModule_UnimplementedOpsStillCountUnresolved guards the
+// other side of gopherstack-2kud: a service's OWN module (never borrowed)
+// declaring more ops than this fixture dispatches must still report them
+// unresolved -- a genuinely thin service's ratio is not a module-attribution
+// artifact and must not be silently dropped from ground truth.
+func TestScan_SingleModule_UnimplementedOpsStillCountUnresolved(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, sharedSentinelFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{
+			"GetThing":    {"ResourceNotFoundException": true},
+			"DeleteThing": {"UnmappedFailureCode": true},
+			"PutThing":    {"UnmappedFailureCode": true},
+			"ListThings":  {"UnmappedFailureCode": true},
+			"UpdateThing": {"UnmappedFailureCode": true},
+		},
+		map[string]bool{
+			"ResourceNotFoundException": true,
+			"UnmappedFailureCode":       true,
+		},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Equal(t, 5, sr.OpsGroundTruth, "unimplemented ops from the service's OWN module must still count")
+	require.Zero(t, sr.OpsGroundTruthBorrowed)
+	require.Equal(t, 2, sr.OpsResolved)
+}
+
+// overlapFixture is gopherstack-2kud's dynamodb/opensearch/personalize
+// case: a domain that mostly dispatches its OWN module's ops (GetThing,
+// DeleteThing) also happens to implement one op literally named after a
+// borrowed, unassigned module's op (PutItem: dynamodb has 58 own ops,
+// dynamodbstreams only 4, so overlap still assigns this domain to the "own"
+// module) -- PutItem must not count toward OpsResolved once its module is
+// excluded from ground truth, or the reported ratio exceeds 100%.
+const overlapFixture = `
+package fixture
+
+type Handler struct{}
+
+func (h *Handler) dispatch(action string) error {
+	switch action {
+	case "GetThing":
+		return h.handleGetThing()
+	case "DeleteThing":
+		return h.handleDeleteThing()
+	case "PutItem":
+		return h.handlePutItem()
+	}
+	return nil
+}
+
+func (h *Handler) handleGetThing() error { return nil }
+func (h *Handler) handleDeleteThing() error { return nil }
+func (h *Handler) handlePutItem() error { return nil }
+`
+
+// TestScan_OverlappingDomain_ResolvedNeverExceedsGroundTruth guards the
+// numerator against the same fix that guards the denominator: PutItem
+// resolves to a real handler, but its module ("borrowed") never gets
+// assigned any domain (the domain's 2-op overlap with "own" beats its 1-op
+// overlap with "borrowed"), so PutItem must be excluded from OpsResolved
+// exactly as it is from OpsGroundTruth -- otherwise resolved > ground truth.
+func TestScan_OverlappingDomain_ResolvedNeverExceedsGroundTruth(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, overlapFixture)
+	smt := &serviceModuleTruth{
+		Modules: map[string]*moduleGroundTruth{
+			"own": newTestModuleGroundTruth(
+				map[string]map[string]bool{
+					"GetThing":    {"ResourceNotFoundException": true},
+					"DeleteThing": {"UnmappedFailureCode": true},
+				},
+				map[string]bool{"ResourceNotFoundException": true, "UnmappedFailureCode": true},
+			),
+			"borrowed": newTestModuleGroundTruth(
+				map[string]map[string]bool{
+					"PutItem": {"ConditionalCheckFailedException": true},
+					"Query":   {"ResourceNotFoundException": true},
+					"Scan":    {"ResourceNotFoundException": true},
+				},
+				map[string]bool{"ConditionalCheckFailedException": true, "ResourceNotFoundException": true},
+			),
+		},
+	}
+
+	sr := scanWithIndex("fixture", []string{"own", "borrowed"}, "/repo", idx, smt)
+
+	require.Equal(t, 2, sr.OpsGroundTruth)
+	require.Equal(t, 2, sr.OpsResolved, "PutItem resolves to a handler but its module was never assigned")
+	require.LessOrEqual(t, sr.OpsResolved, sr.OpsGroundTruth, "resolved must never exceed ground truth")
+}
+
 // constructorFixture is services/networkmanager's real shape: a
 // constructor function (notFoundError) that never mentions a code literal
 // itself, building a locally-declared error type whose field wraps a known

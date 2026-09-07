@@ -31,15 +31,22 @@ type finding struct {
 	AcceptedBy []string       `json:"acceptedBy,omitempty"`
 }
 
-// serviceScan is one services/<dir>'s full result.
+// serviceScan is one services/<dir>'s full result. OpsGroundTruth counts
+// only operations belonging to a module actually assigned to a resolved
+// domain (moduleassign.go) -- OpsGroundTruthBorrowed is the rest: ops from a
+// module this dir imports (module attribution, modresolve.go) but whose
+// handlers this scan never traced to, so gopherstack-2kud's dax/stepfunctions
+// artifact (module attributed for shared types only, e.g. dax's dataplane
+// importing services/dynamodb) no longer pads the denominator.
 type serviceScan struct {
-	Dir             string    `json:"dir"`
-	Modules         []string  `json:"modules"`
-	Findings        []finding `json:"findings,omitempty"`
-	Warnings        []string  `json:"warnings,omitempty"`
-	OpsGroundTruth  int       `json:"opsGroundTruth"`
-	OpsResolved     int       `json:"opsResolved"`
-	OpsWithEmission int       `json:"opsWithEmission"`
+	Dir                    string    `json:"dir"`
+	Modules                []string  `json:"modules"`
+	Findings               []finding `json:"findings,omitempty"`
+	Warnings               []string  `json:"warnings,omitempty"`
+	OpsGroundTruth         int       `json:"opsGroundTruth"`
+	OpsGroundTruthBorrowed int       `json:"opsGroundTruthBorrowed,omitempty"`
+	OpsResolved            int       `json:"opsResolved"`
+	OpsWithEmission        int       `json:"opsWithEmission"`
 }
 
 // scanServiceDir resolves dir's pinned SDK module(s), builds their per-op
@@ -94,13 +101,19 @@ func scanWithIndex(name string, mods []string, repoRoot string, idx *pkgIndex, s
 	}
 
 	domainModule := assignDomainModules(buildDomainOps(resolved), smt)
+	groundTruthOps := assignedGroundTruth(smt, domainModule, opUniverse)
 
-	sr := serviceScan{Dir: name, Modules: mods, OpsGroundTruth: len(opUniverse)}
+	sr := serviceScan{
+		Dir:                    name,
+		Modules:                mods,
+		OpsGroundTruth:         len(groundTruthOps),
+		OpsGroundTruthBorrowed: len(opUniverse) - len(groundTruthOps),
+	}
 
 	allCodes := smt.allServiceCodes()
 	grouped := map[findingKey]*finding{}
 
-	for op := range opUniverse {
+	for op := range groundTruthOps {
 		scanOneOp(op, resolved[op], idx, cls, smt, allCodes, domainModule, repoRoot, &sr, grouped)
 	}
 
