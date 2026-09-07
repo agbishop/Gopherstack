@@ -63,11 +63,20 @@ func TestListPoliciesSortIsTotal(t *testing.T) {
 	b, _ := newOrgBackend(t)
 	h := organizations.NewHandler(b)
 
-	want := make(map[string]bool, 3)
+	want := make(map[string]bool, 4)
+
+	// The default FullAWSAccess SCP every organization is created with also
+	// shows up under this filter.
+	existing, err := b.ListPolicies("SERVICE_CONTROL_POLICY")
+	require.NoError(t, err)
+
+	for _, p := range existing {
+		want[p.PolicySummary.ID] = true
+	}
 
 	for range 3 {
-		p, err := b.CreatePolicy("dup-name", "", `{"Version":"2012-10-17"}`, "SERVICE_CONTROL_POLICY", nil)
-		require.NoError(t, err)
+		p, createErr := b.CreatePolicy("dup-name", "", `{"Version":"2012-10-17"}`, "SERVICE_CONTROL_POLICY", nil)
+		require.NoError(t, createErr)
 		want[p.PolicySummary.ID] = true
 	}
 

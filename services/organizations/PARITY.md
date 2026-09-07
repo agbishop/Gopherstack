@@ -400,3 +400,72 @@ Gaps confirmed and NOT fixed, no backing state:
 InviteOrganizationToTransferResponsibility's Tags and PutResourcePolicy's Tags
 -- neither handshakes nor resource-policy IDs are registered taggable types
 (resourceExistsLocked covers root, OU, account and policy only).
+
+## 2026-09-07 (gopherstack-hg4i): no default FullAWSAccess policy modeled
+
+Real AWS Organizations creates every organization with an AWS-managed SCP,
+`p-FullAWSAccess`, attached to root (`api_op_DetachPolicy.go`'s doc: "Every
+root, OU, and account must have at least one SCP attached. If you want to
+replace the default FullAWSAccess policy with an SCP that limits the
+permissions that can be delegated, you must attach the replacement SCP
+before you can remove the default SCP"; `api_op_CreateOrganization.go`'s doc:
+"By default (or if you set the FeatureSet parameter to ALL) ... service
+control policies automatically enabled in the root"). This backend modeled
+no such policy at all, and `CreatePolicy` hardcoded `AwsManaged: false` for
+every policy it created -- correct for user-created policies, but there was
+no path that ever produced an `AwsManaged: true` policy, so no code
+anywhere could branch on it. The issue's premise that `DeletePolicy` had a
+now-dead `AwsManaged` guard was itself wrong: `DeletePolicy` had no
+`AwsManaged` check of any kind (dead or live) before this fix; `UpdatePolicy`
+likewise had none, despite `types.PolicySummary.AwsManaged`'s doc comment
+("you can attach the policy to roots, OUs, or accounts, but you cannot edit
+it") only ever describing edit restrictions, not deletion.
+
+Fixed by seeding `p-FullAWSAccess` (Name `FullAWSAccess`, Type
+`SERVICE_CONTROL_POLICY`, `AwsManaged: true`) at `CreateOrganization`,
+attached to root when `FeatureSet` is `ALL` (`seedFullAWSAccessPolicyLocked`,
+policies.go) -- the SDK ships no policy id/name/content defaults of its own,
+so the id/name/description match live `describe-policy` output and the
+content is AWS's documented full-access SCP body, not SDK-verified. Added an
+`AwsManaged` guard to both `DeletePolicy` and `UpdatePolicy`, returning
+`AccessDeniedException` (`ErrAccessDeniedManagedPolicy`): neither op's
+declared error set (`deserializers.go`) includes
+`ConstraintViolationException`, and no `ConstraintViolationExceptionReason`
+enum value fits "AWS-managed policy" either, so `AccessDeniedException`
+(declared on both) is the only fit. `DetachPolicy` was left unguarded --
+its own doc describes detaching the default SCP as a normal, supported
+step in replacing it, not a restricted operation.
+
+Seeding a real policy on every organization changed what `ListPolicies`,
+`ListPoliciesForTarget`, and `DescribeEffectivePolicy` return by default,
+and shifted the 5-SCP-per-target attachment ceiling on root down by one
+already-occupied slot. 15 pre-existing tests needed correcting for the new
+count/content (not weakened -- exact counts bumped, e.g. "attach 5 new SCPs
+to root succeeds" became "attach 4 new SCPs succeeds, the 5th fails", and
+`DescribeEffectivePolicy`'s "no policy attached returns not-found" case for
+SCP specifically was rewritten to assert it now correctly resolves to the
+inherited default instead, since real AWS never returns not-found for SCP
+once an org exists). New coverage added in `default_policy_test.go`, all
+HTTP-handler-driven: default policy identity/AwsManaged, its root
+attachment via `ListPoliciesForTarget`, delete/update refusal with survivor
+checks, and a too-broad-guard tripwire (a user-created policy must remain
+`AwsManaged: false` and stay deletable). All new guard lines and the seed
+call were individually neutered (commented out / forced true) and confirmed
+to (a) still compile and (b) fail at least one test each, including a
+simulated always-refuse `DeletePolicy` guard, which multiple existing tests
+and the tripwire both caught.
+
+Not implemented: `EnablePolicyType`/root `PolicyTypes` are not
+auto-populated with `SERVICE_CONTROL_POLICY: ENABLED` at org creation, even
+though `CreateOrganization`'s own doc also promises that for `FeatureSet:
+ALL`. Left alone deliberately -- multiple existing tests
+(`TestPolicyTypes`) call `EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")`
+and require `NoError`, which a pre-enabled root would break via
+`ErrPolicyTypeAlreadyEnabled`; recommend a separate, explicitly-scoped issue
+rather than folding it into this fix.
+
+A snapshot restored from before this change carries no `p-FullAWSAccess`
+policy (Restore does not seed one; only `CreateOrganization` does), so a
+long-lived organization restored across this change has zero SCPs where a
+fresh one would have one. No migration was built for this -- flagged for
+the operator to decide.

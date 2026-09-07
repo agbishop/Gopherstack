@@ -5,6 +5,10 @@ import (
 	"time"
 )
 
+// featureSetAll is the CreateOrganization FeatureSet value under which SCPs
+// are automatically enabled in the root (see seedFullAWSAccessPolicyLocked).
+const featureSetAll = "ALL"
+
 // CreateOrganization creates a new organization.
 func (b *InMemoryBackend) CreateOrganization(featureSet string) (*Organization, *Root, error) {
 	b.mu.Lock("CreateOrganization")
@@ -15,10 +19,10 @@ func (b *InMemoryBackend) CreateOrganization(featureSet string) (*Organization, 
 	}
 
 	if featureSet == "" {
-		featureSet = "ALL"
+		featureSet = featureSetAll
 	}
 
-	if featureSet != "ALL" && featureSet != "CONSOLIDATED_BILLING" {
+	if featureSet != featureSetAll && featureSet != "CONSOLIDATED_BILLING" {
 		return nil, nil, ErrInvalidInput
 	}
 
@@ -66,6 +70,7 @@ func (b *InMemoryBackend) CreateOrganization(featureSet string) (*Organization, 
 	b.accounts.Put(mgmtAcct)
 	b.accountParent[mgmtAcctID] = rootID
 	b.addAccountChild(rootID, mgmtAcctID)
+	b.seedFullAWSAccessPolicyLocked(featureSet, orgID, rootID)
 
 	return org, root, nil
 }

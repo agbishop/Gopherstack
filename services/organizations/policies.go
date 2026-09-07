@@ -22,6 +22,23 @@ const (
 	policyTypeSecHub   = "SECURITYHUB_POLICY"
 )
 
+// fullAWSAccessPolicyID, Name and Description match the id/name/description
+// AWS assigns the default SCP every organization is created with (verified
+// against live `aws organizations describe-policy --policy-id
+// p-FullAWSAccess` output; the pinned SDK ships no policy id/name/content
+// constants of its own -- see types.PolicySummary's doc comment, which only
+// describes the shape). Content is the well-known full-access SCP body AWS
+// documents for it (docs.aws.amazon.com/organizations/latest/userguide
+// /orgs_manage_policies_scps_example-scps.html); not SDK-verified either,
+// since PolicyContent carries no default in the model.
+const (
+	fullAWSAccessPolicyID          = "p-FullAWSAccess"
+	fullAWSAccessPolicyName        = "FullAWSAccess"
+	fullAWSAccessPolicyDescription = "Allows access to every operation"
+	fullAWSAccessPolicyContent     = `{"Version":"2012-10-17","Statement":` +
+		`[{"Effect":"Allow","Action":"*","Resource":"*"}]}`
+)
+
 // validPolicyTypes returns the policy types supported by AWS Organizations.
 func validPolicyTypes() []string {
 	return []string{
@@ -97,6 +114,35 @@ func validatePolicyContent(content, policyType string) error {
 	return nil
 }
 
+// seedFullAWSAccessPolicyLocked creates the default FullAWSAccess SCP that
+// real AWS Organizations creates with every organization, and attaches it to
+// root when SCPs are enabled by default (featureSet == ALL; CreateOrganization's
+// doc comment: "By default (or if you set FeatureSet to ALL) ... service
+// control policies automatically enabled in the root. If you instead choose
+// ... CONSOLIDATED_BILLING ... no policy types are enabled by default").
+// Must be called with the write lock held, after b.org and b.root are set.
+func (b *InMemoryBackend) seedFullAWSAccessPolicyLocked(featureSet, orgID, rootID string) {
+	p := &Policy{
+		PolicySummary: PolicySummary{
+			ID:          fullAWSAccessPolicyID,
+			ARN:         b.policyARN(orgID, policyTypeSCP, fullAWSAccessPolicyID),
+			Name:        fullAWSAccessPolicyName,
+			Description: fullAWSAccessPolicyDescription,
+			Type:        policyTypeSCP,
+			AwsManaged:  true,
+		},
+		Content: fullAWSAccessPolicyContent,
+	}
+
+	b.policies.Put(p)
+	b.policyTargets[fullAWSAccessPolicyID] = []string{}
+
+	if featureSet == featureSetAll {
+		b.policyTargets[fullAWSAccessPolicyID] = append(b.policyTargets[fullAWSAccessPolicyID], rootID)
+		b.targetPolicies[rootID] = append(b.targetPolicies[rootID], fullAWSAccessPolicyID)
+	}
+}
+
 // CreatePolicy creates a new policy.
 func (b *InMemoryBackend) CreatePolicy(
 	name, description, content, policyType string,
@@ -166,6 +212,10 @@ func (b *InMemoryBackend) UpdatePolicy(
 		return nil, ErrPolicyNotFound
 	}
 
+	if p.PolicySummary.AwsManaged {
+		return nil, ErrAccessDeniedManagedPolicy
+	}
+
 	if content != "" {
 		if err := validatePolicyContent(content, p.PolicySummary.Type); err != nil {
 			return nil, err
@@ -192,8 +242,13 @@ func (b *InMemoryBackend) DeletePolicy(policyID string) error {
 	b.mu.Lock("DeletePolicy")
 	defer b.mu.Unlock()
 
-	if !b.policies.Has(policyID) {
+	p, ok := b.policies.Get(policyID)
+	if !ok {
 		return ErrPolicyNotFound
+	}
+
+	if p.PolicySummary.AwsManaged {
+		return ErrAccessDeniedManagedPolicy
 	}
 
 	// AWS rejects deletion of policies that are still attached to targets.

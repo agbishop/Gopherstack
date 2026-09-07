@@ -340,6 +340,7 @@ func getErrorTable() map[error]awserr.APIError {
 			Code:       errConstraintViolation,
 			HTTPStatus: http.StatusBadRequest,
 		},
+		ErrAccessDeniedManagedPolicy: {Code: "AccessDeniedException", HTTPStatus: http.StatusBadRequest},
 	}
 }
 

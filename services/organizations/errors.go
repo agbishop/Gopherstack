@@ -246,6 +246,16 @@ var (
 		"ConstraintViolationException: CANNOT_REMOVE_DELEGATED_ADMINISTRATOR_FROM_ORG",
 		awserr.ErrConflict,
 	)
+	// ErrAccessDeniedManagedPolicy is returned by DeletePolicy and UpdatePolicy
+	// for an AWS-managed policy (e.g. p-FullAWSAccess). Neither op's declared
+	// error set (deserializers.go) includes ConstraintViolationException, so
+	// AccessDeniedException -- declared on both -- is the only fit; see
+	// types.PolicySummary.AwsManaged's doc comment ("you can attach the
+	// policy ... but you cannot edit it").
+	ErrAccessDeniedManagedPolicy = awserr.New(
+		"AccessDeniedException: you don't have permissions to modify or delete an AWS managed policy",
+		awserr.ErrConflict,
+	)
 )
 
 // Ensure errors are used somewhere to satisfy linter.

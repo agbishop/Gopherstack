@@ -153,13 +153,17 @@ func TestAttachPolicy_Targets(t *testing.T) {
 func TestAttachPolicy_Limits(t *testing.T) {
 	t.Parallel()
 
+	// attachCount is new SCPs on top of the default FullAWSAccess SCP that
+	// every organization is created with (already attached to root), so the
+	// 5-per-target-per-type limit is hit one new attach earlier than a bare
+	// count of 5 would suggest.
 	tests := []struct {
 		name        string
 		attachCount int
 		wantLastErr bool
 	}{
-		{name: "exactly_at_limit", attachCount: 5, wantLastErr: false},
-		{name: "exceeds_limit", attachCount: 6, wantLastErr: true},
+		{name: "exactly_at_limit", attachCount: 4, wantLastErr: false},
+		{name: "exceeds_limit", attachCount: 5, wantLastErr: true},
 	}
 
 	for _, tt := range tests {
@@ -201,8 +205,13 @@ func TestAttachPolicy_CrossTypes(t *testing.T) {
 
 	b, rootID := newOrgBackend(t)
 
+	// The default FullAWSAccess SCP is already attached to root, occupying
+	// one of the 5 SCP slots, so only 4 new SCPs fit; TAG_POLICY is
+	// unaffected and still fits 5.
+	counts := map[string]int{"SERVICE_CONTROL_POLICY": 4, "TAG_POLICY": 5}
+
 	for _, pt := range []string{"SERVICE_CONTROL_POLICY", "TAG_POLICY"} {
-		for i := range 5 {
+		for i := range counts[pt] {
 			p, err := b.CreatePolicy(
 				pt+"-"+string(rune('a'+i)),
 				"",
@@ -278,7 +287,8 @@ func TestListPoliciesForTarget_Filter(t *testing.T) {
 		filter    string
 		wantCount int
 	}{
-		{name: "filter_scp", filter: "SERVICE_CONTROL_POLICY", wantCount: 2},
+		// +1 for the default FullAWSAccess SCP already attached to root.
+		{name: "filter_scp", filter: "SERVICE_CONTROL_POLICY", wantCount: 3},
 		{name: "filter_tag", filter: "TAG_POLICY", wantCount: 1},
 		{name: "filter_backup", filter: "BACKUP_POLICY", wantCount: 0},
 	}
