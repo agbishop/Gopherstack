@@ -723,6 +723,41 @@ func TestHandler_GetCommit_CommitIDNotFound(t *testing.T) {
 	assert.Equal(t, "CommitIdDoesNotExistException", resp["__type"])
 }
 
+// TestHandler_BatchGetCommits_ErrorCodeIsCommitIdDoesNotExist verifies the
+// per-entry BatchGetCommitsError.errorCode for an unresolvable commit ID is
+// CommitIdDoesNotExistException, not CommitDoesNotExistException
+// (gopherstack-pfyr). This is document data in a 200 response, so it isn't
+// constrained by BatchGetCommits' declared error set (confirmed empty of
+// both codes in codecommit@v1.36.4's deserializeOpErrorBatchGetCommits), but
+// api-2.json types both GetCommitInput.commitId and BatchGetCommitsError.commitId
+// as the ObjectId shape — the same shape GetCommit uses for the field that
+// throws CommitIdDoesNotExistException — while CreateBranchInput.commitId and
+// every other CommitDoesNotExistException-throwing op use the distinct CommitId
+// shape reserved for specifier-resolution fields.
+func TestHandler_BatchGetCommits_ErrorCodeIsCommitIdDoesNotExist(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, "CreateRepository", map[string]any{"repositoryName": "batch-commits-errorcode-repo"})
+
+	rec := doRequest(t, h, "BatchGetCommits", map[string]any{
+		"repositoryName": "batch-commits-errorcode-repo",
+		"commitIds":      []string{"0000000000000000000000000000000000000"},
+	})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	errs, ok := resp["errors"].([]any)
+	require.True(t, ok)
+	require.Len(t, errs, 1)
+
+	entry, ok := errs[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "CommitIdDoesNotExistException", entry["errorCode"])
+}
+
 func TestHandler_GetDifferences(t *testing.T) {
 	t.Parallel()
 

@@ -45,7 +45,7 @@ ops:
   DeleteBranch: {wire: ok, errors: ok, state: ok, persist: ok}
   CreateCommit: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "filesAdded[].blobId was hardcoded empty (fixed prior pass); this pass: filesDeleted[].blobId was omitted entirely (now the real removed blob id, matching filesAdded), and ParentCommitIdOutdatedException/ParentCommitIdRequiredException were unreachable (missing from errCodeLookup — see Notes). ALSO this pass: putFiles entries with content identical to what's already at that path now return SameFileContentException instead of silently creating a no-op commit (the sentinel existed but no backend path ever returned it — see gaps' prior note, now partially closed). FIXED 2026-09-07 (gopherstack-8pe4): that SameFileContentException was itself the wrong code — CreateCommit's own declared error set (codecommit@v1.36.4) has no SameFileContentException at all (that's PutFile-only); the identical-content check now returns NoChangeException, CreateCommit's real declared equivalent. See Notes."}
   GetCommit: {wire: ok, errors: fixed, state: ok, persist: ok, note: "FIXED 2026-09-07 (gopherstack-8pe4): not-found returned CommitDoesNotExistException, a real but different exception (used correctly elsewhere by CreateBranch/the merge family for a commit-specifier-resolution failure); GetCommit's own declared error set has CommitIdDoesNotExistException specifically for an unresolvable commitId (verified against the real API docs' Errors section). See Notes."}
-  BatchGetCommits: {wire: ok, errors: ok, state: ok, persist: ok, note: "CHECKED 2026-09-07 (gopherstack-8pe4): errtargetaudit flagged the per-entry BatchCommitError.ErrorCode literal (\"CommitDoesNotExistException\") as a class A finding. FALSE POSITIVE — this is document data in a 200 response (BatchGetCommitsOutput.errors[].errorCode), not a thrown/declared HTTP exception, so it isn't in BatchGetCommits' deserializeOpError set at all (nothing is, for this free-string field). Not changed: AWS's own docs for BatchGetCommitsError.errorCode don't enumerate valid values, so there's no positive evidence the current string is wrong, only that GetCommit's sibling not-found case uses CommitIdDoesNotExistException — suggestive, not proof. Flagged for a future pass with harder evidence, not synthesized here."}
+  BatchGetCommits: {wire: ok, errors: fixed, state: ok, persist: ok, note: "CHECKED 2026-09-07 (gopherstack-8pe4): errtargetaudit flagged the per-entry BatchCommitError.ErrorCode literal (\"CommitDoesNotExistException\") as a class A finding. FALSE POSITIVE (unchanged) — this is document data in a 200 response (BatchGetCommitsOutput.errors[].errorCode), not a thrown/declared HTTP exception, so it isn't in BatchGetCommits' deserializeOpError set at all. FIXED 2026-09-07 (gopherstack-pfyr): the VALUE was wrong. codecommit's api-2.json types both GetCommitInput.commitId and BatchGetCommitsError.commitId as the ObjectId shape (a raw full-SHA lookup) — the same shape, with GetCommit's own declared not-found error being CommitIdDoesNotExistException. Every CommitDoesNotExistException-throwing op (CreateBranch and 17 others) instead uses the CommitId shape, reserved for specifier-resolution fields (branch tips, before/after commit, merge base). BatchGetCommits' own live API doc even describes the two errors[] failure modes — \"shortened SHA ID\" / \"not found\" — matching GetCommit's InvalidCommitIdException/CommitIdDoesNotExistException pair exactly, not CreateBranch's specifier-resolution CommitDoesNotExistException. Now CommitIdDoesNotExistException. See Notes."}
   PutFile: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "blobId was hardcoded empty (fixed prior pass); this pass: File.CommitSpecifier stored branchName instead of the real commit id, so GetFile's commitId field after a PutFile returned the branch name — now the real commit id. Also never recorded fileHistory, so files written via PutFile (not CreateCommit) were invisible to ListFileCommitHistory — now recorded. ALSO this pass: writing content identical to what's already at that path now returns SameFileContentException instead of silently creating a no-op commit"}
   GetFile: {wire: ok, errors: fixed, state: ok, persist: ok, note: "not-found now FileDoesNotExistException, was RepositoryDoesNotExistException"}
   GetFolder: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -807,3 +807,49 @@ Re-ran `cmd/errtargetaudit` after the fix: codecommit's class A findings dropped
 
 Gates: `go build`, `go test -race -count=1 ./services/codecommit/...` (ok),
 `golangci-lint run services/codecommit/...` (0 issues).
+
+## 2026-09-07 BatchGetCommits errorCode value resolved (gopherstack-pfyr)
+
+Follow-up to section 3 above, which correctly left the *value* question open
+(the finding itself was, and remains, a confirmed class-1 false positive —
+not re-litigated here).
+
+Evidence: `codecommit@v1.36.4`'s `api-2.json` types `GetCommitInput.commitId`
+and `BatchGetCommitsError.commitId` both as the `ObjectId` shape (a raw,
+required, full-SHA lookup with no specifier resolution). `CreateBranchInput.
+commitId` and every other operation whose declared error set includes
+`CommitDoesNotExistException` (`CreateBranch`, `BatchDescribeMergeConflicts`,
+`CreateUnreferencedMergeCommit`, `DescribeMergeConflicts`,
+`GetCommentsForComparedCommit`, `GetCommentsForPullRequest`, `GetDifferences`,
+`GetFile`, `GetFolder`, `GetMergeCommit`, `GetMergeConflicts`,
+`GetMergeOptions`, `ListFileCommitHistory`, the three `MergeBranchesBy*` ops,
+`PostCommentForComparedCommit`, `PostCommentForPullRequest`) instead use the
+distinct `CommitId` shape, reserved for specifier-resolution fields (branch
+tips, before/after commit, merge base) per `docs-2.json`'s `refs`. `GetCommit`
+is the only operation in the service whose declared error set has
+`CommitIdDoesNotExistException` — confirmed against `deserializeOpErrorGetCommit`
+and `api-2.json`'s per-op `errors` list.
+
+The live API reference for `BatchGetCommits` corroborates independently: its
+`errors[]` doc text — "if one of the commit IDs was a shortened SHA ID or that
+commit was not found in the specified repository" — names exactly the two
+failure modes GetCommit's own declared set distinguishes as
+`InvalidCommitIdException` and `CommitIdDoesNotExistException`, not the
+specifier-resolution condition `CommitDoesNotExistException` describes ("no
+commit was specified, and the specified repository has no default branch").
+
+`BatchGetCommitsError.errorCode` itself still has no enumerated values in
+either `docs-2.json` or the live API reference — confirmed again this pass,
+no new information there. The type-shape identity to `GetCommit` is what
+settles it, not the errorCode field's own doc.
+
+Fixed: `commits.go`'s `BatchGetCommits` not-found entry now uses
+`CommitIdDoesNotExistException`. New regression test
+`TestHandler_BatchGetCommits_ErrorCodeIsCommitIdDoesNotExist`
+(`handler_commits_test.go`) — failed pre-fix with `expected:
+"CommitIdDoesNotExistException" / actual: "CommitDoesNotExistException"`, now
+passes. No pre-existing test asserted this field's value, so nothing else
+changed.
+
+Gates: `golangci-lint run ./services/codecommit/...` (0 issues), `go test -race
+./services/codecommit/...` (ok).

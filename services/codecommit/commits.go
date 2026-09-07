@@ -179,9 +179,13 @@ func (b *InMemoryBackend) BatchGetCommits(
 	for _, id := range commitIDs {
 		c, ok := b.commits.Get(commitKey(repositoryName, id))
 		if !ok {
+			// Not CommitDoesNotExistException: api-2.json types this field and
+			// GetCommitInput.commitId identically as ObjectId (a raw SHA lookup),
+			// distinct from the CommitId shape used by specifier-resolving ops
+			// like CreateBranch (gopherstack-pfyr).
 			errors = append(errors, BatchCommitError{
 				CommitID:     id,
-				ErrorCode:    "CommitDoesNotExistException",
+				ErrorCode:    "CommitIdDoesNotExistException",
 				ErrorMessage: fmt.Sprintf("commit %s not found", id),
 			})
 
