@@ -313,3 +313,99 @@ client across two 10-item pages of 25 seeded invocations and asserts the
 pages are disjoint; fails against the unfixed handler (`should have 10
 item(s), but has 25`), hand-reverted and confirmed.
 
+## 2026-09-06: AsyncInvokeStatus Failed confirmed unreachable by construction (gopherstack-0c1r)
+
+`buildAsyncInvokeResponse` (`handler_async_invoke.go`) has terminal-state
+handling for `AsyncInvokeStatusFailed`/`FailureMessage`, and
+`AsyncInvokeStatus.Values()` (bedrockruntime@v1.57.1 types/enums.go) lists
+`InProgress`, `Completed`, `Failed`, but nothing in this backend ever sets
+`Failed`. Re-audited per gopherstack-0c1r rather than re-asserting the prior
+pass's conclusion; found no reason to overturn it. Checked, in order:
+
+1. **The `services/bedrock/agents.go` missing-FoundationModel precedent.**
+   `advanceAgentStatus` fails an agent only when `ag.FoundationModel == ""`.
+   That is legitimate because `CreateAgentInput.FoundationModel` is
+   genuinely optional in the SDK (no "This member is required" doc comment,
+   `api_op_CreateAgent.go:119`) — an agent can really be created without
+   one, and `PrepareAgent` legitimately has nothing to compile. The
+   analogous field in `bedrockruntime`, `StartAsyncInvokeInput.ModelId`, is
+   the opposite: marked required (`api_op_StartAsyncInvoke.go:44-47`,
+   "This member is required"), and this backend already rejects
+   `modelID == ""` synchronously (`async_invoke.go` `StartAsyncInvoke`,
+   `ErrValidation`). The precedent's condition ("required field left empty,
+   caught at a later async step") has no equivalent here — the empty case
+   is already caught synchronously, before any invocation exists to later
+   fail.
+
+2. **`StartAsyncInvokeInput`'s full field list**
+   (`api_op_StartAsyncInvoke.go:42-65`): `ModelId *string` (required),
+   `ModelInput document.Interface` (required, opaque smithy document —
+   deliberately unparsed, documented in `handler_async_invoke.go`'s
+   `startAsyncInvokeInput` comment), `OutputDataConfig
+   types.AsyncInvokeOutputDataConfig` (required), `ClientRequestToken
+   *string`, `Tags []types.Tag`. `OutputDataConfig` resolves to
+   `AsyncInvokeS3OutputDataConfig{S3Uri *string (required), BucketOwner
+   *string, KmsKeyId *string}` (types/types.go:64-78) — an S3 URI string,
+   `BucketOwner`, and a KMS key ID, none of which this backend can verify
+   are real/reachable (no S3/KMS bucket-existence or key-existence
+   cross-check exists anywhere in this backend, and inventing one would be
+   the same kind of fabrication the issue warns against). No doc comment on
+   any of these three fields describes bucket/key validation as an async
+   failure mode; `S3Uri`'s only documented constraint is the `s3://` prefix,
+   already enforced synchronously in `StartAsyncInvoke`
+   (`strings.HasPrefix` check). `ModelInput` is confirmed the only
+   content field with no wire-decodable schema — nothing changed here.
+
+3. **`GetAsyncInvokeOutput.FailureMessage`'s doc comment**
+   (`api_op_GetAsyncInvoke.go:69-70`): `"An error message."` — no
+   elaboration on what conditions produce it. No evidence here either way.
+
+4. **Error extraction, both ops** (raw, `[A-Za-z0-9]+`, from
+   `bedrockruntime@v1.57.1/deserializers.go`):
+
+   `deserializeOpErrorStartAsyncInvoke`: `UnknownError`,
+   `AccessDeniedException`, `ConflictException`, `InternalServerException`,
+   `ResourceNotFoundException`, `ServiceQuotaExceededException`,
+   `ServiceUnavailableException`, `ThrottlingException`,
+   `ValidationException`.
+
+   `deserializeOpErrorGetAsyncInvoke`: `UnknownError`,
+   `AccessDeniedException`, `InternalServerException`,
+   `ThrottlingException`, `ValidationException`.
+
+   This is the decisive evidence. `StartAsyncInvoke` declares
+   `ResourceNotFoundException` in its own error set — the one error code
+   that would plausibly fire for "ModelId names a model that doesn't
+   exist." Its presence there means AWS rejects an unknown `ModelId`
+   *synchronously*, as a direct `StartAsyncInvoke` error, before an
+   `AsyncInvoke` resource is ever created — not as a `Failed` status
+   discovered later via `GetAsyncInvoke`. `GetAsyncInvoke`'s own error set
+   has no `ResourceNotFoundException`-shaped signal about invocation
+   content either (its `ResourceNotFoundException`-free list only covers
+   "the ARN itself doesn't exist", already handled by this backend's
+   existing `ErrNotFound` path). So the one candidate this repo's own
+   precedent pattern would suggest (`ModelId` naming an unknown model, by
+   analogy to bedrock's missing-`FoundationModel` check) is contradicted by
+   the SDK's own error taxonomy: it is modeled as a synchronous rejection,
+   not an async terminal state. Using it to drive `Failed` would be wrong,
+   not just unproven.
+
+**Verdict: confirmed, not overturned.** No SDK-evidenced precondition
+exists that `StartAsyncInvoke`/`GetAsyncInvoke` validates or requires whose
+violation AWS surfaces as an async `Failed` rather than a synchronous
+error. `AsyncInvokeStatusFailed` and the `FailureMessage`-population branch
+in `buildAsyncInvokeResponse` remain unreachable by construction, in the
+same class as gopherstack-h3th's five unreachable-by-construction status
+constants and gopherstack-glw7's unrepresentable clause. No code changed.
+
+What would change this answer: a documented AWS failure mode for async
+invocations (a user-guide page, a re-read of a newer SDK's doc comments, or
+an observed real API failure report) that ties a specific `StartAsyncInvoke`
+input condition to a later `Failed` status rather than a synchronous error
+— e.g. if AWS ever added a `ModelNotReadyException`-style deferred-failure
+code to `GetAsyncInvoke`'s error set, or documented that S3 write failures
+at completion time populate `FailureMessage`. Absent that, fabricating a
+trigger (time-based, random, or a test-only backdoor) is explicitly out of
+scope per gopherstack-0c1r and would be worse than leaving the constant
+unreachable.
+
