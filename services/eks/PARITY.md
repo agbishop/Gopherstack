@@ -603,3 +603,70 @@ read-only and reports no drift.
 Gates: `go build ./...`, `go vet ./services/eks/...`,
 `go test -race -count=1 ./services/eks/...`, and
 `golangci-lint run services/eks/...` all clean.
+
+## 2026-09-07 (gopherstack-gala): CreateAddonInput.NamespaceConfig was unwired; addon-owned pod identity always landed in kube-system
+
+Follow-up from gopherstack-tu95's "see open item below" note above.
+`CreateAddonInput.NamespaceConfig *types.AddonNamespaceConfigRequest`
+(`api_op_CreateAddon.go`): "The namespace configuration for the addon. If
+specified, this will override the default namespace for the addon." --
+confirmed a real, create-only field: `UpdateAddonInput` (`api_op_UpdateAddon.go`)
+has no such member, so a real client cannot change an add-on's namespace
+after creation. `Addon.NamespaceConfig *types.AddonNamespaceConfigResponse`
+(`types.go:141`) echoes it back; both are `{"namespace": string}` on the wire
+(`serializers.go` `awsRestjson1_serializeDocumentAddonNamespaceConfigRequest`,
+`deserializers.go` `awsRestjson1_deserializeDocumentAddonNamespaceConfigResponse`,
+confirmed against `request_snapshot_test.go`/`response_snapshot_test.go`).
+`AddonInfo.DefaultNamespace` (`types.go:207`, on `DescribeAddonVersions`'
+output) documents that the *default* namespace is genuinely per-addon ("if no
+custom namespace is specified"), not uniformly `kube-system` -- `kube-system`
+is simply the correct default for the AWS-managed add-ons this backend's
+`DescribeAddonVersions` enumerates (vpc-cni, coredns, kube-proxy,
+aws-ebs-csi-driver, aws-efs-csi-driver all install there in real EKS).
+
+`createAddonBody` never declared `NamespaceConfig`, so it was silently
+dropped, `Addon` never carried a namespace, and
+`replaceAddonPodIdentityAssociationsLocked` (`addons.go`) always used the
+`addonPodIdentityNamespace` constant. Fixed: `Addon` gained `Namespace
+string` (`models.go`); `CreateAddon` takes it as a new parameter and stores
+it; `createAddonBody` gained `NamespaceConfig *addonNamespaceConfigBody`;
+`addonToJSON` emits `namespaceConfig: {namespace: ...}` when set;
+`replaceAddonPodIdentityAssociationsLocked` now uses `addon.Namespace` when
+non-empty, falling back to `addonPodIdentityNamespace` otherwise --
+preserving the `kube-system` default gopherstack-tu95 chose. `UpdateAddonInput`
+correctly has no `NamespaceConfig`, so `updateAddonBody` was deliberately left
+without one: an inbound `namespaceConfig` key on an update body is silently
+ignored by `encoding/json`, matching the real API's immutability.
+
+Pod identity association resolution is affected (which namespace an
+addon-owned association is installed into), not authorization/policy
+resolution itself -- no IAM/trust-policy semantics changed.
+
+Regression tests (`addon_namespace_test.go`), each proven failing against
+unmodified code (captured before the fix):
+- `TestAddon_NamespaceConfig_RoundTrip` (real `ekssdk.Client`
+  CreateAddon+DescribeAddon) -- failed: `NamespaceConfig` nil on readback
+  (`Expected value not to be nil`)
+- `TestAddon_NamespaceConfig_PodIdentityAssociationUsesCustomNamespace` --
+  failed: association namespace was `"kube-system"`, wanted `"efs-csi"`
+- `TestAddon_NamespaceConfig_ImmutableOnUpdate` -- failed: `addon` had no
+  `"namespaceConfig"` key at all yet (`NamespaceConfig` wasn't wired on
+  create either)
+- `TestAddon_NamespaceConfig_Absent_OmitsNamespaceConfig` and
+  `TestAddon_NamespaceConfig_Absent_PodIdentityAssociationDefaultsToKubeSystem`
+  passed unmodified (locking in the preserved default, not new behavior)
+- `TestAddon_NamespaceConfig_PersistenceRoundTrip` (new, passes against the
+  fix; see below)
+
+`Addon` gained the `Namespace string` field: additive-only (every existing
+field unchanged), snapshotted generically as plain JSON by
+`pkgs/store/registry.go`'s `Registry.SnapshotAll`/`RestoreAll`, so no
+`eksSnapshotVersion` bump. As with gopherstack-tu95's `PodIdentityAssociations`
+addition, only the shared `pkgs/persistence/testdata/snapshot_inventory.json`
+golden fixture needs a `-update` refresh (`go test ./pkgs/persistence/...
+-run TestSnapshotVersionGuard -update`); left for a separate pass since that
+file is outside `services/eks/` and also carries an unrelated pre-existing
+`codedeploy` drift on this branch not caused by this change.
+
+Gates: `go vet ./services/eks/...`, `go test -race ./services/eks/...`, and
+`golangci-lint run ./services/eks/...` all clean.

@@ -188,7 +188,7 @@ func TestResetWithTaggedResources(t *testing.T) {
 	_, err = b.CreateAccessEntry("c1", "arn:aws:iam::123:role/r", "STANDARD", "", nil, nil)
 	require.NoError(t, err)
 
-	_, err = b.CreateAddon("c1", "coredns", "", "", "", "", map[string]string{"c": "3"}, nil)
+	_, err = b.CreateAddon("c1", "coredns", "", "", "", "", "", map[string]string{"c": "3"}, nil)
 	require.NoError(t, err)
 
 	_, err = b.CreateFargateProfile("c1", "fp1", "", nil, nil, map[string]string{"d": "4"})

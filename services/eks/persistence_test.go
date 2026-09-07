@@ -56,7 +56,7 @@ func TestEKS_FullStatePersistenceRoundTrip(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	_, err = b.CreateAddon("c1", "vpc-cni", "", "", "", "", nil, nil)
+	_, err = b.CreateAddon("c1", "vpc-cni", "", "", "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	_, err = b.CreateFargateProfile("c1", "fp1", "arn:aws:iam::123456789012:role/fp", nil, nil, nil)
@@ -225,7 +225,7 @@ func TestPersistenceRoundTrip_AddonCapabilityEncryptionConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create addon.
-	_, err = b.CreateAddon("c1", "vpc-cni", "v1.12.0", "", "", "", nil, nil)
+	_, err = b.CreateAddon("c1", "vpc-cni", "v1.12.0", "", "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	// Create fargate profile.

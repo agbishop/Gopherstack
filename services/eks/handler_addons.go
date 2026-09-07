@@ -109,6 +109,10 @@ func addonToJSON(a *Addon) map[string]any {
 		m["configurationValues"] = a.Configuration
 	}
 
+	if a.Namespace != "" {
+		m["namespaceConfig"] = map[string]any{keyNamespace: a.Namespace}
+	}
+
 	podAssocs := a.PodIdentityAssociations
 	if podAssocs == nil {
 		podAssocs = []string{}
@@ -119,8 +123,15 @@ func addonToJSON(a *Addon) map[string]any {
 	return m
 }
 
+// addonNamespaceConfigBody mirrors types.AddonNamespaceConfigRequest
+// (namespace only).
+type addonNamespaceConfigBody struct {
+	Namespace string `json:"namespace"`
+}
+
 type createAddonBody struct {
 	Tags                    map[string]string                 `json:"tags"`
+	NamespaceConfig         *addonNamespaceConfigBody         `json:"namespaceConfig"`
 	AddonName               string                            `json:"addonName"`
 	AddonVersion            string                            `json:"addonVersion"`
 	ServiceAccountRoleArn   string                            `json:"serviceAccountRoleArn"`
@@ -144,9 +155,14 @@ func (h *Handler) handleCreateAddon(c *echo.Context, clusterName string, body []
 		specs[i] = PodIdentityAssociationSpec{RoleARN: a.RoleArn, ServiceAccount: a.ServiceAccount}
 	}
 
+	var namespace string
+	if in.NamespaceConfig != nil {
+		namespace = in.NamespaceConfig.Namespace
+	}
+
 	addon, err := h.Backend.CreateAddon(
 		clusterName, in.AddonName, in.AddonVersion, in.ServiceAccountRoleArn,
-		in.ConfigurationValues, in.ResolveConflicts,
+		in.ConfigurationValues, in.ResolveConflicts, namespace,
 		in.Tags, specs,
 	)
 	if err != nil {

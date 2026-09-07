@@ -13,9 +13,9 @@ import (
 )
 
 // addonPodIdentityNamespace is the Kubernetes namespace EKS installs
-// AWS-managed add-ons into by default (vpc-cni, coredns, kube-proxy, etc).
-// This backend does not track a per-addon NamespaceConfig override, so
-// addon-owned pod identity associations always land here.
+// AWS-managed add-ons into when CreateAddonInput.NamespaceConfig is absent
+// (vpc-cni, coredns, kube-proxy, etc -- see AddonInfo.DefaultNamespace,
+// eks@v1.90.4 types/types.go:207).
 const addonPodIdentityNamespace = "kube-system"
 
 // addonTransitionDelay is the async delay before a CREATING addon reaches ACTIVE.
@@ -58,7 +58,7 @@ func isValidResolveConflicts(s string) bool {
 // tri-state semantics: it is a plain create-time list (verified against the
 // SDK doc comment, which says nothing about empty-versus-absent).
 func (b *InMemoryBackend) CreateAddon(
-	clusterName, addonName, addonVersion, serviceAccountRoleARN, configuration, resolveConflicts string,
+	clusterName, addonName, addonVersion, serviceAccountRoleARN, configuration, resolveConflicts, namespace string,
 	kv map[string]string,
 	podIdentityAssociations []PodIdentityAssociationSpec,
 ) (*Addon, error) {
@@ -115,6 +115,7 @@ func (b *InMemoryBackend) CreateAddon(
 		Tags:                  t,
 		Configuration:         configuration,
 		ResolveConflicts:      resolveConflicts,
+		Namespace:             namespace,
 	}
 	b.addons.Put(addon)
 	b.replaceAddonPodIdentityAssociationsLocked(clusterName, addon, podIdentityAssociations)
@@ -301,6 +302,11 @@ func (b *InMemoryBackend) replaceAddonPodIdentityAssociationsLocked(
 		b.podIdentityAssociations.Delete(podIdentityAssociationKey(clusterName, a.AssociationID))
 	}
 
+	namespace := addon.Namespace
+	if namespace == "" {
+		namespace = addonPodIdentityNamespace
+	}
+
 	ids := make([]string, 0, len(specs))
 	now := time.Now().UTC()
 
@@ -310,7 +316,7 @@ func (b *InMemoryBackend) replaceAddonPodIdentityAssociationsLocked(
 			ClusterName:    clusterName,
 			AssociationID:  assocID,
 			ARN:            arn.Build("eks", b.region, b.accountID, "podidentityassociation/"+clusterName+"/"+assocID),
-			Namespace:      addonPodIdentityNamespace,
+			Namespace:      namespace,
 			ServiceAccount: s.ServiceAccount,
 			RoleARN:        s.RoleARN,
 			OwnerARN:       addon.ARN,

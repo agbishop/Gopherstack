@@ -31,6 +31,7 @@ const (
 	keyEnabled        = "enabled"
 	keyModifiedAt     = "modifiedAt"
 	keyHealth         = "health"
+	keyNamespace      = "namespace"
 )
 
 const (

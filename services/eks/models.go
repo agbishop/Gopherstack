@@ -283,6 +283,7 @@ type Addon struct {
 	ServiceAccountRoleARN   string       `json:"serviceAccountRoleArn,omitempty"`
 	Configuration           string       `json:"configurationValues,omitempty"`
 	ResolveConflicts        string       `json:"resolveConflicts,omitempty"`
+	Namespace               string       `json:"namespace,omitempty"`
 	PodIdentityAssociations []string     `json:"podIdentityAssociations,omitempty"`
 }
 

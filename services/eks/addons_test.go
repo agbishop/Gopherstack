@@ -40,7 +40,7 @@ func TestAddon_ResolveConflicts_InvalidValue_Rejected(t *testing.T) {
 	_, err := b.CreateCluster("c1", "1.32", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	_, err = b.CreateAddon("c1", "vpc-cni", "", "", "", "INVALID", nil, nil)
+	_, err = b.CreateAddon("c1", "vpc-cni", "", "", "", "INVALID", "", nil, nil)
 	require.ErrorIs(t, err, eks.ErrValidation)
 }
 
@@ -53,7 +53,7 @@ func TestAddon_ResolveConflicts_ValidValues_Accepted(t *testing.T) {
 
 	for _, rc := range []string{"OVERWRITE", "NONE", "PRESERVE"} {
 		addonName := "addon-" + rc
-		_, err = b.CreateAddon("c1", addonName, "", "", "", rc, nil, nil)
+		_, err = b.CreateAddon("c1", addonName, "", "", "", rc, "", nil, nil)
 		assert.NoError(t, err, "resolveConflicts=%s should be accepted", rc)
 	}
 }
@@ -65,7 +65,7 @@ func TestAddon_EmptyResolveConflicts_Accepted(t *testing.T) {
 	_, err := b.CreateCluster("c1", "1.32", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	_, err = b.CreateAddon("c1", "vpc-cni", "", "", "", "", nil, nil)
+	_, err = b.CreateAddon("c1", "vpc-cni", "", "", "", "", "", nil, nil)
 	require.NoError(t, err, "empty resolveConflicts must be accepted")
 }
 
@@ -95,7 +95,7 @@ func TestAddon_UpdateAddon_InvalidResolveConflicts_Rejected(t *testing.T) {
 	b := eks.NewInMemoryBackend(t.Context(), "123456789012", config.DefaultRegion)
 	_, err := b.CreateCluster("c1", "1.32", "", nil, nil, nil)
 	require.NoError(t, err)
-	_, err = b.CreateAddon("c1", "vpc-cni", "", "", "", "", nil, nil)
+	_, err = b.CreateAddon("c1", "vpc-cni", "", "", "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	_, err = b.UpdateAddon("c1", "vpc-cni", "", "", "", "BAD", nil)
@@ -194,7 +194,7 @@ func TestAddon_Status_ACTIVE_On_Create(t *testing.T) {
 	b := newBackend(t)
 	mustCreateClusterNoVpc(t, b, "addon-status-cluster")
 
-	addon, err := b.CreateAddon("addon-status-cluster", "vpc-cni", "", "", "", "", nil, nil)
+	addon, err := b.CreateAddon("addon-status-cluster", "vpc-cni", "", "", "", "", "", nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "CREATING", addon.Status)
 }
@@ -204,7 +204,7 @@ func TestAddon_Status_DELETING_On_Delete(t *testing.T) {
 
 	b := newBackend(t)
 	mustCreateClusterNoVpc(t, b, "addon-del-cluster")
-	_, _ = b.CreateAddon("addon-del-cluster", "coredns", "", "", "", "", nil, nil)
+	_, _ = b.CreateAddon("addon-del-cluster", "coredns", "", "", "", "", "", nil, nil)
 
 	deleted, err := b.DeleteAddon("addon-del-cluster", "coredns", false)
 	require.NoError(t, err)
@@ -217,7 +217,7 @@ func TestAddon_ARN_Format(t *testing.T) {
 	b := newBackend(t)
 	mustCreateClusterNoVpc(t, b, "arn-addon-cluster")
 
-	addon, err := b.CreateAddon("arn-addon-cluster", "vpc-cni", "", "", "", "", nil, nil)
+	addon, err := b.CreateAddon("arn-addon-cluster", "vpc-cni", "", "", "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	assert.Contains(t, addon.ARN, "arn:aws:eks:")
@@ -247,7 +247,7 @@ func TestAddonCreatesAsCreating(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			addon, err := b.CreateAddon("cl", tc.addonName, "", "", "", "", nil, nil)
+			addon, err := b.CreateAddon("cl", tc.addonName, "", "", "", "", "", nil, nil)
 			require.NoError(t, err)
 			assert.Equal(t, "CREATING", addon.Status, tc.name)
 		})
@@ -274,7 +274,7 @@ func TestAddonTransitionsToActive(t *testing.T) {
 				)
 				require.NoError(t, err)
 
-				_, err = b.CreateAddon("cl", "vpc-cni", "", "", "", "", nil, nil)
+				_, err = b.CreateAddon("cl", "vpc-cni", "", "", "", "", "", nil, nil)
 				require.NoError(t, err)
 
 				time.Sleep(300 * time.Millisecond)

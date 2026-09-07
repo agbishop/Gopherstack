@@ -783,7 +783,7 @@ func TestCreateClusterInitsAllMaps(t *testing.T) {
 	_, err = b.CreateAccessEntry("c1", "arn:aws:iam::123:role/r", "STANDARD", "", nil, nil)
 	require.NoError(t, err)
 
-	_, err = b.CreateAddon("c1", "coredns", "v1.0", "", "", "", nil, nil)
+	_, err = b.CreateAddon("c1", "coredns", "v1.0", "", "", "", "", nil, nil)
 	require.NoError(t, err)
 }
 
@@ -1142,7 +1142,7 @@ func TestDeleteCluster_ClosesAddonTags(t *testing.T) {
 	_, err := b.CreateCluster(clusterName, "1.32", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	_, err = b.CreateAddon(clusterName, addonName, "", "", "", "", map[string]string{"env": "prod"}, nil)
+	_, err = b.CreateAddon(clusterName, addonName, "", "", "", "", "", map[string]string{"env": "prod"}, nil)
 	require.NoError(t, err)
 
 	lockName := "eks.addon." + clusterName + "." + addonName + ".tags"
