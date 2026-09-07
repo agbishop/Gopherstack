@@ -15280,6 +15280,7 @@
       "GrantConstraints.SourceArn string `json:\"SourceArn,omitempty\"`",
       "Key.Arn string `json:\"Arn\"`",
       "Key.CreationDate float64 `json:\"CreationDate\"`",
+      "Key.CustomKeyStoreID string `json:\"CustomKeyStoreId,omitempty\"`",
       "Key.DeletionDate float64 `json:\"DeletionDate,omitempty\"`",
       "Key.Description string `json:\"Description,omitempty\"`",
       "Key.Enabled bool `json:\"Enabled\"`",
