@@ -182,15 +182,11 @@ func printServiceScan(sr serviceScan) {
 	if len(sr.Findings) == 0 {
 		fmt.Fprintln(os.Stdout, "no class A findings (real code, wrong operation)")
 	} else {
-		fmt.Fprintf(os.Stdout, "class A findings (%d):\n", len(sr.Findings))
-		printCauseGroups(sr.Findings)
-
-		for _, f := range sr.Findings {
-			printFinding(f)
-		}
+		fmt.Fprintf(os.Stdout, "class A findings (%d), grouped by emission site:\n", len(sr.Findings))
+		printSiteGroups(sr.Findings, sr.OpsResolved)
 	}
 
-	printOrphanFindings(sr.OrphanFindings)
+	printOrphanFindings(sr.OrphanFindings, sr.OpsResolved)
 
 	fmt.Fprintln(os.Stdout)
 }
@@ -200,100 +196,168 @@ func printServiceScan(sr serviceScan) {
 // emitting operation's own set. Silent when empty -- most services have
 // none, and the empty case is already implied by this tool's own doc
 // comment, not worth a line every run.
-func printOrphanFindings(findings []finding) {
+func printOrphanFindings(findings []finding, opsResolved int) {
 	if len(findings) == 0 {
 		return
 	}
 
-	fmt.Fprintf(os.Stdout, "orphan-code findings (%d, declared by NO operation anywhere in this service's SDK):\n",
-		len(findings))
-	printCauseGroups(findings)
-
-	for _, f := range findings {
-		printFinding(f)
-	}
+	fmt.Fprintf(
+		os.Stdout,
+		"orphan-code findings (%d, declared by NO operation anywhere in this service's SDK), grouped by emission site:\n",
+		len(findings),
+	)
+	printSiteGroups(findings, opsResolved)
 }
 
-// causeKey groups findings sharing the same wrongly-emitted code AND the
-// same first-site emission mechanism -- the two shared-classifier collisions
-// this campaign has actually hit (gopherstack-0yva's 49 same-collision
-// findings here, an earlier 33-finding event) each had ONE root, and both
-// were obvious only after tracing every finding by hand. Requiring both
-// Code and Mechanism to match, not just Code alone, keeps two unrelated
-// collisions that happen to emit the same code from being blurred into one
-// bucket.
-type causeKey struct {
-	Code      string
-	Mechanism string
+// siteGroup collapses a section's findings by the actual emission SITE
+// (file:line, plus code since two different codes can share a line in a
+// switch) rather than the (op, code) pair a finding is keyed by --
+// gopherstack-2evc: mgn's 122 class A findings are 90 ops funneled through
+// one line and 32 through another, and a reader could not tell that apart
+// from 122 independent defects without doing this collapse by hand, which
+// is exactly what gopherstack-mq6m had to do manually.
+type siteGroup struct {
+	File       string
+	Code       string
+	Mechanism  string
+	Ops        []string
+	AcceptedBy []string
+	Line       int
 }
 
-// printCauseGroups prints a one-line-per-cause summary before the full
-// finding list, so a bulk collision (many findings, one root) is visible
-// immediately rather than only after reading every finding. Silent when
-// every finding already has a distinct cause -- nothing to summarize.
-func printCauseGroups(findings []finding) {
-	groups := map[causeKey][]finding{}
+type siteKey struct {
+	File string
+	Code string
+	Line int
+}
+
+// siteAccum is groupFindingsBySite's working state per site -- Ops as a set
+// while findings are still being folded in, since the same op can reach one
+// site via more than one finding path (rare, but AcceptedBy's own per-code
+// invariance below assumes nothing about it).
+type siteAccum struct {
+	ops        map[string]bool
+	mechanism  string
+	acceptedBy []string
+}
+
+// groupFindingsBySite is the collapse gopherstack-2evc asks for. AcceptedBy
+// is siblingsAccepting's result (helpers.go): fixed by (module, code) alone,
+// never by op, so every finding folded into the same site+code carries an
+// identical list -- taking the first one is exact, not an approximation.
+func groupFindingsBySite(findings []finding) []siteGroup {
+	groups := map[siteKey]*siteAccum{}
 
 	for _, f := range findings {
-		mech := ""
-		if len(f.Sites) > 0 {
-			mech = f.Sites[0].Mechanism
-		}
+		for _, s := range f.Sites {
+			key := siteKey{File: s.File, Line: s.Line, Code: f.Code}
 
-		key := causeKey{Code: f.Code, Mechanism: mech}
-		groups[key] = append(groups[key], f)
+			g, ok := groups[key]
+			if !ok {
+				g = &siteAccum{mechanism: s.Mechanism, acceptedBy: f.AcceptedBy, ops: map[string]bool{}}
+				groups[key] = g
+			}
+
+			g.ops[f.Op] = true
+		}
 	}
 
-	if len(groups) == len(findings) {
-		return
-	}
+	return finalizeSiteGroups(groups)
+}
 
-	keys := make([]causeKey, 0, len(groups))
-	for k := range groups {
-		keys = append(keys, k)
-	}
+func finalizeSiteGroups(groups map[siteKey]*siteAccum) []siteGroup {
+	out := make([]siteGroup, 0, len(groups))
 
-	sort.Slice(keys, func(i, j int) bool {
-		if len(groups[keys[i]]) != len(groups[keys[j]]) {
-			return len(groups[keys[i]]) > len(groups[keys[j]])
-		}
-
-		if keys[i].Code != keys[j].Code {
-			return keys[i].Code < keys[j].Code
-		}
-
-		return keys[i].Mechanism < keys[j].Mechanism
-	})
-
-	fmt.Fprintln(os.Stdout, "  grouped by cause (code + mechanism):")
-
-	for _, k := range keys {
-		fs := groups[k]
-
-		ops := make([]string, 0, len(fs))
-		for _, f := range fs {
-			ops = append(ops, f.Op)
+	for key, g := range groups {
+		ops := make([]string, 0, len(g.ops))
+		for op := range g.ops {
+			ops = append(ops, op)
 		}
 
 		sort.Strings(ops)
-		fmt.Fprintf(os.Stdout, "    %d finding(s): code=%s mechanism=%s ops=%v\n", len(fs), k.Code, k.Mechanism, ops)
+
+		out = append(out, siteGroup{
+			File:       key.File,
+			Line:       key.Line,
+			Code:       key.Code,
+			Mechanism:  g.mechanism,
+			Ops:        ops,
+			AcceptedBy: g.acceptedBy,
+		})
 	}
+
+	// Most ops behind a site first -- a funnel point (mgn's 90/95) belongs
+	// at the top of the section, not buried alphabetically among singletons.
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i].Ops) != len(out[j].Ops) {
+			return len(out[i].Ops) > len(out[j].Ops)
+		}
+
+		if out[i].File != out[j].File {
+			return out[i].File < out[j].File
+		}
+
+		return out[i].Line < out[j].Line
+	})
+
+	return out
 }
 
-func printFinding(f finding) {
-	domain := f.Domain
-	if domain == "" {
-		domain = "-"
+// sharedPlumbingRatio and sharedPlumbingMinOps decide when a site is loudly
+// tagged shared plumbing instead of leaving the reader to notice the op
+// count unaided. Corpus check (2026-09-07, all 160 services via -json,
+// every class A/orphan finding's sites grouped the way groupFindingsBySite
+// does here): of 354 resulting site groups, only mgn's two sites that
+// gopherstack-mq6m already confirmed generic exceed 0.25 --
+// marshalResponse's internalServerError at 90/95=0.947 and
+// decodeJSONBody's validationError at 32/95=0.337. Every other group falls
+// at or under 0.162 (cloudfront's own quantity_validation.go:56, a real but
+// narrower-scoped shared validator, 27/167). The threshold sits inside that
+// empty 0.162-0.337 gap, so it fires exactly on the two confirmed cases and
+// nothing else in the corpus available to check it against.
+const sharedPlumbingRatio = 0.25
+
+// sharedPlumbingMinOps guards the ratio at small N the same way
+// minOpsForResolutionGuard does above: 1-of-3 ops (0.33) on a tiny service
+// is noise, not a funnel point.
+const sharedPlumbingMinOps = minOpsForResolutionGuard
+
+func isSharedPlumbing(nOps, opsResolved int) bool {
+	if opsResolved == 0 || nOps < sharedPlumbingMinOps {
+		return false
 	}
 
-	fmt.Fprintf(os.Stdout, "  op=%s domain=%s code=%s\n", f.Op, domain, f.Code)
+	return float64(nOps)/float64(opsResolved) >= sharedPlumbingRatio
+}
 
-	for _, s := range f.Sites {
-		fmt.Fprintf(os.Stdout, "    %s:%d  [%s]\n", s.File, s.Line, s.Mechanism)
-	}
+// printSiteGroups prints one line per emission site: the site, the code, how
+// many of the service's resolved ops route through it, the emission
+// mechanism (composite literal field vs sentinel reference is gopherstack-
+// 2evc's other ask -- six of the ten residual orphan findings this campaign
+// closed with are the composite-literal false-positive shape, so surfacing
+// it here rather than only in JSON is load-bearing), and a shared-plumbing
+// tag when isSharedPlumbing says so. The op list is printed in full, never
+// truncated: this campaign's set-diff regression guard extracts (op, code,
+// site) triples mechanically from this output, and an elided op list would
+// make that extraction lossy.
+func printSiteGroups(findings []finding, opsResolved int) {
+	const percentScale = 100
 
-	if len(f.AcceptedBy) > 0 {
-		fmt.Fprintf(os.Stdout, "    declared correctly by: %v\n", f.AcceptedBy)
+	for _, g := range groupFindingsBySite(findings) {
+		n := len(g.Ops)
+
+		tag := ""
+		if isSharedPlumbing(n, opsResolved) {
+			tag = fmt.Sprintf("  -- SHARED PLUMBING (>=%.0f%% of resolved ops)", sharedPlumbingRatio*percentScale)
+		}
+
+		fmt.Fprintf(os.Stdout, "  %s:%d  %s  %d/%d ops  [%s]%s\n",
+			g.File, g.Line, g.Code, n, opsResolved, g.Mechanism, tag)
+		fmt.Fprintf(os.Stdout, "    %s\n", strings.Join(g.Ops, ", "))
+
+		if len(g.AcceptedBy) > 0 {
+			fmt.Fprintf(os.Stdout, "    declared correctly by: %v\n", g.AcceptedBy)
+		}
 	}
 }
 

@@ -1893,3 +1893,133 @@ func TestWorthReporting_KeepsZeroGroundTruthServiceWithWarnings(t *testing.T) {
 	require.True(t, worthReporting(serviceScan{OpsGroundTruth: 5}),
 		"a normal scanned service must still be reported")
 }
+
+// fixtureInternalServerException and fixtureValidationException name-share
+// mgn's own two confirmed-generic codes (gopherstack-mq6m) across the
+// fixtures below, rather than repeating the literal -- goconst's count is
+// package-wide, not per-file, and repeating these two particular strings a
+// few more times tips genericcodes.go's own pre-existing occurrences over
+// its threshold.
+const (
+	fixtureInternalServerException = "InternalServerException"
+	fixtureValidationException     = "ValidationException"
+)
+
+// mgnShapedFindings reproduces gopherstack-mq6m's confirmed shape: 3 ops
+// funnel InternalServerException through one shared site
+// (handler.go:372), and one of those 3 also emits ValidationException from
+// its own dedicated line (applications.go:27) -- the exact fan-out/fan-in
+// mix that makes site grouping worth doing at all.
+func mgnShapedFindings() []finding {
+	shared := evidenceSite{
+		File: "services/mgn/handler.go", Line: 372,
+		Mechanism: "constructor classifier: internalServerError",
+	}
+	own := evidenceSite{
+		File: "services/mgn/applications.go", Line: 27,
+		Mechanism: "constructor classifier: validationError",
+	}
+
+	return []finding{
+		{Op: "ArchiveApplication", Code: fixtureInternalServerException, Sites: []evidenceSite{shared}},
+		{Op: "CreateApplication", Code: fixtureInternalServerException, Sites: []evidenceSite{shared}},
+		{Op: "CreateApplication", Code: fixtureValidationException, Sites: []evidenceSite{own}},
+		{Op: "DeleteJob", Code: fixtureInternalServerException, Sites: []evidenceSite{shared}},
+	}
+}
+
+// TestGroupFindingsBySite_CollapsesSharedSite is gopherstack-2evc's core
+// ask: report.go:341's printSiteGroups (via groupFindingsBySite,
+// report.go:246) must show handler.go:372 ONCE with 3 ops behind it, not 3
+// independent findings -- exactly the collapse gopherstack-mq6m had to do
+// by hand across 122 findings.
+func TestGroupFindingsBySite_CollapsesSharedSite(t *testing.T) {
+	t.Parallel()
+
+	groups := groupFindingsBySite(mgnShapedFindings())
+
+	require.Len(t, groups, 2, "3 findings at one shared site plus 1 at its own site must collapse to 2 groups, not 4")
+
+	shared := groups[0]
+	require.Equal(t, "services/mgn/handler.go", shared.File)
+	require.Equal(t, 372, shared.Line)
+	require.Equal(t, fixtureInternalServerException, shared.Code)
+	require.Equal(t, []string{"ArchiveApplication", "CreateApplication", "DeleteJob"}, shared.Ops)
+
+	own := groups[1]
+	require.Equal(t, "services/mgn/applications.go", own.File)
+	require.Equal(t, []string{"CreateApplication"}, own.Ops)
+}
+
+// TestGroupFindingsBySite_SortedByOpCountDescending: the funnel point
+// belongs at the top of the section (report.go:287's comment), not buried
+// alphabetically among singletons a reader has to scan past first.
+func TestGroupFindingsBySite_SortedByOpCountDescending(t *testing.T) {
+	t.Parallel()
+
+	groups := groupFindingsBySite(mgnShapedFindings())
+
+	require.Len(t, groups, 2)
+	require.GreaterOrEqual(t, len(groups[0].Ops), len(groups[1].Ops),
+		"the site reached by more ops must sort first")
+}
+
+// TestGroupFindingsBySite_AcceptedByCarriedFromSite verifies AcceptedBy
+// survives the collapse -- helpers.go's siblingsAccepting is invariant per
+// (module, code), so any finding folded into the group carries the same
+// list, and dropping it during grouping would silently lose the "declared
+// correctly by" evidence line.
+func TestGroupFindingsBySite_AcceptedByCarriedFromSite(t *testing.T) {
+	t.Parallel()
+
+	findings := []finding{
+		{
+			Op:   "ArchiveApplication",
+			Code: fixtureInternalServerException,
+			Sites: []evidenceSite{
+				{File: "services/mgn/handler.go", Line: 372, Mechanism: "constructor classifier: internalServerError"},
+			},
+			AcceptedBy: []string{"ListTagsForResource", "TagResource"},
+		},
+	}
+
+	groups := groupFindingsBySite(findings)
+
+	require.Len(t, groups, 1)
+	require.Equal(t, []string{"ListTagsForResource", "TagResource"}, groups[0].AcceptedBy)
+}
+
+// TestIsSharedPlumbing_ThresholdFromCorpus pins report.go:316's
+// sharedPlumbingRatio (0.25) against the actual corpus values gopherstack-
+// 2evc's design decision rests on: mgn's two gopherstack-mq6m-confirmed
+// generic sites (90/95=0.947, 32/95=0.337) must fire, and the highest
+// ratio among every OTHER site group in the full 160-service corpus --
+// cloudfront's own real-but-narrower-scoped quantity_validation.go:56 at
+// 27/167=0.162 -- must not. A regression here would either stop flagging
+// mgn's confirmed funnel points or start flagging cloudfront's, both of
+// which changed WHAT is found, which gopherstack-2evc forbids.
+func TestIsSharedPlumbing_ThresholdFromCorpus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		nOps        int
+		opsResolved int
+		want        bool
+	}{
+		{"mgn marshalResponse 90/95", 90, 95, true},
+		{"mgn decodeJSONBody 32/95", 32, 95, true},
+		{"cloudfront quantity validator 27/167", 27, 167, false},
+		{"kms grant token check 5/54", 5, 54, false},
+		{"small N below op-count guard", 2, 4, false},
+		{"zero resolved", 3, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, tt.want, isSharedPlumbing(tt.nOps, tt.opsResolved))
+		})
+	}
+}

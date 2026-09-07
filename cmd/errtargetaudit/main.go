@@ -377,12 +377,11 @@
 //     mapper compares against -- deliberately permissive, since an
 //     over-broad reachable set can only ever cause under-suppression (more
 //     findings kept), never the reverse.
-//   - Cause grouping (report.go's printCauseGroups, already present)
-//     surfaces a bulk shared-mapper event as "N findings, all via
-//     <mechanism>+<code>" in the summary printed before the full finding
-//     list, so a service shaped like bedrockagent or account is visible as
-//     one root cause at a glance even for a finding this reachability
-//     filter could not resolve and therefore still reports.
+//   - Site grouping (report.go's printSiteGroups) surfaces a bulk
+//     shared-mapper event as one file:line with its op count and op list,
+//     so a service shaped like bedrockagent or account is visible as one
+//     root cause at a glance even for a finding this reachability filter
+//     could not resolve and therefore still reports.
 //
 // WHAT THIS TOOL CANNOT TELL YOU, stated plainly:
 //   - It cannot distinguish a REACHABLE handler from an unreachable one at
