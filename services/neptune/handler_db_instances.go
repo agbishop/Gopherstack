@@ -67,7 +67,7 @@ func (h *Handler) handleCreateDBInstance(ctx context.Context, vals url.Values) (
 
 	return &createDBInstanceResponse{
 		Xmlns:      neptuneXMLNS,
-		DBInstance: toXMLInstance(inst),
+		DBInstance: h.toXMLInstance(ctx, inst),
 	}, nil
 }
 
@@ -81,7 +81,7 @@ func (h *Handler) handleDescribeDBInstances(ctx context.Context, vals url.Values
 	members := make([]xmlDBInstance, 0, len(instances))
 	for _, inst := range instances {
 		cp := inst
-		members = append(members, toXMLInstance(&cp))
+		members = append(members, h.toXMLInstance(ctx, &cp))
 	}
 
 	members, nextMarker := applyNeptuneMarker(members, vals.Get("Marker"), vals.Get("MaxRecords"))
@@ -104,7 +104,7 @@ func (h *Handler) handleDeleteDBInstance(ctx context.Context, vals url.Values) (
 
 	return &deleteDBInstanceResponse{
 		Xmlns:      neptuneXMLNS,
-		DBInstance: toXMLInstance(inst),
+		DBInstance: h.toXMLInstance(ctx, inst),
 	}, nil
 }
 
@@ -151,7 +151,7 @@ func (h *Handler) handleModifyDBInstance(ctx context.Context, vals url.Values) (
 
 	return &modifyDBInstanceResponse{
 		Xmlns:      neptuneXMLNS,
-		DBInstance: toXMLInstance(inst),
+		DBInstance: h.toXMLInstance(ctx, inst),
 	}, nil
 }
 
@@ -164,7 +164,7 @@ func (h *Handler) handleRebootDBInstance(ctx context.Context, vals url.Values) (
 
 	return &rebootDBInstanceResponse{
 		Xmlns:      neptuneXMLNS,
-		DBInstance: toXMLInstance(inst),
+		DBInstance: h.toXMLInstance(ctx, inst),
 	}, nil
 }
 
@@ -352,7 +352,12 @@ func (h *Handler) handleDescribeValidDBInstanceModifications(
 	}, nil
 }
 
-func toXMLInstance(inst *DBInstance) xmlDBInstance {
+// toXMLInstance renders a DBInstance as its wire shape. Unlike
+// DBCluster.DBSubnetGroup (a bare *string in the real SDK), DBInstance's is
+// a *types.DBSubnetGroup struct (neptune@v1.48.4 types/types.go:690); this
+// looks up the real subnet group so the emitted <DBSubnetGroup> element is
+// nested rather than a bare name (gopherstack-qdqg).
+func (h *Handler) toXMLInstance(ctx context.Context, inst *DBInstance) xmlDBInstance {
 	return xmlDBInstance{
 		DBInstanceIdentifier:            inst.DBInstanceIdentifier,
 		DBInstanceArn:                   inst.DBInstanceArn,
@@ -363,7 +368,7 @@ func toXMLInstance(inst *DBInstance) xmlDBInstance {
 		DBInstanceStatus:                inst.DBInstanceStatus,
 		InstanceCreateTime:              inst.InstanceCreateTime,
 		Endpoint:                        inst.Endpoint,
-		DBSubnetGroupName:               inst.DBSubnetGroupName,
+		DBSubnetGroup:                   h.xmlInstanceSubnetGroup(ctx, inst.DBSubnetGroupName),
 		NetworkType:                     inst.NetworkType,
 		Port:                            inst.Port,
 		DBInstancePort:                  inst.Port,
@@ -382,32 +387,50 @@ func toXMLInstance(inst *DBInstance) xmlDBInstance {
 	}
 }
 
+// xmlInstanceSubnetGroup resolves a DB instance's subnet group by name and
+// renders it via the same toXMLSubnetGroup used by the subnet-group
+// endpoints, reusing the wire shape rather than duplicating it. Returns nil
+// (element omitted) when the instance has no subnet group name, or the
+// named group no longer exists.
+func (h *Handler) xmlInstanceSubnetGroup(ctx context.Context, name string) *xmlDBSubnetGroup {
+	if name == "" {
+		return nil
+	}
+	sgs, err := h.Backend.DescribeDBSubnetGroups(ctx, name)
+	if err != nil || len(sgs) == 0 {
+		return nil
+	}
+	x := toXMLSubnetGroup(&sgs[0])
+
+	return &x
+}
+
 type xmlDBInstance struct {
-	DBInstanceIdentifier            string `xml:"DBInstanceIdentifier"`
-	DBInstanceArn                   string `xml:"DBInstanceArn,omitempty"`
-	DBClusterIdentifier             string `xml:"DBClusterIdentifier,omitempty"`
-	DBInstanceClass                 string `xml:"DBInstanceClass"`
-	Engine                          string `xml:"Engine"`
-	EngineVersion                   string `xml:"EngineVersion,omitempty"`
-	DBInstanceStatus                string `xml:"DBInstanceStatus"`
-	InstanceCreateTime              string `xml:"InstanceCreateTime,omitempty"`
-	Endpoint                        string `xml:"Endpoint>Address,omitempty"`
-	DBSubnetGroupName               string `xml:"DBSubnetGroup,omitempty"`
-	NetworkType                     string `xml:"NetworkType,omitempty"`
-	DBParameterGroupName            string `xml:"DBParameterGroups>DBParameterGroup>DBParameterGroupName,omitempty"`
-	PreferredMaintenanceWindow      string `xml:"PreferredMaintenanceWindow,omitempty"`
-	PreferredBackupWindow           string `xml:"PreferredBackupWindow,omitempty"`
-	AvailabilityZone                string `xml:"AvailabilityZone,omitempty"`
-	Port                            int    `xml:"Endpoint>Port"`
-	DBInstancePort                  int    `xml:"DbInstancePort"`
-	PromotionTier                   int    `xml:"PromotionTier,omitempty"`
-	StorageEncrypted                bool   `xml:"StorageEncrypted"`
-	AutoMinorVersionUpgrade         bool   `xml:"AutoMinorVersionUpgrade"`
-	CopyTagsToSnapshot              bool   `xml:"CopyTagsToSnapshot"`
-	EnableIAMDatabaseAuthentication bool   `xml:"IAMDatabaseAuthenticationEnabled"`
-	MultiAZ                         bool   `xml:"MultiAZ"`
-	PubliclyAccessible              bool   `xml:"PubliclyAccessible"`
-	DeletionProtection              bool   `xml:"DeletionProtection"`
+	DBSubnetGroup                   *xmlDBSubnetGroup `xml:"DBSubnetGroup,omitempty"`
+	DBInstanceIdentifier            string            `xml:"DBInstanceIdentifier"`
+	DBInstanceArn                   string            `xml:"DBInstanceArn,omitempty"`
+	DBClusterIdentifier             string            `xml:"DBClusterIdentifier,omitempty"`
+	DBInstanceClass                 string            `xml:"DBInstanceClass"`
+	Engine                          string            `xml:"Engine"`
+	EngineVersion                   string            `xml:"EngineVersion,omitempty"`
+	DBInstanceStatus                string            `xml:"DBInstanceStatus"`
+	InstanceCreateTime              string            `xml:"InstanceCreateTime,omitempty"`
+	Endpoint                        string            `xml:"Endpoint>Address,omitempty"`
+	NetworkType                     string            `xml:"NetworkType,omitempty"`
+	DBParameterGroupName            string            `xml:"DBParameterGroups>DBParameterGroup>DBParameterGroupName,omitempty"` //nolint:lll // nested query-protocol tag path, cannot be shortened
+	PreferredMaintenanceWindow      string            `xml:"PreferredMaintenanceWindow,omitempty"`
+	PreferredBackupWindow           string            `xml:"PreferredBackupWindow,omitempty"`
+	AvailabilityZone                string            `xml:"AvailabilityZone,omitempty"`
+	Port                            int               `xml:"Endpoint>Port"`
+	DBInstancePort                  int               `xml:"DbInstancePort"`
+	PromotionTier                   int               `xml:"PromotionTier,omitempty"`
+	StorageEncrypted                bool              `xml:"StorageEncrypted"`
+	AutoMinorVersionUpgrade         bool              `xml:"AutoMinorVersionUpgrade"`
+	CopyTagsToSnapshot              bool              `xml:"CopyTagsToSnapshot"`
+	EnableIAMDatabaseAuthentication bool              `xml:"IAMDatabaseAuthenticationEnabled"`
+	MultiAZ                         bool              `xml:"MultiAZ"`
+	PubliclyAccessible              bool              `xml:"PubliclyAccessible"`
+	DeletionProtection              bool              `xml:"DeletionProtection"`
 }
 
 type xmlDBInstanceList struct {

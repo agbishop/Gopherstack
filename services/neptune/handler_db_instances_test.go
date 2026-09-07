@@ -1488,8 +1488,8 @@ func TestHandler_CreateDBInstance_DBSubnetGroupName(t *testing.T) {
 		})
 		require.Equal(t, http.StatusOK, rr.Code)
 		body := rr.Body.String()
-		assert.Contains(t, body, "<DBSubnetGroup>instance-sg</DBSubnetGroup>")
-		assert.NotContains(t, body, "<DBSubnetGroup>cluster-sg</DBSubnetGroup>")
+		assert.Contains(t, body, "<DBSubnetGroup><DBSubnetGroupName>instance-sg</DBSubnetGroupName>")
+		assert.NotContains(t, body, "<DBSubnetGroupName>cluster-sg</DBSubnetGroupName>")
 	})
 
 	t.Run("omitted_defaults_to_cluster", func(t *testing.T) {
@@ -1515,7 +1515,7 @@ func TestHandler_CreateDBInstance_DBSubnetGroupName(t *testing.T) {
 			"DBInstanceClass":      {"db.r5.large"},
 		})
 		require.Equal(t, http.StatusOK, rr.Code)
-		assert.Contains(t, rr.Body.String(), "<DBSubnetGroup>default-sg</DBSubnetGroup>")
+		assert.Contains(t, rr.Body.String(), "<DBSubnetGroup><DBSubnetGroupName>default-sg</DBSubnetGroupName>")
 	})
 
 	t.Run("nonexistent_name_rejected", func(t *testing.T) {
@@ -1534,4 +1534,92 @@ func TestHandler_CreateDBInstance_DBSubnetGroupName(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, rr.Code)
 		assert.Contains(t, rr.Body.String(), "DBSubnetGroupNotFoundFault")
 	})
+}
+
+// TestHandler_DescribeDBInstances_DBSubnetGroupShape covers gopherstack-qdqg:
+// types.DBInstance.DBSubnetGroup (neptune@v1.48.4 types/types.go:690) is a
+// *types.DBSubnetGroup struct, unlike types.DBCluster.DBSubnetGroup (same
+// file, line 165), which is a bare *string. DescribeDBInstances must emit
+// the nested element structure the real SDK's
+// awsAwsquery_deserializeDocumentDBSubnetGroup expects
+// (deserializers.go:16439), not a bare name.
+func TestHandler_DescribeDBInstances_DBSubnetGroupShape(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, url.Values{
+		"Action":                       {"CreateDBSubnetGroup"},
+		"Version":                      {"2014-10-31"},
+		"DBSubnetGroupName":            {"shape-sg"},
+		"DBSubnetGroupDescription":     {"shape test group"},
+		"VpcId":                        {"vpc-shape01"},
+		"SubnetIds.SubnetIdentifier.1": {"subnet-shape01"},
+		"SubnetIds.SubnetIdentifier.2": {"subnet-shape02"},
+	})
+	doRequest(t, h, url.Values{
+		"Action":              {"CreateDBCluster"},
+		"Version":             {"2014-10-31"},
+		"DBClusterIdentifier": {"shape-cluster"},
+		"DBSubnetGroupName":   {"shape-sg"},
+	})
+	rr := doRequest(t, h, url.Values{
+		"Action":               {"CreateDBInstance"},
+		"Version":              {"2014-10-31"},
+		"DBInstanceIdentifier": {"shape-inst"},
+		"DBClusterIdentifier":  {"shape-cluster"},
+		"DBInstanceClass":      {"db.r5.large"},
+	})
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	rr = doRequest(t, h, url.Values{
+		"Action":               {"DescribeDBInstances"},
+		"Version":              {"2014-10-31"},
+		"DBInstanceIdentifier": {"shape-inst"},
+	})
+	require.Equal(t, http.StatusOK, rr.Code)
+	body := rr.Body.String()
+
+	// A bare-string regression (the pre-fix shape) would produce exactly
+	// this text with no nested tags; assert the real nested children
+	// instead so a regression back to the bare string fails these.
+	assert.NotContains(t, body, "<DBSubnetGroup>shape-sg</DBSubnetGroup>")
+	assert.Contains(t, body, "<DBSubnetGroup><DBSubnetGroupName>shape-sg</DBSubnetGroupName>")
+	assert.Contains(t, body, "<DBSubnetGroupDescription>shape test group</DBSubnetGroupDescription>")
+	assert.Contains(t, body, "<VpcId>vpc-shape01</VpcId>")
+	assert.Contains(t, body, "<SubnetGroupStatus>Complete</SubnetGroupStatus>")
+	assert.Contains(t, body, "<Subnets><Subnet><SubnetIdentifier>subnet-shape01</SubnetIdentifier></Subnet>"+
+		"<Subnet><SubnetIdentifier>subnet-shape02</SubnetIdentifier></Subnet></Subnets>")
+}
+
+// TestHandler_DescribeDBClusters_DBSubnetGroupStaysBareString is a guard:
+// types.DBCluster.DBSubnetGroup is a bare *string (neptune@v1.48.4
+// types/types.go:165, confirmed against deserializers.go:11784's DBCluster
+// deserializer, which reads DBSubnetGroup as a scalar value, not a nested
+// element). A later "fix both for consistency" pass must not touch this
+// path. This test passes both before and after the DBInstance fix in this
+// change, by design.
+func TestHandler_DescribeDBClusters_DBSubnetGroupStaysBareString(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, url.Values{
+		"Action":            {"CreateDBSubnetGroup"},
+		"Version":           {"2014-10-31"},
+		"DBSubnetGroupName": {"cluster-bare-sg"},
+	})
+	doRequest(t, h, url.Values{
+		"Action":              {"CreateDBCluster"},
+		"Version":             {"2014-10-31"},
+		"DBClusterIdentifier": {"cluster-bare"},
+		"DBSubnetGroupName":   {"cluster-bare-sg"},
+	})
+	rr := doRequest(t, h, url.Values{
+		"Action":              {"DescribeDBClusters"},
+		"Version":             {"2014-10-31"},
+		"DBClusterIdentifier": {"cluster-bare"},
+	})
+	require.Equal(t, http.StatusOK, rr.Code)
+	body := rr.Body.String()
+	assert.Contains(t, body, "<DBSubnetGroup>cluster-bare-sg</DBSubnetGroup>")
+	assert.NotContains(t, body, "<DBSubnetGroupName>cluster-bare-sg</DBSubnetGroupName>")
 }

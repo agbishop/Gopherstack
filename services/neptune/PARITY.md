@@ -9,6 +9,7 @@ sdk_module: aws-sdk-go-v2/service/neptune@v1.48.4
 last_audit_commit: 087cb59186751418d9d49b88434f13cf214c7609
 last_audit_date: 2026-09-04
 overall: A            # every previously-open gap this pass either genuinely fixed or re-verified as correct-as-is
+                      # 2026-09-07 (gopherstack-qdqg): xmlDBInstance emitted DBSubnetGroup as a bare <DBSubnetGroup>name</DBSubnetGroup> string (the follow-up flagged by the 2026-09-07 gopherstack-ucus entry below), but types.DBInstance.DBSubnetGroup (neptune@v1.48.4 types/types.go:690) is a *types.DBSubnetGroup struct, unlike types.DBCluster.DBSubnetGroup (types/types.go:165), which really is a bare *string -- verified against both the type declarations and each type's deserializer (DBInstance's reads a nested DBSubnetGroup element via awsAwsquery_deserializeDocumentDBSubnetGroup, deserializers.go:16439; DBCluster's reads DBSubnetGroup as a scalar decoder.Value(), deserializers.go:11784 region). Fixed by resolving the instance's stored subnet-group name against the existing subnet-group store and rendering it with the same toXMLSubnetGroup helper the subnet-group endpoints already use, instead of duplicating the shape. Populated from real state: DBSubnetGroupName/DBSubnetGroupArn/DBSubnetGroupDescription/VpcId/SubnetGroupStatus, and Subnets>Subnet>SubnetIdentifier (one per stored subnet ID). Left unpopulated for lack of a source, same as the pre-existing subnet-group endpoints: Subnet.SubnetAvailabilityZone, Subnet.SubnetStatus, and DBSubnetGroup.SupportedNetworkTypes (this backend tracks subnets as opaque ID strings only, no AZ/CIDR data -- see the DBSubnetGroup gaps entry). DBCluster's own bare-string DBSubnetGroup emission was verified correct as-is and deliberately left untouched. See TestHandler_DescribeDBInstances_DBSubnetGroupShape (new) and TestHandler_DescribeDBClusters_DBSubnetGroupStaysBareString (new guard, passes both before and after this fix by design); TestHandler_CreateDBInstance_DBSubnetGroupName's two subtests asserting the old bare-string shape were corrected to assert the new nested shape (strengthened, not weakened -- they now fail against a bare string same as before, and additionally fail against an unpopulated/wrongly-shaped nested element).
                       # 2026-09-04 (gopherstack-12v delete-precondition sweep): swept all 9 Delete* ops against their SDK doc comments. Two real missing-precondition bugs found and fixed: (1) DeleteDBInstance never enforced DeletionProtection -- the field was entirely unmodeled on DBInstance (zero references anywhere), despite being a real member of types.DBInstance/CreateDBInstanceInput/ModifyDBInstanceInput (neptune@v1.48.4 types/types.go:705, "The instance can't be deleted when deletion protection is enabled") and named explicitly in DeleteDBInstance's own doc comment ("or if it has deletion protection enabled"); now modeled end-to-end (Create/Modify/Delete/wire) and enforced with the same ErrInvalidDBInstanceStateFault the sibling only-instance-in-cluster check already used. (2) DeleteGlobalCluster never inspected GlobalClusterMembers at all, despite its own doc comment ("The primary and all secondary clusters must already be detached or deleted first") and DeleteGlobalCluster's own deserializer modeling InvalidGlobalClusterStateFault as a typed error for this exact op -- now rejects deletion while members remain attached. Fixing (2) surfaced a real ghost-row bug as a direct consequence: DeleteDBCluster never cleared a departing member's entry from its global cluster's GlobalClusterMembers list (only RemoveFromGlobalCluster did), so a member cluster deleted directly (not via RemoveFromGlobalCluster) would have permanently blocked its global cluster from ever being deleted after fix (2) landed -- fixed via new detachDeletedClusterFromGlobalCluster, justified directly by the same doc sentence ("detached OR deleted" names deletion as a sufficient alternative to detaching). Separately, a tag-store ghost-row sweep (Create*/AddTagsToResource vs Delete* symmetry, same bug class as the pre-existing DBCluster/DBClusterParameterGroup/DBSubnetGroup/DBClusterSnapshot cascade-clean convention) found DeleteDBParameterGroup, DeleteDBClusterEndpoint, DeleteEventSubscription, and DeleteGlobalCluster all left their resource's tags behind on delete -- all four Create their resource with a deterministic (name-derived) ARN and support AddTagsToResource at create time, so a resource recreated under the same identifier would silently inherit the deleted resource's tags; all four fixed. DeleteDBClusterSnapshot's documented "must be in the available state" precondition was checked and found unenforceable-as-a-bug: every snapshot this backend ever creates is set to "available" synchronously and no code path ever assigns any other status, so the precondition can never actually fire -- same class of reasoning as the existing RebootDBInstance note (a synchronous emulator collapsing an async AWS status window). Not fixed, disclosed as a gap: CreateDBInstanceInput carries a real, optional DBSubnetGroupName member ("A DB subnet group to associate with this DB instance", api_op_CreateDBInstance.go:130) independent from the parent cluster's, but the handler never parses it (DBInstance.DBSubnetGroupName is only ever inherited from the cluster at create time) -- a discarded-parameter bug, not a delete-precondition bug, out of scope for this pass's focus; DeleteDBSubnetGroup's existing in-use check (against clusters, not instances) is a reasonable proxy given that gap, not a bug in its own right. See TestHandler_DeleteDBInstance_DeletionProtectionEnabled, TestDeleteGlobalCluster_MembersAttachedRoundTrip, TestDeleteGlobalCluster_MemberDeletedDirectlyRoundTrip, TestDelete_NoGhostTags.
                       # 2026-07-31 (browser parity pass): RouteMatcher checked only the User-Agent header for the "api/neptune" marker, which a browser cannot set (Fetch spec forbids scripts from setting User-Agent) -- the AWS SDK for JavaScript in a browser puts its SDK identification in X-Amz-User-Agent instead, so every browser dashboard Neptune request (@aws-sdk/client-neptune) fell through unmatched. Also confirmed the marker itself needed case-insensitive matching: the JS SDK's serviceId-derived marker is "api/Neptune" (PascalCase), not aws-sdk-go-v2's lowercase "api/neptune". Fixed via the new pkgs/service.MatchesUserAgentMarker helper, shared with the identical bug class fixed the same pass in mediastoredata/docdb/appsync. Grade held at A: fixed, not deferred.
                       # 2026-08-11 (gopherstack-gt9o NetworkType pass): closed the recorded NetworkType/SupportedNetworkTypes/NetworkTypeNotSupportedFault gap. NetworkType threaded end-to-end for DBCluster (CreateDBCluster/ModifyDBCluster input, IPV4 default, Describe echo) and DBInstance (inherited from parent cluster at create time, no input member of its own -- verified absent from CreateDBInstanceInput/ModifyDBInstanceInput). SupportedNetworkTypes modeled on DBSubnetGroup/OrderableDBInstanceOption but deliberately left empty (no CIDR data to derive it honestly) and NetworkTypeNotSupportedFault deliberately left unwired (no state to detect the real trigger condition) -- see gaps below for the reasoning on both. Snapshot version constant unchanged (1); additive omitempty fields only.
@@ -16,7 +17,7 @@ overall: A            # every previously-open gap this pass either genuinely fix
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
 families:
   DBCluster: {wire: ok, errors: ok, state: ok, persist: ok, note: "ClusterCreateTime was hardcoded to a fixed 2024-01-01 literal for every cluster (fixed: real timestamp per creation, including restore paths which previously omitted it and DBClusterResourceID entirely). FailoverDBCluster was a disguised no-op (fixed: real writer/reader promotion via DBClusterMembers.IsClusterWriter, with TargetDBInstanceIdentifier support and InvalidDBClusterStateFault when no reader exists). PromoteReadReplicaDBCluster re-verified this pass against the SDK: its own doc comment on both the operation and its DBClusterIdentifier field says 'Not supported.' -- gopherstack's describe-only echo (no state mutation) is therefore the CORRECT behavior for a genuinely-unsupported op, not a stub; reclassified from gap to ok. NetworkType FIXED this pass: gained on CreateDBCluster/ModifyDBCluster input (neptune@v1.48.4 api_op_CreateDBCluster.go:171/api_op_ModifyDBCluster.go:136, plain *string wire member 'NetworkType') and echoed on Describe; unspecified-on-create defaults to IPV4 per the SDK's documented default (api_op_CreateDBCluster.go:161), matching real AWS always answering a concrete value. Accepted as any string, not validated against IPV4/DUAL (no smithy enum backs it). 2026-08-29 (write-only-state sweep): member-count check against types.DBCluster's own deserializer (awsAwsquery_deserializeDocumentDBCluster, 44 of 44 members enumerated) found GlobalClusterIdentifier -- a real DBCluster response member -- was completely unmodeled: zero struct field, so DescribeDBClusters could never echo it even though the GlobalCluster family already tracks membership relations on the other side (global_clusters.go's own doc comment even names this exact gap: 'real Neptune clusters join via CreateDBCluster's GlobalClusterIdentifier at creation time, which this backend does not model'). Worse, CreateDBClusterInput's real, optional GlobalClusterIdentifier member (api_op_CreateDBCluster.go:129) was entirely unparsed by CreateDBCluster -- discarded input, not just a missing echo. Fixed: DBCluster gained the field (json/xml GlobalClusterIdentifier,omitempty); CreateDBCluster now parses it, requires the named global cluster to already exist (GlobalClusterNotFound otherwise), and attaches the new cluster as a member (writer if the global cluster has no members yet, reader otherwise) via new attachClusterToGlobalClusterLocked. Reciprocal fixes to the write side found by the same sweep: CreateGlobalCluster's SourceDBClusterIdentifier path set the GlobalCluster's own member list but never the source DBCluster's new field (fixed); promoteGlobalClusterWriter's attach-an-unresolved-but-real-cluster path (Failover/SwitchoverGlobalCluster) had the same gap (fixed); RemoveFromGlobalCluster/DeleteGlobalCluster never cleared the field on departing/deleted members (fixed, via new clusterByARNLocked/clusterIdentifierFromARN ARN-to-cluster resolution). See TestCreateDBCluster_JoinsExistingGlobalCluster, TestCreateDBCluster_JoinNonexistentGlobalCluster, TestCreateGlobalCluster_WithSource_SetsMemberClusterField, TestRemoveFromGlobalCluster_ClearsMemberClusterField (wire_field_fixes_test.go). EngineMode (accepted on CreateDBCluster's opts and echoed on every DBCluster response) is NOT a real member of types.DBCluster or CreateDBClusterInput at all under any name (zero grep hits in types.go/api_op_CreateDBCluster.go/api_op_ModifyDBCluster.go) -- an invented field, but DORMANT: no real typed client can ever populate the request side (the field doesn't exist on CreateDBClusterInput to set), and an unrecognized response element is silently skipped by the real XML deserializer's default case, so it costs nothing to a real caller. Not removed this pass (unreachable, and removing it risks disturbing internal test helpers/AddClusterInternal that may reference it) -- flagged here rather than fixed. FIXED 2026-09-04 (gopherstack-12v): DeleteDBCluster never removed a departing global-cluster member from its global cluster's GlobalClusterMembers list (only RemoveFromGlobalCluster did) -- see the top-level 2026-09-04 note above."}
-  DBInstance: {wire: ok, errors: ok, state: ok, persist: ok, note: "InstanceCreateTime field was entirely absent from the model/wire shape (fixed: added and populated on create). RebootDBInstance intentionally stays a state-preserving op (matches AWS's eventual-consistency behavior for reboot; DescribeDBInstances shows 'available' immediately either way). NetworkType FIXED this pass: CreateDBInstanceInput/ModifyDBInstanceInput carry no NetworkType member of their own (verified against the SDK -- absent from both input structs), matching the doc comment on DBInstance.NetworkType ('Inherited from the DB cluster'); now captured from the parent cluster's NetworkType at instance-create time and echoed on Describe. CreateDBInstance FIXED this pass (gopherstack-uhsb): Engine is a required CreateDBInstanceInput member documented 'Valid Values: neptune', but the handler never read it at all -- any value silently had zero effect since the backend hardcodes DBInstance.Engine to \"neptune\" regardless. Rather than continuing to ignore the field, an explicit Engine value that isn't \"neptune\" is now rejected with InvalidParameterValue (no typed exception exists for this in CreateDBInstance's error switch, so it falls through to the same generic-error path every other unmodeled InvalidParameterValue case already uses) -- same reasoning as the elasticache ApplyImmediately=false precedent: validating and rejecting the one AWS-documented illegal case is more faithful than silently accepting anything. Engine omitted or \"neptune\" is unaffected. FIXED 2026-09-04 (gopherstack-12v): DeletionProtection was entirely unmodeled and unenforced on DeleteDBInstance -- see the top-level 2026-09-04 note above."}
+  DBInstance: {wire: ok, errors: ok, state: ok, persist: ok, note: "InstanceCreateTime field was entirely absent from the model/wire shape (fixed: added and populated on create). RebootDBInstance intentionally stays a state-preserving op (matches AWS's eventual-consistency behavior for reboot; DescribeDBInstances shows 'available' immediately either way). NetworkType FIXED this pass: CreateDBInstanceInput/ModifyDBInstanceInput carry no NetworkType member of their own (verified against the SDK -- absent from both input structs), matching the doc comment on DBInstance.NetworkType ('Inherited from the DB cluster'); now captured from the parent cluster's NetworkType at instance-create time and echoed on Describe. CreateDBInstance FIXED this pass (gopherstack-uhsb): Engine is a required CreateDBInstanceInput member documented 'Valid Values: neptune', but the handler never read it at all -- any value silently had zero effect since the backend hardcodes DBInstance.Engine to \"neptune\" regardless. Rather than continuing to ignore the field, an explicit Engine value that isn't \"neptune\" is now rejected with InvalidParameterValue (no typed exception exists for this in CreateDBInstance's error switch, so it falls through to the same generic-error path every other unmodeled InvalidParameterValue case already uses) -- same reasoning as the elasticache ApplyImmediately=false precedent: validating and rejecting the one AWS-documented illegal case is more faithful than silently accepting anything. Engine omitted or \"neptune\" is unaffected. FIXED 2026-09-04 (gopherstack-12v): DeletionProtection was entirely unmodeled and unenforced on DeleteDBInstance -- see the top-level 2026-09-04 note above. FIXED 2026-09-07 (gopherstack-qdqg): DBSubnetGroup was emitted as a bare string on every op returning a DBInstance -- see the top-level 2026-09-07 note above."}
   DBClusterParameterGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: ModifyDBClusterParameterGroup/ResetDBClusterParameterGroup were disguised no-ops -- they validated the group and the Parameters.Parameter.N.* the real client sends, then discarded every value, so DescribeDBClusterParameters always answered empty regardless of what was 'set'. Added a real per-group ParameterValue override store (parameter_catalog.go) seeded against a documented Neptune engine-parameter catalog (neptune_query_timeout, neptune_enable_audit_log, neptune_streams, neptune_result_cache, neptune_dfe_query_engine, neptune_ml_iam_role, neptune_lab_mode, neptune_shard_hash_partitions), enforcing the real static-parameter/pending-reboot ApplyMethod rule and the non-modifiable-parameter rule, with ResetAllParameters and per-parameter reset both wired to real state. DescribeEngineDefaultClusterParameters now returns that catalog instead of an always-empty list. Delete cascades the override store (no ghost rows)."}
   DBParameterGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "Same fix as DBClusterParameterGroup, sharing the catalog/override-store logic in parameter_catalog.go (real Neptune parameter names are shared across both instance- and cluster-level groups). FIXED 2026-09-04 (gopherstack-12v): DeleteDBParameterGroup left its tag-store entry behind on delete (ghost row) -- see the top-level 2026-09-04 note above."}
   DBSubnetGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "SupportedNetworkTypes modeled (real StringList wire shape) but never populated -- see the gaps entry below for why."}
@@ -577,3 +578,113 @@ Gates: `go test -race -count=1 ./services/neptune/...` (pass);
 ./pkgs/persistence/...` run read-only, unaffected -- no field was added to
 a persisted struct (`DBInstanceCreateOptions` is a transient parameter
 struct, never part of the persistence DTO registry).
+
+## 2026-09-07 -- gopherstack-qdqg: DescribeDBInstances emitted DBSubnetGroup as a bare name
+
+Follow-up to the gap flagged by the gopherstack-ucus entry above:
+`xmlDBInstance` serialized `DBSubnetGroup` as a bare
+`<DBSubnetGroup>name</DBSubnetGroup>` string on every op returning a
+`DBInstance` (Create/Describe/Modify/Delete/RebootDBInstance).
+
+Verified against the pinned SDK (`aws-sdk-go-v2/service/neptune@v1.48.4`):
+
+- `types.DBInstance.DBSubnetGroup` (`types/types.go:690`) is
+  `*types.DBSubnetGroup`, a struct:
+  ```go
+  type DBSubnetGroup struct {
+      DBSubnetGroupArn         *string
+      DBSubnetGroupDescription *string
+      DBSubnetGroupName        *string
+      SubnetGroupStatus        *string
+      Subnets                  []Subnet
+      SupportedNetworkTypes    []string
+      VpcId                    *string
+  }
+  ```
+- `types.DBCluster.DBSubnetGroup` (`types/types.go:165`) really is a bare
+  `*string` -- the asymmetry in the issue was real, not a misreading.
+  Confirmed against each type's deserializer, not just the struct decl:
+  `awsAwsquery_deserializeDocumentDBInstance` dispatches its
+  `DBSubnetGroup` case to
+  `awsAwsquery_deserializeDocumentDBSubnetGroup` (a nested-element
+  decoder, `deserializers.go:16439`), while
+  `awsAwsquery_deserializeDocumentDBCluster`'s `DBSubnetGroup` case calls
+  `decoder.Value()` directly (a scalar read,
+  `deserializers.go:11784` region). `Subnets` is a real list member,
+  wrapped `<Subnets><Subnet>...</Subnet></Subnets>` (confirmed via
+  `awsAwsquery_deserializeDocumentSubnetList`, `deserializers.go:22490` --
+  member name `Subnet`, not the generic `member`). `types.Subnet` has
+  `SubnetIdentifier`, `SubnetStatus`, and `SubnetAvailabilityZone`
+  (`*types.AvailabilityZone{Name *string}`).
+
+What data actually exists: `subnet_groups.go`'s `DBSubnetGroup` model
+(`models.go`) stores `DBSubnetGroupName`, `DBSubnetGroupArn`,
+`DBSubnetGroupDescription`, `VpcID`, `Status`, and `SubnetIDs
+([]string`, opaque identifiers only -- no AZ or CIDR data). This is richer
+than the issue anticipated: not just the name.
+
+Fix: `xmlDBInstance.DBSubnetGroupName string` (tag
+`xml:"DBSubnetGroup,omitempty"`) replaced with `DBSubnetGroup
+*xmlDBSubnetGroup`, reusing the same `xmlDBSubnetGroup` type and
+`toXMLSubnetGroup` converter the `CreateDBSubnetGroup`/
+`DescribeDBSubnetGroups`/`ModifyDBSubnetGroup` responses already use,
+instead of duplicating the shape. `toXMLInstance` became a `*Handler`
+method (`h.toXMLInstance(ctx, inst)`, all 5 call sites updated) so it can
+resolve the instance's subnet-group name against the real store via a new
+`h.xmlInstanceSubnetGroup(ctx, name)` helper (`nil` name or a lookup miss
+both correctly omit the element, matching AWS's own optional field).
+
+Populated from real state: `DBSubnetGroupName`, `DBSubnetGroupArn`,
+`DBSubnetGroupDescription`, `VpcId`, `SubnetGroupStatus`, and
+`Subnets>Subnet>SubnetIdentifier` (one per stored subnet ID). Left
+unpopulated for lack of a source (same gap the subnet-group endpoints
+already disclose): `Subnet.SubnetAvailabilityZone`, `Subnet.SubnetStatus`,
+and `DBSubnetGroup.SupportedNetworkTypes` -- this backend tracks subnets
+as opaque ID strings only, no AZ/CIDR data to compute them from honestly.
+
+Not touched: `types.DBCluster.DBSubnetGroup` is confirmed a bare
+`*string`, so `xmlDBCluster.DBSubnetGroupName` (`handler_db_clusters.go`,
+tag `xml:"DBSubnetGroup,omitempty"`) is unchanged.
+
+Regression tests (`handler_db_instances_test.go`, HTTP-handler level,
+asserting the actual XML text, not backend state):
+- `TestHandler_DescribeDBInstances_DBSubnetGroupShape` (new): creates a
+  subnet group with a VPC ID, description, and 2 subnet IDs, attaches it
+  to a cluster/instance, and asserts the nested
+  `<DBSubnetGroup><DBSubnetGroupName>`/`<DBSubnetGroupDescription>`/
+  `<VpcId>`/`<SubnetGroupStatus>`/`<Subnets><Subnet><SubnetIdentifier>`
+  element text, plus a `NotContains` on the old bare-string form.
+- `TestHandler_DescribeDBClusters_DBSubnetGroupStaysBareString` (new
+  guard): asserts `DescribeDBClusters` still emits
+  `<DBSubnetGroup>name</DBSubnetGroup>`. This test passes both before and
+  after this change, by design -- it exists to catch a future "fix both
+  for consistency" regression, not to prove this pass's fix.
+- `TestHandler_CreateDBInstance_DBSubnetGroupName`'s
+  `explicit_name_overrides_cluster` and `omitted_defaults_to_cluster`
+  subtests (pre-existing, from gopherstack-ucus) asserted the bare-string
+  shape (`<DBSubnetGroup>instance-sg</DBSubnetGroup>`) and would have kept
+  passing against the bug forever; corrected to assert
+  `<DBSubnetGroup><DBSubnetGroupName>instance-sg</DBSubnetGroupName>`
+  instead -- strengthened, not weakened: still fails against a bare
+  string, and now additionally fails if the nested element is missing or
+  misnamed. `nonexistent_name_rejected` (input validation, not a wire-shape
+  assertion) was unaffected.
+
+Reverted `handler_db_instances.go` to its pre-fix content while keeping
+all of the above tests: `TestHandler_DescribeDBInstances_DBSubnetGroupShape`
+and both corrected `TestHandler_CreateDBInstance_DBSubnetGroupName`
+subtests failed (6 total assertion failures across the 3 tests);
+`TestHandler_DescribeDBClusters_DBSubnetGroupStaysBareString` passed, as
+expected. Restored the fix afterward; full suite green again.
+
+No field was added to any persisted struct (`xmlDBInstance` and
+`xmlDBSubnetGroup` are wire-only types, never registered in
+`persistence.go`'s DTO registry) -- the `pkgs/persistence` guard does not
+apply to this change.
+
+Gates: `go build ./services/neptune/...` (clean); `go test -race
+-count=1 ./services/neptune/...` (pass); `golangci-lint run
+./services/neptune/...` (0 issues, after moving the new
+`*xmlDBSubnetGroup` field to the front of `xmlDBInstance` to satisfy
+`fieldalignment`, which regressed the struct from 224 to 232 leading
+pointer bytes when the field was appended after the existing string run).
