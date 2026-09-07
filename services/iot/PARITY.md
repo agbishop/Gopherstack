@@ -1829,3 +1829,82 @@ to `respondAsConflictCode`, not suppressed).
   run ./services/iot/...` `0 issues`. No persisted snapshot DTO changed
   (no new struct fields; only added `delete(...)` calls and one reverse-index
   loop), so `TestSnapshotVersionGuard` was not affected and not run.
+
+## 2026-09-07 errtargetaudit re-sweep (gopherstack-yr88): same 10 findings, 0 fixed
+
+`errtargetaudit` reports the identical 10 class-A findings the 2026-08-31
+sweep already resolved down to (immediately above): 6 `ResourceAlreadyExistsException`
+false positives (`CreateCommand`/`CreateJobTemplate`/`CreatePackage`/
+`CreatePackageVersion`/`StartAuditMitigationActionsTask`/
+`StartDetectMitigationActionsTask`) and the same 4 `DeleteCommand`/
+`DeleteCommandExecution`/`DeletePackage`/`DeletePackageVersion`
+`ResourceNotFoundException` findings the prior pass explicitly left open.
+Re-verified everything from scratch rather than trusting the prior write-up.
+
+**Confirmed false positive, all 6, not touched**: the tool's trace stops at
+the sentinel-creation call site inside the *backend* method (e.g.
+`commands.go:52`'s `return nil, fmt.Errorf(..., ErrAlreadyExists)`), one hop
+short of the *handler*, which already renders the correct declared code via
+a per-call-site override added by the 2026-08-31 pass:
+`respondAsConflictCode(c, err, ErrAlreadyExists, "ConflictException")`
+(`handler_commands.go:83`, `handler_jobs.go:430`, `handler_packages.go:153`,
+`handler_packages.go:252`) and `respondAsConflictCode(c, err, ErrAlreadyExists,
+"TaskAlreadyExistsException")` (`handler_devicedefender.go:159`,
+`handler_devicedefender.go:281`). Re-extracted each op's declared set
+directly from `iot@v1.77.4/deserializers.go` and confirmed every override
+matches: `CreateCommand`/`CreateJobTemplate`/`CreatePackage`/
+`CreatePackageVersion` all declare `ConflictException`;
+`StartAuditMitigationActionsTask`/`StartDetectMitigationActionsTask` both
+declare `TaskAlreadyExistsException`. This is a variant of the tool's known
+"one hop of callees" blind spot not yet enumerated in its false-positive
+taxonomy: the miscoded value isn't inferred from a guard the tool can't
+see (classes 2-5) or a doc/model disagreement (class 6) -- it's inferred
+correctly at the sentinel, then silently overridden a second hop away, at
+the handler call site, which the tool's single-hop trace never visits.
+
+**Confirmed real, all 4, deliberately left unfixed -- same conclusion as
+2026-08-31, re-derived independently**: re-extracted the full declared set
+per op directly from `iot@v1.77.4/deserializers.go` (`DeleteCommand`/
+`DeleteCommandExecution`: `{ConflictException, InternalServerException,
+ThrottlingException, ValidationException, UnknownError}`; `DeletePackage`/
+`DeletePackageVersion`: `{InternalServerException, ThrottlingException,
+ValidationException, UnknownError}`) and independently cross-checked
+against the live public API reference
+(`docs.aws.amazon.com/iot/latest/apireference/API_DeleteCommand.html`,
+`.../API_DeletePackage.html`) -- both list the same set with no
+`ResourceNotFoundException` and no sentence describing idempotent-delete
+behavior for an unknown id. This adds no evidence beyond what the
+2026-08-31 pass already had from `deserializers.go` alone (the API
+reference is generated from the same model). Weighed fixing this as the
+"operation's model declares no not-found code at all -> no error" bug
+shape (this service's own `TopicRule` family and workmail's
+`DeleteMobileDeviceAccessOverride` both confirmed real instances of this
+shape elsewhere): none of the 4 operations' declared codes fit "resource
+missing" semantically (`ConflictException`/`ValidationException` are both
+wrong shape), so an idempotent no-op read as the only internally-consistent
+value among the declared set. But per this service's own prior verdict on
+these exact 4 operations, that inference is not proof of AWS's actual
+behavior absent either an explicit doc sentence (which workmail had and
+this doesn't) or an idempotency-token argument that would need to apply
+uniformly (`DeletePackage`/`DeletePackageVersion` carry a `clientToken`
+idempotency parameter consistent with idempotent-retry semantics;
+`DeleteCommand`/`DeleteCommandExecution` carry no such parameter, so the
+same argument doesn't explain their identical gap). No new evidence
+changes the prior pass's tiebreak. Left unchanged, matching gopherstack-yr88's
+own instruction to fix only unambiguous findings and describe an ambiguous
+one for the filer rather than guess: the two live options are (a) make all
+4 idempotent (return success, no error, on an already-gone resource) or
+(b) leave the current `ResourceNotFoundException` emission as-is since no
+declared alternative is demonstrably more correct. Both were fully
+implemented, regression-tested (table-driven idempotency test plus a
+negative case proving sibling Get/Update ops still 404), lint-clean, and
+neutered-verified to actually be reachable by the assertions during this
+pass, then reverted before commit once the ambiguity above was recognized
+-- reported here rather than left silently reverted.
+
+No code changes this pass. Gates: `go build ./services/iot/...` clean,
+`go test -race -count=1 ./services/iot/...` pass (unchanged from baseline),
+`golangci-lint run ./services/iot/...` `0 issues`. `errtargetaudit` iot
+count after this pass: unchanged at 10 (6 confirmed-correct-but-flagged,
+4 confirmed-real-but-ambiguous) -- filed as gopherstack-yr88 stays open for
+a human tiebreak on the 4, not because verification was skipped.
