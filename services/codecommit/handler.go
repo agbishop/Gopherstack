@@ -371,6 +371,7 @@ var errCodeLookup = []errCodeEntry{
 	{sentinel: ErrBranchNotFound, code: http.StatusNotFound, errType: "BranchDoesNotExistException"},
 	{sentinel: ErrBranchAlreadyExists, code: http.StatusBadRequest, errType: "BranchNameExistsException"},
 	{sentinel: ErrCommitNotFound, code: http.StatusNotFound, errType: "CommitDoesNotExistException"},
+	{sentinel: ErrCommitIDNotFound, code: http.StatusNotFound, errType: "CommitIdDoesNotExistException"},
 	{sentinel: ErrFileNotFound, code: http.StatusNotFound, errType: "FileDoesNotExistException"},
 	{sentinel: ErrBlobNotFound, code: http.StatusNotFound, errType: "BlobIdDoesNotExistException"},
 	{sentinel: ErrCommentNotFound, code: http.StatusNotFound, errType: "CommentDoesNotExistException"},
@@ -398,6 +399,7 @@ var errCodeLookup = []errCodeEntry{
 	{sentinel: ErrParentCommitIDRequired, code: http.StatusBadRequest, errType: "ParentCommitIdRequiredException"},
 	{sentinel: ErrParentCommitIDOutdated, code: http.StatusBadRequest, errType: "ParentCommitIdOutdatedException"},
 	{sentinel: ErrSameFileContent, code: http.StatusBadRequest, errType: "SameFileContentException"},
+	{sentinel: ErrNoChange, code: http.StatusBadRequest, errType: "NoChangeException"},
 	{
 		sentinel: ErrFilePathConflicts,
 		code:     http.StatusBadRequest,

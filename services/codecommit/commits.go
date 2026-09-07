@@ -102,13 +102,14 @@ func (b *InMemoryBackend) CreateCommit(
 	}
 
 	// AWS rejects a commit whose putFiles entry has content identical to
-	// what's already at that path with SameFileContentException, checked
-	// before any mutation so a rejected commit leaves no partial state.
+	// what's already at that path with NoChangeException (CreateCommit's own
+	// declared error set has no SameFileContentException; that's PutFile's),
+	// checked before any mutation so a rejected commit leaves no partial state.
 	for _, pf := range putFiles {
 		if existing, ok := b.files.Get(fileKey(repositoryName, pf.FilePath)); ok &&
 			bytes.Equal(existing.FileContent, pf.FileContent) {
 			return nil, nil, nil, fmt.Errorf(
-				"%w: file %s content is unchanged", ErrSameFileContent, pf.FilePath,
+				"%w: file %s content is unchanged", ErrNoChange, pf.FilePath,
 			)
 		}
 	}
@@ -209,7 +210,7 @@ func (b *InMemoryBackend) GetCommit(repositoryName, commitID string) (*Commit, e
 
 	c, ok := b.commits.Get(commitKey(repositoryName, commitID))
 	if !ok {
-		return nil, fmt.Errorf("%w: commit %s not found", ErrCommitNotFound, commitID)
+		return nil, fmt.Errorf("%w: commit %s not found", ErrCommitIDNotFound, commitID)
 	}
 
 	cp := *c

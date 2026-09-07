@@ -31,8 +31,14 @@ var (
 	ErrBranchNotFound = awserr.New("BranchDoesNotExistException", awserr.ErrNotFound)
 	// ErrBranchAlreadyExists is returned when a branch already exists.
 	ErrBranchAlreadyExists = awserr.New("BranchNameExistsException", awserr.ErrConflict)
-	// ErrCommitNotFound is returned when a commit is not found.
+	// ErrCommitNotFound is returned when a commit specifier fails to resolve
+	// (e.g. a branch/merge op looking up a commit by name or ID).
 	ErrCommitNotFound = awserr.New("CommitDoesNotExistException", awserr.ErrNotFound)
+	// ErrCommitIDNotFound is returned by GetCommit specifically: its real AWS
+	// error for an unresolvable commitId is CommitIdDoesNotExistException, a
+	// distinct exception from CommitDoesNotExistException (verified against
+	// codecommit@v1.36.4's deserializeOpErrorGetCommit).
+	ErrCommitIDNotFound = awserr.New("CommitIdDoesNotExistException", awserr.ErrNotFound)
 	// ErrPullRequestNotFound is returned when a pull request is not found.
 	ErrPullRequestNotFound = awserr.New("PullRequestDoesNotExistException", awserr.ErrNotFound)
 	// ErrPullRequestAlreadyMerged is returned when a PR is already merged.
@@ -49,8 +55,16 @@ var (
 	ErrParentCommitIDRequired = awserr.New("ParentCommitIdRequiredException", awserr.ErrInvalidParameter)
 	// ErrParentCommitIDOutdated is returned when parentCommitId doesn't match branch tip.
 	ErrParentCommitIDOutdated = awserr.New("ParentCommitIdOutdatedException", awserr.ErrConflict)
-	// ErrSameFileContent is returned when putFiles has no actual changes.
+	// ErrSameFileContent is returned by PutFile when the written content is
+	// identical to what's already at that path.
 	ErrSameFileContent = awserr.New("SameFileContentException", awserr.ErrConflict)
+	// ErrNoChange is returned by CreateCommit when a putFiles entry's content
+	// is identical to what's already at that path: CreateCommit's own
+	// declared error set has no SameFileContentException (that's PutFile-only,
+	// verified against codecommit@v1.36.4's deserializeOpErrorCreateCommit),
+	// its closest declared equivalent is NoChangeException ("no changes will
+	// be made to the repository as a result of this commit").
+	ErrNoChange = awserr.New("NoChangeException", awserr.ErrConflict)
 	// ErrFilePathConflicts is returned when a file path conflicts with an existing path.
 	ErrFilePathConflicts = awserr.New("FilePathConflictsWithSubmodulePathException", awserr.ErrConflict)
 	// ErrFileNotFound is returned when a file path does not exist in the repository.

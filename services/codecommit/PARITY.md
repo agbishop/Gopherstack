@@ -43,9 +43,9 @@ ops:
   GetBranch: {wire: ok, errors: ok, state: ok, persist: ok}
   ListBranches: {wire: ok, errors: ok, state: ok, persist: ok}
   DeleteBranch: {wire: ok, errors: ok, state: ok, persist: ok}
-  CreateCommit: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "filesAdded[].blobId was hardcoded empty (fixed prior pass); this pass: filesDeleted[].blobId was omitted entirely (now the real removed blob id, matching filesAdded), and ParentCommitIdOutdatedException/ParentCommitIdRequiredException were unreachable (missing from errCodeLookup — see Notes). ALSO this pass: putFiles entries with content identical to what's already at that path now return SameFileContentException instead of silently creating a no-op commit (the sentinel existed but no backend path ever returned it — see gaps' prior note, now partially closed)"}
-  GetCommit: {wire: ok, errors: ok, state: ok, persist: ok}
-  BatchGetCommits: {wire: ok, errors: ok, state: ok, persist: ok}
+  CreateCommit: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "filesAdded[].blobId was hardcoded empty (fixed prior pass); this pass: filesDeleted[].blobId was omitted entirely (now the real removed blob id, matching filesAdded), and ParentCommitIdOutdatedException/ParentCommitIdRequiredException were unreachable (missing from errCodeLookup — see Notes). ALSO this pass: putFiles entries with content identical to what's already at that path now return SameFileContentException instead of silently creating a no-op commit (the sentinel existed but no backend path ever returned it — see gaps' prior note, now partially closed). FIXED 2026-09-07 (gopherstack-8pe4): that SameFileContentException was itself the wrong code — CreateCommit's own declared error set (codecommit@v1.36.4) has no SameFileContentException at all (that's PutFile-only); the identical-content check now returns NoChangeException, CreateCommit's real declared equivalent. See Notes."}
+  GetCommit: {wire: ok, errors: fixed, state: ok, persist: ok, note: "FIXED 2026-09-07 (gopherstack-8pe4): not-found returned CommitDoesNotExistException, a real but different exception (used correctly elsewhere by CreateBranch/the merge family for a commit-specifier-resolution failure); GetCommit's own declared error set has CommitIdDoesNotExistException specifically for an unresolvable commitId (verified against the real API docs' Errors section). See Notes."}
+  BatchGetCommits: {wire: ok, errors: ok, state: ok, persist: ok, note: "CHECKED 2026-09-07 (gopherstack-8pe4): errtargetaudit flagged the per-entry BatchCommitError.ErrorCode literal (\"CommitDoesNotExistException\") as a class A finding. FALSE POSITIVE — this is document data in a 200 response (BatchGetCommitsOutput.errors[].errorCode), not a thrown/declared HTTP exception, so it isn't in BatchGetCommits' deserializeOpError set at all (nothing is, for this free-string field). Not changed: AWS's own docs for BatchGetCommitsError.errorCode don't enumerate valid values, so there's no positive evidence the current string is wrong, only that GetCommit's sibling not-found case uses CommitIdDoesNotExistException — suggestive, not proof. Flagged for a future pass with harder evidence, not synthesized here."}
   PutFile: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "blobId was hardcoded empty (fixed prior pass); this pass: File.CommitSpecifier stored branchName instead of the real commit id, so GetFile's commitId field after a PutFile returned the branch name — now the real commit id. Also never recorded fileHistory, so files written via PutFile (not CreateCommit) were invisible to ListFileCommitHistory — now recorded. ALSO this pass: writing content identical to what's already at that path now returns SameFileContentException instead of silently creating a no-op commit"}
   GetFile: {wire: ok, errors: fixed, state: ok, persist: ok, note: "not-found now FileDoesNotExistException, was RepositoryDoesNotExistException"}
   GetFolder: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -731,3 +731,79 @@ correct) and untouched.
 Gates: `go build`, `go vet` (repo-wide, clean), `go test -race -count=1`,
 `golangci-lint run` (0 issues) — all clean (`./services/codecommit/...`).
 Work left uncommitted per this pass's instructions.
+
+## 2026-09-07 errtargetaudit sweep (gopherstack-8pe4)
+
+No prior error-envelope/errtargetaudit entry existed for this service (screened before
+starting). `cmd/errtargetaudit` (declared-vs-emitted error-code cross-check against
+codecommit@v1.36.4's `deserializeOpError<Op>` tables) reported: operations with SDK ground
+truth 79, resolved 79, emission found for 76, no coverage warning; 3 class A findings.
+
+### 1. CreateCommit / SameFileContentException — CONFIRMED, fixed
+
+`awk "/deserializeOpErrorCreateCommit\(/,/^}/" deserializers.go | grep -oE '"[A-Za-z0-9]+"'`
+lists CreateCommit's entire declared error set (35 codes) — `SameFileContentException` is
+not among them; `NoChangeException` is ("The commit cannot be created because no changes
+will be made to the repository as a result of this commit", per the real API docs' Errors
+section). `SameFileContentException`'s own doc ("The file was not added or updated because
+the content of the file is exactly the same...") is PutFile's exception specifically, and
+PutFile's declared set does contain it (confirmed the same way) — PutFile's own identical-
+content check (`files.go:48`) was untouched, it already used the right code. CreateCommit's
+`putFiles`-identical-content check (`commits.go`, added by the 2026-08-07 gopherstack-3bsb
+pass) reused PutFile's `ErrSameFileContent` sentinel for a different op with a different
+declared error set — a global-sentinel-map-shaped bug (gopherstack-hdvu's class), fixed per
+call site: new `ErrNoChange` sentinel (`errors.go`) wired to `NoChangeException` in
+`errCodeLookup`, used only by CreateCommit's check; `ErrSameFileContent`/PutFile untouched.
+
+### 2. GetCommit / CommitDoesNotExistException — CONFIRMED, fixed
+
+Same extraction for GetCommit's declared set: `CommitIdDoesNotExistException`,
+`CommitIdRequiredException`, plus repo/encryption/invalid-id codes — no
+`CommitDoesNotExistException`. The real API docs' GetCommit Errors section lists
+`CommitIdDoesNotExistException` — "The specified commit ID does not exist" — a distinct
+type from `CommitDoesNotExistException` ("The specified commit does not exist or no commit
+was specified, and the specified repository has no default branch", confirmed via
+`types/errors.go`'s doc comments on both). The shared `ErrCommitNotFound` sentinel
+(`errors.go`) is correctly `CommitDoesNotExistException` for every other caller
+(`branches.go`'s `CreateBranch`, `merges.go`'s `resolveCommitSpecifier` users —
+`BatchDescribeMergeConflicts`/`CreateUnreferencedMergeCommit`/`DescribeMergeConflicts`/
+`GetCommentsForComparedCommit`/the merge family — all confirmed against their own declared
+sets, all correct, untouched); only GetCommit's own by-ID lookup (`commits.go`) needed the
+other exception. Fixed per call site, not per sentinel: new `ErrCommitIDNotFound` sentinel
+wired to `CommitIdDoesNotExistException`, used only by GetCommit's not-found return.
+
+### 3. BatchGetCommits / CommitDoesNotExistException — FALSE POSITIVE (class 1: batch data)
+
+The flagged line (`commits.go`) is a composite-literal `BatchCommitError.ErrorCode` field
+inside the per-`commitId` `errors` list of a 200 response — document data, not a thrown
+exception, so it has no entry in `deserializeOpErrorBatchGetCommits` at all (confirmed: that
+op's declared set has only `CommitIdsLimitExceededException`/`CommitIdsListRequiredException`
+plus the usual repo/encryption codes — no commit-not-found code of either name). Not changed:
+the real docs for `BatchGetCommitsError.errorCode` don't enumerate valid string values (unlike
+the typed exceptions above), so there's no positive evidence the current string is wrong —
+only that GetCommit's sibling by-ID lookup uses the `...Id...` variant, which is suggestive
+but not proof for a free-string field with no declared enum. Left as a documented open
+question (see `ops:` above) rather than a synthesized remedy.
+
+### Verification
+
+Per-line neuter: reverted `commits.go`'s `ErrNoChange` (CreateCommit) back to
+`ErrSameFileContent` — compiled, `TestHandler_CreateCommit_NoChange` failed on the asserted
+`__type` (`"NoChangeException"` vs `"SameFileContentException"`), restored. Reverted
+`ErrCommitIDNotFound` (GetCommit) back to `ErrCommitNotFound` — compiled,
+`TestHandler_GetCommit_CommitIDNotFound` failed the same way (`"CommitIdDoesNotExistException"`
+vs `"CommitDoesNotExistException"`), restored.
+
+Pre-existing test correction: `TestHandler_CreateCommit_SameFileContent` (`handler_commits_
+test.go`) asserted `SameFileContentException` for CreateCommit's identical-content rejection
+— the exact bug fixed above, with no note that it pinned wrong behavior. Renamed
+`TestHandler_CreateCommit_NoChange`, assertion corrected to `NoChangeException`, comment added
+citing this issue. 1 test corrected, 0 dropped. New regression test:
+`TestHandler_GetCommit_CommitIDNotFound` (no pre-existing test asserted GetCommit's not-found
+`__type` at all).
+
+Re-ran `cmd/errtargetaudit` after the fix: codecommit's class A findings dropped from 3 to 1
+(the BatchGetCommits false positive above; unchanged, not a regression).
+
+Gates: `go build`, `go test -race -count=1 ./services/codecommit/...` (ok),
+`golangci-lint run services/codecommit/...` (0 issues).
