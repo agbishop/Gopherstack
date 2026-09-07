@@ -64,3 +64,23 @@ var genericProtocolCodes = map[string]bool{ //nolint:gochecknoglobals // read-on
 	"MissingAction":               true,
 	"NotImplementedException":     true,
 }
+
+// wireFaultTypeDiscriminators are AWS Query/SOAP-style envelope Type field
+// values (<Error><Type>Sender</Type></Error>) -- never an operation error
+// code itself, structurally: a real AWS exception name is always a
+// specific multi-word PascalCase name, never a bare member of this fixed
+// four-value fault-type vocabulary. Confirmed as a false positive on
+// services/sns (writeError's `Error{Type: "Sender", Code: code, ...}`) and
+// services/glacier (writeError's `errorResponse{..., Type: "Client", ...}`)
+// during gopherstack-zofv's validation pass: firstCodeLiteral's one-hop
+// recursion into either shared helper finds "Sender"/"Client" before ever
+// reaching the real (parameter-carried, non-literal) code, since both
+// happen to satisfy codeShapeRe same as any real code would. Excluded
+// unconditionally, same as genericProtocolCodes -- neither ever appears in
+// any module's AllCodes, so this changes no existing finding.
+var wireFaultTypeDiscriminators = map[string]bool{ //nolint:gochecknoglobals // read-only lookup table
+	"Sender":   true,
+	"Receiver": true,
+	"Client":   true,
+	"Server":   true,
+}

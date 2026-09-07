@@ -28,6 +28,18 @@ type emission struct {
 	Code      string
 	Mechanism string
 	Pos       token.Pos
+	// WeakLabel is true when Code was resolved via the ambiguous "Type"
+	// composite-literal field label specifically (isCodeFieldLabel's
+	// comment already flags the risk: AWS Query's <Error><Type>Sender
+	// </Type></Error> fault-type discriminator shares this field name with
+	// iam/ecs's own per-op code field). Confirmed during gopherstack-zofv's
+	// validation pass: this exact label produced ZERO class A findings
+	// anywhere in the corpus, but produced Client/Sender/CNAME/GROUP/USER/
+	// ... (real API data, never a code) at 25+ sites once nothing else
+	// filtered its output -- so it is trusted for class A (its accidental
+	// AllCodes cross-check has never let one of these through) but never
+	// for the orphan class, which has no such backstop.
+	WeakLabel bool
 }
 
 // walkOpEmissions finds every emission reachable from roots (hop 0 each
@@ -439,7 +451,12 @@ func compositeLitEmissions(cl *ast.CompositeLit) []emission {
 			continue
 		}
 
-		out = append(out, emission{Code: v, Mechanism: "composite literal field: " + id.Name, Pos: lit.Pos()})
+		out = append(out, emission{
+			Code:      v,
+			Mechanism: "composite literal field: " + id.Name,
+			Pos:       lit.Pos(),
+			WeakLabel: strings.EqualFold(id.Name, "type"),
+		})
 	}
 
 	return out

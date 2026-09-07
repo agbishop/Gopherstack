@@ -147,14 +147,18 @@ func TestScan_SharedSentinel_AttributedPerOperation(t *testing.T) {
 		"undeclared code must be flagged and attributed to DeleteThing",
 	)
 	require.Len(t, sr.Findings, 1, "the shared sentinel must not also produce a spurious GetThing finding")
+	require.Empty(t, sr.OrphanFindings,
+		"declared by a DIFFERENT op (GetThing) must stay class A, never also reported as the orphan class")
 
 	require.Equal(t, 2, sr.OpsResolved)
 }
 
 // TestScan_ClassB_NotFabricated_NoFinding confirms a code absent from the
 // SERVICE-WIDE code universe (never declared by ANY operation -- class B,
-// cmd/errcodeaudit's job) produces no finding here, even though it is also
-// absent from the specific operation's own declared set.
+// cmd/errcodeaudit's job) produces no class A finding here, even though it
+// is also absent from the specific operation's own declared set. This is
+// gopherstack-zofv's orphan class instead -- see
+// TestScan_OrphanCode_DeclaredByNoOp_NewClass below, same fixture.
 func TestScan_ClassB_NotFabricated_NoFinding(t *testing.T) {
 	t.Parallel()
 
@@ -170,6 +174,67 @@ func TestScan_ClassB_NotFabricated_NoFinding(t *testing.T) {
 	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
 
 	require.Empty(t, sr.Findings, "a code no operation ever declares is class B, out of this tool's scope")
+}
+
+// TestScan_OrphanCode_DeclaredByNoOp_NewClass is gopherstack-zofv's central
+// case: ResourceNotFoundException is absent from EVERY operation's declared
+// set AND from allCodes -- the tool previously had no way to report this at
+// all (silently deferred to cmd/errcodeaudit, never double-reported here).
+// Same fixture/ground truth as TestScan_ClassB_NotFabricated_NoFinding
+// above: still zero class A findings, but now two orphan-code findings,
+// one per operation that actually emits it.
+func TestScan_OrphanCode_DeclaredByNoOp_NewClass(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, sharedSentinelFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{
+			"GetThing":    {"SomeOtherException": true},
+			"DeleteThing": {"SomeOtherException": true},
+		},
+		map[string]bool{"SomeOtherException": true},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Empty(t, sr.Findings)
+	require.Len(t, sr.OrphanFindings, 2)
+
+	codes := findingCodes(sr.OrphanFindings)
+	require.Equal(t, "ResourceNotFoundException", codes["GetThing"])
+	require.Equal(t, "ResourceNotFoundException", codes["DeleteThing"])
+}
+
+// TestScan_OrphanCode_SparseModule_Suppressed is gopherstack-zofv's third,
+// decisive fixture: a module whose own deserializer matched a declared code
+// for only 1 of 3 OpFuncs (a 33% ratio, cmd/errcodeaudit's own sparse
+// threshold) must not flood the orphan class with findings it has no real
+// ground truth to back -- ResourceNotFoundException would otherwise qualify
+// exactly as it does in TestScan_OrphanCode_DeclaredByNoOp_NewClass above,
+// but this module cannot be trusted to say so.
+func TestScan_OrphanCode_SparseModule_Suppressed(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, sharedSentinelFixture)
+	mgt := newModuleGroundTruth()
+	mgt.PerOp = map[string]map[string]bool{
+		"GetThing": {"SomeOtherException": true},
+	}
+	mgt.OpFuncs = map[string]bool{
+		"GetThing":    true,
+		"DeleteThing": true, // has its own deserializeOpError func, but it matched zero codes
+		"PutThing":    true, // ditto -- 1/3 matched, well under the 0.5 sparse threshold
+	}
+	mgt.AllCodes = map[string]bool{"SomeOtherException": true}
+
+	smt := singleModuleTruth(mgt)
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.NotEmpty(t, sr.ModulesSparse, "1/3 matched OpFuncs must be flagged sparse")
+	require.Empty(t, sr.OrphanFindings,
+		"a sparsely-modeled module must not flood the orphan class -- absence here is this tool's own "+
+			"parsing gap, not evidence")
 }
 
 // TestScan_BorrowedModule_NotCountedInGroundTruth is gopherstack-2kud's dax
@@ -801,6 +866,180 @@ func TestGenericProtocolCodes_InternalServerException(t *testing.T) {
 		genericProtocolCodes["InternalServerException"],
 		"must be allowlisted -- see genericcodes.go's doc for the 90-false-positive mgn case this fixes",
 	)
+}
+
+// TestFirstCodeLiteral_SkipsMapLiteralKey is services/quicksight's confirmed
+// false positive during gopherstack-zofv's own validation pass:
+// writeError(c, code, errCode, msg)'s body builds map[string]any{"Code":
+// errCode, "Message": msg}. Before firstCodeLiteral learned to skip a
+// KeyValueExpr's Key, ast.Inspect's blind traversal found the map KEY
+// ("Code", a plain string literal) before ever reaching errCode -- the
+// PARAMETER that actually carries the real code at each call site, which
+// this fixture deliberately can't resolve to a literal at all (matching
+// the real writeError: the real code only exists at the CALLER).
+func TestFirstCodeLiteral_SkipsMapLiteralKey(t *testing.T) {
+	t.Parallel()
+
+	src := `
+package fixture
+
+func writeError(code, msg string) error {
+	_ = map[string]any{"Code": code, "Message": msg}
+	return nil
+}
+`
+	idx := parseSrc(t, src)
+	fn := findFuncDecl(t, idx, "writeError")
+
+	_, found := firstCodeLiteral(fn.Body, idx, 0)
+	require.False(t, found, `a map literal's KEY ("Code") must never be read as the emitted code`)
+}
+
+// TestFirstCodeLiteral_SkipsConstKeyedMapLiteralKey is services/securityhub's
+// confirmed false positive: map[string]any{keyMessage: msg}, where
+// keyMessage is a package-level const ("Message") -- codeLiteralAtNode's
+// *ast.Ident branch resolves it via idx.PkgConsts, but only the KEY
+// position should ever be considered a map key, never a candidate code.
+func TestFirstCodeLiteral_SkipsConstKeyedMapLiteralKey(t *testing.T) {
+	t.Parallel()
+
+	src := `
+package fixture
+
+const keyMessage = "Message"
+
+func writeError(msg string) error {
+	_ = map[string]any{keyMessage: msg}
+	return nil
+}
+`
+	idx := parseSrc(t, src)
+	fn := findFuncDecl(t, idx, "writeError")
+
+	_, found := firstCodeLiteral(fn.Body, idx, 0)
+	require.False(t, found, "a const-keyed map literal's KEY must never be read as the emitted code")
+}
+
+// findFuncDecl locates a top-level function by name in idx, for tests that
+// need to call an internal AST-walking function directly.
+func findFuncDecl(t *testing.T, idx *pkgIndex, name string) *ast.FuncDecl {
+	t.Helper()
+
+	for _, f := range idx.Files {
+		for _, decl := range f.Decls {
+			if fd, ok := decl.(*ast.FuncDecl); ok && fd.Name.Name == name {
+				return fd
+			}
+		}
+	}
+
+	t.Fatalf("no func %q found", name)
+
+	return nil
+}
+
+// TestCompositeLitEmissions_TypeLabelMarkedWeak is gopherstack-zofv's second
+// extraction fix: the "Type" composite-field label is legitimately
+// ambiguous (iam/ecs's own per-op code field vs. AWS Query's <Error><Type>
+// Sender</Type></Error> fault-type discriminator), confirmed to have
+// produced zero true positives and 25+ false ones (Client/Sender/CNAME/
+// GROUP/USER/...) once nothing else filtered its output. "ErrorCode" has no
+// such ambiguity and must stay trusted.
+func TestCompositeLitEmissions_TypeLabelMarkedWeak(t *testing.T) {
+	t.Parallel()
+
+	src := `
+package fixture
+
+var _ = errorResponse{Type: "Sender", ErrorCode: "RealException"}
+`
+	idx := parseSrc(t, src)
+
+	var lit *ast.CompositeLit
+
+	for _, f := range idx.Files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			if cl, ok := n.(*ast.CompositeLit); ok && lit == nil {
+				lit = cl
+			}
+
+			return true
+		})
+	}
+
+	require.NotNil(t, lit)
+
+	byCode := map[string]emission{}
+	for _, e := range compositeLitEmissions(lit) {
+		byCode[e.Code] = e
+	}
+
+	require.True(t, byCode["Sender"].WeakLabel, `"Type" field label must be marked weak`)
+	require.False(t, byCode["RealException"].WeakLabel, `"ErrorCode" field label must stay trusted`)
+}
+
+// TestClassifyEmission_WireFaultTypeDiscriminator_Excluded is gopherstack-
+// zofv's third extraction fix: services/sns and services/glacier's own
+// writeError helpers hold "Sender"/"Client" in a field firstCodeLiteral's
+// one-hop callee recursion can still reach directly (not through
+// compositeLitEmissions' own WeakLabel path at all), so the value itself
+// must be excluded regardless of mechanism.
+func TestClassifyEmission_WireFaultTypeDiscriminator_Excluded(t *testing.T) {
+	t.Parallel()
+
+	declared := map[string]bool{}
+	allCodes := map[string]bool{}
+
+	require.Equal(t, emissionDeclaredOrGeneric, classifyEmission("Sender", declared, allCodes))
+	require.Equal(t, emissionDeclaredOrGeneric, classifyEmission("Client", declared, allCodes))
+	require.Equal(t, emissionDeclaredOrGeneric, classifyEmission("Receiver", declared, allCodes))
+	require.Equal(t, emissionDeclaredOrGeneric, classifyEmission("Server", declared, allCodes))
+}
+
+// TestScan_OrphanCode_WeakTypeLabel_Suppressed is the scan-level version of
+// TestCompositeLitEmissions_TypeLabelMarkedWeak: services/workmail's real
+// shape (DescribeEntity{Type: "GROUP"}) is ordinary API response data, not
+// a code, and must never surface as an orphan-code finding even though
+// "GROUP" is absent from allCodes exactly like a genuine orphan would be.
+func TestScan_OrphanCode_WeakTypeLabel_Suppressed(t *testing.T) {
+	t.Parallel()
+
+	src := `
+package fixture
+
+type Handler struct{ Backend *Backend }
+
+func (h *Handler) dispatch(action string) error {
+	switch action {
+	case "GetThing":
+		return h.handleGetThing()
+	}
+	return nil
+}
+
+func (h *Handler) handleGetThing() error {
+	return h.Backend.GetThing()
+}
+
+type Backend struct{}
+
+func (b *Backend) GetThing() error {
+	_ = entityInfo{Type: "GROUP", Name: "foo"}
+	return nil
+}
+`
+	idx := parseSrc(t, src)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{"GetThing": {"SomeException": true}},
+		map[string]bool{"SomeException": true},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Empty(t, sr.Findings)
+	require.Empty(t, sr.OrphanFindings,
+		`a "Type"-labeled composite field holding unrelated domain data ("GROUP") must never surface as `+
+			"an orphan-code finding")
 }
 
 // collisionScopedFixture is services/eks's real shape (gopherstack-0yva,

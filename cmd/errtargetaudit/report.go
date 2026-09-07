@@ -21,6 +21,7 @@ const minOpsForResolutionGuard = 5
 
 func coverageWarnings(sr serviceScan) []string {
 	warnings := untraceableModuleWarnings(sr)
+	warnings = append(warnings, sparseModuleWarnings(sr)...)
 
 	if sr.OpsGroundTruth == 0 {
 		return warnings
@@ -72,6 +73,26 @@ func untraceableModuleWarnings(sr serviceScan) []string {
 				"file at all) -- treat this service as UNTRACEABLE, not clean; this tool has no "+
 				"per-operation ground truth for it, so a report of zero class A findings below proves nothing",
 			mod))
+	}
+
+	return warnings
+}
+
+// sparseModuleWarnings flags a resolved module whose own deserializer
+// matched a code for under half its OpFuncs (deser.go's sparselyModeled) --
+// gopherstack-zofv's OrphanFindings is unconditionally suppressed for such
+// a module (scan.go), so this warning is the only visible trace that some
+// "declared nowhere in this service" codes may have gone unchecked here,
+// not confirmed absent.
+func sparseModuleWarnings(sr serviceScan) []string {
+	warnings := make([]string, 0, len(sr.ModulesSparse))
+
+	for _, mod := range sr.ModulesSparse {
+		warnings = append(warnings, fmt.Sprintf(
+			"module %q matched a declared code for under half its own deserializeOpError<Op> functions "+
+				"(s3-class sparse modeling) -- orphan-code findings are suppressed for its operations, "+
+				"since this tool cannot tell a genuine gap apart from a code this SDK version's "+
+				"deserializer simply never modeled", mod))
 	}
 
 	return warnings
@@ -140,7 +161,7 @@ func writeJSON(path string, scans []serviceScan) error {
 }
 
 func printServiceScan(sr serviceScan) {
-	if len(sr.Findings) == 0 && len(sr.Warnings) == 0 {
+	if len(sr.Findings) == 0 && len(sr.OrphanFindings) == 0 && len(sr.Warnings) == 0 {
 		return
 	}
 
@@ -160,19 +181,37 @@ func printServiceScan(sr serviceScan) {
 
 	if len(sr.Findings) == 0 {
 		fmt.Fprintln(os.Stdout, "no class A findings (real code, wrong operation)")
-		fmt.Fprintln(os.Stdout)
+	} else {
+		fmt.Fprintf(os.Stdout, "class A findings (%d):\n", len(sr.Findings))
+		printCauseGroups(sr.Findings)
 
+		for _, f := range sr.Findings {
+			printFinding(f)
+		}
+	}
+
+	printOrphanFindings(sr.OrphanFindings)
+
+	fmt.Fprintln(os.Stdout)
+}
+
+// printOrphanFindings reports gopherstack-zofv's class: a code declared by
+// no operation anywhere in this service's resolved module(s), not just the
+// emitting operation's own set. Silent when empty -- most services have
+// none, and the empty case is already implied by this tool's own doc
+// comment, not worth a line every run.
+func printOrphanFindings(findings []finding) {
+	if len(findings) == 0 {
 		return
 	}
 
-	fmt.Fprintf(os.Stdout, "class A findings (%d):\n", len(sr.Findings))
-	printCauseGroups(sr.Findings)
+	fmt.Fprintf(os.Stdout, "orphan-code findings (%d, declared by NO operation anywhere in this service's SDK):\n",
+		len(findings))
+	printCauseGroups(findings)
 
-	for _, f := range sr.Findings {
+	for _, f := range findings {
 		printFinding(f)
 	}
-
-	fmt.Fprintln(os.Stdout)
 }
 
 // causeKey groups findings sharing the same wrongly-emitted code AND the

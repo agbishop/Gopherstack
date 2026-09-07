@@ -651,6 +651,22 @@ func firstCodeLiteral(n ast.Node, idx *pkgIndex, hop int) (string, bool) {
 			return false
 		}
 
+		// A KeyValueExpr's Key is a map key or struct field NAME, never the
+		// code this branch renders -- services/quicksight's own
+		// map[string]any{"Code": errCode, ...} and services/securityhub's
+		// map[string]any{keyMessage: msg} (keyMessage a package-level
+		// const, matched via the *ast.Ident branch below on an unguarded
+		// walk) both surfaced their KEY ("Code", "Message") as a false
+		// emitted code before this guard, confirmed during gopherstack-zofv's
+		// validation pass. Recurse into Value only.
+		if kv, isKV := node.(*ast.KeyValueExpr); isKV {
+			if code, matched := firstCodeLiteral(kv.Value, idx, hop); matched {
+				found, ok = code, true
+			}
+
+			return false
+		}
+
 		if code, matched := codeLiteralAtNode(node, idx, hop); matched {
 			found, ok = code, true
 

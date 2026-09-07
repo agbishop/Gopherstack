@@ -458,27 +458,30 @@ func main() {
 	}
 
 	findings := 0
+	orphans := 0
 	warned := 0
 
 	for _, sr := range scans {
 		printServiceScan(sr)
 
 		findings += len(sr.Findings)
+		orphans += len(sr.OrphanFindings)
+
 		if len(sr.Warnings) > 0 {
 			warned++
 		}
 	}
 
-	summarize(scans, findings, warned)
+	summarize(scans, findings, orphans, warned)
 
-	if findings > 0 || warned > 0 {
+	if findings > 0 || orphans > 0 || warned > 0 {
 		os.Exit(exitFindings)
 	}
 
 	os.Exit(exitClean)
 }
 
-func summarize(scans []serviceScan, findings, warned int) {
+func summarize(scans []serviceScan, findings, orphans, warned int) {
 	scanned := 0
 
 	for _, sr := range scans {
@@ -487,8 +490,14 @@ func summarize(scans []serviceScan, findings, warned int) {
 		}
 	}
 
-	fmt.Fprintf(os.Stdout, "# %d services scanned, %d class A findings, %d coverage warnings\n",
-		scanned, findings, warned)
+	fmt.Fprintf(
+		os.Stdout,
+		"# %d services scanned, %d class A findings, %d orphan-code findings, %d coverage warnings\n",
+		scanned,
+		findings,
+		orphans,
+		warned,
+	)
 }
 
 func run(dirFlag string) ([]serviceScan, error) {
