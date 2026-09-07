@@ -773,6 +773,16 @@ func (b *InMemoryBackend) DescribeStateMachineForExecution(
 		// Fall back to the current definition if no snapshot was taken (pre-snapshot executions).
 		sm, smExists := b.stateMachines.Get(exec.StateMachineArn)
 		if !smExists {
+			// BUG: DescribeStateMachineForExecution's deserializer declares no
+			// StateMachineDoesNotExist (only ExecutionDoesNotExist/InvalidArn/Kms*/
+			// UnknownError) -- this leaks an undeclared code. !hasSnapshot fires on any
+			// execution started before the last persistence restore (executionDefinitions
+			// is deliberately not persisted, see persistence.go's Phase 3.3 comment), so
+			// this is reachable, not just theoretical. No declared code fits "execution
+			// exists, SM gone." The smExists==false branch below (hasSnapshot==true)
+			// answers the identical real condition with a synthetic 200 -- candidate fix:
+			// return &StateMachine{StateMachineArn: exec.StateMachineArn} here too instead
+			// of erroring. Left unfixed pending evidence for that remedy (gopherstack-2hdk).
 			return nil, fmt.Errorf(
 				"%w: state machine %s no longer exists",
 				ErrStateMachineDoesNotExist,

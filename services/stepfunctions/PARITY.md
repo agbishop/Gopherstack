@@ -747,3 +747,151 @@ pre-revert state. `go build ./...`, `go test ./services/stepfunctions/...`,
 No persisted struct changed (`ExecutionResult` is an in-process handoff
 type, never persisted; `Execution.RedriveStatusReason` was already a
 persisted field, just newly populated).
+
+## 2026-09-07 pass (bd gopherstack-2hdk): errtargetaudit's 4 class-A findings triaged, 3 false positives, 1 real gap left as a landmine
+
+Audit tool (`cmd/errtargetaudit`) flagged 4 class-A findings for stepfunctions
+(coverage warning: only 37/205 ops resolved to a handler, so treat as
+unverified leads, not a clean bill). All 4 verified against
+`aws-sdk-go-v2/service/sfn@v1.45.4` deserializers.go
+(`awk "/deserializeOpError<Op>\(/,/^}/" deserializers.go | grep -oE
+'"[A-Za-z0-9]+"'`), not trusted as-reported.
+
+**Protocol**: `application/x-amz-json-1.0` (`handler.go`'s `handleError`
+sets this Content-Type; `models.go` confirms AWS JSON 1.0). Errors are
+shaped as `service.JSONErrorResponse{Type, Message}` via a single
+service-wide `classifyError` table (`handler.go`) mapping each backend
+sentinel `error` to one `(__type string, HTTP status)` pair -- there is no
+per-operation filtering at this layer, so any backend call site can leak
+any sentinel through any operation if the call site itself is wrong. No
+override-helper pattern exists in this service (grepped for
+override/reclassify/remap/translate in handler_*.go -- none); class-7
+(handler overrides code at call site) does not apply here.
+
+### Findings
+
+1. **CreateActivity / ActivityDoesNotExist** (`activities.go:119`,
+   `handler_activities.go:113`) -- **false positive, class 4** (guard
+   cannot fire). `handleCreateActivity` calls
+   `SetActivityEncryptionConfiguration(a.ActivityArn, ...)` with the ARN
+   just returned by `CreateActivity` in the same request; the guard it
+   trips (`ErrActivityDoesNotExist`) requires the activity to be absent,
+   which is impossible moments after `b.activities.Put(a)`. Ground truth:
+   `CreateActivity` declares `ActivityAlreadyExists, ActivityLimitExceeded,
+   InvalidEncryptionConfiguration, InvalidName, KmsAccessDeniedException,
+   KmsThrottlingException, TooManyTags, UnknownError` -- no
+   `ActivityDoesNotExist`; correctly declared instead by `DescribeActivity`/
+   `GetActivityTask`. Regression coverage already exists and asserts 200:
+   `TestCreateActivity_EncryptionConfiguration`
+   (`handler_activities_test.go`).
+2. **CreateStateMachine / StateMachineDoesNotExist**
+   (`handler_state_machines.go:117`, `state_machines.go:51`,
+   `state_machine_versions.go:18`) -- **false positive, class 4**, same
+   shape: `createStateMachineAction` calls
+   `SetStateMachineConfigurations(sm.StateMachineArn, ...)` and (when
+   `publish=true`) `PublishStateMachineVersion(sm.StateMachineArn, ...)`
+   with the ARN just created in the same request; both guards trip
+   `ErrStateMachineDoesNotExist`, which cannot fire on an ARN that was
+   `Put` moments earlier under the same lock region. Ground truth:
+   `CreateStateMachine` declares `ConflictException, InvalidArn,
+   InvalidDefinition, InvalidEncryptionConfiguration,
+   InvalidLoggingConfiguration, InvalidName, InvalidTracingConfiguration,
+   KmsAccessDeniedException, KmsThrottlingException,
+   StateMachineAlreadyExists, StateMachineDeleting,
+   StateMachineLimitExceeded, StateMachineTypeNotSupported, TooManyTags,
+   UnknownError, ValidationException` -- no `StateMachineDoesNotExist`;
+   correctly declared instead by `DescribeStateMachine`/`ListExecutions`/
+   `ListStateMachineAliases`/`PublishStateMachineVersion`/`StartExecution`.
+   Regression coverage already exists and asserts 200:
+   `TestHandler_CreateStateMachine_PropagatesTracingAndLogging`
+   (`handler_tracing_logging_test.go`) and the `publish_true_creates_version`
+   subtest of `TestHandler_CreateStateMachine_Publish`
+   (`handler_state_machines_test.go`).
+3. **DescribeStateMachineForExecution / StateMachineDoesNotExist**
+   (`executions.go:776`, now `:790`) -- **real bug, left unfixed**. Ground
+   truth: this op declares only `ExecutionDoesNotExist, InvalidArn,
+   KmsAccessDeniedException, KmsInvalidStateException,
+   KmsThrottlingException, UnknownError` -- no `StateMachineDoesNotExist`,
+   and no code in that set semantically fits "the execution exists but its
+   state machine's record is gone" (`ExecutionDoesNotExist` would be
+   false: the execution *does* exist). Reachable, not theoretical: the
+   function's `!hasSnapshot` fallback fires for any execution started
+   before the last persistence restore, because `executionDefinitions` is
+   deliberately excluded from `backendSnapshot` (`persistence.go`'s
+   documented Phase-3.3 boundary) -- so a restart followed by deleting that
+   execution's state machine hits this branch. The sibling branch three
+   lines down (`hasSnapshot == true`, SM also gone) answers the identical
+   real-world condition with a synthetic 200
+   (`&StateMachine{StateMachineArn: ..., Definition: definition}`), which
+   is the strongest same-function precedent for what AWS actually does
+   here, but silently turning this branch's error into success needs its
+   own evidence per the audit brief's evidence-trap rule, and expanding
+   persistence to close the root cause (persist `executionDefinitions`,
+   bump `sfnSnapshotVersion`) is out of scope for this pass. Left a
+   landmine comment at the call site naming both candidate fixes and this
+   issue (gopherstack-2hdk). No test asserts this path either way today.
+4. **StartSyncExecution / InvalidDefinition** (`executions.go:118`) --
+   **false positive**, a variant of class 4 (defensive re-validation of
+   already-validated data, not "just created" but "already validated at
+   an earlier lifecycle step"). `StartSyncExecution` re-parses
+   `sm.Definition` with `asl.Parse` after pulling it from the store; but
+   `CreateStateMachine` (`state_machines.go:86-88`) and
+   `UpdateStateMachine` (`state_machines.go:259-262`) both already reject
+   any definition that fails `asl.Parse` before it is ever stored, and
+   every path that hands a definition to `StartSyncExecution` --
+   unqualified ARN, version ARN (`stateMachineForVersionLocked` copies a
+   `PublishStateMachineVersion` snapshot, itself copied from an
+   already-validated `sm.Definition`), or alias ARN routed to a version --
+   ultimately traces back to one of those two validated writes. So the
+   second parse cannot fail via any documented API sequence. Ground truth:
+   `StartSyncExecution` declares `InvalidArn, InvalidExecutionInput,
+   InvalidName, KmsAccessDeniedException, KmsInvalidStateException,
+   KmsThrottlingException, StateMachineDeleting, StateMachineDoesNotExist,
+   StateMachineTypeNotSupported, UnknownError` -- no `InvalidDefinition`;
+   correctly declared instead by `CreateStateMachine`/`TestState`/
+   `UpdateStateMachine`. The identical `asl.Parse(definition)` ->
+   `ErrInvalidDefinition` pattern also appears, unflagged by the tool
+   (coverage gap, not a clean bill), in `startExecutionLocked`
+   (`executions.go:305`, backs `StartExecution`) and
+   `redriveExecutionLocked` (`executions.go:688`, backs
+   `RedriveExecution`) -- same reasoning applies to both; neither op's
+   declared set includes `InvalidDefinition` either. Regression coverage
+   already exists and asserts success:
+   `TestStartSyncExecution_Express_Succeeds`/
+   `TestStartSyncExecution_Express_InputPayload`
+   (`executions_asl_test.go`) plus the broader `StartExecution`/
+   `RedriveExecution` happy-path suites in `executions_test.go`.
+
+### A related, unflagged structural finding: deleting vs. missing collapsed
+
+The audit brief specifically asked whether a **deleting** state machine is
+modeled as distinct from a **missing** one. It is not: there is no
+`ErrStateMachineDeleting` sentinel anywhere in this package, and no
+`classifyError` mapping for AWS's `StateMachineDeleting` code (which
+`CreateStateMachine`/`StartExecution`/`StartSyncExecution` all declare).
+`DeleteStateMachine` (`state_machines.go:134-150`) sets
+`sm.Status = statusDeleting` and then, in the same locked critical
+section, immediately calls `b.stateMachines.Delete(arn)` -- deletion is
+synchronous, so no other request can ever observe a state machine with
+`Status == DELETING`; `CreateStateMachine`'s `sm.Status != statusDeleting`
+duplicate-name guard (`state_machines.go:99`) is consequently dead code.
+This is a real, documented AWS distinction this backend cannot produce
+(async delete simply isn't modeled) -- not one of the 4 flagged findings,
+too large a change to fold into this pass, worth its own tracked issue.
+
+### Verification
+
+- `GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/stepfunctions/...`: pass.
+- `GOTOOLCHAIN=go1.26.6 golangci-lint run services/stepfunctions/...`: `0 issues.`
+- No pre-existing test was found asserting a wrong error code for any of
+  the 4 call sites (searched all `*_test.go` for
+  `ActivityDoesNotExist`/`StateMachineDoesNotExist`/`InvalidDefinition`
+  near `CreateActivity`/`CreateStateMachine`/`StartSyncExecution`/
+  `DescribeStateMachineForExecution`); 0 corrected.
+- Only change: a landmine comment on finding 3
+  (`executions.go`, `DescribeStateMachineForExecution`) -- no functional
+  line touched. Verified with `git stash` on just that file: builds and
+  `go test -run TestDescribeStateMachineForExecution` pass identically
+  with and without it, confirming it's documentation-only.
+- No persisted struct was touched; `pkgs/persistence` guard not re-run
+  (nothing to check -- no field added).
