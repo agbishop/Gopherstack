@@ -311,6 +311,69 @@ func TestHandlerBatchDeleteRecipeVersion_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// TestHandlerBatchDeleteRecipeVersion_LatestWorkingOnly verifies LATEST_WORKING
+// deletes successfully when it is the recipe's only version, per
+// aws-sdk-go-v2/service/databrew's BatchDeleteRecipeVersion doc comment: "the
+// LATEST_WORKING version will only be deleted if the recipe has no other
+// versions".
+func TestHandlerBatchDeleteRecipeVersion_LatestWorkingOnly(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler()
+	databrewReq(t, h, http.MethodPost, "/databrew/v1/recipes", map[string]any{"Name": "bdrv-lw-only"})
+
+	rec := databrewReq(t, h, http.MethodPost, "/databrew/v1/recipes/bdrv-lw-only/batchDeleteRecipeVersion",
+		map[string]any{"RecipeVersions": []string{"LATEST_WORKING"}})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out struct {
+		Errors []map[string]string `json:"Errors"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Empty(t, out.Errors, "deleting LATEST_WORKING as the only version must succeed with no partial failures")
+
+	desc := databrewReq(t, h, http.MethodGet, "/databrew/v1/recipes/bdrv-lw-only", nil)
+	assert.Equal(t, http.StatusNotFound, desc.Code, "the recipe must be gone once its only version is deleted")
+}
+
+// TestHandlerBatchDeleteRecipeVersion_LatestWorkingBlockedByPublished verifies
+// LATEST_WORKING is rejected as a partial failure -- not deleted -- when a
+// published version exists, per the same doc comment: "If you try to delete
+// LATEST_WORKING while other versions exist ... then LATEST_WORKING will be
+// listed as partial failure in the response." The recipe and its published
+// version must both survive the rejected delete.
+func TestHandlerBatchDeleteRecipeVersion_LatestWorkingBlockedByPublished(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler()
+	databrewReq(t, h, http.MethodPost, "/databrew/v1/recipes", map[string]any{"Name": "bdrv-lw-blocked"})
+	pub := databrewReq(t, h, http.MethodPost, "/databrew/v1/recipes/bdrv-lw-blocked/publishRecipe", nil)
+	require.Equal(t, http.StatusOK, pub.Code)
+
+	rec := databrewReq(t, h, http.MethodPost, "/databrew/v1/recipes/bdrv-lw-blocked/batchDeleteRecipeVersion",
+		map[string]any{"RecipeVersions": []string{"LATEST_WORKING"}})
+	require.Equal(
+		t, http.StatusOK, rec.Code, "a blocked LATEST_WORKING is a partial failure, not a whole-request error",
+	)
+
+	var out struct {
+		Errors []struct {
+			RecipeVersion string `json:"RecipeVersion"`
+			ErrorCode     string `json:"ErrorCode"`
+		} `json:"Errors"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	require.Len(t, out.Errors, 1)
+	assert.Equal(t, "LATEST_WORKING", out.Errors[0].RecipeVersion)
+	assert.Equal(t, "ValidationException", out.Errors[0].ErrorCode)
+
+	descWorking := databrewReq(
+		t, h, http.MethodGet, "/databrew/v1/recipes/bdrv-lw-blocked?recipeVersion=LATEST_WORKING", nil,
+	)
+	require.Equal(t, http.StatusOK, descWorking.Code, "the recipe's LATEST_WORKING draft must still exist")
+
+	descPublished := databrewReq(t, h, http.MethodGet, "/databrew/v1/recipes/bdrv-lw-blocked?recipeVersion=1.0", nil)
+	require.Equal(t, http.StatusOK, descPublished.Code, "the published version must still exist")
+}
+
 // ---- Recipe wire-shape / routing regression coverage ----
 
 // TestRecipeReference verifies CreateRecipeJob reads RecipeReference and DescribeJob returns it.
