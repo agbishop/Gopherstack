@@ -55,7 +55,16 @@ func TestDecodeAuthorizationMessage(t *testing.T) {
 	assert.Equal(t, original, resp.Result.DecodedMessage)
 }
 
-// TestDecodeAuthorizationMessageEmpty verifies empty EncodedMessage gives 400.
+// TestDecodeAuthorizationMessageEmpty verifies a missing EncodedMessage gives
+// 400 MissingParameter. Previously asserted the sibling code "InvalidParameter"
+// -- gopherstack-yatn orphan-code triage found "InvalidParameter" does not
+// exist anywhere in the pinned sts@v1.45.4 module, and AWS's own STS Common
+// Errors page (docs.aws.amazon.com/STS/latest/APIReference/CommonErrors.html)
+// documents "MissingParameter" (not "InvalidParameter") for exactly this
+// condition ("A required parameter for the specified action isn't included
+// in the request"), matching every other missing-required-parameter sentinel
+// in this package (ErrMissingRoleArn et al., handler.go's
+// mapValidationErrorToCode).
 func TestDecodeAuthorizationMessageEmpty(t *testing.T) {
 	t.Parallel()
 
@@ -71,8 +80,7 @@ func TestDecodeAuthorizationMessageEmpty(t *testing.T) {
 
 	var errResp sts.ErrorResponse
 	require.NoError(t, xml.Unmarshal(rec.Body.Bytes(), &errResp))
-	// AWS returns InvalidParameter (not MissingParameter) for an empty EncodedMessage.
-	assert.Equal(t, "InvalidParameter", errResp.Error.Code)
+	assert.Equal(t, "MissingParameter", errResp.Error.Code)
 }
 
 // TestDecodeAuthorizationMessageInvalidBase64Returns400 verifies malformed

@@ -641,8 +641,6 @@ func sesNewOpsErrorCode(opErr error, status int) (string, int) {
 		return "RuleDoesNotExist", status
 	case errors.Is(opErr, ErrReceiptRuleExists):
 		return errCodeAlreadyExists, status
-	case errors.Is(opErr, ErrReceiptFilterNotFound):
-		return "FilterDoesNotExist", status
 	case errors.Is(opErr, ErrReceiptFilterExists):
 		return errCodeAlreadyExists, status
 	case errors.Is(opErr, ErrEventDestinationNotFound):

@@ -11,15 +11,18 @@ import (
 )
 
 // TestDeleteOps_MissingTarget_Idempotent proves that DeleteCustomVerification-
-// EmailTemplate, DeleteReceiptRule, and DeleteReceiptRuleSet succeed (rather
-// than error) when their target does not exist, matching what each
-// operation's own deserializer can decode: DeleteCustomVerificationEmail-
-// Template declares no exception at all (ses@v1.37.4 deserializers.go, empty
-// switch); DeleteReceiptRule declares only RuleSetDoesNotExist, not
-// RuleDoesNotExist; DeleteReceiptRuleSet declares only CannotDelete, not
-// RuleSetDoesNotExist. Emitting the not-found code these ops don't declare
-// left the client with only a generic, untyped error either way, so the
-// real service treats a missing delete target as already-deleted.
+// EmailTemplate, DeleteReceiptRule, DeleteReceiptRuleSet, and
+// DeleteReceiptFilter succeed (rather than error) when their target does not
+// exist, matching what each operation's own deserializer can decode:
+// DeleteCustomVerificationEmailTemplate declares no exception at all
+// (ses@v1.37.4 deserializers.go, empty switch); DeleteReceiptRule declares
+// only RuleSetDoesNotExist, not RuleDoesNotExist; DeleteReceiptRuleSet
+// declares only CannotDelete, not RuleSetDoesNotExist; DeleteReceiptFilter
+// declares no exception at all (empty switch, and botocore's ses/2010-12-01
+// service-2.json has no "errors" key on this op whatsoever -- not even a
+// parent-resource check). Emitting the not-found code these ops don't
+// declare left the client with only a generic, untyped error either way, so
+// the real service treats a missing delete target as already-deleted.
 func TestDeleteOps_MissingTarget_Idempotent(t *testing.T) {
 	t.Parallel()
 
@@ -58,6 +61,15 @@ func TestDeleteOps_MissingTarget_Idempotent(t *testing.T) {
 
 		_, err := client.DeleteReceiptRuleSet(ctx, &sessdk.DeleteReceiptRuleSetInput{
 			RuleSetName: aws.String("no-such-rule-set"),
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("receipt_filter", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := client.DeleteReceiptFilter(ctx, &sessdk.DeleteReceiptFilterInput{
+			FilterName: aws.String("no-such-filter"),
 		})
 		require.NoError(t, err)
 	})

@@ -261,10 +261,9 @@ func mapValidationErrorToCode(reqErr error) (string, int, bool) {
 		errors.Is(reqErr, ErrMissingSAMLAssertion), errors.Is(reqErr, ErrMissingPrincipalArn),
 		errors.Is(reqErr, ErrMissingTargetPrincipal), errors.Is(reqErr, ErrMissingTaskPolicyArn),
 		errors.Is(reqErr, ErrMissingTradeInToken), errors.Is(reqErr, ErrMissingAudience),
-		errors.Is(reqErr, ErrMissingSigningAlgorithm), errors.Is(reqErr, ErrMFACodeRequired):
+		errors.Is(reqErr, ErrMissingSigningAlgorithm), errors.Is(reqErr, ErrMFACodeRequired),
+		errors.Is(reqErr, ErrMissingEncodedMessage):
 		return "MissingParameter", http.StatusBadRequest, true
-	case errors.Is(reqErr, ErrMissingEncodedMessage):
-		return "InvalidParameter", http.StatusBadRequest, true
 	case errors.Is(reqErr, ErrInvalidRoleArn), errors.Is(reqErr, ErrInvalidSourceIdentity),
 		errors.Is(reqErr, ErrInvalidPrincipalArn), errors.Is(reqErr, ErrValidation):
 		return invalidParamValue, http.StatusBadRequest, true

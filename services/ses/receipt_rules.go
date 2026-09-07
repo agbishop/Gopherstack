@@ -103,16 +103,16 @@ func (b *InMemoryBackend) ListReceiptFilters() []ReceiptFilter {
 	return out
 }
 
-// DeleteReceiptFilter removes a receipt filter by name.
+// DeleteReceiptFilter removes a receipt filter by name. A missing name is
+// idempotent: DeleteReceiptFilter's own deserializer (ses@v1.37.4
+// deserializers.go) declares no exception at all, and botocore's
+// ses/2010-12-01 service-2.json has no "errors" key on this op whatsoever.
 func (b *InMemoryBackend) DeleteReceiptFilter(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("%w: Filter.Name is required", ErrInvalidParameter)
 	}
 	b.mu.Lock("DeleteReceiptFilter")
 	defer b.mu.Unlock()
-	if !b.receiptFilters.Has(name) {
-		return fmt.Errorf("%w: %s", ErrReceiptFilterNotFound, name)
-	}
 	b.receiptFilters.Delete(name)
 
 	return nil

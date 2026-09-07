@@ -509,7 +509,14 @@ func TestDeleteReceiptFilter_Handler(t *testing.T) {
 	assert.Equal(t, 0, h.Backend.(*ses.InMemoryBackend).ReceiptFilterCount())
 }
 
-func TestDeleteReceiptFilter_NotFound_Error(t *testing.T) {
+// TestDeleteReceiptFilter_NotFound_IsIdempotent replaces the previous
+// TestDeleteReceiptFilter_NotFound_Error, which asserted a 400 here. That was
+// wrong: DeleteReceiptFilter's own deserializer (ses@v1.37.4 deserializers.go)
+// declares no exception at all, and botocore's ses/2010-12-01 service-2.json
+// has no "errors" key on this op whatsoever -- a missing filter is a no-op,
+// matching the sibling DeleteReceiptRule/DeleteReceiptRuleSet precedent (see
+// undeclared_delete_errors_test.go).
+func TestDeleteReceiptFilter_NotFound_IsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	h := newHandler()
@@ -518,7 +525,7 @@ func TestDeleteReceiptFilter_NotFound_Error(t *testing.T) {
 		"Version":    {"2010-12-01"},
 		"FilterName": {"nonexistent"},
 	}.Encode())
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestReceiptFilter_AllowAndBlock_Policies(t *testing.T) {
@@ -945,10 +952,12 @@ func TestHandler_DeleteReceiptFilter(t *testing.T) {
 			wantContains: "DeleteReceiptFilterResponse",
 		},
 		{
-			name:         "filter_not_found",
+			// FilterDoesNotExist does not exist in this SDK; a missing
+			// filter is idempotent (see TestDeleteReceiptFilter_NotFound_IsIdempotent).
+			name:         "filter_not_found_is_idempotent",
 			body:         "Action=DeleteReceiptFilter&Version=2010-12-01&FilterName=nonexistent",
-			wantCode:     http.StatusBadRequest,
-			wantContains: "FilterDoesNotExist",
+			wantCode:     http.StatusOK,
+			wantContains: "DeleteReceiptFilterResponse",
 		},
 		{
 			name:         "empty_filter_name",
