@@ -5930,3 +5930,148 @@ subtest now passes), `go test -race -count=20 -run
 'TestPipelineExecutionTransitionsFire|TestStartPipelineExecutionFull_StopClobbersToSucceeded|TestRetryPipelineExecution_StopClobbersToSucceeded'
 ./services/sagemaker/` 20/20, `golangci-lint run services/sagemaker/...`
 0 issues.
+
+## 2026-09-07 (gopherstack-rh77): guarded scheduleEndpointTransition/scheduleInferenceComponentTransition; confirmed no permanent-clobber, P3 stands
+
+Follow-up to the two sites gopherstack-7lrq's entry above named and left
+unfixed. `DeleteEndpoint` (endpoints.go:307-324) and
+`DeleteInferenceComponent` (inference_components.go:453-467) both call
+`store.Delete(name)` outright — neither ever writes a `Deleting` (or any
+other) status before removing the record — so the filer's reasoning
+that a completed delete cannot be resurrected by a stale callback was
+confirmed correct: `scheduleEndpointTransition`/
+`scheduleInferenceComponentTransition` both check `store.Get(name)` and
+no-op when the record is gone.
+
+`types.EndpointStatus` (enums.go): `OutOfService`, `Creating`,
+`Updating`, `SystemUpdating`, `RollingBack`, `InService`, `Deleting`,
+`Failed`, `UpdateRollbackFailed`. `types.InferenceComponentStatus`:
+`InService`, `Creating`, `Updating`, `Failed`, `Deleting`. This backend
+only ever *writes* three of each: `Creating`, `Updating`, `InService`
+(confirmed by grepping every `EndpointStatus =`/`InferenceComponentStatus =`
+assignment in the package) — `Failed`/`Deleting`/`RollingBack`/
+`OutOfService`/`SystemUpdating`/`UpdateRollbackFailed` are never
+simulated. That fact is what makes the guard's fromStatus a single value
+per call site rather than a set: `CreateEndpointFSM`/
+`CreateInferenceComponent` synchronously set `Creating` then schedule a
+transition guarded on `== Creating`; `UpdateEndpointFSM`,
+`UpdateEndpointWeightsAndCapacitiesFull`, `UpdateInferenceComponent`, and
+`UpdateInferenceComponentRuntimeConfig` all set `Updating` then schedule
+a transition guarded on `== Updating`. Each call site already knows,
+synchronously, which status it just set — there is never a case where
+one call site's scheduled transition legitimately needs to advance from
+either of two different statuses, so a set was unnecessary; a guard
+requiring `InService` instead of `Creating`/`Updating` would have been
+the too-narrow mistake the issue warned about, and would break the
+normal path outright (nothing would ever leave `Creating`/`Updating`).
+
+Interleaving analysis: because every scheduled transition in both files
+targets the same terminal status (`InService`) and nothing in this
+backend ever schedules a transition to `Failed`/`Deleting`/anything
+else, no interleaving of overlapping Create/Update calls can leave a
+*permanently* wrong status — every pending callback, whenever it
+eventually fires (guarded or not), either no-ops (record deleted) or
+writes the same `InService` value the record was always going to reach.
+Concrete interleaving: `CreateEndpointFSM` at t=0 sets `Creating`,
+schedules `Creating->InService` at `endpointCreatingToInService` (300ms,
+fires t=300); an immediate `UpdateEndpointFSM` at t=0 (endpoints.go has
+no precondition that an endpoint be `InService` before it can be
+updated) sets `Updating`, schedules `Updating->InService` at
+`endpointUpdatingToInService` (250ms, fires t=250). Without the guard,
+Update's callback fires at t=250 and correctly lands `InService`; then
+Create's stale callback fires at t=300 and unconditionally re-writes
+`EndpointStatus = InService` (same value, so not visibly wrong) but also
+bumps `LastModifiedTime` to t=300 and re-syncs `ProductionVariants`
+Current* from Desired* — a phantom "changed at t=300" when nothing
+actually changed since t=250. That is the real, if narrow, defect: not
+a wrong terminal status (this was correctly filed P3, not re-prioritised
+to P2 like 7lrq — 7lrq's bug replaced a legitimate, distinct terminal
+value, `Stopped`, with a different, wrong one, `Succeeded`, and nothing
+ever corrected it), but a spurious `LastModifiedTime`/variant-resync
+touch after a later, overlapping transition already finished the
+record. The `fromStatus` guard fixes exactly this: a stale callback
+that no longer finds the status it expects (because a later transition
+already advanced past it) now no-ops instead of re-touching the record.
+
+Same interleaving applies symmetrically to
+`scheduleInferenceComponentTransition` (`CreateInferenceComponent` +
+`UpdateInferenceComponent`/`UpdateInferenceComponentRuntimeConfig`,
+`inferenceComponentCreatingToInService`/`inferenceComponentUpdatingToInService`,
+both 300ms/250ms).
+
+Files changed: `endpoints.go` (`scheduleEndpointTransition` gained a
+`fromStatus` parameter and guard; its three call sites pass
+`statusCreating`/`statusUpdating`); `inference_components.go` (same
+shape for `scheduleInferenceComponentTransition` and its three call
+sites); `endpoint_inference_component_transition_test.go` (new,
+white-box, `synctest`-based); `handler_endpoints_test.go` and
+`handler_inference_components_test.go` (pre-existing `assert.Eventually`/
+`require.Eventually` polls on these exact transitions converted to
+`synctest.Test` + `synctest.Wait`, per this package's ban on
+Eventually — masked exactly this class of race in gopherstack-7lrq).
+
+New tests: `TestEndpointTransitions_ReachInService` and
+`TestInferenceComponentTransitions_ReachInService` (table-driven over
+create/update/weights-and-capacities and create/update/update-runtime-
+config respectively) pin the normal path — each still reaches
+`InService` after its own delay, so a too-narrow `fromStatus` would be
+caught here. `TestEndpointTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate`
+and `TestInferenceComponentTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate`
+pin the race — explicitly an ordering test, not a clobber test, per the
+interleaving analysis above: they assert `LastModifiedTime` is
+unchanged by Create's stale callback after Update has already settled
+the record on `InService`, not that the status differs.
+
+Three pre-existing tests were corrected because they poll these same
+transitions and would otherwise timeout-fail (or silently races-mask a
+future regression) under the ban on `Eventually`:
+
+- `TestHandler_ListEndpoints_Filters` (handler_endpoints_test.go): the
+  `require.Eventually` waiting for both endpoints to leave `Creating`
+  was replaced with `synctest.Test` around the two `CreateEndpoint`
+  calls plus `time.Sleep`/`synctest.Wait`. `future`/`past` (used by the
+  `CreationTimeAfter`/`LastModifiedTimeBefore` subtests) had to move
+  inside the same bubble and be captured into closure variables — a
+  synctest bubble's fake clock does not track the real wall clock, so
+  computing them with a real `time.Now()` after the bubble closed
+  produced nonsensical comparisons against the bubble-clock-stamped
+  `CreationTime`/`LastModifiedTime` (this was caught by the gate run,
+  not anticipated — two subtests failed with off-by-decades comparisons
+  until fixed).
+- `TestHandler_DescribeEndpoint_EventuallyInService`
+  (handler_endpoints_test.go): same `Eventually`->`synctest` conversion,
+  no other change needed (no post-bubble time comparisons).
+- `TestHandler_InferenceComponentLifecycle`
+  (handler_inference_components_test.go): same conversion, but the
+  *entire* test body had to move inside one `synctest.Test` bubble, not
+  just the Create-to-InService wait — `runDelayed`'s `b.wg.Go` call
+  panics ("WaitGroup.Add called from inside and outside synctest
+  bubble") if the same backend's WaitGroup is touched by a
+  bubble-spawned goroutine and then again by a call made outside any
+  bubble, and this test's later `UpdateInferenceComponentRuntimeConfig`/
+  `UpdateInferenceComponent` calls each schedule their own delayed
+  transition. A final `time.Sleep`+`synctest.Wait` was added at the end
+  (after Delete) to drain those two calls' still-pending timers before
+  the bubble exits — synctest fatals with "deadlock: main bubble
+  goroutine has exited but blocked goroutines remain" otherwise.
+
+Neuter results (`scheduleEndpointTransition`/
+`scheduleInferenceComponentTransition`, guard reduced to the bare
+`!ok` existence check, `// NEUTERED for gopherstack-rh77 coverage
+check`): both compile; endpoint guard removal fails
+`TestEndpointTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate`
+(`LastModifiedTime changed from ...0.25... to ...0.3...`), leaves
+`TestEndpointTransitions_ReachInService` passing (as expected — only the
+race test is sensitive to this guard); inference-component guard
+removal fails
+`TestInferenceComponentTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate`
+the same way, leaves `TestInferenceComponentTransitions_ReachInService`
+passing. Both restored and diffed byte-identical against the pre-neuter
+version.
+
+Gates: `go build ./services/sagemaker/...` clean; `go test -race
+-count=1 ./services/sagemaker/...` fully green; `go test -race
+-count=20 -run
+'TestEndpointTransitions_ReachInService|TestEndpointTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate|TestInferenceComponentTransitions_ReachInService|TestInferenceComponentTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate'
+./services/sagemaker/` 20/20; `golangci-lint run services/sagemaker/...`
+0 issues.
