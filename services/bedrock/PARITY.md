@@ -874,7 +874,7 @@ up under re-verification, with one correction on item 1's resource list.
    `DeleteDataSource` (deleting a single data source without deleting its
    parent KB) -- that path has the identical gap but is not one of this
    issue's five items; noted for a future pass rather than silently widening
-   scope.
+   scope. **Fixed 2026-09-07, see gopherstack-y0to below.**
 
 Files changed: `services/bedrock/agent_aliases.go` (DeleteAgentAlias prunes
 agentTags), `services/bedrock/flow_aliases.go` (DeleteFlowAlias prunes
@@ -893,6 +893,53 @@ ARPVersionCountForTest, ARPAnnotationStateExistsForTest),
 `services/bedrock/ghost_row_jkiu_test.go` (new -- seven regression tests, each
 confirmed failing against the unmodified code before the fix, then restored;
 see commit history).
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
+both clean.
+
+## 2026-09-07 (gopherstack-y0to): DeleteDataSource had the same ghost row one level down
+
+`DeleteKnowledgeBase` cascades to `ingestionJobs`/`kbDocuments` as of
+gopherstack-jkiu above, which explicitly declined to extend the fix to
+`DeleteDataSource` and filed this issue instead.
+
+**GHOST ROW, fixed.** `GetIngestionJob`/`ListIngestionJobs`
+(ingestion_jobs.go) and `ListKnowledgeBaseDocuments`
+(knowledge_base_documents.go) do zero existence check on the data source --
+they filter the single global `ingestionJobs`/`kbDocuments` tables by
+`KnowledgeBaseID`/`DataSourceID` fields alone -- so all three kept returning
+rows for a `DataSourceID` that `DeleteDataSource` had already removed. Same
+root cause as jkiu's item 5, one level down. (`GetKnowledgeBaseDocuments` is
+unaffected: it already existence-checks `b.dataSources` before reading, so
+it 404s correctly.)
+
+**FIXED**: `DeleteDataSource` (data_sources.go) now also ranges
+`b.ingestionJobs` and `b.kbDocuments` and deletes every entry whose
+`KnowledgeBaseID` and `DataSourceID` both match, mirroring
+`DeleteKnowledgeBase`'s existing cascade in knowledge_bases.go. No
+Reset-vs-delete landmine here: both are single global `store.Table`s, not
+lazily-registered per-parent ones, so range-and-delete is correct (same
+reasoning as jkiu item 5).
+
+**Sibling check**: nothing else is orphaned by `DeleteDataSource`.
+`DataSource` (models.go:898-909) still has no ARN field, confirming jkiu's
+finding that it cannot leak into `agentTags`. No other map in the backend is
+keyed by `DataSourceID` (store.go's field list checked).
+
+**Composition with `DeleteKnowledgeBase`**: the two cascades are independent
+range-and-delete passes over the same tables with no shared state or
+call-through -- `DeleteKnowledgeBase` does not call `DeleteDataSource`, so
+there is no double-delete or double-lock. Verified by
+`TestDeleteKnowledgeBase_StillCascadesAfterDataSourceCascadeFix` (KB deleted
+directly, without deleting its data source first, still cascades) alongside
+the new `DeleteDataSource`-path tests.
+
+Files changed: `services/bedrock/data_sources.go` (`DeleteDataSource`
+cascades to `ingestionJobs` and `kbDocuments`),
+`services/bedrock/ghost_row_y0to_test.go` (new -- three regression tests;
+the ghost-row assertion confirmed failing against the unmodified code before
+the fix, then restored; see commit history).
 
 Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
 `GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
