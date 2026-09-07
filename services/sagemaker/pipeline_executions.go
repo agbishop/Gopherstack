@@ -26,6 +26,7 @@ type PipelineExecutionStep struct {
 }
 
 const (
+	startTransitionDelay = 200 * time.Millisecond // delay for started execution to succeed
 	retryTransitionDelay = 200 * time.Millisecond // delay for retry execution to succeed
 	stopTransitionDelay  = 100 * time.Millisecond // delay for execution to stop
 )
