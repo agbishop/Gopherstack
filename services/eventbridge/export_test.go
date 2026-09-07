@@ -2,6 +2,7 @@ package eventbridge
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -12,6 +13,28 @@ type RegionContextKeyForTest = regionContextKey
 // MatchPatternForTest exposes the internal matchPattern function for external tests.
 func MatchPatternForTest(pattern, event string) bool {
 	return matchPattern(pattern, event)
+}
+
+// CompilePatternErrorForTest exposes compilePattern's error for external tests.
+func CompilePatternErrorForTest(pattern string) error {
+	_, err := compilePattern(pattern)
+
+	return err
+}
+
+// MatchCompiledPatternBypassingValidationForTest builds a compiledPattern
+// directly from raw JSON, skipping compilePattern's validatePatternObject
+// step, and matches it via matchCompiledPattern. It exists to exercise
+// matchAnythingBut's defense-in-depth (gopherstack-lrgk) independently of
+// validateAnythingButValue, simulating a pattern that reached matching
+// despite carrying a shape validation would normally reject.
+func MatchCompiledPatternBypassingValidationForTest(patternJSON, event string) bool {
+	var pattern map[string]any
+	if err := json.Unmarshal([]byte(patternJSON), &pattern); err != nil {
+		panic(err)
+	}
+
+	return matchCompiledPattern(&compiledPattern{pattern: pattern}, event)
 }
 
 // SubstituteInputTemplateForTest exposes the input-transformer template scanner

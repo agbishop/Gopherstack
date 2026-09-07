@@ -908,3 +908,68 @@ Gates: `go build`, `go vet` (repo-wide, clean — no exported signature
 changed except adding `ErrReplayNotCancellable`, whose only new caller is
 `replays.go`), `go test -race -count=1`, `golangci-lint run` — all clean
 (`./services/eventbridge/...`).
+
+## 2026-09-06: `anything-but` non-scalar list element panicked matching (gopherstack-lrgk)
+
+A pattern like `{"foo": [{"anything-but": [{"x":1}]}]}` passed
+`compilePattern`'s validation unchanged (`validateMatcherObject` only
+checked that `anything-but` is a *known key*, never the *shape* of its
+value) and then panicked inside `matchAnythingBut`'s `[]any` case
+(`pattern.go:424`, pre-fix): `slices.Contains(ab, eventVal)` compares with
+`==`, and `==` between two interface values sharing an identical
+non-comparable dynamic type (here `map[string]interface{}`, from the
+pattern's `{"x":1}` and the event's `{"foo": {"x": 1}}`) panics per the Go
+spec. `delivery.go`'s `ruleMatchesForDelivery` calls `matchCompiledPattern`
+on the `PutEvents` hot path with no `recover()`, so a rule with this
+pattern took down request handling on the very first matching event.
+
+Both defensible fixes from the bd issue were done, for different reasons:
+
+- **Validation (`validateAnythingButValue`/`validateAnythingButObject`,
+  new in `pattern.go`)**: real AWS does not support this pattern at all.
+  Per AWS's content-filtering docs (`eb-event-patterns-content-based-filtering.html#eb-filtering-anything-but`):
+  "You can use anything-but matching with strings and numeric values,
+  including lists that contain only strings, or only numbers." A
+  map/array element is neither, so `PutRule`/`TestEventPattern` now reject
+  it with `InvalidEventPatternException` (via `ErrInvalidParameter`) —
+  **the pattern is rejected at compile/`PutRule` time, not silently
+  accepted and merely non-matching.** While in there, the object form
+  (`{"anything-but": {"prefix": ...}}`) now also rejects unrecognized inner
+  keys, matching what `matchAnythingButObject` actually recognizes
+  (`numeric`/`prefix`/`suffix`/`wildcard`/`equals-ignore-case`) instead of
+  silently never matching on a typo'd key.
+- **Matching (`matchAnythingBut`'s `[]any` case, `pattern.go`)**: replaced
+  `slices.Contains(ab, eventVal)` (`==`) with a `reflect.DeepEqual`-based
+  `anySliceContains` helper — same fix and same reason as
+  `services/pipes/filter.go`'s `matchesExactRule`. Done regardless of the
+  validation fix: matching must not crash even if validation is later
+  loosened, bypassed by a code path that doesn't call `compilePattern`, or
+  simply wrong in some case not yet found. Proven independently of the
+  validation fix by `TestPattern_AnythingBut_DefenseInDepth_NoPanicWhenValidationBypassed`,
+  which builds a `compiledPattern` directly (skipping `compilePattern`)
+  and drives `matchCompiledPattern` straight at the non-scalar case.
+
+**The `default:` branch of `matchAnythingBut`** (`eventVal != v` for a
+scalar `anything-but` value) is **not reachable** with a non-comparable
+type: `v` there is always one of `json.Unmarshal`'s scalar decode targets
+(`string`/`float64`/`bool`/`nil` — `[]any` and `map[string]any` are peeled
+off by the earlier switch cases), all of which are comparable regardless of
+`eventVal`'s type (differing dynamic types never panic on `==`, only
+identical non-comparable ones do). No other `any`-vs-`any` `==`/`!=` or
+`slices.Contains`-on-`[]any` site exists in `pattern.go`: the two other
+scalar-exact-match sites (`matchObjectField`'s `default` case at the top
+level, `matchSingleValue`'s `default` case for array-of-matchers elements)
+are both reached only after a type switch has already excluded `[]any` and
+`map[string]any`, for the same reason — safe by construction, not by luck.
+
+Regression tests (`pattern_test.go`): `TestPattern_AnythingButNonScalarListElement_RejectedAtCompile`
+(compile-time rejection, decision (b)), `TestPattern_AnythingButNonScalarListElement_NoPanic`
+(the exact bd repro end-to-end via `compilePattern`+`matchCompiledPattern`;
+panics on unmodified `pattern.go`, confirmed by reverting the production
+change and re-running — `panic: runtime error: comparing uncomparable type
+map[string]interface {}` at the same `slices.Contains`/`matchAnythingBut`
+stack as the bd issue), `TestPattern_AnythingBut_DefenseInDepth_NoPanicWhenValidationBypassed`
+(decision (a), validation bypassed).
+
+Gates: `go build`, `go test -race -count=1`, `golangci-lint run` — all
+clean (`./services/eventbridge/...`).
