@@ -506,7 +506,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Neptune](services/neptune/README.md) | A | — | 13 families; 6 gaps; 2 deferred |
 | [QLDB](services/qldb/README.md) | Removed | — | removed service |
 | [QLDB Session](services/qldbsession/README.md) | Removed | — | removed service |
-| [RDS](services/rds/README.md) | A | 52 | 5 gaps |
+| [RDS](services/rds/README.md) | A | 52 | 6 gaps |
 | [RDS Data](services/rdsdata/README.md) | A | 6 | 3 gaps |
 | [Redshift](services/redshift/README.md) | A | 9 | clean |
 | [Redshift Data](services/redshiftdata/README.md) | A | 12 | 8 gaps; 1 deferred |
@@ -578,7 +578,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Detective](services/detective/README.md) | A | 29 | 3 gaps; 2 deferred |
 | [GuardDuty](services/guardduty/README.md) | A | 66 | 5 gaps; 1 structural gap; 5 deferred |
 | [Inspector](services/inspector2/README.md) | A | 13 | 10 gaps; 1 deferred |
-| [KMS](services/kms/README.md) | A | 54 | 9 gaps; 2 deferred |
+| [KMS](services/kms/README.md) | A | 54 | 10 gaps; 2 deferred |
 | [Macie](services/macie2/README.md) | A | 81 | clean |
 | [Secrets Manager](services/secretsmanager/README.md) | A | 24 | 8 gaps; 2 deferred |
 | [Security Hub](services/securityhub/README.md) | A | 116 | 5 gaps |
