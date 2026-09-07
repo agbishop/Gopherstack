@@ -1233,3 +1233,178 @@ Gates (`services/cloudfront/` only, plus repo-wide `go vet`): `go build ./...` c
 `golangci-lint run ./services/cloudfront/...` 0 issues. No `nolint` directives in any file
 touched this batch (`handler_connection.go`, `handler_distributions.go`,
 `handler_distributions_test.go`, `handler_sdk_route_fixes_test.go`).
+
+## 2026-09-07: errtargetaudit class A sweep, 32 findings (gopherstack-lmkr)
+
+`cmd/errtargetaudit` flagged 32 class A findings for cloudfront (real code, present
+elsewhere in the SDK, emitted by an op whose own `deserializeOpError<Op>` never declares
+it) -- the second largest block in that campaign's corpus. All 32 traced to two root
+causes; only one was a real, fixable bug.
+
+**Error-response shape** (verified before touching anything, per this campaign's own
+mandate that CloudFront's protocol needs checking, not assumed): cloudfront is REST-XML.
+`awsRestxml_deserializeOpError<Op>` (cloudfront@v1.67.4 deserializers.go) reads the HTTP
+body via `awsxml.GetErrorResponseComponents`, then switches on `errorCode` against a
+`strings.EqualFold("<Code>", errorCode)` case list that is genuinely PER-OPERATION here
+(unlike this campaign's JSON-protocol services, where a thin per-op case list was the
+norm, cloudfront's real per-op case lists run into the dozens -- e.g. `CreateDistribution`
+declares 62 codes). The extraction pattern (`awk "/deserializeOpError<Op>\(/,/^}/" |
+grep -oE '"[A-Za-z0-9]+"'`) needed no adjustment for this protocol; scripted per op via a
+bash loop over the 32 op names, pasted below per finding. This repo's own error path
+(`services/cloudfront/handler_dispatch.go`'s `handleError`) renders
+`<ErrorResponse><Error><Type>Sender</Type><Code>%s</Code><Message>%s</Code></Error></ErrorResponse>`
+via `cfErrorXML`, matched against the SDK's `awsxml.GetErrorResponseComponents` shape.
+
+**Root cause A (27 findings, FALSE POSITIVE -- new class, not one of the 3 already known
+from sqs/kms): `checkQuantityNode`'s generic Quantity/Items walker
+(`services/cloudfront/quantity_validation.go`) runs against these ops' raw request bodies,
+but their real cloudfront@v1.67.4 wire shape never contains a `<X><Quantity>..</Quantity>
+<Items>..</Items></X>` pattern anywhere -- confirmed by mechanically walking every
+`awsRestxml_serialize(Op)?Document*` function transitively reachable from each op's own
+request serializer (depth-8 BFS over `serializers.go`, script below) and finding zero
+`Local: "Quantity"` elements at all, paired or not, for all 27. `validateQuantities` is
+therefore dead code for real client traffic to these ops -- unlike
+`CreateCloudFrontOriginAccessIdentity`'s pre-existing "harmless no-op for this shape" note
+above (same mechanism, already accepted convention in this file), just not yet
+individually called out for these 27. Left unchanged; no fix possible or needed since no
+real input can reach the mismatch branch.
+
+  Ops (27): `AssociateDistributionTenantWebACL AssociateDistributionWebACL
+  CreateAnycastIpList CreateConnectionGroup CreateDistributionTenant CreateKeyGroup
+  CreateKeyValueStore CreateMonitoringSubscription CreateOriginAccessControl
+  CreatePublicKey CreateRealtimeLogConfig CreateTrustStore ListDomainConflicts
+  PutResourcePolicy TagResource TestConnectionFunction UpdateAnycastIpList
+  UpdateConnectionGroup UpdateDistributionTenant UpdateDomainAssociation UpdateKeyGroup
+  UpdateKeyValueStore UpdateOriginAccessControl UpdatePublicKey UpdateRealtimeLogConfig
+  UpdateTrustStore VerifyDnsConfiguration`. (The tool's original single-cause 31-count
+  also included `CreateFunction UpdateFunction CreateConnectionFunction
+  UpdateConnectionFunction`, reclassified into root cause B below once the reachability
+  check distinguished them; 27 + 4 = 31, the tool's pre-fix total, and 27 + 1 (root cause
+  C) = 28, its post-fix total.)
+
+**Root cause B (4 findings, CONFIRMED and FIXED):** `CreateFunction`, `UpdateFunction`,
+`CreateConnectionFunction`, `UpdateConnectionFunction` all carry a real, genuinely
+reachable Quantity/Items pair -- `FunctionConfig.KeyValueStoreAssociations`
+(cloudfront@v1.67.4 types.go/serializers.go's
+`awsRestxml_serializeDocumentKeyValueStoreAssociations`: `Quantity *int32` +
+`Items []KeyValueStoreAssociation`) -- but none of the four ops' own declared error sets
+include `InconsistentQuantities`, only `InvalidArgument` (verified per-op, raw extraction
+below). A real client sending a mismatched `KeyValueStoreAssociations` therefore got the
+wrong wire code from `validateQuantities`' unconditional `ErrInconsistentQuantities`.
+Fixed: `services/cloudfront/quantity_validation.go`'s mismatch-finding logic was split out
+of the sentinel-wrapping (`findQuantityMismatch`/`quantityMismatchError`, unchanged
+behavior for all other ~40 `validateQuantities` call sites), and a new
+`validateFunctionConfigQuantities` wraps the same mismatch with `ErrValidation`
+("InvalidArgument") instead. The 4 handlers (`handler_functions.go:50,210`,
+`handler_connection.go:84,519`) now call it instead of `validateQuantities`; no other call
+site changed.
+
+**Root cause C (1 finding, CONFIRMED, left unfixed -- ambiguous, filed for gopherstack to
+triage):** `UpdateFieldLevelEncryptionConfig`'s rename-collision path
+(`field_level_encryption.go:182`, `renameInIndex` failing) returns
+`FieldLevelEncryptionConfigAlreadyExists`, but that op's own declared error set
+(`AccessDenied IllegalUpdate InconsistentQuantities InvalidArgument InvalidIfMatchVersion
+NoSuchFieldLevelEncryptionConfig NoSuchFieldLevelEncryptionProfile PreconditionFailed
+QueryArgProfileEmpty TooManyFieldLevelEncryptionContentTypeProfiles
+TooManyFieldLevelEncryptionQueryArgProfiles UnknownError`) never includes it -- only
+`CreateFieldLevelEncryptionConfig` does. Unlike root cause A this IS reachable by a
+legitimate client (update an FLE config's `CallerReference` to one already used by another
+FLE config) so it is not a false positive. But real `types.FieldLevelEncryptionConfig` has
+no `Name` field at all (only `CallerReference`, `Comment`, `ContentTypeProfileConfig`,
+`QueryArgProfileConfig` -- verified against `awsRestxml_serializeDocumentFieldLevelEncryptionConfig`);
+this repo's `fieldLevelEncryptionByName` uniqueness index is keyed on `CallerReference`
+under an internal `Name` field, a gopherstack-only invention with no real-AWS analogue to
+consult. Real CloudFront's declared set gives no signal on what Update SHOULD do on a
+collision (silently allow it, since CallerReference collision isn't validated the same way
+on Update as on Create? or `IllegalUpdate`, this file's standing code for "not allowed on
+update"?) -- a genuine judgement call between at least two plausible fixes, not "exactly
+one declared code obviously replaces the wrong one." Left unfixed per this campaign's
+standard; flagging for a filed issue rather than guessing.
+
+**Verdict table** (all 32; raw extraction is `awk "/deserializeOpError<Op>\(/,/^}/"
+deserializers.go | grep -oE '"[A-Za-z0-9]+"' | sort -u`, scripted per op in a bash loop):
+
+| op | code | verdict | class |
+|---|---|---|---|
+| AssociateDistributionTenantWebACL | InconsistentQuantities | FALSE POSITIVE | A: unreachable, no Quantity/Items in real wire shape (declared: AccessDenied, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
+| AssociateDistributionWebACL | InconsistentQuantities | FALSE POSITIVE | A (same declared set as above) |
+| CreateAnycastIpList | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, InvalidArgument, InvalidTagging, UnknownError, UnsupportedOperation) |
+| CreateConnectionGroup | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidTagging, UnknownError) |
+| CreateConnectionFunction | InconsistentQuantities | CONFIRMED, FIXED | B: real KeyValueStoreAssociations pair, wrong code -> now InvalidArgument (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntitySizeLimitExceeded, InvalidArgument, InvalidTagging, UnknownError, UnsupportedOperation) |
+| CreateDistributionTenant | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, CNAMEAlreadyExists, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidAssociation, InvalidTagging, UnknownError) |
+| CreateFunction | InconsistentQuantities | CONFIRMED, FIXED | B (declared: FunctionAlreadyExists, FunctionSizeLimitExceeded, InvalidArgument, TooManyFunctions, UnsupportedOperation, UnknownError) |
+| CreateKeyGroup | InconsistentQuantities | FALSE POSITIVE | A: KeyGroupConfig has Items but no Quantity element at all (declared: InvalidArgument, KeyGroupAlreadyExists, TooManyKeyGroups, TooManyPublicKeysInKeyGroup, UnknownError) |
+| CreateKeyValueStore | InconsistentQuantities | FALSE POSITIVE | A: no Quantity/Items in shape (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntitySizeLimitExceeded, InvalidArgument, UnknownError, UnsupportedOperation) |
+| CreateMonitoringSubscription | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, MonitoringSubscriptionAlreadyExists, NoSuchDistribution, UnknownError, UnsupportedOperation) |
+| CreateOriginAccessControl | InconsistentQuantities | FALSE POSITIVE | A (declared: InvalidArgument, OriginAccessControlAlreadyExists, TooManyOriginAccessControls, UnknownError) |
+| CreatePublicKey | InconsistentQuantities | FALSE POSITIVE | A (declared: InvalidArgument, PublicKeyAlreadyExists, TooManyPublicKeys, UnknownError) |
+| CreateRealtimeLogConfig | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, InvalidArgument, RealtimeLogConfigAlreadyExists, TooManyRealtimeLogConfigs, UnknownError) |
+| CreateTrustStore | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidTagging, UnknownError) |
+| ListDomainConflicts | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, UnknownError) |
+| PutResourcePolicy | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, IllegalUpdate, InvalidArgument, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| TagResource | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, InvalidArgument, InvalidTagging, NoSuchResource, UnknownError) |
+| TestConnectionFunction | InconsistentQuantities | FALSE POSITIVE | A: request is Stage/EventObject, no FunctionConfig at all (declared: EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, TestFunctionFailed, UnknownError, UnsupportedOperation) |
+| UpdateAnycastIpList | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| UpdateConnectionFunction | InconsistentQuantities | CONFIRMED, FIXED | B (declared: AccessDenied, EntityNotFound, EntitySizeLimitExceeded, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| UpdateConnectionGroup | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, ResourceInUse, UnknownError) |
+| UpdateDistributionTenant | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, CNAMEAlreadyExists, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidAssociation, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
+| UpdateDomainAssociation | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, IllegalUpdate, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
+| UpdateFieldLevelEncryptionConfig | FieldLevelEncryptionConfigAlreadyExists | CONFIRMED, left unfixed | C: reachable, ambiguous fix (declared: AccessDenied, IllegalUpdate, InconsistentQuantities, InvalidArgument, InvalidIfMatchVersion, NoSuchFieldLevelEncryptionConfig, NoSuchFieldLevelEncryptionProfile, PreconditionFailed, QueryArgProfileEmpty, TooManyFieldLevelEncryptionContentTypeProfiles, TooManyFieldLevelEncryptionQueryArgProfiles, UnknownError) |
+| UpdateFunction | InconsistentQuantities | CONFIRMED, FIXED | B (declared: FunctionSizeLimitExceeded, InvalidArgument, InvalidIfMatchVersion, NoSuchFunctionExists, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| UpdateKeyGroup | InconsistentQuantities | FALSE POSITIVE | A (declared: InvalidArgument, InvalidIfMatchVersion, KeyGroupAlreadyExists, NoSuchResource, PreconditionFailed, TooManyPublicKeysInKeyGroup, UnknownError) |
+| UpdateKeyValueStore | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| UpdateOriginAccessControl | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, IllegalUpdate, InvalidArgument, InvalidIfMatchVersion, NoSuchOriginAccessControl, OriginAccessControlAlreadyExists, PreconditionFailed, UnknownError) |
+| UpdatePublicKey | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, CannotChangeImmutablePublicKeyFields, IllegalUpdate, InvalidArgument, InvalidIfMatchVersion, NoSuchPublicKey, PreconditionFailed, UnknownError) |
+| UpdateRealtimeLogConfig | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, InvalidArgument, NoSuchRealtimeLogConfig, UnknownError) |
+| UpdateTrustStore | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
+| VerifyDnsConfiguration | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, UnknownError) |
+
+**Files changed:** `services/cloudfront/quantity_validation.go` (split
+`findQuantityMismatch`/`quantityMismatchError` out of `validateQuantities`; added
+`validateFunctionConfigQuantities`), `services/cloudfront/handler_functions.go` (2 call
+sites: `handleCreateFunction`, `handleUpdateFunction`),
+`services/cloudfront/handler_connection.go` (2 call sites:
+`handleCreateConnectionFunction`, `handleUpdateConnectionFunction`), new
+`services/cloudfront/function_config_quantities_test.go`.
+
+**Tests** (`Test_FunctionConfigQuantities_WrongCode`, table-driven, 5 subtests): each
+mismatch subtest drives the real HTTP handler with a `KeyValueStoreAssociations`
+`Quantity`/`Items` mismatch, asserts the XML response `<Code>` is `InvalidArgument` (not
+`InconsistentQuantities`), and asserts the resource was neither created (`ListFunctions`/
+`ListConnectionFunctions` empty) nor mutated (`GetFunction`/`GetConnectionFunction` ETag
+and Comment unchanged); one control subtest (`create_function_match_control_created`)
+proves a consistent `Quantity`/`Items` pair still succeeds. `Test_InconsistentQuantities_
+EndToEnd` (pre-existing, unmodified) already covers the "an op that legitimately still
+emits `InconsistentQuantities`" side for this shared mechanism (`CreateDistribution`,
+`CreateCachePolicy`, `CreateInvalidation`, `CreateResponseHeadersPolicy`) -- none of those
+ops are in this fix's scope, so no pre-existing test needed correcting.
+
+**Neuter results** (each change reverted individually, confirmed to compile, confirmed a
+test then fails, then restored):
+| line | compiles reverted? | failing test |
+|---|---|---|
+| `handler_functions.go:50` (`validateFunctionConfigQuantities`->`validateQuantities`) | yes | `create_function_mismatch_invalid_argument_not_created` |
+| `handler_functions.go:210` (same swap) | yes | `update_function_mismatch_invalid_argument_not_mutated` |
+| `handler_connection.go:84` (same swap) | yes | `create_connection_function_mismatch_invalid_argument_not_created` |
+| `handler_connection.go:519` (same swap) | yes | `update_connection_function_mismatch_invalid_argument_not_mutated` |
+| `quantity_validation.go`'s `validateFunctionConfigQuantities` sentinel (`ErrValidation`->`ErrInconsistentQuantities`) | yes | all 3 mismatch subtests (control subtest still passes, as expected) |
+
+Pre-existing tests corrected: none (`Test_InconsistentQuantities_EndToEnd` was already
+driving the HTTP handler and asserting on the rendered `<Code>`, not `errors.Is`, and
+covers only ops outside this fix's scope).
+
+Gates: `go test -race -count=1 ./services/cloudfront/...` ok (1.5s); `golangci-lint run
+services/cloudfront/...` 0 issues (after renaming `quantityMismatch`->
+`quantityMismatchError` for `errname` and switching both mismatch wraps to `%w: %w` for
+`errorlint` -- `fmt.Errorf` support for multiple `%w` verbs, Go 1.20+, confirmed unchanged
+`errors.Is` behavior against `errCodeMapping` by re-running the full suite).
+`cmd/errtargetaudit`'s cloudfront count dropped from 32 to 28 after the fix (27 root-cause-A
+false positives + the 1 root-cause-C ambiguous finding remain, exactly as expected -- the 4
+root-cause-B ops no longer appear).
+
+Fragile: root cause A's "unreachable" verdict rests on the BFS script's depth-8 traversal
+of `serializers.go`'s call graph; a future SDK bump that adds a genuine Quantity/Items
+field to one of those 27 ops' request shapes would silently re-arm `validateQuantities`
+for it with the correct code already in place (harmless), but would NOT itself flip that
+op's `deserializeOpError` case list to declare `InconsistentQuantities` -- worth re-running
+this audit after any cloudfront SDK version bump, not just trusting this file's snapshot.

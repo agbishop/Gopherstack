@@ -24,6 +24,23 @@ type quantityNode struct {
 	Nodes   []quantityNode `xml:",any"`
 }
 
+// quantityMismatchError describes one Quantity/Items pairing found inconsistent by
+// findQuantityMismatch. Its Error() is the shared message text; callers choose which
+// sentinel it means by wrapping it themselves (validateQuantities,
+// validateFunctionConfigQuantities).
+type quantityMismatchError struct {
+	element  string
+	declared int
+	actual   int
+}
+
+func (m *quantityMismatchError) Error() string {
+	return fmt.Sprintf(
+		"the parameter Quantity (%d) for the %s list does not match the number of Items provided (%d)",
+		m.declared, m.element, m.actual,
+	)
+}
+
 // validateQuantities parses rawConfig as generic XML and verifies every
 // Quantity/Items pairing found anywhere in the document is internally consistent.
 // It returns an error wrapping ErrInconsistentQuantities describing the first
@@ -31,6 +48,33 @@ type quantityNode struct {
 // malformed XML is the caller's own strict typed-unmarshal's job to report, as
 // MalformedXML, not this generic pass's).
 func validateQuantities(rawConfig []byte) error {
+	m := findQuantityMismatch(rawConfig)
+	if m == nil {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %w", ErrInconsistentQuantities, m)
+}
+
+// validateFunctionConfigQuantities is validateQuantities for
+// CreateFunction/UpdateFunction/CreateConnectionFunction/UpdateConnectionFunction: their
+// own SDK error deserializer never declares InconsistentQuantities, only InvalidArgument,
+// even though FunctionConfig.KeyValueStoreAssociations is a real Quantity/Items pair
+// (cloudfront@v1.67.4 serializers.go's awsRestxml_serializeDocumentKeyValueStoreAssociations).
+func validateFunctionConfigQuantities(rawConfig []byte) error {
+	m := findQuantityMismatch(rawConfig)
+	if m == nil {
+		return nil
+	}
+
+	return fmt.Errorf("%w: %w", ErrValidation, m)
+}
+
+// findQuantityMismatch parses rawConfig as generic XML and returns the first
+// Quantity/Items mismatch found anywhere in the document, or nil if the document is
+// consistent (or not parseable as XML -- malformed XML is the caller's own strict
+// typed-unmarshal's job to report, as MalformedXML, not this generic pass's).
+func findQuantityMismatch(rawConfig []byte) *quantityMismatchError {
 	if len(rawConfig) == 0 {
 		return nil
 	}
@@ -48,7 +92,7 @@ func validateQuantities(rawConfig []byte) error {
 
 // checkQuantityNode recursively checks n and its descendants for Quantity/Items
 // mismatches, depth-first, returning the first one found.
-func checkQuantityNode(n *quantityNode) error {
+func checkQuantityNode(n *quantityNode) *quantityMismatchError {
 	var (
 		quantity    int
 		hasQuantity bool
@@ -75,17 +119,13 @@ func checkQuantityNode(n *quantityNode) error {
 		}
 
 		if quantity != actual {
-			return fmt.Errorf(
-				"%w: the parameter Quantity (%d) for the %s list does not match "+
-					"the number of Items provided (%d)",
-				ErrInconsistentQuantities, quantity, n.XMLName.Local, actual,
-			)
+			return &quantityMismatchError{element: n.XMLName.Local, declared: quantity, actual: actual}
 		}
 	}
 
 	for i := range n.Nodes {
-		if err := checkQuantityNode(&n.Nodes[i]); err != nil {
-			return err
+		if m := checkQuantityNode(&n.Nodes[i]); m != nil {
+			return m
 		}
 	}
 
