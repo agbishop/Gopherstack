@@ -1347,3 +1347,26 @@ that actually mattered (this package's dispatch-table union) already
 carried the correct field set regardless of which fold candidate won.
 
 Verdict: confirmed zero damage, not merely predicted.
+
+## 2026-09-06: StartInstance now reassigns the dynamic public IP (gopherstack-i2s6)
+
+`publicIPForName` was a pure function of instance name, so `StartInstance`
+never changed `PublicIPAddress` across a stop/start cycle. Source for the
+real behavior: `api_op_StartInstance.go`'s doc comment in
+`aws-sdk-go-v2/service/lightsail@v1.58.4` (also on `api_op_StopInstance.go`):
+"When you start a stopped instance, Lightsail assigns a new public IP
+address to the instance. To use the same IP address after stopping and
+starting an instance, create a static IP address and attach it to the
+instance." `types.Instance.IsStaticIp`'s doc comment ("A Boolean value
+indicating whether this instance has a static IP assigned to it") confirms
+AWS models the two cases distinctly.
+
+Static IPs were already modelled here (`Instance.IsStaticIP`,
+`AttachStaticIp`/`DetachStaticIp`/`ReleaseStaticIp`), so the fix is
+conditional: `StartInstance` now assigns a new public IP on a
+stopped->running transition only when `!IsStaticIP`, leaving an attached
+static IP untouched. `publicIPForName` gained a `generation int32`
+parameter (`Instance.PublicIPGeneration`, bumped each qualifying restart)
+folded into its hash input, so the address stays a pure, reproducible
+function of (name, generation) instead of drawing on `time.Now` or
+`crypto/rand`.

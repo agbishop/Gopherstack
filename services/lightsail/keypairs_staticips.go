@@ -274,7 +274,7 @@ func (b *InMemoryBackend) AllocateStaticIP(name string) (*Operation, error) {
 
 	sip := &StaticIP{
 		Name: name, Arn: b.regionalARN(ResourceTypeStaticIP, newUUID()), SupportCode: newSupportCode(),
-		IPAddress: publicIPForName(name), CreatedAt: nowUTC(),
+		IPAddress: publicIPForName(name, 0), CreatedAt: nowUTC(),
 		Location: ResourceLocation{RegionName: b.region, AvailabilityZone: availabilityZoneA(b.region)},
 	}
 	b.staticIPs.Put(sip)
@@ -322,7 +322,7 @@ func (b *InMemoryBackend) DetachStaticIP(name string) (*Operation, error) {
 
 	if inst, instOK := b.instances.Get(sip.AttachedTo); instOK {
 		inst.IsStaticIP = false
-		inst.PublicIPAddress = publicIPForName(inst.Name)
+		inst.PublicIPAddress = publicIPForName(inst.Name, inst.PublicIPGeneration)
 	}
 
 	sip.IsAttached = false
@@ -374,7 +374,7 @@ func (b *InMemoryBackend) ReleaseStaticIP(name string) (*Operation, error) {
 
 	if inst, instOK := b.instances.Get(sip.AttachedTo); instOK {
 		inst.IsStaticIP = false
-		inst.PublicIPAddress = publicIPForName(inst.Name)
+		inst.PublicIPAddress = publicIPForName(inst.Name, inst.PublicIPGeneration)
 	}
 
 	b.staticIPs.Delete(name)
