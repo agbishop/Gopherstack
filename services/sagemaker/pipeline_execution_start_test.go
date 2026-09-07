@@ -93,3 +93,99 @@ func TestStartPipelineExecution_TransitionsThroughExecuting(t *testing.T) {
 		})
 	}
 }
+
+// TestStartPipelineExecutionFull_StopClobbersToSucceeded is the
+// StartPipelineExecutionFull equivalent of lifecycle_test.go's
+// "stop transitions to Stopped" subtest: StartPipelineExecutionFull's
+// Executing->Succeeded callback must not clobber a Stopped execution back to
+// Succeeded when its startTransitionDelay fires after StopPipelineExecution's
+// shorter stopTransitionDelay (gopherstack-7lrq).
+func TestStartPipelineExecutionFull_StopClobbersToSucceeded(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		b := NewInMemoryBackend("000000000000", "us-east-1")
+		defer b.Shutdown(context.Background())
+
+		pipelineName := "start-pipe-full-stop"
+		if _, err := b.CreatePipeline(context.Background(), pipelineName, "{}", "role", nil); err != nil {
+			t.Fatalf("CreatePipeline: %v", err)
+		}
+
+		exec, err := b.StartPipelineExecutionFull(context.Background(), StartPipelineExecutionOptions{
+			PipelineName: pipelineName,
+		})
+		if err != nil {
+			t.Fatalf("StartPipelineExecutionFull: %v", err)
+		}
+
+		if _, stopErr := b.StopPipelineExecution(context.Background(), exec.PipelineExecutionArn); stopErr != nil {
+			t.Fatalf("StopPipelineExecution: %v", stopErr)
+		}
+
+		time.Sleep(startTransitionDelay + time.Millisecond)
+		synctest.Wait()
+
+		got, err := b.DescribePipelineExecution(context.Background(), exec.PipelineExecutionArn)
+		if err != nil {
+			t.Fatalf("DescribePipelineExecution after delay: %v", err)
+		}
+		if got.PipelineExecutionStatus != pipelineStatusStopped {
+			t.Fatalf("status after delay = %q, want %q (Start's delayed callback clobbered Stop)",
+				got.PipelineExecutionStatus, pipelineStatusStopped)
+		}
+	})
+}
+
+// TestRetryPipelineExecution_StopClobbersToSucceeded is the
+// RetryPipelineExecution equivalent of TestStartPipelineExecutionFull_
+// StopClobbersToSucceeded: RetryPipelineExecution's Executing->Succeeded
+// callback must not clobber a Stopped retried execution back to Succeeded
+// when its retryTransitionDelay fires after StopPipelineExecution's shorter
+// stopTransitionDelay. RetryPipelineExecution mints a new execution ARN
+// (newArn, pipeline_executions.go:93), so the Stop here targets the RETRIED
+// execution's ARN, not the original one Retry was called on -- stopping the
+// original does not reproduce the clobber, since the callback only ever
+// touches newArn (gopherstack-7lrq).
+func TestRetryPipelineExecution_StopClobbersToSucceeded(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		b := NewInMemoryBackend("000000000000", "us-east-1")
+		defer b.Shutdown(context.Background())
+
+		pipelineName := "retry-pipe-stop"
+		if _, err := b.CreatePipeline(context.Background(), pipelineName, "{}", "role", nil); err != nil {
+			t.Fatalf("CreatePipeline: %v", err)
+		}
+
+		exec, err := b.StartPipelineExecution(context.Background(), pipelineName)
+		if err != nil {
+			t.Fatalf("StartPipelineExecution: %v", err)
+		}
+
+		time.Sleep(startTransitionDelay + time.Millisecond)
+		synctest.Wait()
+
+		retried, err := b.RetryPipelineExecution(context.Background(), exec.PipelineExecutionArn, nil)
+		if err != nil {
+			t.Fatalf("RetryPipelineExecution: %v", err)
+		}
+
+		if _, stopErr := b.StopPipelineExecution(context.Background(), retried.PipelineExecutionArn); stopErr != nil {
+			t.Fatalf("StopPipelineExecution: %v", stopErr)
+		}
+
+		time.Sleep(retryTransitionDelay + time.Millisecond)
+		synctest.Wait()
+
+		got, err := b.DescribePipelineExecution(context.Background(), retried.PipelineExecutionArn)
+		if err != nil {
+			t.Fatalf("DescribePipelineExecution after delay: %v", err)
+		}
+		if got.PipelineExecutionStatus != pipelineStatusStopped {
+			t.Fatalf("status after delay = %q, want %q (Retry's delayed callback clobbered Stop)",
+				got.PipelineExecutionStatus, pipelineStatusStopped)
+		}
+	})
+}

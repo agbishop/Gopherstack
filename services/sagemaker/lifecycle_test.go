@@ -3,6 +3,7 @@ package sagemaker_test
 import (
 	"context"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -62,6 +63,10 @@ func TestPipelineExecutionTransitionsFire(t *testing.T) {
 			wantStatus: "Succeeded",
 		},
 		{
+			// Stopped must survive past startTransitionDelay: the Start callback
+			// fires 100ms after this Stop lands and used to overwrite it
+			// (gopherstack-7lrq). assert.Eventually hid that by returning the
+			// moment Stopped first appeared, before the clobber.
 			name: "stop transitions to Stopped",
 			act: func(t *testing.T, b *sagemaker.InMemoryBackend, execArn string) string {
 				t.Helper()
@@ -78,17 +83,20 @@ func TestPipelineExecutionTransitionsFire(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			b := sagemaker.NewInMemoryBackendWithContext(
-				t.Context(),
-				lifecycleAccountID,
-				lifecycleRegion,
-			)
-			execArn := seedPipelineExecution(t, b)
-			target := tc.act(t, b, execArn)
+			synctest.Test(t, func(t *testing.T) {
+				b := sagemaker.NewInMemoryBackendWithContext(
+					t.Context(),
+					lifecycleAccountID,
+					lifecycleRegion,
+				)
+				execArn := seedPipelineExecution(t, b)
+				target := tc.act(t, b, execArn)
 
-			assert.Eventually(t, func() bool {
-				return statusOf(t, b, target) == tc.wantStatus
-			}, time.Second, 5*time.Millisecond, "transition did not fire")
+				time.Sleep(time.Second)
+				synctest.Wait()
+
+				assert.Equal(t, tc.wantStatus, statusOf(t, b, target), "transition did not fire")
+			})
 		})
 	}
 }
@@ -99,23 +107,25 @@ func TestPipelineExecutionTransitionsFire(t *testing.T) {
 func TestShutdownCancelsPendingTransitions(t *testing.T) {
 	t.Parallel()
 
-	b := sagemaker.NewInMemoryBackend(lifecycleAccountID, lifecycleRegion)
-	execArn := seedPipelineExecution(t, b)
+	synctest.Test(t, func(t *testing.T) {
+		b := sagemaker.NewInMemoryBackend(lifecycleAccountID, lifecycleRegion)
+		execArn := seedPipelineExecution(t, b)
 
-	// Schedule a Stopping -> Stopped transition (100ms delay), then immediately
-	// shut down. Shutdown cancels the lifecycle context before the timer fires.
-	_, err := b.StopPipelineExecution(context.Background(), execArn)
-	require.NoError(t, err)
+		// Schedule a Stopping -> Stopped transition (100ms delay), then immediately
+		// shut down. Shutdown cancels the lifecycle context before the timer fires.
+		_, err := b.StopPipelineExecution(context.Background(), execArn)
+		require.NoError(t, err)
 
-	shutdownStart := time.Now()
-	b.Shutdown(t.Context())
-	require.Less(t, time.Since(shutdownStart), time.Second, "Shutdown must return promptly")
+		shutdownStart := time.Now()
+		b.Shutdown(t.Context())
+		require.Less(t, time.Since(shutdownStart), time.Second, "Shutdown must return promptly")
 
-	// The cancelled goroutine must not advance the status past Stopping.
-	// Wait past the transition delay to confirm it never fires.
-	time.Sleep(150 * time.Millisecond)
-	assert.Equal(t, "Stopping", statusOf(t, b, execArn),
-		"cancelled transition must not mutate state after Shutdown")
+		// The cancelled goroutine must not advance the status past Stopping.
+		// Wait past the transition delay to confirm it never fires.
+		time.Sleep(150 * time.Millisecond)
+		assert.Equal(t, "Stopping", statusOf(t, b, execArn),
+			"cancelled transition must not mutate state after Shutdown")
+	})
 }
 
 // TestShutdownRespectsContextDeadline verifies Shutdown returns when its ctx

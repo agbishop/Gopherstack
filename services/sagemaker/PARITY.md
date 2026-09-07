@@ -5786,3 +5786,147 @@ per request, not part of `models.go` or the persisted backend state) --
 Gates: `go build ./services/sagemaker/...`, `go vet ./...` (repo-wide,
 clean), `go test -race -count=1 ./services/sagemaker/...`, `golangci-lint
 run ./services/sagemaker/...` all clean.
+
+
+## 2026-09-07 (gopherstack-tdg0): lifecycle_test.go migrated to testing/synctest; surfaced a real Start/Stop pipeline-execution race
+
+`lifecycle_test.go`'s two async-transition waits (`assert.Eventually` in
+`TestPipelineExecutionTransitionsFire`, `time.Sleep(150ms)` in
+`TestShutdownCancelsPendingTransitions`) converted to `testing/synctest`
+(`synctest.Test` + a fake-clock `time.Sleep` + `synctest.Wait`), following
+`pipeline_execution_start_test.go`'s precedent (gopherstack-z5hj). The
+scheduler both sites wait on (`runDelayed`, `lifecycle.go:115`) is
+bubble-compatible: its goroutine is spawned via `b.wg.Go` synchronously
+from the calling goroutine, so a backend constructed and driven entirely
+inside `synctest.Test` gets a timer that lives in the same bubble --
+confirmed by a passing, deterministic migration for two of the three
+tests.
+
+The migration did not just pass cleanly -- it surfaced a genuine,
+previously-masked bug. `TestPipelineExecutionTransitionsFire/stop_transitions_to_Stopped`
+now fails deterministically (20/20 runs under `-race`, left failing and
+documented in-line rather than patched around). `StopPipelineExecution`
+(pipeline_executions.go:138) and `StartPipelineExecution`/
+`StartPipelineExecutionFull`'s delayed Executing->Succeeded callbacks
+(pipelines.go:335-339, 567-571) both schedule against the same execution
+ARN when Stop targets an execution still mid-Start. The Start callbacks
+have no guard on current status before overwriting -- unlike
+`StopProcessingJob`'s (processing_jobs.go:267-271), which checks
+`ProcessingJobStatus == notebookStatusStopping` first -- so at
+startTransitionDelay (200ms) they unconditionally clobber the execution
+back to `Succeeded`, overwriting the `Stopped` that `StopPipelineExecution`
+already landed at stopTransitionDelay (100ms). `assert.Eventually`'s
+poll-until-first-match semantics previously hid this entirely: it observed
+`Stopped` around 100ms and returned before the 200ms clobber ever ran. No
+retry, tolerance, or production fix was added to make this pass -- it is
+reported here for a follow-up bug, per this session's instructions.
+
+Not migrated: `TestShutdownRespectsContextDeadline` (no Sleep/Eventually,
+out of scope). 20 further `time.Sleep`/`assert.Eventually`/`require.Eventually`
+sites remain elsewhere in `services/sagemaker/*_test.go`
+(handler_notebook_instances_test.go, handler_labeling_test.go,
+handler_endpoints_test.go, handler_processing_jobs_test.go,
+handler_transform_jobs_test.go, handler_edge_packaging_jobs_test.go,
+handler_inference_recommendations_jobs_test.go, handler_training_jobs_test.go,
+handler_hp_tuning_jobs_test.go, handler_inference_components_test.go,
+handler_compilation_jobs_test.go) -- out of scope for this issue, which
+named `lifecycle_test.go` specifically.
+
+Gates: `gofmt -l services/sagemaker/lifecycle_test.go` clean, `go vet
+./services/sagemaker/...` clean, `golangci-lint run
+./services/sagemaker/...` 0 issues. `go test -race -count=1
+./services/sagemaker/...` fails on the one subtest above, everything else
+in the package passes. `-count=20` on just the three migrated/reviewed
+tests: the newly-failing subtest fails 20/20 identically (deterministic,
+not flaky), the other two pass 20/20. Wall time for those three tests:
+count=1 ~1.29s before (real sleeps) -> ~0.08s after; count=20 ~6.4s before
+-> ~1.3s after.
+
+
+## 2026-09-07 (gopherstack-7lrq): fixed the Start/Stop pipeline-execution clobber
+
+Fixed the bug gopherstack-tdg0's entry above surfaced and left failing.
+`StartPipelineExecution` (pipelines.go:335-341), `StartPipelineExecutionFull`
+(pipelines.go:567-573), and `RetryPipelineExecution`
+(pipeline_executions.go:106-114) each schedule a delayed
+Executing->Succeeded callback — the first two at `startTransitionDelay`
+(200ms), the last at `retryTransitionDelay` (200ms, both
+pipeline_executions.go:29). None guarded on the execution's current
+status before overwriting it, so `StopPipelineExecution`'s own delayed
+callback (pipeline_executions.go:139-146, `stopTransitionDelay` = 100ms)
+landing `Stopped` first was silently clobbered back to `Succeeded` once
+the longer 200ms delay elapsed. All three now guard on
+`exec.PipelineExecutionStatus == pipelineStatusExecuting`, matching
+`StopProcessingJob`'s established guard pattern
+(processing_jobs.go:267-271).
+
+`RetryPipelineExecution` was initially reported but deliberately left
+unfixed pending the issue filer's decision, since it mints its own new
+execution ARN (`newArn`, pipeline_executions.go:93) rather than reusing
+the ARN it was called with — folding it in required a dedicated
+regression test that stops the *retried* ARN, not the original, since
+stopping the original does not reach the vulnerable callback at all (it
+only ever writes `newArn`). The filer asked for it to be folded in, so
+it now carries the same guard and its own test,
+`TestRetryPipelineExecution_StopClobbersToSucceeded`
+(pipeline_execution_start_test.go), independently neutered before
+landing: guard removed -> compiles, test fails with `status after delay
+= "Succeeded", want "Stopped"`; guard restored -> passes.
+
+Swept every `runDelayed` call site in `services/sagemaker/` for the same
+unguarded-clobber shape. All other job-family Start/Stop pairs
+(compilation, edge-packaging, HP-tuning, inference-recommendations,
+labeling, processing, training, transform, and the generic AI-job
+family in `jobs.go`/`lifecycle.go`) already guard their Stop-side
+callback on the expected `*Stopping` status before writing `*Stopped`.
+Two other unguarded sites remain and are intentionally left unfixed —
+the issue filer is tracking them as a separate, lower-severity issue:
+
+- `scheduleEndpointTransition` (endpoints.go:430-451) and
+  `scheduleInferenceComponentTransition` (inference_components.go:216-236)
+  unconditionally overwrite status on every delayed firing. Both only
+  ever schedule `Creating/Updating -> InService` (no Stop/Delete-via-status
+  path was found; `DeleteEndpoint`/`DeleteInferenceComponent` remove the
+  record outright, so a completed delete does not get resurrected). The
+  only observed risk is a transient reordering when two transitions
+  overlap (e.g. `UpdateEndpoint` called again before a prior transition's
+  callback fires), not a permanent wrong-terminal-status clobber like the
+  pipeline-execution bug.
+
+`PipelineExecutionStatus` is set, in this package, to only four values
+(pipeline_executions.go:35-38): `Executing`, `Succeeded`, `Stopping`,
+`Stopped`. A Start callback should advance only from `Executing`:
+`StopPipelineExecution` sets `Stopping` synchronously under `b.mu` the
+moment Stop is called (pipeline_executions.go:134), before its own
+delayed callback ever runs, so by the time a Start callback's guard
+could observe `Stopping`, the status is never `Executing` -- guarding on
+`== Executing` alone is sufficient, an explicit `Stopping` exclusion
+would be redundant.
+
+Added `TestStartPipelineExecutionFull_StopClobbersToSucceeded` and
+`TestRetryPipelineExecution_StopClobbersToSucceeded`
+(pipeline_execution_start_test.go) -- the `StartPipelineExecutionFull`
+and `RetryPipelineExecution` equivalents of `lifecycle_test.go`'s
+now-passing `stop_transitions_to_Stopped` subtest; no prior test covered
+either race. The Retry test starts an execution, lets it settle, retries
+it, then stops the *retried* execution's own ARN before asserting
+`Stopped` survives past `retryTransitionDelay`. The positive path (an
+untouched execution still reaches `Succeeded`) was already covered by
+`TestStartPipelineExecution_TransitionsThroughExecuting` (Start/StartFull)
+and `lifecycle_test.go`'s `retry_transitions_to_Succeeded` subtest (Retry).
+
+Each guard was independently neutered (removed, confirmed the package
+still compiles, confirmed a test then fails) and restored:
+`StartPipelineExecution`'s guard removal fails
+`lifecycle_test.go`'s `TestPipelineExecutionTransitionsFire/stop_transitions_to_Stopped`;
+`StartPipelineExecutionFull`'s guard removal fails
+`TestStartPipelineExecutionFull_StopClobbersToSucceeded`;
+`RetryPipelineExecution`'s guard removal fails
+`TestRetryPipelineExecution_StopClobbersToSucceeded`.
+
+Gates: `go build ./services/sagemaker/...` clean, `go test -race
+-count=1 ./services/sagemaker/...` fully green (previously-failing
+subtest now passes), `go test -race -count=20 -run
+'TestPipelineExecutionTransitionsFire|TestStartPipelineExecutionFull_StopClobbersToSucceeded|TestRetryPipelineExecution_StopClobbersToSucceeded'
+./services/sagemaker/` 20/20, `golangci-lint run services/sagemaker/...`
+0 issues.

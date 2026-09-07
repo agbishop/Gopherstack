@@ -336,7 +336,8 @@ func (b *InMemoryBackend) StartPipelineExecution(ctx context.Context, pipelineNa
 		b.mu.Lock("StartPipelineExecution.goroutine")
 		defer b.mu.Unlock()
 
-		if exec, exists := b.pipelineExecutionsStore(region).Get(execArn); exists {
+		if exec, exists := b.pipelineExecutionsStore(region).Get(execArn); exists &&
+			exec.PipelineExecutionStatus == pipelineStatusExecuting {
 			exec.PipelineExecutionStatus = pipelineStatusSucceeded
 		}
 	})
@@ -568,7 +569,8 @@ func (b *InMemoryBackend) StartPipelineExecutionFull(
 		b.mu.Lock("StartPipelineExecutionFull.goroutine")
 		defer b.mu.Unlock()
 
-		if exec, exists := b.pipelineExecutionsStore(region).Get(execArn); exists {
+		if exec, exists := b.pipelineExecutionsStore(region).Get(execArn); exists &&
+			exec.PipelineExecutionStatus == pipelineStatusExecuting {
 			exec.PipelineExecutionStatus = pipelineStatusSucceeded
 		}
 	})

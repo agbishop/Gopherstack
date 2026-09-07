@@ -107,7 +107,8 @@ func (b *InMemoryBackend) RetryPipelineExecution(
 		b.mu.Lock("RetryPipelineExecution.goroutine")
 		defer b.mu.Unlock()
 
-		if exec, exists := b.pipelineExecutionsStore(region).Get(newArn); exists {
+		if exec, exists := b.pipelineExecutionsStore(region).Get(newArn); exists &&
+			exec.PipelineExecutionStatus == pipelineStatusExecuting {
 			exec.PipelineExecutionStatus = pipelineStatusSucceeded
 		}
 	})
