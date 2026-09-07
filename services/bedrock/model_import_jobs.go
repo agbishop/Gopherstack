@@ -160,11 +160,7 @@ func (b *InMemoryBackend) GetImportedModel(modelARN string) (*ModelImportJob, er
 // ListImportedModels returns imported models (import jobs with an imported
 // model ARN), optionally filtered by nameContains (matched against
 // ImportedModelName) and creation-time range, sorted and paginated.
-func (b *InMemoryBackend) ListImportedModels(
-	nameContains string,
-	creationTimeAfter, creationTimeBefore *time.Time,
-	nextToken string,
-) ([]*ModelImportJob, string) {
+func (b *InMemoryBackend) ListImportedModels(in *ListImportedModelsInput) ([]*ModelImportJob, string) {
 	b.mu.RLock("ListImportedModels")
 	defer b.mu.RUnlock()
 
@@ -174,13 +170,7 @@ func (b *InMemoryBackend) ListImportedModels(
 		if j.ImportedModelArn == "" {
 			continue
 		}
-		if nameContains != "" && !containsIgnoreCase(j.ImportedModelName, nameContains) {
-			continue
-		}
-		if creationTimeAfter != nil && !j.CreationTime.After(*creationTimeAfter) {
-			continue
-		}
-		if creationTimeBefore != nil && !j.CreationTime.Before(*creationTimeBefore) {
+		if !matchesImportedModelFilter(j, in) {
 			continue
 		}
 
@@ -197,7 +187,31 @@ func (b *InMemoryBackend) ListImportedModels(
 		return models[i].ImportedModelArn < models[k].ImportedModelArn
 	})
 
-	return paginateBedrockSlice(models, nextToken)
+	maxResults, nextToken := 0, ""
+	if in != nil {
+		maxResults, nextToken = int(in.MaxResults), in.NextToken
+	}
+
+	return paginate(models, maxResults, nextToken)
+}
+
+// matchesImportedModelFilter reports whether an imported model satisfies the
+// list filters (nameContains, creationTimeAfter/Before).
+func matchesImportedModelFilter(j *ModelImportJob, in *ListImportedModelsInput) bool {
+	if in == nil {
+		return true
+	}
+	if in.NameContains != "" && !containsIgnoreCase(j.ImportedModelName, in.NameContains) {
+		return false
+	}
+	if in.CreationTimeAfter != nil && !j.CreationTime.After(*in.CreationTimeAfter) {
+		return false
+	}
+	if in.CreationTimeBefore != nil && !j.CreationTime.Before(*in.CreationTimeBefore) {
+		return false
+	}
+
+	return true
 }
 
 // DeleteImportedModel removes the import job whose importedModelArn matches.

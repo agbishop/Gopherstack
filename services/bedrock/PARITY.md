@@ -83,7 +83,7 @@ ops:
   GetModelImportJob: {wire: ok, errors: ok, state: ok, persist: ok}
   ListModelImportJobs: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-uult: reused modelImportJobToOutput (the Get-shape converter) unscoped, leaking roleArn/modelDataSource/tags -- none of which types.ModelImportJobSummary declares (creationTime/jobArn/jobName/status/endTime/importedModelArn/importedModelName/lastModifiedTime only). Fixed with a dedicated modelImportJobToSummary. this pass: also fixed -- ListModelImportJobs() took no arguments at all, so statusEquals/nameContains/creationTimeAfter/creationTimeBefore/sortOrder/maxResults were all silently ignored. Now filters/sorts/paginates per ListModelImportJobsInput."}
   GetImportedModel: {wire: ok, errors: ok, state: ok, persist: n/a, note: "fixed — response invented a \"status\" field with no basis in the real GetImportedModelOutput shape (ImportedModel has no lifecycle status of its own), and used \"createdAt\" instead of the real \"creationTime\" key, while omitting the required modelArn/modelName/jobArn/jobName fields entirely. Now matches the real shape (modelArn, modelName, jobArn, jobName, creationTime, modelDataSource); the invented status field is deleted."}
-  ListImportedModels: {wire: ok, errors: ok, state: ok, persist: n/a, note: "same field-shape fix as GetImportedModel (per-item). Also fixed: previously took zero params and returned every imported model unfiltered/unpaginated; now supports nameContains + creationTimeAfter/Before + nextToken."}
+  ListImportedModels: {wire: ok, errors: ok, state: ok, persist: n/a, note: "same field-shape fix as GetImportedModel (per-item). Also fixed: previously took zero params and returned every imported model unfiltered/unpaginated; now supports nameContains + creationTimeAfter/Before + nextToken. FIXED 2026-09-06 (gopherstack-kkfs): maxResults (api_op_ListImportedModels.go:42-46, *int32, no client-side range validator anywhere in bedrock@v1.66.4's validators.go) was accepted nowhere -- the handler never parsed it and the backend always paginated at the fixed bedrockDefaultPageSize (100) via paginateBedrockSlice, same gap ListModelImportJobs had before its own fix above. Now backed by a new ListImportedModelsInput (mirroring ListModelImportJobsInput's shape minus StatusEquals/SortBy/SortOrder, which this op never modeled either before or after this fix) and paginate(), matching the sibling exactly. SortBy/SortOrder (real fields on ListImportedModelsInput, types.SortModelsBy/types.SortOrder) remain unmodeled -- out of scope, this op has always sorted CreationTime-ascending only; not a regression."}
   DeleteImportedModel: {wire: ok, errors: ok, state: ok, persist: n/a, note: "status code fixed 204 -> 200 for consistency with DeleteImportedModelOutput's empty (non-204-specified) real shape, matching this service's other verified-ok Delete ops."}
   CreateModelInvocationJob: {wire: fixed, errors: ok, state: ok, persist: ok, note: "was routed under the PLURAL \"/model-invocation-jobs\" path; real SDK uses the SINGULAR \"/model-invocation-job\" for Create/Get/Stop (List alone is plural). Completely unreachable by real clients before that fix. gopherstack-7ux2: the handler also silently dropped modelId/roleArn/inputDataConfig/outputDataConfig/clientRequestToken from the request body even though the backend already accepted them via CreateModelInvocationJobInput opts -- so Get/List could never honestly source them either. Now parses and stores all five."}
   GetModelInvocationJob: {wire: fixed, errors: ok, state: ok, persist: ok, note: "same singular-path fix as Create. gopherstack-7ux2: response omitted modelId/inputDataConfig/outputDataConfig/roleArn/submitTime, all five \"This member is required\" on the real GetModelInvocationJobOutput (bedrock@v1.66.4 api_op_GetModelInvocationJob.go), and emitted a \"creationTime\" key the real shape doesn't have at all (harmless to a real client, which discards unknown keys, but still wrong). Fixed via a shared modelInvocationJobToSummary converter: submitTime reuses the existing CreationTime domain field (no separate creationTime key on the wire), the other four are now sourced from the Create fix above."}
@@ -568,3 +568,66 @@ Gates: `go build`, `go vet` (repo-wide, clean), `go test -race -count=1`,
 `golangci-lint run` (0 issues after one `golines -m 120` pass on the new
 test file) -- all clean on `./services/bedrock/...`. No new
 cyclop/gocyclo/gocognit/funlen nolints (0 in this package, unchanged).
+
+## 2026-09-06 ListImportedModels maxResults fix (gopherstack-kkfs)
+
+Verified against `bedrock@v1.66.4/api_op_ListImportedModels.go` before
+touching anything, per the issue's own instruction: `ListImportedModelsInput`
+does declare `MaxResults *int32` (line 46), alongside `NextToken`,
+`NameContains`, `CreationTimeAfter`/`CreationTimeBefore`, `SortBy`
+(`types.SortModelsBy`), `SortOrder` (`types.SortOrder`). `validators.go` has
+no `validateOpListImportedModelsInput` at all -- no client-side range check
+on `MaxResults`, same as every other List op in this service; a large or
+negative value is neither clamped nor rejected by the real SDK, so gopherstack
+doesn't invent that behavior either.
+
+The premise held: `ListImportedModels` (model_import_jobs.go) took four bare
+positional params (nameContains, creationTimeAfter, creationTimeBefore,
+nextToken), had no `MaxResults`/Input struct, and the handler
+(handler_model_import_jobs.go) never even read the `maxResults` query
+param -- it always paginated at the fixed `bedrockDefaultPageSize` (100) via
+`paginateBedrockSlice`. Exact same shape `ListModelImportJobs` had before its
+own earlier fix (see that op's entry above): its sibling was already
+Input-struct-backed (`ListModelImportJobsInput`), so this fix follows suit
+rather than inventing a new pattern -- added `ListImportedModelsInput`
+(models.go) mirroring `ListModelImportJobsInput` minus `StatusEquals`/
+`SortBy`/`SortOrder` (this op never modeled those, before or after; out of
+scope here -- it has always sorted CreationTime-ascending only, tie-broken
+by ImportedModelArn, and still does). The backend now threads
+`in.MaxResults`/`in.NextToken` through the existing `paginate()` helper
+(same one `ListModelImportJobs`/`ListEvaluationJobs`/etc. use) instead of
+`paginateBedrockSlice`, which defaults an absent/non-positive `MaxResults`
+to `bedrockDefaultPageSize` -- i.e. today's behavior is unchanged for an
+absent `maxResults` (still page-100-by-default, not literally unbounded,
+since that was already true before this fix), while an explicit smaller or
+larger value is now honored instead of silently ignored.
+
+Declared errors (`awk`+`grep` on `deserializeOpErrorListImportedModels`,
+deserializers.go): `UnknownError`, `AccessDeniedException`,
+`InternalServerException`, `ThrottlingException`, `ValidationException` --
+unchanged by this fix, no error-path behavior touched.
+
+Ordering stability: `TestListImportedModelsSortIsTotal`
+(pagination_sort_totality_test.go, pre-existing, updated only for the new
+call signature) already walks 105 tied-CreationTime items 30 times and
+confirms zero drops/duplicates/reordering across repeated calls; new
+`TestListImportedModels_MaxResults/ordering_is_stable_across_calls` adds a
+direct two-call comparison scoped to this fix.
+
+TESTS: `model_import_jobs_maxresults_test.go` (new) --
+`TestListImportedModels_MaxResults` covers `smaller_page_returns_exactly_that_many_plus_a_token`,
+`resuming_with_the_token_returns_the_remainder`, `absent_maxresults_still_returns_everything`,
+`ordering_is_stable_across_calls`. `handler_list_maxresults_test.go` gained a
+`ListImportedModels` table entry (HTTP-level maxResults=1 query-string
+check). Confirmed failing against the unmodified backend: hand-reverted
+`ListImportedModels`'s pagination call from `paginate(models, maxResults,
+nextToken)` back to `paginateBedrockSlice(models, nextToken)` (ignoring
+`in.MaxResults` entirely, matching the original bug) -- the two page-size
+subtests and the new handler-table entry failed exactly as predicted
+(`"...should have 2 item(s), but has 5"`, `"...should have 1 item(s), but
+has 3"`), while `absent_maxresults_still_returns_everything` and
+`ordering_is_stable_across_calls` still passed (correctly -- those aspects
+were never broken); restored, all gates re-run clean.
+
+Gates: `go build`, `go test -race -count=1 ./services/bedrock/...`,
+`golangci-lint run services/bedrock/...` -- 0 issues, all clean.

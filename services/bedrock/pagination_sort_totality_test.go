@@ -354,7 +354,7 @@ func TestListImportedModelsSortIsTotal(t *testing.T) {
 	}
 
 	walkAndVerify(t, want, func(token string) ([]string, string) {
-		page, next := b.ListImportedModels("", nil, nil, token)
+		page, next := b.ListImportedModels(&bedrock.ListImportedModelsInput{NextToken: token})
 		ids := make([]string, len(page))
 		for i, m := range page {
 			ids[i] = m.ImportedModelArn

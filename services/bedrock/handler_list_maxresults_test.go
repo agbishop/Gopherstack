@@ -11,14 +11,15 @@ import (
 )
 
 // TestHandler_List_MaxResults covers the maxResults query parameter on
-// ListEvaluationJobs, ListModelInvocationJobs, ListCustomModels, and
-// ListModelCustomizationJobs. All four real SDK inputs model MaxResults
-// *int32 (bedrock@v1.66.4 api_op_ListEvaluationJobs.go, api_op_
-// ListModelInvocationJobs.go, api_op_ListCustomModels.go, api_op_
-// ListModelCustomizationJobs.go), serialized as the "maxResults" query
-// param -- but the handlers never parsed it and the backends always
-// paginated with the fixed bedrockDefaultPageSize via paginateBedrockSlice,
-// silently ignoring a client's smaller page-size request.
+// ListEvaluationJobs, ListModelInvocationJobs, ListCustomModels,
+// ListModelCustomizationJobs, and ListImportedModels. All five real SDK
+// inputs model MaxResults *int32 (bedrock@v1.66.4 api_op_ListEvaluationJobs.go,
+// api_op_ListModelInvocationJobs.go, api_op_ListCustomModels.go, api_op_
+// ListModelCustomizationJobs.go, api_op_ListImportedModels.go), serialized as
+// the "maxResults" query param -- but the handlers never parsed it and the
+// backends always paginated with the fixed bedrockDefaultPageSize via
+// paginateBedrockSlice, silently ignoring a client's smaller page-size
+// request (gopherstack-kkfs for ListImportedModels).
 func TestHandler_List_MaxResults(t *testing.T) {
 	t.Parallel()
 
@@ -74,6 +75,20 @@ func TestHandler_List_MaxResults(t *testing.T) {
 				}
 			},
 			path: "/model-customization-jobs",
+		},
+		{
+			name: "ListImportedModels",
+			setup: func(t *testing.T, h *bedrock.Handler) {
+				t.Helper()
+
+				for _, n := range []string{"im-a", "im-b", "im-c"} {
+					_, err := h.Backend.CreateModelImportJob(
+						n, n+"-model", "arn:aws:iam::000000000000:role/x", "s3://bucket/data/", nil,
+					)
+					require.NoError(t, err)
+				}
+			},
+			path: "/imported-models",
 		},
 	}
 

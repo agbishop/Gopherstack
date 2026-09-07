@@ -767,6 +767,19 @@ type ListModelImportJobsInput struct {
 	MaxResults         int32
 }
 
+// ListImportedModelsInput holds filter/pagination params for
+// ListImportedModels (bedrock@v1.66.4 api_op_ListImportedModels.go). Real
+// SortBy/SortOrder not modeled here: gopherstack has always sorted
+// CreationTime ascending regardless of client input; out of scope for
+// gopherstack-kkfs's MaxResults fix.
+type ListImportedModelsInput struct {
+	CreationTimeAfter  *time.Time
+	CreationTimeBefore *time.Time
+	NameContains       string
+	NextToken          string
+	MaxResults         int32
+}
+
 // ListCustomModelDeploymentsInput holds filter/pagination params for
 // ListCustomModelDeployments (bedrock@v1.66.4 api_op_ListCustomModelDeployments.go).
 type ListCustomModelDeploymentsInput struct {
