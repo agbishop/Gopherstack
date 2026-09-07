@@ -97,39 +97,47 @@ var genericAcmResourceArnPattern = regexp.MustCompile(
 )
 
 // validateAcmeEndpointArn checks that a non-empty AcmeEndpointArn matches the
-// real ACM ARN shape, mirroring validateCertArn's treatment of
-// CertificateArn (empty is left to the caller's own required-field check).
+// real ACM ARN shape (empty is left to the caller's own required-field
+// check). Unlike validateCertArn's CertificateArn, none of the ACME-family
+// ops (Create/Delete/Describe/List/Revoke/UpdateAcme*) declare
+// InvalidArnException -- their deserializers recognize only
+// ValidationException for a malformed ARN, so a bad shape here must return
+// ErrInvalidParameter, not ErrInvalidArn -- gopherstack-ftkd.
 func validateAcmeEndpointArn(v string) error {
 	if v == "" {
 		return nil
 	}
 
 	if !acmeEndpointArnPattern.MatchString(v) {
-		return fmt.Errorf("%w: %q is not a valid ACME endpoint ARN", ErrInvalidArn, v)
+		return fmt.Errorf("%w: %q is not a valid ACME endpoint ARN", ErrInvalidParameter, v)
 	}
 
 	return nil
 }
 
+// validateAcmeEABArn: see validateAcmeEndpointArn's doc -- same
+// ValidationException-only declared model, gopherstack-ftkd.
 func validateAcmeEABArn(v string) error {
 	if v == "" {
 		return nil
 	}
 
 	if !acmeEABArnPattern.MatchString(v) {
-		return fmt.Errorf("%w: %q is not a valid ACME external account binding ARN", ErrInvalidArn, v)
+		return fmt.Errorf("%w: %q is not a valid ACME external account binding ARN", ErrInvalidParameter, v)
 	}
 
 	return nil
 }
 
+// validateAcmeDomainValidationArn: see validateAcmeEndpointArn's doc -- same
+// ValidationException-only declared model, gopherstack-ftkd.
 func validateAcmeDomainValidationArn(v string) error {
 	if v == "" {
 		return nil
 	}
 
 	if !acmeDomainValidationArnPattern.MatchString(v) {
-		return fmt.Errorf("%w: %q is not a valid ACME domain validation ARN", ErrInvalidArn, v)
+		return fmt.Errorf("%w: %q is not a valid ACME domain validation ARN", ErrInvalidParameter, v)
 	}
 
 	return nil

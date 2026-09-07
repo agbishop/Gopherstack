@@ -273,6 +273,10 @@ func (b *InMemoryBackend) UpdateAcmeEndpoint(
 // ARNs are literally nested under the endpoint's), so leaving them behind as
 // orphans after the parent endpoint disappears would misrepresent gopherstack's
 // own resource-ownership model, not just the real API's.
+//
+// Unlike Describe/List/Update, Delete's deserializer declares no
+// ResourceNotFoundException -- a missing ARN is ErrInvalidParameter
+// (ValidationException), not ErrAcmeResourceNotFound -- gopherstack-ftkd.
 func (b *InMemoryBackend) DeleteAcmeEndpoint(ctx context.Context, epARN string) error {
 	region := getRegion(ctx, b.region)
 
@@ -281,7 +285,7 @@ func (b *InMemoryBackend) DeleteAcmeEndpoint(ctx context.Context, epARN string) 
 
 	ep, ok := b.endpoints.Get(epARN)
 	if !ok || ep.Region != region {
-		return fmt.Errorf("%w: ACME endpoint %s not found", ErrAcmeResourceNotFound, epARN)
+		return fmt.Errorf("%w: ACME endpoint %s not found", ErrInvalidParameter, epARN)
 	}
 
 	deletedEABs := make(map[string]struct{})

@@ -128,7 +128,7 @@ func (h *Handler) jsonCreateAcmeDomainValidation(ctx context.Context, body []byt
 			kv[t.Key] = t.Value
 		}
 
-		if tagErr := h.setTags(dv.ARN, kv); tagErr != nil {
+		if tagErr := h.setTags(dv.ARN, kv, ErrInvalidParameter, ErrServiceQuotaExceeded); tagErr != nil {
 			return nil, tagErr
 		}
 	}

@@ -23,8 +23,16 @@ var (
 	// maximum of 50 tags per certificate.
 	ErrTooManyTags = errors.New("TooManyTagsException")
 	// ErrInvalidTag is returned when a tag key or value fails AWS tag
-	// constraints (e.g. the reserved "aws:" prefix).
+	// constraints (e.g. the reserved "aws:" prefix). Only the legacy
+	// certificate-tag ops (AddTagsToCertificate, ImportCertificate,
+	// RequestCertificate) declare it; the ACME resource families and
+	// TagResource declare ValidationException instead -- see ErrInvalidParameter.
 	ErrInvalidTag = errors.New("InvalidTagException")
+	// ErrServiceQuotaExceeded is TagResource's and the ACME resource
+	// families' declared "too many tags" code -- unlike the legacy
+	// certificate-tag ops, which declare TooManyTagsException instead
+	// (ErrTooManyTags).
+	ErrServiceQuotaExceeded = errors.New("ServiceQuotaExceededException")
 	// ErrInvalidDomainValidationOptions is returned when the
 	// DomainValidationOptions input to RequestCertificate references a domain
 	// not in the request, or specifies a ValidationDomain that is not the

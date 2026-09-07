@@ -325,6 +325,7 @@ var acmErrorCodeTable = []struct {
 	{ErrLimitExceeded, "LimitExceededException"},
 	{ErrTooManyTags, "TooManyTagsException"},
 	{ErrInvalidTag, "InvalidTagException"},
+	{ErrServiceQuotaExceeded, "ServiceQuotaExceededException"},
 	{ErrInvalidDomainValidationOptions, "InvalidDomainValidationOptionsException"},
 	{ErrInvalidArgs, "InvalidArgsException"},
 }

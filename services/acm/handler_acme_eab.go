@@ -90,7 +90,7 @@ func (h *Handler) jsonCreateAcmeExternalAccountBinding(ctx context.Context, body
 			kv[t.Key] = t.Value
 		}
 
-		if tagErr := h.setTags(eab.ARN, kv); tagErr != nil {
+		if tagErr := h.setTags(eab.ARN, kv, ErrInvalidParameter, ErrServiceQuotaExceeded); tagErr != nil {
 			return nil, tagErr
 		}
 	}

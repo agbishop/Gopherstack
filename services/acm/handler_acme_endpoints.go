@@ -93,7 +93,7 @@ func (h *Handler) jsonCreateAcmeEndpoint(ctx context.Context, body []byte) (any,
 			kv[t.Key] = t.Value
 		}
 
-		if tagErr := h.setTags(ep.ARN, kv); tagErr != nil {
+		if tagErr := h.setTags(ep.ARN, kv, ErrInvalidParameter, ErrServiceQuotaExceeded); tagErr != nil {
 			return nil, tagErr
 		}
 	}

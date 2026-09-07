@@ -837,3 +837,97 @@ filter before `page.New`); no MaxResults/NextToken-accepting op found that
 silently returns everything untruncated. Gates on `./services/acm/...`:
 `go build`, `go vet`, `go test -race -count=1` (all pass), `golangci-lint run`
 (0 issues).
+
+## Notes (2026-09-07 pass — gopherstack-ftkd error-code parity audit)
+
+Audited all 43 `errtargetaudit` class-A findings for acm (`cmd/errtargetaudit`,
+which flags an op emitting a sentinel error whose mapped code is not in that
+op's own `deserializeOpError<Op>` set in `aws-sdk-go-v2/service/acm@v1.43.4`'s
+`deserializers.go`). Verified every finding against the raw declared-error
+extraction (`awk '/deserializeOpError<Op>\(/,/^}/' deserializers.go | grep
+-oE '"[A-Za-z0-9]+"'`) rather than trusting the tool. Collapsed to 7 root
+causes; fixed 5 (40 of the 43 findings), left 2 as an unreachable false
+positive and a genuine ambiguous judgment call.
+
+1. **ACME ARN validators wrap the wrong sentinel (20 findings, FIXED).**
+   `validateAcmeEndpointArn`/`validateAcmeEABArn`/`validateAcmeDomainValidationArn`
+   (acme_models.go) always returned `ErrInvalidArn` (InvalidArnException) on a
+   malformed ARN, mirroring `validateCertArn`'s legacy CertificateArn
+   treatment. But none of the 16 ACME-family ops that call them
+   (Create/Delete/Describe/List/Revoke/UpdateAcme{Endpoint,ExternalAccountBinding,
+   DomainValidation}, DescribeAcmeAccount, ListAcmeAccounts, RevokeAcmeAccount)
+   declare InvalidArnException -- only ValidationException. Fixed: all three
+   validators now return `ErrInvalidParameter`. Every call site of the three
+   validators was confirmed to belong to an op with this ValidationException-
+   only model (no legacy CertificateArn caller uses these functions), so the
+   fix is unambiguous and collateral-free.
+2. **Delete{AcmeDomainValidation,AcmeEndpoint,AcmeExternalAccountBinding}
+   use ResourceNotFoundException, but declare only ValidationException (6
+   findings, FIXED).** Unlike their sibling Describe/List/Update/Revoke ops,
+   all three Delete ops' declared error sets omit ResourceNotFoundException.
+   Fixed: their not-found branches now return `ErrInvalidParameter`.
+3. **RequestCertificate's post-create helpers guard an unreachable state (1
+   finding, FALSE POSITIVE -- left).** `ApplyDomainValidationOverrides`/
+   `SetExportPreference`/`SetManagedBy` (certificates.go) return
+   `ErrCertNotFound` (ResourceNotFoundException, not in RequestCertificate's
+   declared set) if the just-created certificate's ARN is missing. These run
+   immediately after RequestCertificate mints that exact ARN, in the same
+   request, before any caller could reference it -- structurally unreachable
+   through any client input, so left unchanged as dead defensive code.
+4. **Revoke{AcmeAccount,AcmeExternalAccountBinding} "already revoked" uses
+   InvalidStateException, but declare ConflictException (4 findings,
+   FIXED).** Both switched from `ErrAlreadyRevoked` to `ErrConflict`.
+   RevokeAcmeAccount's branch is presently unreachable via the wire API --
+   the AcmeAccount table is permanently empty by deliberate design (see this
+   file's ACME-account gap entry and `TestACMHandler_AcmeAccounts_HonestlyEmpty`)
+   -- fixed for correctness/future-proofing (compile-verified only, see
+   report) rather than left inconsistent with its EAB sibling.
+5. **GetAcmeExternalAccountBindingCredentials' revoked check uses
+   InvalidStateException, but declares neither Conflict nor InvalidState,
+   only ValidationException (2 findings, FIXED).** Switched from
+   `ErrInvalidState` to `ErrInvalidParameter`.
+6. **RevokeCertificate's already-revoked/PENDING_VALIDATION checks use
+   InvalidStateException, but RevokeCertificate declares both
+   ConflictException and ResourceInUseException, not InvalidStateException
+   (2 findings, LEFT -- judgment call).** Both declared codes are plausible
+   replacements (idempotency-style "already done" vs. "resource in a state
+   that blocks the request") with no way to pick one from the declared set
+   alone. Left unchanged; filing as gopherstack issue for a human call.
+7. **Shared tag-validation helper `setTags` used the certificate-only tag
+   codes for non-certificate callers (8 findings, FIXED).** `setTags`
+   (handler_tags.go) unconditionally used `ErrInvalidTag`/`ErrTooManyTags`
+   (InvalidTagException/TooManyTagsException) -- correct for the legacy
+   certificate-tag ops (AddTagsToCertificate, ImportCertificate,
+   RequestCertificate) but wrong for CreateAcmeDomainValidation,
+   CreateAcmeEndpoint, CreateAcmeExternalAccountBinding, and TagResource,
+   whose declared models use ValidationException/ServiceQuotaExceededException
+   instead. `setTags` now takes the two sentinels as parameters; the 3 legacy
+   call sites (handler_tags.go, handler_certificates.go x2) keep
+   ErrInvalidTag/ErrTooManyTags, the 4 non-certificate call sites
+   (handler_acme_eab.go, handler_acme_endpoints.go,
+   handler_acme_domain_validations.go, handler_resource_tags.go x2) now pass
+   `ErrInvalidParameter`/the new `ErrServiceQuotaExceeded` sentinel
+   (ServiceQuotaExceededException, added to errors.go/handler.go's
+   `acmErrorCodeTable`).
+
+Corrected 2 pre-existing tests that were pinning root causes 1 and 4/5 above
+(`TestACMHandler_AcmeEndpoints/Describe_MalformedArn_Validation`,
+`TestACMHandler_AcmeExternalAccountBindings/GetCredentials_ThenRevoke_ThenCredentialsRejected`)
+to assert the corrected codes instead of the wrong ones they were pinning.
+Added regression coverage for every fixed root cause via the JSON handler
+(not `errors.Is`), asserting the AWS-shaped `{"__type":...,"message":...}`
+error body `writeJSONError` produces, plus non-mutation checks where
+applicable. Every fix was neutered (reverted individually), confirmed to
+still compile, and confirmed to fail its regression test, before being
+restored -- see `gopherstack-ftkd`'s session report for the full table.
+
+Left deliberately unfixed, both confirmed-real declared/emitted mismatches:
+RevokeCertificate's two InvalidStateException sites (root cause 6, ambiguous
+ConflictException-vs-ResourceInUseException replacement -- pre-existing
+tests `handler_certificate_lifecycle_test.go:579`,
+`handler_certificate_status_errors_test.go:328,398` still pin current
+InvalidStateException behavior and were deliberately left as-is pending that
+decision).
+
+Gates on `./services/acm/...`: `go build`, `go test -race -count=1` (all
+pass), `golangci-lint run` (0 issues).

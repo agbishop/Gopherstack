@@ -2,6 +2,7 @@ package acm_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -189,6 +190,111 @@ func TestACMHandler_GenericResourceTags_RouteByArnType(t *testing.T) {
 				rec := postACMJSON(t, h, "ListTagsForResource", `{"ResourceArn":"not-an-arn"}`)
 				assert.Equal(t, http.StatusBadRequest, rec.Code)
 				assert.Contains(t, rec.Body.String(), "ValidationException")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newACMHandler()
+			tt.run(t, h)
+		})
+	}
+}
+
+// TestACMHandler_NewStyleTagValidation_UsesValidationAndServiceQuota verifies
+// that the ACME resource families (CreateAcmeEndpoint et al.) and the
+// generic TagResource op reject bad tags with ValidationException/
+// ServiceQuotaExceededException, not the legacy certificate-tag codes
+// InvalidTagException/TooManyTagsException that AddTagsToCertificate/
+// ImportCertificate/RequestCertificate declare -- gopherstack-ftkd.
+func TestACMHandler_NewStyleTagValidation_UsesValidationAndServiceQuota(t *testing.T) {
+	t.Parallel()
+
+	tooManyTags := func() []map[string]string {
+		tags := make([]map[string]string, 0, 51)
+		for i := range 51 {
+			tags = append(tags, map[string]string{"Key": fmt.Sprintf("k%d", i), "Value": "v"})
+		}
+
+		return tags
+	}
+
+	tests := []struct {
+		run  func(t *testing.T, h *acm.Handler)
+		name string
+	}{
+		{
+			name: "CreateAcmeEndpoint_ReservedTagPrefix_ValidationException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				body := `{"AuthorizationBehavior":"PRE_APPROVED",` +
+					`"CertificateAuthority":{"PublicCertificateAuthority":{}},` +
+					`"Tags":[{"Key":"aws:reserved","Value":"v"}]}`
+				rec := postACMJSON(t, h, "CreateAcmeEndpoint", body)
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+				assert.NotContains(t, rec.Body.String(), "InvalidTagException")
+			},
+		},
+		{
+			name: "CreateAcmeEndpoint_TooManyTags_ServiceQuotaExceededException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				body, err := json.Marshal(map[string]any{
+					"AuthorizationBehavior": "PRE_APPROVED",
+					"CertificateAuthority":  map[string]any{"PublicCertificateAuthority": map[string]any{}},
+					"Tags":                  tooManyTags(),
+				})
+				require.NoError(t, err)
+
+				rec := postACMJSON(t, h, "CreateAcmeEndpoint", string(body))
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ServiceQuotaExceededException")
+				assert.NotContains(t, rec.Body.String(), "TooManyTagsException")
+			},
+		},
+		{
+			name: "TagResource_ReservedTagPrefix_ValidationException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				epARN := createTestAcmeEndpoint(t, h)
+				body, err := json.Marshal(map[string]any{
+					"ResourceArn": epARN,
+					"Tags":        []map[string]string{{"Key": "aws:reserved", "Value": "v"}},
+				})
+				require.NoError(t, err)
+
+				rec := postACMJSON(t, h, "TagResource", string(body))
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+				assert.NotContains(t, rec.Body.String(), "InvalidTagException")
+
+				listBody, _ := json.Marshal(map[string]string{"ResourceArn": epARN})
+				listRec := postACMJSON(t, h, "ListTagsForResource", string(listBody))
+				require.Equal(t, http.StatusOK, listRec.Code)
+				assert.JSONEq(t, `{"Tags":[]}`, listRec.Body.String(), "rejected tag must not be stored")
+			},
+		},
+		{
+			name: "TagResource_TooManyTags_ServiceQuotaExceededException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				epARN := createTestAcmeEndpoint(t, h)
+
+				body, err := json.Marshal(map[string]any{"ResourceArn": epARN, "Tags": tooManyTags()})
+				require.NoError(t, err)
+
+				rec := postACMJSON(t, h, "TagResource", string(body))
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ServiceQuotaExceededException")
+				assert.NotContains(t, rec.Body.String(), "TooManyTagsException")
 			},
 		},
 	}

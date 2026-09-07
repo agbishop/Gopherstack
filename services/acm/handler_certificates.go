@@ -318,7 +318,7 @@ func (h *Handler) jsonRequestCertificate(ctx context.Context, body []byte) (any,
 				kvMap[k] = tag["Value"]
 			}
 		}
-		if setErr := h.setTags(cert.ARN, kvMap); setErr != nil {
+		if setErr := h.setTags(cert.ARN, kvMap, ErrInvalidTag, ErrTooManyTags); setErr != nil {
 			return nil, setErr
 		}
 	}
@@ -592,7 +592,7 @@ func (h *Handler) jsonImportCertificate(ctx context.Context, body []byte) (any, 
 				kvMap[k] = tag["Value"]
 			}
 		}
-		if setErr := h.setTags(cert.ARN, kvMap); setErr != nil {
+		if setErr := h.setTags(cert.ARN, kvMap, ErrInvalidTag, ErrTooManyTags); setErr != nil {
 			return nil, setErr
 		}
 	}
