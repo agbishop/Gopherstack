@@ -9,7 +9,7 @@
 | --- | --- |
 | PARITY entries audited | 30 (28 ok, 2 partial) |
 | Feature families | 5 (5 ok) |
-| Known gaps | 4 |
+| Known gaps | 5 |
 | Deferred items | 0 |
 | Resource leaks | clean |
 
@@ -19,6 +19,7 @@
 - No AccessDeniedException path anywhere in this service -- gopherstack has no IAM policy evaluation engine to source it from; this is a cross-cutting infra gap common to every gopherstack service, not specific to rolesanywhere.
 - FIXED this pass: CreateProfile now rejects a nil roleArns list with ValidationException, matching CreateProfileInput.RoleArns's "This member is required" marker (aws-sdk-go-v2@v1.26.3's validateOpCreateProfileInput checks v.RoleArns == nil) and botocore's CreateProfileRequest.required list. A prior pass's note framed this as deliberately left permissive 'to control blast radius' against existing tests -- that framing was backwards: the tests asserting nil-roleArns success were the bug, not a constraint to protect. An explicitly empty (non-nil) roleArns slice is still accepted, since the RoleArnList shape declares min:0 (requirement is presence, not non-emptiness). ImportCrlInput.CrlData/TrustAnchorArn and CreateTrustAnchorInput.Source were already validated by a prior pass.
 - TrustAnchorDetail has no createdBy field in the real API (confirmed absent from types.TrustAnchorDetail) -- correctly NOT added to TrustAnchor's JSON output this pass (a prior gaps note incorrectly implied it should be); ProfileDetail DOES have createdBy and it is now implemented.
+- gopherstack-i5ss (2026-09-06): ImportCrl does not validate TrustAnchorArn refers to an existing trust anchor, and DeleteTrustAnchor does not cascade to CRLs referencing it. Both left unimplemented -- see the dated section below for the sourced reasoning. Would be revisited if AWS ever adds ResourceNotFoundException to ImportCrl's modelled errors, or a doc revision states either behavior explicitly.
 
 ## More
 

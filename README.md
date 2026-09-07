@@ -597,7 +597,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [IAM](services/iam/README.md) | A | 33 | clean |
 | [IAM Access Analyzer](services/accessanalyzer/README.md) | A | 39 | 5 gaps; 1 deferred |
 | [IAM Identity Center (SSO)](services/ssoadmin/README.md) | A | 56 | 4 gaps |
-| [IAM Roles Anywhere](services/rolesanywhere/README.md) | A | 30 | 4 gaps |
+| [IAM Roles Anywhere](services/rolesanywhere/README.md) | A | 30 | 5 gaps |
 | [Identity Store](services/identitystore/README.md) | A | 19 | 2 gaps; 1 deferred |
 | [STS](services/sts/README.md) | A | 11 | 4 gaps; 1 deferred |
 
