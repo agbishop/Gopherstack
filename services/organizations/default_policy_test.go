@@ -29,6 +29,28 @@ func TestDefaultFullAWSAccessPolicy_ViaHandler(t *testing.T) {
 	assert.True(t, resp.Policy.PolicySummary.AwsManaged, "FullAWSAccess must be AwsManaged")
 }
 
+// TestDefaultFullAWSAccessPolicy_ARN_ViaHandler verifies the seeded
+// FullAWSAccess SCP carries the AWS-owned ARN authority ("aws", not the
+// caller's account ID), matching the PolicyArn pattern in botocore's
+// organizations model (api-2.json), which allows only two shapes: the
+// customer-owned "::<account>:policy/<org>/<type>/<id>" and the AWS-owned
+// "::aws:policy/<type>/<id>" -- FullAWSAccess is AWS-owned (gopherstack-3hov).
+func TestDefaultFullAWSAccessPolicy_ARN_ViaHandler(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newHandlerWithOrg(t)
+
+	rec := doRequest(t, h, "DescribePolicy", map[string]any{"PolicyId": "p-FullAWSAccess"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp describePolicyResp
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+
+	assert.Equal(t,
+		"arn:aws:organizations::aws:policy/SERVICE_CONTROL_POLICY/p-FullAWSAccess",
+		resp.Policy.PolicySummary.ARN)
+}
+
 // TestDefaultFullAWSAccessPolicy_AttachedToRoot_ViaHandler verifies the
 // default policy is attached to root, like real AWS.
 func TestDefaultFullAWSAccessPolicy_AttachedToRoot_ViaHandler(t *testing.T) {
@@ -141,6 +163,7 @@ func TestUserPolicy_AwsManagedFalse_StillDeletable_ViaHandler(t *testing.T) {
 
 type policySummaryResp struct {
 	ID         string `json:"Id"`
+	ARN        string `json:"Arn"`
 	Name       string `json:"Name"`
 	Type       string `json:"Type"`
 	AwsManaged bool   `json:"AwsManaged"`

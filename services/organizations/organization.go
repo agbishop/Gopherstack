@@ -70,7 +70,7 @@ func (b *InMemoryBackend) CreateOrganization(featureSet string) (*Organization, 
 	b.accounts.Put(mgmtAcct)
 	b.accountParent[mgmtAcctID] = rootID
 	b.addAccountChild(rootID, mgmtAcctID)
-	b.seedFullAWSAccessPolicyLocked(featureSet, orgID, rootID)
+	b.seedFullAWSAccessPolicyLocked(featureSet, rootID)
 
 	return org, root, nil
 }

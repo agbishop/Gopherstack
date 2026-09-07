@@ -121,11 +121,11 @@ func validatePolicyContent(content, policyType string) error {
 // control policies automatically enabled in the root. If you instead choose
 // ... CONSOLIDATED_BILLING ... no policy types are enabled by default").
 // Must be called with the write lock held, after b.org and b.root are set.
-func (b *InMemoryBackend) seedFullAWSAccessPolicyLocked(featureSet, orgID, rootID string) {
+func (b *InMemoryBackend) seedFullAWSAccessPolicyLocked(featureSet, rootID string) {
 	p := &Policy{
 		PolicySummary: PolicySummary{
 			ID:          fullAWSAccessPolicyID,
-			ARN:         b.policyARN(orgID, policyTypeSCP, fullAWSAccessPolicyID),
+			ARN:         b.awsManagedPolicyARN(policyTypeSCP, fullAWSAccessPolicyID),
 			Name:        fullAWSAccessPolicyName,
 			Description: fullAWSAccessPolicyDescription,
 			Type:        policyTypeSCP,
