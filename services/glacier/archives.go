@@ -45,6 +45,7 @@ func (b *InMemoryBackend) UploadArchive(
 	b.archiveData[archiveID] = append([]byte(nil), data...)
 	v.NumberOfArchives++
 	v.SizeInBytes += size
+	v.WriteSinceLastInventory = true
 
 	return a, nil
 }
@@ -89,6 +90,7 @@ func (b *InMemoryBackend) DeleteArchive(accountID, region, vaultName, archiveID 
 
 	delete(v.Archives, archiveID)
 	delete(b.archiveData, archiveID)
+	v.WriteSinceLastInventory = true
 
 	return nil
 }

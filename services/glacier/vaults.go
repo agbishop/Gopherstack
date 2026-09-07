@@ -74,7 +74,10 @@ func (b *InMemoryBackend) DeleteVault(accountID, region, vaultName string) error
 		return err
 	}
 
-	if len(v.Archives) > 0 {
+	// Per api_op_DeleteVault.go's doc comment: delete only if there are no
+	// archives as of the last inventory and no writes since -- not whether
+	// the vault is empty right now.
+	if v.NumberOfArchivesAtLastInventory > 0 || v.WriteSinceLastInventory {
 		return ErrVaultNotEmpty
 	}
 

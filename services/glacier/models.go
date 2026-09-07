@@ -25,6 +25,15 @@ type Vault struct {
 	NotificationEvents   []string            `json:"notificationEvents,omitempty"`
 	NumberOfArchives     int64               `json:"numberOfArchives"`
 	SizeInBytes          int64               `json:"sizeInBytes"`
+	// NumberOfArchivesAtLastInventory is the archive count captured when
+	// LastInventoryDate was last set (InitiateJob for inventory-retrieval). Per
+	// api_op_DeleteVault.go's doc comment, DeleteVault checks this -- "no
+	// archives ... as of the last inventory" -- rather than live NumberOfArchives.
+	NumberOfArchivesAtLastInventory int64 `json:"numberOfArchivesAtLastInventory,omitempty"`
+	// WriteSinceLastInventory tracks DeleteVault's other documented condition,
+	// "no writes ... since the last inventory": set on any archive add/remove,
+	// cleared when LastInventoryDate is refreshed.
+	WriteSinceLastInventory bool `json:"writeSinceLastInventory,omitempty"`
 }
 
 // Archive stores metadata for a single archive uploaded to a vault.

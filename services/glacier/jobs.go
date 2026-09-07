@@ -214,6 +214,8 @@ func applyJobTypeSpecifics(
 		applyArchiveRetrievalFields(j, v, req.ArchiveID, ready)
 	case jobTypeInventoryRetrieval:
 		v.LastInventoryDate = formatDate(now)
+		v.NumberOfArchivesAtLastInventory = v.NumberOfArchives
+		v.WriteSinceLastInventory = false
 
 		if invParams != nil {
 			j.InventoryRetrievalStartDate = invParams.StartDate

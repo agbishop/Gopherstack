@@ -12,8 +12,8 @@ overall: A            # wrapper-key/header/nested-shape sweep (2026-08-20): 1 re
                        # gopherstack-6flj/21my sweep (2026-08-29): 1 real bug found+fixed (ListJobs sorted by JobID instead of CreationDate/initiation-time -- see Notes). ListVaults/ListMultipartUploads/ListParts sort orders re-verified against real API docs (ASCII-by-name / no-guaranteed-order / by-range respectively) and found correct. DescribeCommands/DescribeDeployments-equivalent filters (statuscode/completed on ListJobs) re-verified honored. An existing test (TestSortedListJobs) was asserting the JobID-sort bug as correct behavior; fixed to assert CreationDate order instead.
 ops:
   CreateVault:            {wire: ok, errors: ok, state: ok, persist: ok}
-  DescribeVault:          {wire: ok, errors: ok, state: ok, persist: ok}
-  DeleteVault:            {wire: ok, errors: ok, state: ok, persist: ok, note: "cascade-deletes jobs/uploads/lock; blocks on non-empty vault; this pass fixed a leak where cascade-deleting a vault's multipart uploads dropped the store.Table row but orphaned the raw multipartParts map entry (see Notes). gopherstack-ygfk (THIS PASS): now consults the vault's lock policy (checkVaultLockDelete) before deleting -- see families: vault_lock_enforcement"}
+  DescribeVault:          {wire: ok, errors: ok, state: ok, persist: ok, note: "GAP (disclosed 2026-09-07, gopherstack-x8em, not fixed this pass -- separate from DeleteVault's fix, filed separately): NumberOfArchives/SizeInBytes/LastInventoryDate are documented as-of-last-inventory (types.DescribeVaultOutput doc: 'The number of archives in the vault as of the last inventory date... returns null if an inventory has not yet run'), but this backend reports the LIVE v.NumberOfArchives/v.SizeInBytes counters instead. DeleteVault's fix added a separate NumberOfArchivesAtLastInventory field for its own check; DescribeVault was left untouched -- reusing that field here is a distinct, larger change (would also need SizeInBytes-at-inventory and null-vs-zero handling) out of this pass's scope."}
+  DeleteVault:            {wire: ok, errors: ok, state: ok, persist: ok, note: "cascade-deletes jobs/uploads/lock; blocks per api_op_DeleteVault.go's documented as-of-last-inventory rule (archives at last inventory OR any write since), not the live archive count; this pass fixed a leak where cascade-deleting a vault's multipart uploads dropped the store.Table row but orphaned the raw multipartParts map entry (see Notes). gopherstack-ygfk: consults the vault's lock policy (checkVaultLockDelete) before deleting -- see families: vault_lock_enforcement. FIXED 2026-09-07 (gopherstack-x8em): was checking len(v.Archives) (live count) instead -- see Notes."}
   ListVaults:             {wire: ok, errors: ok, state: ok, persist: ok, note: "marker/limit pagination verified vs SDK Marker/VaultList shape. FIXED 2026-08-29 (gopherstack-6flj constrained-parameter sweep): an unset limit returned every vault instead of defaulting to the documented 10 -- see Notes."}
   UploadArchive:          {wire: ok, errors: ok, state: ok, persist: ok, note: "ArchiveId/Checksum/Location are header-only on real wire (confirmed via awsRestjson1_deserializeOpHttpBindingsUploadArchiveOutput); gopherstack sets all three headers correctly, body is a harmless bonus"}
   DeleteArchive:          {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-ygfk (THIS PASS): now consults the vault's lock policy (checkVaultLockDelete) before deleting -- see families: vault_lock_enforcement"}
@@ -511,3 +511,110 @@ and `go vet ./...` (repo-wide, clean), `go test -race -count=1
 ./services/glacier/...`, `golangci-lint run ./services/glacier/...` (0
 issues). No production code changed this pass — test-only additions
 confirming correctness.
+
+## 2026-09-07 DeleteVault as-of-last-inventory fix (gopherstack-x8em)
+
+`api_op_DeleteVault.go`'s doc comment, quoted verbatim: "Amazon Glacier will
+delete a vault only if there are no archives in the vault as of the last
+inventory and there have been no writes to the vault since the last
+inventory." Two documented conditions, not one. `types.DescribeVaultOutput`
+confirms `NumberOfArchives`/`LastInventoryDate` are themselves as-of-last-
+inventory values ("The number of archives in the vault as of the last
+inventory date... This field will return null if an inventory has not yet
+run on the vault").
+
+The filed issue's own framing was half wrong: it claimed "a vault whose
+archives were all uploaded since the last inventory can be deleted." The
+doc's second clause -- no writes since last inventory -- says the opposite:
+such a vault is still blocked, because uploading after the inventory is
+itself a write since that inventory. The doc wins; see
+`TestDeleteVault_InventorySemantics/write_after_zero_archive_inventory_still_empty_now`.
+
+Was checking `len(v.Archives) > 0` (the live archive count) instead of
+either documented condition. This backend already tracked
+`Vault.LastInventoryDate`, set when an inventory-retrieval job is initiated
+(`jobs.go`'s `applyJobTypeSpecifics`) -- an existing, already-established
+trigger point, not a new invented schedule. Reused that same point to add
+two fields: `NumberOfArchivesAtLastInventory` (snapshots the live count
+there) and `WriteSinceLastInventory` (cleared there, set on any archive
+add/remove -- `UploadArchive`/`DeleteArchive`/`CompleteMultipartUpload`).
+`DeleteVault` now rejects iff `NumberOfArchivesAtLastInventory > 0 ||
+WriteSinceLastInventory`. A vault that has never had an inventory run and
+never had a write defaults both fields to zero/false, matching
+`NumberOfArchives`'s documented null-at-creation baseline, so an untouched
+fresh vault stays trivially deletable.
+
+No fabricated timer or periodic refresh was added: the emulator has no
+background inventory process and none was invented; `LastInventoryDate`
+only advances on an explicit `InitiateJob(inventory-retrieval)` call, same
+as before this fix.
+
+Separate, disclosed, NOT fixed this pass: `DescribeVault` reports the LIVE
+`NumberOfArchives`/`SizeInBytes` where AWS documents as-of-inventory values
+-- see the `DescribeVault` ops row. Filed separately; not the same one-line
+change as `DeleteVault`'s fix (that used a new field purpose-built for the
+delete check; `DescribeVault` would need its own as-of-inventory
+size/count/null handling).
+
+Pre-existing tests corrected (2, strengthened not weakened):
+`TestDeleteVault_RejectsNonEmpty` and `TestDeleteVault_NotEmpty_Returns409`
+set up their non-empty vault via `AddVaultInternal(&Vault{VaultName: ...})`
++ `AddArchiveInternal(...)`, which populates `v.Archives` directly without
+touching the new inventory-tracking fields -- under the new semantics that
+vault would be (wrongly) deletable. Both now also set
+`NumberOfArchivesAtLastInventory: 1` on the `AddVaultInternal` vault so they
+keep testing genuine non-empty-vault rejection under the new model, still
+asserting the same 409.
+
+New regression tests, all driven through the HTTP handler
+(`handler_vaults_test.go`'s `TestDeleteVault_InventorySemantics`, 3
+subtests): `archives_at_last_inventory_but_currently_empty` (upload, run
+inventory, delete the archive, vault now empty live but still 409) and
+`write_after_zero_archive_inventory_still_empty_now` (inventory while
+empty, upload+delete after, still 409 despite zero archives at inventory)
+both FAIL against unmodified code (expected 409, got 204 -- confirmed by
+reverting the `vaults.go` check alone, running, and restoring);
+`zero_archives_at_inventory_no_writes_since` (204, and a second untouched
+vault is confirmed present) passes both before and after since it never
+exercised the bug. Rejected-path subtests also assert the declared error
+code (`ConflictException`, from the existing `ErrVaultNotEmpty`) and that
+`DescribeVault` still returns the vault afterward.
+
+Error code: no new error was introduced. `ErrVaultNotEmpty` already maps to
+`ConflictException` (`errors.go`/`handler.go`'s `writeBackendError`), kept
+as-is. Raw `deserializeOpErrorDeleteVault` extraction (for reference; it
+has no `ConflictException` case, which is expected -- that switch only
+picks a typed Go error struct, an unmatched code still round-trips as
+`smithy.GenericAPIError` with the real `Code`/`Message`):
+`UnknownError`, `InvalidParameterValueException`,
+`MissingParameterValueException`, `NoLongerSupportedException`,
+`ResourceNotFoundException`, `ServiceUnavailableException`.
+
+Persisted-field guard: `Vault` gained two fields
+(`NumberOfArchivesAtLastInventory`, `WriteSinceLastInventory`). Ran
+`go test ./pkgs/persistence/... -run TestSnapshotVersionGuard` read-only (no
+`-update`, no version bump): it reports "glacier: backendSnapshot fields
+changed without a version bump; golden is out of date, run with -update to
+refresh it (this is bookkeeping, not a version-bump case: every old field is
+still present unchanged, so the diff is additive only and needs no bump)" --
+purely additive, golden refresh only, left for the golden owner.
+
+Gates: `go build ./services/glacier/...` clean; `go test -race -count=1
+./services/glacier/...` PASS; `golangci-lint run services/glacier/...` 0
+issues (one `fieldalignment` finding in the new test's table struct, fixed
+by hand-reordering fields, no `-fix` used).
+
+**Addendum**: the tests above reached the two new `Vault` fields only via
+`AddVaultInternal`/direct backend calls, leaving `jobs.go:217-218` (the
+`InitiateJob(inventory-retrieval)` snapshot/reset that actually makes the
+model coherent) uncovered -- either line could be deleted or hard-coded and
+the suite stayed green. Closed by two more HTTP-driven tests:
+`TestDeleteVault_InventoryRefresh_ClearsWriteSinceFlag` (pins `jobs.go:218`:
+write, delete, DeleteVault rejected; InitiateJob(inventory-retrieval);
+DeleteVault now succeeds) and
+`TestDeleteVault_InventoryRefresh_SnapshotsArchiveCount` (pins
+`jobs.go:217`: upload, InitiateJob(inventory-retrieval), DeleteVault
+rejected -- asserted immediately, before any further write, so only the
+snapshotted count can be driving it). Each neutered line was hand-reverted
+individually, confirmed to fail only its matching new test (all others
+green), and restored.
