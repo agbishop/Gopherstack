@@ -375,7 +375,7 @@ func (b *InMemoryBackend) ListImages(
 func (b *InMemoryBackend) ListImageReferrers(
 	ctx context.Context, //nolint:revive // existing issue.
 	repositoryName string,
-	subject ImageIdentifier,
+	_ ImageIdentifier,
 ) ([]ImageReferrer, error) {
 	b.mu.RLock("ListImageReferrers")
 	defer b.mu.RUnlock()
@@ -384,11 +384,10 @@ func (b *InMemoryBackend) ListImageReferrers(
 		return nil, fmt.Errorf("%w: %s", ErrRepositoryNotFound, repositoryName)
 	}
 
-	if _, ok := findImageLocked(b.images, b.imagesByRepo, repositoryName, b.tagIndex[repositoryName], subject); !ok &&
-		subject.ImageDigest != "" {
-		return nil, fmt.Errorf("%w: image not found", ErrImageNotFound)
-	}
-
+	// Real ListImageReferrers declares no not-found error for the subject
+	// (only RepositoryNotFoundException/UnableToListUpstreamImageReferrersException/etc,
+	// per deserializeOpErrorListImageReferrers) -- an unknown subject digest
+	// returns an empty list, not ImageNotFoundException.
 	return []ImageReferrer{}, nil
 }
 
