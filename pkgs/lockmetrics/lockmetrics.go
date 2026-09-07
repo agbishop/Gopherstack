@@ -129,32 +129,53 @@ func (c *liveCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.readWaitersDesc
 }
 
+// heldKey identifies one (lock, operation) series for the write-held gauge.
+type heldKey struct{ lock, op string }
+
 // Collect implements [prometheus.Collector].
+//
+// Many [RWMutex] instances can share the same name by design (e.g. every S3
+// object lock is named "s3.object"), so instances are aggregated per label
+// tuple before emitting: waiters sum (total contention under that name),
+// held-seconds takes the max (the worst-case hold is what deadlock detection
+// cares about). Emitting one raw sample per instance instead — as this used
+// to — produces duplicate label sets that make Gather return a MultiError.
 func (c *liveCollector) Collect(ch chan<- prometheus.Metric) {
+	held := make(map[heldKey]float64)
+	writeWaiters := make(map[string]float64)
+	readWaiters := make(map[string]float64)
+
 	c.allMutexes.Range(func(k, _ any) bool {
 		m, ok := k.(*RWMutex)
 		if !ok {
 			return true
 		}
 
-		// Write-lock hold duration (only emitted while lock is held).
-		ts := m.writeStart.Load()
-		if ts != 0 {
+		if ts := m.writeStart.Load(); ts != 0 {
 			op, _ := m.writeOp.Load().(string)
-			held := time.Since(time.Unix(0, ts)).Seconds()
-			ch <- prometheus.MustNewConstMetric(c.writeHeldDesc, prometheus.GaugeValue, held, m.name, op)
+			key := heldKey{lock: m.name, op: op}
+			if hs := time.Since(time.Unix(0, ts)).Seconds(); hs > held[key] {
+				held[key] = hs
+			}
 		}
 
-		// Write waiters: goroutines currently blocked in Lock().
-		ch <- prometheus.MustNewConstMetric(c.writeWaitersDesc, prometheus.GaugeValue,
-			float64(m.writeWaiters.Load()), m.name)
-
-		// Read waiters: goroutines currently blocked in RLock().
-		ch <- prometheus.MustNewConstMetric(c.readWaitersDesc, prometheus.GaugeValue,
-			float64(m.readWaiters.Load()), m.name)
+		writeWaiters[m.name] += float64(m.writeWaiters.Load())
+		readWaiters[m.name] += float64(m.readWaiters.Load())
 
 		return true
 	})
+
+	for key, hs := range held {
+		ch <- prometheus.MustNewConstMetric(c.writeHeldDesc, prometheus.GaugeValue, hs, key.lock, key.op)
+	}
+
+	for name, w := range writeWaiters {
+		ch <- prometheus.MustNewConstMetric(c.writeWaitersDesc, prometheus.GaugeValue, w, name)
+	}
+
+	for name, w := range readWaiters {
+		ch <- prometheus.MustNewConstMetric(c.readWaitersDesc, prometheus.GaugeValue, w, name)
+	}
 }
 
 // registerOrReuse registers c with [prometheus.DefaultRegisterer].
