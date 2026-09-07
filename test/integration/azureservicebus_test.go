@@ -16,11 +16,13 @@ package integration_test
 // namespace's Brokered Messaging API.
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -156,5 +158,117 @@ func TestIntegration_AzureServiceBus_TopicSubscriptionFanOut(t *testing.T) {
 
 	// DeleteTopic (cascades to its subscriptions).
 	resp = sbRequest(t, http.MethodDelete, "/"+topic, nil, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestIntegration_AzureServiceBus_PerEntityConfigAndGetList covers gaps #1
+// and #5 together: creating a queue with a non-default LockDuration/
+// MaxDeliveryCount/DefaultMessageTimeToLive via a real Atom+XML request body
+// (rather than the ?type=topic escape hatch the other tests here use, since
+// this is exactly the case that needs a real body), then reading those
+// values back via GET, and exercising the $Resources/Queues and
+// $Resources/Topics list endpoints.
+func TestIntegration_AzureServiceBus_PerEntityConfigAndGetList(t *testing.T) {
+	t.Parallel()
+	dumpContainerLogsOnFailure(t)
+
+	queue := "test-queue-cfg-" + uuid.NewString()
+
+	const queueBody = `<entry xmlns="http://www.w3.org/2005/Atom"><content type="application/xml">` +
+		`<QueueDescription xmlns="http://schemas.microsoft.com/netservices/2010/10/servicebus/connect">` +
+		`<LockDuration>PT2M</LockDuration>` +
+		`<MaxDeliveryCount>5</MaxDeliveryCount>` +
+		`<DefaultMessageTimeToLive>P1D</DefaultMessageTimeToLive>` +
+		`</QueueDescription></content></entry>`
+
+	resp := sbRequest(t, http.MethodPut, "/"+queue, []byte(queueBody), map[string]string{
+		"Content-Type": "application/atom+xml",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	resp = sbRequest(t, http.MethodGet, "/"+queue, nil, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/atom+xml;type=entry;charset=utf-8", resp.Header.Get("Content-Type"))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "<LockDuration>PT2M</LockDuration>")
+	assert.Contains(t, string(body), "<MaxDeliveryCount>5</MaxDeliveryCount>")
+	assert.Contains(t, string(body), "<DefaultMessageTimeToLive>P1D</DefaultMessageTimeToLive>")
+
+	// $Resources/Queues should list it.
+	resp = sbRequest(t, http.MethodGet, "/$Resources/Queues", nil, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/atom+xml;type=feed;charset=utf-8", resp.Header.Get("Content-Type"))
+
+	body, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "<title>"+queue+"</title>")
+
+	// A topic and $Resources/Topics.
+	topic := "test-topic-cfg-" + uuid.NewString()
+	resp = sbRequest(t, http.MethodPut, "/"+topic+"?type=topic", nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	resp = sbRequest(t, http.MethodGet, "/$Resources/Topics", nil, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "<title>"+topic+"</title>")
+
+	// A missing entity 404s.
+	resp = sbRequest(t, http.MethodGet, "/no-such-entity-"+uuid.NewString(), nil, nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	// Cleanup.
+	resp = sbRequest(t, http.MethodDelete, "/"+queue, nil, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	resp = sbRequest(t, http.MethodDelete, "/"+topic, nil, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestIntegration_AzureServiceBus_PeekLockLongPoll covers gap #2: a
+// PeekLock long-poll waiting for a message that arrives shortly after the
+// request starts, rather than getting an immediate 204.
+func TestIntegration_AzureServiceBus_PeekLockLongPoll(t *testing.T) {
+	t.Parallel()
+	dumpContainerLogsOnFailure(t)
+
+	queue := "test-queue-longpoll-" + uuid.NewString()
+
+	resp := sbRequest(t, http.MethodPut, "/"+queue, nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	const messageBody = "delayed message"
+
+	// sbRequest uses require/t.Helper(), which must only ever run on the
+	// test's own goroutine -- so the delayed Send below is a plain
+	// net/http.Post rather than a reused sbRequest call.
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+
+		req, err := http.NewRequestWithContext(
+			context.Background(), http.MethodPost, azureServiceBusEndpoint+"/"+queue+"/messages",
+			strings.NewReader(messageBody),
+		)
+		if err != nil {
+			return
+		}
+
+		sendResp, doErr := http.DefaultClient.Do(req)
+		if doErr == nil {
+			_ = sendResp.Body.Close()
+		}
+	}()
+
+	resp = sbRequest(t, http.MethodPost, "/"+queue+"/messages/head?timeout=10", nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "long-poll should have waited for the delayed Send")
+
+	gotBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, messageBody, string(gotBody))
+
+	resp = sbRequest(t, http.MethodDelete, "/"+queue, nil, nil)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
