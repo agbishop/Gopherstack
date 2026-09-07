@@ -29,11 +29,11 @@ ops:
   BatchDisableStandards: {wire: ok, errors: ok, state: ok, persist: ok, note: "DELETING is an ephemeral response literal returned after a synchronous delete (record is removed from the table in the same call) -- a later GetEnabledStandards correctly no longer returns it. Not the gopherstack-muzq stall pattern; left as-is."}
   GetEnabledStandards: {wire: ok, errors: ok, state: fixed, persist: ok, note: "gopherstack-muzq (2026-08-21): now advances any PENDING subscription to READY on first poll (new unexported StandardsSubscription.pollCount field), mirroring the reap-on-read pattern services/omics uses for Get*-advances-Creating resources -- no generated Get*Waiter ships for this op in this SDK version, but that only means a real caller must hand-roll its own poll loop, not that an unadvancing status is correct. TestBatchEnableStandardsPath (standards_test.go) previously asserted only the initial PENDING status and stopped; strengthened with a GetEnabledStandards follow-up asserting READY. New real-SDK-client proof: TestBatchEnableStandards_ReachesReady (wire_field_fixes_test.go). Hand-reverted standards.go+models.go to git show HEAD, confirmed both tests fail with StandardsStatus stuck at PENDING, restored, md5sum byte-identical."}
   DescribeStandards: {wire: ok, errors: ok, state: ok, persist: n/a, note: "static known-standards catalog, matches AWS ARNs/names"}
-  DescribeStandardsControls: {wire: ok, errors: ok, state: ok, persist: ok}
-  UpdateStandardsControl: {wire: ok, errors: ok, state: ok, persist: ok}
-  ListStandardsControlAssociations: {wire: ok, errors: ok, state: ok, persist: n/a}
-  BatchGetStandardsControlAssociations: {wire: ok, errors: ok, state: ok, persist: ok}
-  BatchUpdateStandardsControlAssociations: {wire: ok, errors: ok, state: ok, persist: ok}
+  DescribeStandardsControls: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-cf4j: control status is stored/echoed only, never consulted by a check engine -- structural, see triage section."}
+  UpdateStandardsControl: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-cf4j: same as DescribeStandardsControls."}
+  ListStandardsControlAssociations: {wire: ok, errors: ok, state: ok, persist: n/a, note: "gopherstack-cf4j: same as DescribeStandardsControls."}
+  BatchGetStandardsControlAssociations: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-cf4j: same as DescribeStandardsControls."}
+  BatchUpdateStandardsControlAssociations: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-cf4j: same as DescribeStandardsControls."}
   CreateActionTarget: {wire: ok, errors: ok, state: ok, persist: ok}
   DescribeActionTargets: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateActionTarget: {wire: ok, errors: fixed, state: ok, persist: ok, note: "gopherstack-02oa: never checked b.hubEnabled, unlike CreateActionTarget/every sibling create/enable path. deserializers.go's deserializeOpErrorUpdateActionTarget (:16987) models InvalidAccessException; added the check and mapped it. See action_targets_hub_enabled_test.go."}
@@ -1053,12 +1053,17 @@ speculation before reading the code:**
   `ResultMetadata`, so silently skipping an unknown id matches the real
   wire shape exactly).
 - `CreateFindingAggregator`/cross-Region aggregation and
-  `BatchEnableStandards`/`BatchUpdateStandardsControlAssociations`/compliance
+  `BatchEnableStandards`/`BatchUpdateStandardsControlAssociations` control
   status are bookkeeping, not derived from real cross-region replication or
   finding-vs-control evaluation -- structural (single-backend-instance mock
   has no second region to replicate into, and no config-rule-evaluation
   engine), same category as `DescribeStandards`'/`DescribeProducts`' static
-  catalogs, not a new finding.
+  catalogs, not a new finding. This does NOT extend to finding-level
+  `Compliance.Status`: that field is never fabricated by this backend (see
+  gopherstack-cf4j triage below) -- it's not part of this bullet's claim,
+  only the control/standard bookkeeping is. Prior wording here read
+  "...compliance status are bookkeeping" as one run-on list, which is
+  ambiguous about which "compliance" it means; corrected.
 
 **Structural/absent, checked rather than assumed, not fixed this pass:**
 
@@ -1103,3 +1108,138 @@ Gates: `GOTOOLCHAIN=go1.26.6 go build ./services/securityhub/...`,
 ./services/securityhub/...` (all pass), `golangci-lint run
 ./services/securityhub/...` (0 issues), `gofmt -l services/securityhub/`
 (clean).
+
+## gopherstack-cf4j (2026-09-07): triage -- standards/control associations ARE bookkeeping (correctly); compliance status is NOT synthesized
+
+Filed title-only, empty description: "securityhub: standards and control
+associations are bookkeeping; compliance status is synthesized." Re-derived
+both claims from the code since none of the specifics existed in the issue.
+Verdict: **structural for claim 1, factually wrong for claim 2** -- no code
+change. This section is the missing triage note plus the correction.
+
+### Claim 1: standards/control associations are bookkeeping -- TRUE, and correct
+
+`BatchEnableStandards`/`BatchDisableStandards` (standards.go) create/delete a
+`StandardsSubscription` record. `DescribeStandardsControls` returns a static
+`defaultControls()` list overridable per-arn via `UpdateStandardsControl`
+(`b.controlOverrides`). `BatchGetStandardsControlAssociations`/
+`BatchUpdateStandardsControlAssociations`/`ListStandardsControlAssociations`
+read/write `b.controlAssocOverrides` the same way. All four are pure
+CRUD-on-a-map: stored on write, echoed on read, consulted by nothing else.
+
+Confirmed by grep, not assumed: `ImportFindings` (the only function that
+creates a finding -- interfaces.go:14, called from exactly one call site,
+handler_findings.go:71 `handleBatchImportFindings`) is never called from
+standards.go, controls.go, handler_standards.go, or handler_controls.go.
+Enabling a standard, disabling a control, or updating a control association
+never produces, withdraws, or touches a single finding.
+
+That is the honest behavior, not a gap, because the real AWS semantics this
+mirrors require a check-evaluation engine gopherstack doesn't have.
+`StandardsControl.ControlStatus`'s doc comment (types.go:19299-19301,
+securityhub@v1.75.4) says outright:
+
+> The current status of the security standard control. Indicates whether the
+> control is enabled or disabled. Security Hub CSPM does not check against
+> disabled controls.
+
+"Does not check against disabled controls" presupposes Security Hub CSPM
+*does* check against enabled ones -- a continuous compliance engine that
+inspects real resource state per control and emits/withdraws findings as
+`ControlStatus`/`AssociationStatus` change. Gopherstack's `securityhub`
+package has no such engine (per the 2026-08-29 error-path sweep, confirmed
+again this pass: zero cross-service call sites from guardduty/inspector/
+macie into securityhub, and the only finding-creation path is client-driven
+`BatchImportFindings`). Given that, `ControlStatus`/`AssociationStatus` have
+exactly one honest implementation available: store what the caller set and
+echo it back. Building a real per-control resource evaluator is out of
+reach without picking a source of truth for "what does S3.1 check" across
+every emulated service and re-running it on every toggle -- a project-wide
+feature, not a securityhub fix.
+
+**What would have to exist first**: a resource-evaluation engine that maps
+each `SecurityControlId` (controls.go's `knownSecurityControls`, e.g.
+`S3.1` "S3 Block Public Access setting should be enabled") to a real check
+against the corresponding emulated service's stored state (e.g. query
+`services/s3`'s bucket public-access-block config), runs it when a control's
+`AssociationStatus`/`ControlStatus` is `ENABLED`, and creates/updates
+`Compliance.Status` findings via the existing `ImportFindings` path when the
+check result changes. That's new cross-service infrastructure, not a
+securityhub-local fix. Not building it; echo-only bookkeeping is correct
+until it exists.
+
+### Claim 2: compliance status is synthesized -- FALSE, checked against the code
+
+`types.ComplianceStatus` (enums.go:237,241-244) has four values: `PASSED`,
+`WARNING`, `FAILED`, `NOT_AVAILABLE`.
+
+Grepped every non-test `.go` file in this package for all four literals and
+for any `math/rand` import: zero hits. Nothing in this backend ever writes
+a `ComplianceStatus` value. The only two places `Compliance`/`Compliance.Status`
+appear in non-test code are reads: `findings.go:347` (`nestedFindingString`,
+used by `GetFindings`/`GetFindingsV2`'s `ComplianceStatus` filter) and
+`findings_v2.go:570` (`GetFindingsV2` composite-filter evaluation). Neither
+writes a value; both return `""` when the field is absent on the stored
+finding (`nestedFindingString`, findings.go:357-360) -- absence stays
+absent, it is never defaulted to an enum member.
+
+The only place a finding (and therefore any `Compliance` object) is created
+is `ImportFindings` (findings.go:104-148), which copies the caller's ASFF
+map verbatim (`maps.Copy(stored, f)`, findings.go:133) into storage. The one
+list of fields explicitly protected from being overwritten by a client's
+re-import -- `findingCustomerManagedFields` (findings.go:21-23): `Note`,
+`UserDefinedFields`, `VerificationState`, `Workflow` -- does **not** include
+`Compliance`, which is correct: AWS's own docs place `Compliance` with the
+finding-provider-owned fields a re-import is expected to refresh, not the
+customer-managed set. So on every `BatchImportFindings` call, whatever
+`Compliance.Status` the caller supplies is exactly what gets stored,
+overwriting the prior value -- matching real AWS, where the finding
+*provider* (a real CSPM check, GuardDuty, a third-party integration) is the
+only party that ever sets `Compliance.Status`; Security Hub itself doesn't
+invent one.
+
+`BatchUpdateFindings` (findings.go:480-527) *could* in principle be a second
+write path -- `handleBatchUpdateFindings` (handler_findings.go:80-98)
+collects `updates` from every raw JSON body key except
+`FindingIdentifiers` (handler_findings.go:91-98), with no field allowlist,
+and `maps.Copy(f, updates)` applies it verbatim. This was already investigated by the 2026-08-29
+error-discard sweep (PARITY.md, "Checked and confirmed correct... contra
+this pass's own speculation") and found clean: `BatchUpdateFindingsInput`
+(api_op_BatchUpdateFindings.go, securityhub@v1.75.4) defines exactly nine
+fields besides `FindingIdentifiers` -- `Confidence`, `Criticality`, `Note`,
+`RelatedFindings`, `Severity`, `Types`, `UserDefinedFields`,
+`VerificationState`, `Workflow` -- and has no `Compliance` member at all. A
+real typed `aws-sdk-go-v2` client is structurally incapable of sending
+`Compliance` through `BatchUpdateFindings`; only a hand-crafted raw HTTP
+request could exploit the missing allowlist, and even then it would be
+replaying attacker-supplied input, not the backend inventing a status.
+Re-confirmed this pass, not just cited: still true, not treating it as new
+scope for gopherstack-cf4j.
+
+**Conclusion**: `Compliance.Status` falls in the "copied from client input
+on `BatchImportFindings`" category the audit brief calls out as legitimate,
+not the "invented" category. Nothing here resembles the accessanalyzer/
+personalize undisclosed-confident-answer bug class (gopherstack-xyu4/h3th)
+-- there is no code path that fabricates a value the caller never supplied.
+The issue title's second half does not hold up against the code as written.
+
+### Files changed
+
+- `services/securityhub/PARITY.md`: added `note:` fields to the
+  `DescribeStandardsControls`/`UpdateStandardsControl`/
+  `ListStandardsControlAssociations`/`BatchGetStandardsControlAssociations`/
+  `BatchUpdateStandardsControlAssociations` table rows pointing here;
+  tightened the pre-existing but ambiguous "...compliance status are
+  bookkeeping" sentence (2026-08-29 sweep section) that conflated
+  control-association bookkeeping with finding-level `Compliance.Status` in
+  one run-on clause, and added a forward pointer to this section. No `.go`
+  files touched -- both claims resolve to "no code defect," not "no code
+  reviewed."
+
+### Suggested bd disposition
+
+Close gopherstack-cf4j as **not a bug / documentation-only**, or re-file if
+the maintainer wants the "what would have to exist first" cross-service
+check-evaluation engine tracked separately (it would be a new, large,
+multi-service feature, not a securityhub-local fix). Suggested bd close
+text below.
