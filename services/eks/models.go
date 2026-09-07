@@ -392,9 +392,10 @@ type PodIdentityAssociation struct {
 	DisableSessionTags bool       `json:"disableSessionTags"`
 }
 
-// PodIdentityAssociationSpec is one entry of UpdateAddonInput's
-// PodIdentityAssociations, matching types.AddonPodIdentityAssociations
-// (RoleArn + ServiceAccount only -- no namespace).
+// PodIdentityAssociationSpec is one entry of CreateAddonInput's or
+// UpdateAddonInput's PodIdentityAssociations, matching
+// types.AddonPodIdentityAssociations (RoleArn + ServiceAccount only -- no
+// namespace).
 type PodIdentityAssociationSpec struct {
 	RoleARN        string
 	ServiceAccount string

@@ -53,9 +53,14 @@ func isValidResolveConflicts(s string) bool {
 }
 
 // CreateAddon creates a new managed add-on in a cluster.
+//
+// Unlike UpdateAddon, CreateAddonInput.PodIdentityAssociations has no
+// tri-state semantics: it is a plain create-time list (verified against the
+// SDK doc comment, which says nothing about empty-versus-absent).
 func (b *InMemoryBackend) CreateAddon(
 	clusterName, addonName, addonVersion, serviceAccountRoleARN, configuration, resolveConflicts string,
 	kv map[string]string,
+	podIdentityAssociations []PodIdentityAssociationSpec,
 ) (*Addon, error) {
 	b.mu.Lock("CreateAddon")
 	defer b.mu.Unlock()
@@ -73,6 +78,10 @@ func (b *InMemoryBackend) CreateAddon(
 			"%w: resolveConflicts %q must be one of OVERWRITE, NONE, PRESERVE",
 			ErrValidation, resolveConflicts,
 		)
+	}
+
+	if err := validatePodIdentityAssociationSpecs(podIdentityAssociations); err != nil {
+		return nil, err
 	}
 
 	addonARN := arn.Build(
@@ -108,6 +117,7 @@ func (b *InMemoryBackend) CreateAddon(
 		ResolveConflicts:      resolveConflicts,
 	}
 	b.addons.Put(addon)
+	b.replaceAddonPodIdentityAssociationsLocked(clusterName, addon, podIdentityAssociations)
 
 	b.work.After("AddonTransition", addonTransitionDelay, func() {
 		b.mu.Lock("CreateAddon-async")
@@ -123,8 +133,12 @@ func (b *InMemoryBackend) CreateAddon(
 	return &cp, nil
 }
 
-// DeleteAddon removes an add-on from a cluster.
-func (b *InMemoryBackend) DeleteAddon(clusterName, addonName string) (*Addon, error) {
+// DeleteAddon removes an add-on from a cluster. Unless preserve is set, its
+// owned pod identity associations (OwnerARN == addon.ARN) are deleted along
+// with it -- confirmed via DeleteAddonInput.Preserve's doc comment ("If an
+// IAM account is associated with the add-on, it isn't removed"), which only
+// makes sense if the default (preserve=false) path does remove it.
+func (b *InMemoryBackend) DeleteAddon(clusterName, addonName string, preserve bool) (*Addon, error) {
 	b.mu.Lock("DeleteAddon")
 	defer b.mu.Unlock()
 
@@ -135,6 +149,10 @@ func (b *InMemoryBackend) DeleteAddon(clusterName, addonName string) (*Addon, er
 	addon, ok := b.addons.Get(addonKey(clusterName, addonName))
 	if !ok {
 		return nil, fmt.Errorf("%w: addon %s not found in cluster %s", ErrNotFound, addonName, clusterName)
+	}
+
+	if !preserve {
+		b.replaceAddonPodIdentityAssociationsLocked(clusterName, addon, nil)
 	}
 
 	cp := *addon
@@ -219,13 +237,8 @@ func (b *InMemoryBackend) UpdateAddon(
 	}
 
 	if podIdentityAssociations != nil {
-		for _, s := range *podIdentityAssociations {
-			if s.RoleARN == "" || s.ServiceAccount == "" {
-				return nil, fmt.Errorf(
-					"%w: podIdentityAssociations roleArn and serviceAccount are required",
-					ErrValidation,
-				)
-			}
+		if err := validatePodIdentityAssociationSpecs(*podIdentityAssociations); err != nil {
+			return nil, err
 		}
 	}
 
@@ -252,6 +265,21 @@ func (b *InMemoryBackend) UpdateAddon(
 	cp := *addon
 
 	return &cp, nil
+}
+
+// validatePodIdentityAssociationSpecs requires roleARN and serviceAccount on
+// every spec. Shared by CreateAddon and UpdateAddon.
+func validatePodIdentityAssociationSpecs(specs []PodIdentityAssociationSpec) error {
+	for _, s := range specs {
+		if s.RoleARN == "" || s.ServiceAccount == "" {
+			return fmt.Errorf(
+				"%w: podIdentityAssociations roleArn and serviceAccount are required",
+				ErrValidation,
+			)
+		}
+	}
+
+	return nil
 }
 
 // replaceAddonPodIdentityAssociationsLocked deletes every pod identity

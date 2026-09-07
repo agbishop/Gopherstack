@@ -403,7 +403,7 @@ func TestTagResourceOnAddon(t *testing.T) {
 	_, err := b.CreateCluster("c1", "1.32", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	addon, err := b.CreateAddon("c1", "coredns", "v1.0", "", "", "", nil)
+	addon, err := b.CreateAddon("c1", "coredns", "v1.0", "", "", "", nil, nil)
 	require.NoError(t, err)
 
 	err = b.TagResource(addon.ARN, map[string]string{"k": "v"})

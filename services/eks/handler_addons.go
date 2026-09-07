@@ -3,6 +3,7 @@ package eks
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -119,12 +120,13 @@ func addonToJSON(a *Addon) map[string]any {
 }
 
 type createAddonBody struct {
-	Tags                  map[string]string `json:"tags"`
-	AddonName             string            `json:"addonName"`
-	AddonVersion          string            `json:"addonVersion"`
-	ServiceAccountRoleArn string            `json:"serviceAccountRoleArn"`
-	ConfigurationValues   string            `json:"configurationValues"`
-	ResolveConflicts      string            `json:"resolveConflicts"`
+	Tags                    map[string]string                 `json:"tags"`
+	AddonName               string                            `json:"addonName"`
+	AddonVersion            string                            `json:"addonVersion"`
+	ServiceAccountRoleArn   string                            `json:"serviceAccountRoleArn"`
+	ConfigurationValues     string                            `json:"configurationValues"`
+	ResolveConflicts        string                            `json:"resolveConflicts"`
+	PodIdentityAssociations []addonPodIdentityAssociationBody `json:"podIdentityAssociations"`
 }
 
 func (h *Handler) handleCreateAddon(c *echo.Context, clusterName string, body []byte) error {
@@ -137,10 +139,15 @@ func (h *Handler) handleCreateAddon(c *echo.Context, clusterName string, body []
 		return c.JSON(http.StatusBadRequest, errResp("InvalidParameterException", "addonName is required"))
 	}
 
+	specs := make([]PodIdentityAssociationSpec, len(in.PodIdentityAssociations))
+	for i, a := range in.PodIdentityAssociations {
+		specs[i] = PodIdentityAssociationSpec{RoleARN: a.RoleArn, ServiceAccount: a.ServiceAccount}
+	}
+
 	addon, err := h.Backend.CreateAddon(
 		clusterName, in.AddonName, in.AddonVersion, in.ServiceAccountRoleArn,
 		in.ConfigurationValues, in.ResolveConflicts,
-		in.Tags,
+		in.Tags, specs,
 	)
 	if err != nil {
 		return h.handleError(c, err)
@@ -152,7 +159,9 @@ func (h *Handler) handleCreateAddon(c *echo.Context, clusterName string, body []
 }
 
 func (h *Handler) handleDeleteAddon(c *echo.Context, clusterName, addonName string) error {
-	addon, err := h.Backend.DeleteAddon(clusterName, addonName)
+	preserve, _ := strconv.ParseBool(c.Request().URL.Query().Get("preserve"))
+
+	addon, err := h.Backend.DeleteAddon(clusterName, addonName, preserve)
 	if err != nil {
 		return h.handleError(c, err)
 	}

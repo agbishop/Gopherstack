@@ -44,10 +44,10 @@ ops:
   DeleteNodegroup: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateNodegroupConfig: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was reachable on a bare POST to the nodegroup path with no suffix check, so real SDK traffic to .../update-config fell through with a corrupted nodegroupName (the literal suffix baked in); now requires the real /update-config suffix. gopherstack-muzq (2026-08-21): the Update record built in the handler was stamped InProgress and never advanced; now scheduled to Successful"}
   UpdateNodegroupVersion: {wire: ok, errors: ok, state: fixed, persist: ok, note: "gopherstack-muzq (2026-08-21): the returned Update record was stamped InProgress and never advanced -- DescribeUpdate polled InProgress forever; now scheduled to Successful via scheduleUpdateTransition"}
-  CreateAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "2026-08-21 (gopherstack-y1zn): addonToJSON (shared by Create/Describe/Delete) emitted \"marketplaceVersion\" and \"resolveConflicts\"; types.Addon has neither (real Marketplace field is the nested \"marketplaceInformation\" object, not tracked by this backend; resolveConflicts is CreateAddon/UpdateAddon request-only, never echoed). Both removed. Proven via TestAddon_NoMarketplaceVersionOrResolveConflicts_RealClient, hand-reverted/confirmed-failing/restored/md5sum-verified."}
+  CreateAddon: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "2026-08-21 (gopherstack-y1zn): addonToJSON (shared by Create/Describe/Delete) emitted \"marketplaceVersion\" and \"resolveConflicts\"; types.Addon has neither (real Marketplace field is the nested \"marketplaceInformation\" object, not tracked by this backend; resolveConflicts is CreateAddon/UpdateAddon request-only, never echoed). Both removed. Proven via TestAddon_NoMarketplaceVersionOrResolveConflicts_RealClient, hand-reverted/confirmed-failing/restored/md5sum-verified. 2026-09-07 (gopherstack-bs4t): CreateAddonInput.PodIdentityAssociations was declared by the model but never read by createAddonBody, so create-time associations were silently dropped. Fixed -- see the gopherstack-bs4t/wmuv note below."}
   DescribeAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "see CreateAddon's gopherstack-y1zn note -- same addonToJSON fix."}
   ListAddons: {wire: fixed, errors: ok, state: ok, persist: ok, note: "now supports maxResults/nextToken pagination"}
-  DeleteAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "see CreateAddon's gopherstack-y1zn note -- same addonToJSON fix."}
+  DeleteAddon: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "see CreateAddon's gopherstack-y1zn note -- same addonToJSON fix. 2026-09-07 (gopherstack-wmuv): did not clean up the deleted add-on's owned pod identity associations, leaking a tags handle and an orphaned association. Fixed -- see the gopherstack-bs4t/wmuv note below."}
   UpdateAddon: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was PUT to bare addon path; real op is POST .../addons/{addonName}/update. 2026-09-07 (gopherstack-tu95): PodIdentityAssociations was declared on the wire but never read -- its documented tri-state (absent=no change, []=delete all, populated=replace) was unimplemented. Addon also never surfaced its owned associations back (types.Addon.PodIdentityAssociations), so a delete could not be observed. See PodIdentityAssociation tri-state entry below."}
   DescribeAddonVersions: {wire: fixed, errors: ok, state: n/a, persist: n/a, note: "path was /addon-versions; real path is /addons/supported-versions — was completely unreachable by the real SDK client"}
   DescribeAddonConfiguration: {wire: fixed, errors: ok, state: n/a, persist: n/a, note: "path was /addon-configuration; real path is /addons/configuration-schemas — was completely unreachable. gopherstack-g479 (2026-08-21): configurationSchema was ALSO a nested JSON object where the real member (deserializers.go, case \"configurationSchema\": value.(string)) is the schema as a raw JSON string; failed with 'expected String to be of type string, got map[string]interface {} instead' pre-fix. Found via a new go/types-based map-literal kind scanner."}
@@ -530,3 +530,76 @@ three production files, ran, confirmed 4 failures, restored):
 (every existing field unchanged) and needs no `eksSnapshotVersion` bump --
 only its golden `testdata/snapshot_inventory.json` fixture needs a
 `-update` refresh, deliberately left for a separate pass.
+
+## 2026-09-07 (gopherstack-bs4t, gopherstack-wmuv): CreateAddon dropped PodIdentityAssociations; DeleteAddon leaked its owned associations
+
+Two follow-ups from gopherstack-tu95's UpdateAddon fix above, both in
+`services/eks/addons.go`.
+
+**gopherstack-bs4t.** `CreateAddonInput.PodIdentityAssociations`
+(`api_op_CreateAddon.go`) is documented as a plain create-time list: "An
+array of EKS Pod Identity associations to be created. Each association maps
+a Kubernetes service account to an IAM role." -- no tri-state wording at
+all, unlike `UpdateAddonInput`'s field. `createAddonBody` in
+`handler_addons.go` never declared the field, so create-time associations
+were silently dropped. Fixed: `createAddonBody` now carries
+`PodIdentityAssociations []addonPodIdentityAssociationBody` (the same body
+type `updateAddonBody` already used), converted to `[]PodIdentityAssociationSpec`
+and passed as a new trailing parameter to `Backend.CreateAddon`, which
+validates it (`validatePodIdentityAssociationSpecs`, extracted from
+`UpdateAddon`'s inline check and now shared by both) and reuses
+`replaceAddonPodIdentityAssociationsLocked` to create one association per
+spec (its delete-owned-first step is a no-op on a brand-new addon).
+
+**gopherstack-wmuv.** `DeleteAddonInput.Preserve`'s doc comment: "Specifying
+this option preserves the add-on software on your cluster but Amazon EKS
+stops managing any settings for the add-on. If an IAM account is associated
+with the add-on, it isn't removed." The `DeleteAddon` op doc comment itself
+says nothing about pod identity associations; `Preserve`'s doc is the only
+evidence, and its wording only makes sense if the default (`preserve=false`)
+path *does* remove the associated IAM account -- confirming wmuv's claim
+by negative implication. `DeleteAddon` never read a `preserve` flag at all
+and never touched `PodIdentityAssociation`, so owned associations survived
+their deleted owner and leaked a `tags.Tags` Prometheus-label handle. Fixed:
+`DeleteAddonInput`'s `preserve` query parameter (serializers.go's
+`awsRestjson1_serializeOpHttpBindingsDeleteAddonInput` -- `encoder.SetQuery("preserve")`,
+only emitted when true) is now read in `handleDeleteAddon` via
+`strconv.ParseBool` and passed to `Backend.DeleteAddon`, which -- unless
+`preserve` is set -- calls `replaceAddonPodIdentityAssociationsLocked` with
+a nil spec list to delete every association owned by the add-on (`OwnerARN
+== addon.ARN`) before removing it, reusing the exact same helper as
+gopherstack-tu95 and gopherstack-bs4t rather than a third parallel
+implementation.
+
+Both `CreateAddon` errors that podIdentityAssociations validation feeds
+(missing `roleArn`/`serviceAccount`) confirmed declared for `CreateAddon` in
+`deserializeOpErrorCreateAddon` (`InvalidParameterException`, already the
+shared `ErrValidation` sentinel).
+
+Regression tests (`addon_pod_identity_test.go`), all HTTP-handler-driven:
+- `TestAddon_CreateAddon_PodIdentityAssociations_Populated` (create with two
+  associations, asserts DescribeAddon reports exactly those two, each
+  association's roleArn/serviceAccount and ownerArn verified via
+  DescribePodIdentityAssociation/ListPodIdentityAssociations) -- fails
+  against unmodified code (0 associations instead of 2)
+- `TestAddon_CreateAddon_PodIdentityAssociations_Absent` (create without the
+  field, asserts `[]`)
+- `TestAddon_CreateAddon_PodIdentityAssociations_RejectsMissingFields`
+  (a populated entry missing serviceAccount is rejected
+  InvalidParameterException and leaves no partially created addon) -- fails
+  against unmodified code (200 instead of 400, addon exists)
+- `TestAddon_DeleteAddon_CleansUpOwnedPodIdentityAssociations` (creates a
+  second addon with its own association, deletes the first, asserts via
+  ListPodIdentityAssociations that only the second addon's association
+  survives) -- fails against unmodified code (3 survivors instead of 1)
+- `TestAddon_DeleteAddon_Preserve_KeepsOwnedPodIdentityAssociations`
+  (deletes with `?preserve=true`, asserts both associations still present)
+
+`Addon`/`PodIdentityAssociationSpec` gained no new fields (bs4t/wmuv reuse
+the `PodIdentityAssociations []string` field gopherstack-tu95 already added
+to `Addon`); the `pkgs/persistence` snapshot-version guard was re-run
+read-only and reports no drift.
+
+Gates: `go build ./...`, `go vet ./services/eks/...`,
+`go test -race -count=1 ./services/eks/...`, and
+`golangci-lint run services/eks/...` all clean.
