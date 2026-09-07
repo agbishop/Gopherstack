@@ -15,6 +15,8 @@ var (
 	ErrFindingNotFound = awserr.New("ResourceNotFoundException", awserr.ErrNotFound)
 	// ErrValidation is returned on invalid input.
 	ErrValidation = awserr.New("ValidationException", awserr.ErrInvalidParameter)
+	// ErrMalformedPolicy is returned when a policyDocument is not valid JSON.
+	ErrMalformedPolicy = awserr.New("UnprocessableEntityException", awserr.ErrInvalidParameter)
 )
 
 // ErrPolicyGenerationNotFound is returned when a policy generation job is not found.

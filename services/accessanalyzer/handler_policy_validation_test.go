@@ -114,6 +114,63 @@ func TestCheckPolicyOps_RequiredFieldMissing(t *testing.T) {
 	}
 }
 
+// TestCheckPolicyOps_MalformedPolicyDocument verifies the three Check* ops
+// report UnprocessableEntityException (422) for a syntactically invalid
+// policyDocument, rather than silently treating it as an empty policy and
+// reporting PASS (gopherstack-x9ff).
+func TestCheckPolicyOps_MalformedPolicyDocument(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		body map[string]any
+		name string
+		path string
+	}{
+		{
+			name: "check_access_not_granted",
+			path: "/policy/check-access-not-granted",
+			body: map[string]any{
+				"access": []any{
+					map[string]any{"actions": []string{"s3:GetObject"}, "resources": []string{"*"}},
+				},
+				"policyDocument": "not-json",
+				"policyType":     "IDENTITY_POLICY",
+			},
+		},
+		{
+			name: "check_no_new_access",
+			path: "/policy/check-no-new-access",
+			body: map[string]any{
+				"existingPolicyDocument": "not-json",
+				"newPolicyDocument":      `{"Version":"2012-10-17","Statement":[]}`,
+				"policyType":             "IDENTITY_POLICY",
+			},
+		},
+		{
+			name: "check_no_public_access",
+			path: "/policy/check-no-public-access",
+			body: map[string]any{
+				"policyDocument": "not-json",
+				"resourceType":   "AWS::S3::Bucket",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			rec := doRequest(t, h, http.MethodPost, tt.path, tt.body)
+			assert.Equal(t, http.StatusUnprocessableEntity, rec.Code)
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			assert.Equal(t, "UnprocessableEntityException", resp["__type"])
+		})
+	}
+}
+
 // TestValidatePolicy verifies POST /policy/validation returns empty findings.
 func TestValidatePolicy(t *testing.T) {
 	t.Parallel()

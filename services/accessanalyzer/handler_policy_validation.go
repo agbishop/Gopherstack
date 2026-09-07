@@ -65,7 +65,11 @@ func (h *Handler) handleCheckAccessNotGranted(body []byte) (any, int, error) {
 		return nil, 0, ErrValidation
 	}
 
-	res := CheckAccessNotGranted(req.PolicyDocument, req.Access)
+	res, err := CheckAccessNotGranted(req.PolicyDocument, req.Access)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	out := map[string]any{keyResult: res.Result, keyMessage: res.Message}
 
 	if len(res.Reasons) > 0 {
@@ -90,7 +94,11 @@ func (h *Handler) handleCheckNoNewAccess(body []byte) (any, int, error) {
 		return nil, 0, ErrValidation
 	}
 
-	res := CheckNoNewAccess(req.ExistingPolicyDocument, req.NewPolicyDocument)
+	res, err := CheckNoNewAccess(req.ExistingPolicyDocument, req.NewPolicyDocument)
+	if err != nil {
+		return nil, 0, err
+	}
+
 	out := map[string]any{keyResult: res.Result, keyMessage: res.Message}
 
 	if len(res.Reasons) > 0 {
@@ -114,7 +122,10 @@ func (h *Handler) handleCheckNoPublicAccess(body []byte) (any, int, error) {
 		return nil, 0, ErrValidation
 	}
 
-	res := CheckNoPublicAccess(req.PolicyDocument)
+	res, err := CheckNoPublicAccess(req.PolicyDocument)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	reasons := make([]any, 0, len(res.Reasons))
 	for _, r := range res.Reasons {

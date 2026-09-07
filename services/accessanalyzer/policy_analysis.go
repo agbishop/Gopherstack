@@ -104,12 +104,23 @@ func (p *iamPrincipal) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// parsePolicy unmarshals a policy document JSON string. Returns empty policy on error.
-func parsePolicy(doc string) iamPolicy {
-	var p iamPolicy
-	_ = json.Unmarshal([]byte(doc), &p)
+// parsePolicy unmarshals a policy document JSON string. An empty/absent doc
+// is a valid empty policy (no statements); anything else that fails to parse
+// is malformed and reported via ErrMalformedPolicy rather than silently
+// treated as empty (gopherstack-x9ff: previously garbage input silently
+// became an empty policy, so CheckAccessNotGranted/CheckNoNewAccess/
+// CheckNoPublicAccess reported PASS on corrupt policyDocument input).
+func parsePolicy(doc string) (iamPolicy, error) {
+	if strings.TrimSpace(doc) == "" {
+		return iamPolicy{}, nil
+	}
 
-	return p
+	var p iamPolicy
+	if err := json.Unmarshal([]byte(doc), &p); err != nil {
+		return iamPolicy{}, ErrMalformedPolicy
+	}
+
+	return p, nil
 }
 
 // iamGlob reports whether value matches pattern (case-insensitive, supports * and ?).
@@ -230,8 +241,11 @@ func stmtGrantedReasons(stmt iamStatement, i int, accesses []AccessSpec) []map[s
 }
 
 // CheckAccessNotGranted returns PASS if the policy does NOT grant any of the specified accesses.
-func CheckAccessNotGranted(policyDoc string, accesses []AccessSpec) PolicyCheckResult {
-	p := parsePolicy(policyDoc)
+func CheckAccessNotGranted(policyDoc string, accesses []AccessSpec) (PolicyCheckResult, error) {
+	p, err := parsePolicy(policyDoc)
+	if err != nil {
+		return PolicyCheckResult{}, err
+	}
 
 	var reasons []map[string]any
 
@@ -248,19 +262,26 @@ func CheckAccessNotGranted(policyDoc string, accesses []AccessSpec) PolicyCheckR
 			Result:  checkResultFail,
 			Message: "The specified policy grants the specified access.",
 			Reasons: reasons,
-		}
+		}, nil
 	}
 
 	return PolicyCheckResult{
 		Result:  checkResultPass,
 		Message: "The specified policy does not grant the specified access.",
-	}
+	}, nil
 }
 
 // CheckNoNewAccess returns PASS if newPolicyDoc does not grant access beyond existingPolicyDoc.
-func CheckNoNewAccess(existingDoc, newDoc string) PolicyCheckResult {
-	existing := parsePolicy(existingDoc)
-	newPol := parsePolicy(newDoc)
+func CheckNoNewAccess(existingDoc, newDoc string) (PolicyCheckResult, error) {
+	existing, err := parsePolicy(existingDoc)
+	if err != nil {
+		return PolicyCheckResult{}, err
+	}
+
+	newPol, err := parsePolicy(newDoc)
+	if err != nil {
+		return PolicyCheckResult{}, err
+	}
 
 	var reasons []map[string]any
 
@@ -277,13 +298,13 @@ func CheckNoNewAccess(existingDoc, newDoc string) PolicyCheckResult {
 			Result:  checkResultFail,
 			Message: "The updated policy grants new access compared to the existing policy.",
 			Reasons: reasons,
-		}
+		}, nil
 	}
 
 	return PolicyCheckResult{
 		Result:  checkResultPass,
 		Message: "The updated policy does not grant new access compared to the existing policy.",
-	}
+	}, nil
 }
 
 // newAccessReasons returns reasons for (action, resource) pairs granted by stmt
@@ -307,8 +328,11 @@ func newAccessReasons(existing iamPolicy, stmt iamStatement, i int) []map[string
 }
 
 // CheckNoPublicAccess returns PASS if the policy has no public-access Allow statements.
-func CheckNoPublicAccess(policyDoc string) PolicyCheckResult {
-	p := parsePolicy(policyDoc)
+func CheckNoPublicAccess(policyDoc string) (PolicyCheckResult, error) {
+	p, err := parsePolicy(policyDoc)
+	if err != nil {
+		return PolicyCheckResult{}, err
+	}
 
 	var reasons []map[string]any
 
@@ -328,13 +352,13 @@ func CheckNoPublicAccess(policyDoc string) PolicyCheckResult {
 			Result:  checkResultFail,
 			Message: "The policy grants public access.",
 			Reasons: reasons,
-		}
+		}, nil
 	}
 
 	return PolicyCheckResult{
 		Result:  checkResultPass,
 		Message: "The policy does not grant public access.",
-	}
+	}, nil
 }
 
 // ValidatePolicyFinding is a single finding from policy validation.
@@ -530,7 +554,7 @@ func ValidatePolicy(policyDoc, policyType string) []ValidatePolicyFinding {
 		return findings
 	}
 
-	p := parsePolicy(policyDoc)
+	p, _ := parsePolicy(policyDoc)
 
 	findings := validateVersion(raw, p)
 

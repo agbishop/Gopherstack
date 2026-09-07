@@ -278,6 +278,8 @@ func (h *Handler) handleError(c *echo.Context, err error) error {
 		return c.JSON(http.StatusNotFound, errorBody("ResourceNotFoundException", err.Error()))
 	case errors.Is(err, ErrValidation):
 		return c.JSON(http.StatusBadRequest, errorBody("ValidationException", err.Error()))
+	case errors.Is(err, ErrMalformedPolicy):
+		return c.JSON(http.StatusUnprocessableEntity, errorBody("UnprocessableEntityException", err.Error()))
 	}
 
 	return c.JSON(http.StatusInternalServerError, errorBody("InternalFailure", err.Error()))

@@ -160,7 +160,8 @@ func TestCheckAccessNotGrantedLogic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			res := accessanalyzer.CheckAccessNotGranted(tt.policy, tt.accesses)
+			res, err := accessanalyzer.CheckAccessNotGranted(tt.policy, tt.accesses)
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, res.Result)
 
 			if tt.wantResult == "FAIL" {
@@ -168,6 +169,34 @@ func TestCheckAccessNotGrantedLogic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCheckAccessNotGrantedMalformedPolicy proves a syntactically invalid
+// policyDocument is reported as ErrMalformedPolicy rather than silently
+// parsed as an empty policy (gopherstack-x9ff: previously parsePolicy
+// swallowed the json.Unmarshal error, so garbage input reported PASS
+// regardless of the requested access).
+func TestCheckAccessNotGrantedMalformedPolicy(t *testing.T) {
+	t.Parallel()
+
+	_, err := accessanalyzer.CheckAccessNotGranted("not-json", []accessanalyzer.AccessSpec{
+		{Actions: []string{"s3:GetObject"}, Resources: []string{"*"}},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, accessanalyzer.ErrMalformedPolicy)
+}
+
+// TestCheckAccessNotGrantedEmptyPolicyNotMalformed proves an empty/absent
+// policyDocument still parses as a valid empty policy (PASS), not an error --
+// gopherstack-x9ff is about garbage input, not absent input.
+func TestCheckAccessNotGrantedEmptyPolicyNotMalformed(t *testing.T) {
+	t.Parallel()
+
+	res, err := accessanalyzer.CheckAccessNotGranted("", []accessanalyzer.AccessSpec{
+		{Actions: []string{"s3:GetObject"}, Resources: []string{"*"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", res.Result)
 }
 
 // TestCheckNoNewAccessLogic covers CheckNoNewAccess diff logic.
@@ -234,12 +263,42 @@ func TestCheckNoNewAccessLogic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			res := accessanalyzer.CheckNoNewAccess(tt.existing, tt.newPol)
+			res, err := accessanalyzer.CheckNoNewAccess(tt.existing, tt.newPol)
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, res.Result)
 
 			if tt.wantResult == "FAIL" {
 				assert.NotEmpty(t, res.Reasons)
 			}
+		})
+	}
+}
+
+// TestCheckNoNewAccessMalformedPolicy proves a syntactically invalid
+// existingPolicyDocument or newPolicyDocument is reported as
+// ErrMalformedPolicy rather than silently parsed as an empty policy
+// (gopherstack-x9ff).
+func TestCheckNoNewAccessMalformedPolicy(t *testing.T) {
+	t.Parallel()
+
+	valid := policyEmpty()
+
+	tests := []struct {
+		existing string
+		newPol   string
+		name     string
+	}{
+		{name: "malformed_existing", existing: "not-json", newPol: valid},
+		{name: "malformed_new", existing: valid, newPol: "not-json"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := accessanalyzer.CheckNoNewAccess(tt.existing, tt.newPol)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, accessanalyzer.ErrMalformedPolicy)
 		})
 	}
 }
@@ -300,7 +359,8 @@ func TestCheckNoPublicAccessLogic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			res := accessanalyzer.CheckNoPublicAccess(tt.policy)
+			res, err := accessanalyzer.CheckNoPublicAccess(tt.policy)
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, res.Result)
 
 			if tt.wantResult == "FAIL" {
@@ -308,6 +368,17 @@ func TestCheckNoPublicAccessLogic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCheckNoPublicAccessMalformedPolicy proves a syntactically invalid
+// policyDocument is reported as ErrMalformedPolicy rather than silently
+// parsed as an empty (therefore never-public) policy (gopherstack-x9ff).
+func TestCheckNoPublicAccessMalformedPolicy(t *testing.T) {
+	t.Parallel()
+
+	_, err := accessanalyzer.CheckNoPublicAccess("not-json")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, accessanalyzer.ErrMalformedPolicy)
 }
 
 // TestValidatePolicyLogic covers ValidatePolicy structural validation.

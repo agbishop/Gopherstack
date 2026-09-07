@@ -42,9 +42,9 @@ ops:
   GetAccessPreview: {wire: fixed, errors: ok, state: ok, persist: ok, note: "response now echoes Configurations back (accessPreviewToJSON(ap, true)), matching real GetAccessPreviewOutput.accessPreview (types.AccessPreview, which has a Configurations member) -- see CreateAccessPreview."}
   ListAccessPreviews: {wire: ok, errors: ok, state: ok, persist: ok, note: "unaffected by the CreateAccessPreview fix: real ListAccessPreviewsOutput.accessPreviews is []types.AccessPreviewSummary, which has NO Configurations member (unlike Get's types.AccessPreview) -- accessPreviewToJSON(ap, false) correctly omits it here, same asymmetry as ListAnalyzers/GetAnalyzer's Configuration field above."}
   ListAccessPreviewFindings: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS (was: wire: partial): now builds the real types.AccessPreviewFinding shape (id/changeType/resourceOwnerAccount/resourceType/status/createdAt required members, plus action/principal/condition/isPublic when set) via a new accessPreviewFindingToJSON, instead of reusing findingToJSON's v1 Finding/FindingSummary shape (which has analyzerArn and no changeType -- a different, incompatible shape). Every finding is reported as changeType \"NEW\" since access previews here are not diffed against a prior finding set, so existingFindingId/existingFindingStatus are never populated (both are documented as \"provided only for existing findings\"). FIXED (cmd/enumcheck sweep, 1d6e40d1a): changeType was the non-member string \"New\" -- types.FindingChangeType only has NEW/UNCHANGED/CHANGED (types/enums.go:237-244), all-caps -- now emits \"NEW\"; see TestListAccessPreviewFindings_ChangeType_RealSDKClient (wire_field_fixes_test.go). Also added the missing analyzerArn-required validation (ListAccessPreviewFindingsInput requires it). gopherstack-6flj FIXED (discarded input, third instance of the ListFindings/ListFindingsV2 pattern): ListAccessPreviewFindingsInput.Filter was decoded from the body but the backend method took no filter parameter at all -- same fix, same matchesFindingFilter, same disclosed scope."}
-  CheckAccessNotGranted: {wire: ok, errors: ok, state: gap, persist: n/a, note: "genuine IAM policy evaluation (policy_analysis.go), not a stub. FIXED 2026-08-30 (gopherstack-4a8v, anonymous-struct sweep): policyType is a required CheckAccessNotGrantedInput member (accessanalyzer@v1.51.4 api_op_CheckAccessNotGranted.go) that was parsed off the wire and never validated or forwarded anywhere -- CheckAccessNotGranted(policyDoc, accesses) takes no policyType param at all. Added a required-field check. NOT fixed (gap, layer-boundary risk): the underlying evaluation still doesn't distinguish IDENTITY_POLICY from RESOURCE_POLICY (e.g. no Principal-aware analysis for resource policies) -- doing so would need new policy-evaluation semantics this pass didn't invent. A real typed SDK client can never omit policyType (validateOpCheckAccessNotGrantedInput rejects it client-side before any request is sent), so this gap is only reachable by a non-SDK/raw HTTP caller; the required-field test therefore drives the raw HTTP path (handler_policy_validation_test.go), not the typed client. FIXED 2026-09-06 (gopherstack-xyu4, deep-read audit): actionAllowed/resourceAllowed (policy_analysis.go) checked only Action/Resource and silently ignored NotAction/NotResource, so a NotAction- or NotResource-only Allow statement (which grants the *complement* of the listed set -- e.g. NotAction:s3:PutObject grants every other action) was treated as granting nothing at all. That produced a confident, wrong PASS for exactly the kind of broad grant this op exists to catch. Fixed by adding NotAction/NotResource complement matching; see TestCheckAccessNotGrantedLogic/not_action_grants_other_actions_fails and .../not_resource_grants_other_resources_fails (policy_analysis_test.go), both proven to fail against the pre-fix code. Still NOT fixed (gap, disclosed below): a policyDocument that isn't valid JSON is silently parsed to an empty policy (parsePolicy swallows the json.Unmarshal error) rather than erroring, so this op reports PASS for garbage input instead of InvalidParameterException/UnprocessableEntityException -- same confident-wrong-answer shape, left for a follow-up issue since fixing it means adding error returns to a currently-infallible function signature shared by all three Check* ops."}
-  CheckNoNewAccess: {wire: ok, errors: ok, state: ok, persist: n/a, note: "FIXED 2026-08-30 (gopherstack-4a8v): policyType is a required CheckNoNewAccessInput member, parsed but never validated (CheckNoNewAccess(existingDoc, newDoc) doesn't take it either, same as CheckAccessNotGranted -- see its note for why that deeper gap is left alone). Added a required-field check. FIXED 2026-09-06 (gopherstack-xyu4): same NotAction/NotResource fix as CheckAccessNotGranted (shared stmtGrants/policyGrants helpers) -- an existing policy that grants broadly via NotAction/NotResource was previously invisible to policyGrants, so CheckNoNewAccess reported a false FAIL (\"new access\") for access the existing policy already granted. See TestCheckNoNewAccessLogic/existing_not_action_already_covers_new_grant_passes. NOT fixed (gap, unbounded): the *new* statement's own NotAction/NotResource are still not expanded when walking newAccessReasons -- doing so would require enumerating \"every action/resource except these\" against an unbounded action/resource space, which is the automated-reasoning problem this mock cannot solve; a new statement written with NotAction/NotResource is under-reported (may PASS when it should FAIL). Disclosed, not fixed -- see the deep-read note at the bottom of this file (gopherstack-xyu4)."}
-  CheckNoPublicAccess: {wire: ok, errors: ok, state: ok, persist: n/a, note: "FIXED 2026-08-30 (gopherstack-4a8v): resourceType is a required CheckNoPublicAccessInput member, parsed but never validated or used (CheckNoPublicAccess(policyDoc) ignores it -- this mock has no resource-type-specific evaluation, e.g. S3 bucket vs KMS key rules, same structural gap class as CheckAccessNotGranted's policyType). Added a required-field check."}
+  CheckAccessNotGranted: {wire: ok, errors: ok, state: ok, persist: n/a, note: "genuine IAM policy evaluation (policy_analysis.go), not a stub. FIXED 2026-08-30 (gopherstack-4a8v, anonymous-struct sweep): policyType is a required CheckAccessNotGrantedInput member (accessanalyzer@v1.51.4 api_op_CheckAccessNotGranted.go) that was parsed off the wire and never validated or forwarded anywhere -- CheckAccessNotGranted(policyDoc, accesses) takes no policyType param at all. Added a required-field check. NOT fixed (gap, layer-boundary risk): the underlying evaluation still doesn't distinguish IDENTITY_POLICY from RESOURCE_POLICY (e.g. no Principal-aware analysis for resource policies) -- doing so would need new policy-evaluation semantics this pass didn't invent. A real typed SDK client can never omit policyType (validateOpCheckAccessNotGrantedInput rejects it client-side before any request is sent), so this gap is only reachable by a non-SDK/raw HTTP caller; the required-field test therefore drives the raw HTTP path (handler_policy_validation_test.go), not the typed client. FIXED 2026-09-06 (gopherstack-xyu4, deep-read audit): actionAllowed/resourceAllowed (policy_analysis.go) checked only Action/Resource and silently ignored NotAction/NotResource, so a NotAction- or NotResource-only Allow statement (which grants the *complement* of the listed set -- e.g. NotAction:s3:PutObject grants every other action) was treated as granting nothing at all. That produced a confident, wrong PASS for exactly the kind of broad grant this op exists to catch. Fixed by adding NotAction/NotResource complement matching; see TestCheckAccessNotGrantedLogic/not_action_grants_other_actions_fails and .../not_resource_grants_other_resources_fails (policy_analysis_test.go), both proven to fail against the pre-fix code. FIXED 2026-09-07 (gopherstack-x9ff): a policyDocument that wasn't valid JSON was silently parsed to an empty policy (parsePolicy swallowed the json.Unmarshal error), so this op reported PASS for garbage input. parsePolicy now returns ErrMalformedPolicy for anything that fails to parse (an empty/absent doc is still a valid empty policy, unchanged), CheckAccessNotGranted now returns (PolicyCheckResult, error), and the handler maps that error to UnprocessableEntityException/422. See TestCheckAccessNotGrantedMalformedPolicy, proven to fail against pre-fix code."}
+  CheckNoNewAccess: {wire: ok, errors: ok, state: ok, persist: n/a, note: "FIXED 2026-08-30 (gopherstack-4a8v): policyType is a required CheckNoNewAccessInput member, parsed but never validated (CheckNoNewAccess(existingDoc, newDoc) doesn't take it either, same as CheckAccessNotGranted -- see its note for why that deeper gap is left alone). Added a required-field check. FIXED 2026-09-06 (gopherstack-xyu4): same NotAction/NotResource fix as CheckAccessNotGranted (shared stmtGrants/policyGrants helpers) -- an existing policy that grants broadly via NotAction/NotResource was previously invisible to policyGrants, so CheckNoNewAccess reported a false FAIL (\"new access\") for access the existing policy already granted. See TestCheckNoNewAccessLogic/existing_not_action_already_covers_new_grant_passes. NOT fixed (gap, unbounded): the *new* statement's own NotAction/NotResource are still not expanded when walking newAccessReasons -- doing so would require enumerating \"every action/resource except these\" against an unbounded action/resource space, which is the automated-reasoning problem this mock cannot solve; a new statement written with NotAction/NotResource is under-reported (may PASS when it should FAIL). Disclosed, not fixed -- see the deep-read note at the bottom of this file (gopherstack-xyu4). FIXED 2026-09-07 (gopherstack-x9ff): same malformed-policyDocument fix as CheckAccessNotGranted, applied to both existingPolicyDocument and newPolicyDocument. See TestCheckNoNewAccessMalformedPolicy, proven to fail against pre-fix code."}
+  CheckNoPublicAccess: {wire: ok, errors: ok, state: ok, persist: n/a, note: "FIXED 2026-08-30 (gopherstack-4a8v): resourceType is a required CheckNoPublicAccessInput member, parsed but never validated or used (CheckNoPublicAccess(policyDoc) ignores it -- this mock has no resource-type-specific evaluation, e.g. S3 bucket vs KMS key rules, same structural gap class as CheckAccessNotGranted's policyType). Added a required-field check. FIXED 2026-09-07 (gopherstack-x9ff): same malformed-policyDocument fix as CheckAccessNotGranted -- a garbage policyDocument previously parsed to an empty (therefore never-public) policy and reported PASS. See TestCheckNoPublicAccessMalformedPolicy, proven to fail against pre-fix code."}
   ValidatePolicy: {wire: ok, errors: ok, state: partial, persist: n/a, note: "NEW gap noted 2026-08-30 (gopherstack-4a8v): nextToken is parsed off the wire and never used -- ValidatePolicy always returns every finding on one page with no NextToken out. Not fixed: maxResults isn't even parsed (a separate, unflagged wire gap), so there's no natural page size to paginate against without inventing one; this mock's finding set is deterministic and small enough to plausibly fit on one page every time, the same honest-gap shape as GetStatementResult's single-page demo data elsewhere in this repo. gopherstack-6flj FIXED: findingDetails is a required types.ValidatePolicyFinding member (\"a localized message that explains the finding\") and was never emitted at all. Added findingDetailMessages, a static IssueCode->message lookup covering every code this package's validators can produce (locked in by TestValidatePolicy_FindingDetailsPopulated, which fails if any finding is emitted with an empty message). 2026-08-21 gopherstack-r80d batch 18 FIXED (real bug, one level deeper): each types.Location within the required Locations array requires its own Span member (types/types.go:1509-1521, v1.51.4) -- Path was present but Span was never emitted at all (rootLoc/fieldLoc/stmtLoc/stmtFieldLoc, policy_analysis.go, built only \"path\"). A real client's Location.Span decoded to nil for every ValidatePolicy finding ever returned. This is a domain struct invisible to a flat per-op scan of ValidatePolicyOutput (whose own only required member is the top-level Findings array) AND one level deeper than ValidatePolicyFinding's own required Locations (which was already correctly populated) -- it's the Location entries *inside* Locations that were missing their own required member. Fixed with attachSpans/resolveRawAt (policy_analysis.go): each Location's real byte range is recovered from the original policyDocument text via its json.RawMessage bytes (copied verbatim by encoding/json, not re-synthesized), with a step-by-step fallback toward the document root so Span is never dropped even when the specific key a finding is about (e.g. a wholly absent \"Effect\") can't itself be located. Proven via a real aws-sdk-go-v2/service/accessanalyzer client round trip (wire_output_required_r80d_test.go): one test asserts Span/Start/End/Position fields are never nil across 4 finding shapes (root-span, field-span, and a 2-statement case exercising the duplicate-element search), a second asserts the span's byte range exactly bounds the real `\"Permit\"` substring for an INVALID_EFFECT finding. Hand-reverted/confirmed-failing (all 4 subtests + the accuracy test)/restored, md5sum byte-identical."}
   TagResource: {wire: ok, errors: ok, state: ok, persist: ok}
   UntagResource: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -559,7 +559,7 @@ question is honesty about the gap, not reasoning correctness.
 | Op | SDK return shape | What this backend computes | Verdict |
 |---|---|---|---|
 | `ValidatePolicy` | `ValidatePolicyOutput.Findings []types.ValidatePolicyFinding` (required) | Real, bounded structural/syntax validation: JSON-parseable, `Version` present/valid, `Effect` in {Allow,Deny}, exactly one of Action/NotAction, exactly one of Resource/NotResource (identity policies only), plus one narrow `PASS_ROLE_WITH_STAR` heuristic (wildcard Action AND wildcard Resource on an Allow). No IAM-grammar semantic reasoning beyond that (e.g. does not validate action names exist, ARN formats, or Condition operators). | **Documented approximation.** Never returns empty findings for a policy with real structural errors; the checks it does perform are correct and match `findingDetailMessages`'s disclosed coverage. |
-| `CheckAccessNotGranted` | `CheckAccessNotGrantedOutput.Result types.CheckAccessNotGrantedResult` (`PASS`/`FAIL`, types/enums.go:180-197) | Real glob-based Allow/Deny statement evaluation against the caller-supplied `access` (Actions x Resources). **Bug found and fixed this pass**: NotAction/NotResource were parsed into `iamStatement` but silently ignored by `actionAllowed`/`resourceAllowed`, so a NotAction/NotResource-only Allow statement (which grants the *complement* of the listed set) was scored as granting nothing -- a confident, wrong `PASS` for exactly the broad-grant case this op exists to catch. Fixed (see policy_analysis.go, matchesAny/actionAllowed/resourceAllowed). Residual disclosed gap: invalid-JSON policyDocument silently parses to an empty policy (see below) and IDENTITY_POLICY vs RESOURCE_POLICY is not distinguished (pre-existing, gopherstack-4a8v). | **Real bounded check, with a real bug now fixed; residual gaps disclosed.** |
+| `CheckAccessNotGranted` | `CheckAccessNotGrantedOutput.Result types.CheckAccessNotGrantedResult` (`PASS`/`FAIL`, types/enums.go:180-197) | Real glob-based Allow/Deny statement evaluation against the caller-supplied `access` (Actions x Resources). **Bug found and fixed this pass**: NotAction/NotResource were parsed into `iamStatement` but silently ignored by `actionAllowed`/`resourceAllowed`, so a NotAction/NotResource-only Allow statement (which grants the *complement* of the listed set) was scored as granting nothing -- a confident, wrong `PASS` for exactly the broad-grant case this op exists to catch. Fixed (see policy_analysis.go, matchesAny/actionAllowed/resourceAllowed). Residual disclosed gap at the time: invalid-JSON policyDocument silently parsed to an empty policy (see below; FIXED 2026-09-07, gopherstack-x9ff) and IDENTITY_POLICY vs RESOURCE_POLICY is not distinguished (pre-existing, gopherstack-4a8v). | **Real bounded check, with a real bug now fixed; residual gaps disclosed.** |
 | `CheckNoNewAccess` | `CheckNoNewAccessOutput.Result types.CheckNoNewAccessResult` (`PASS`/`FAIL`, types/enums.go:199-216) | Same statement-grant machinery as `CheckAccessNotGranted`, diffed old vs. new. Same NotAction/NotResource bug on the *existing*-policy side, fixed this pass (existing grants via NotAction/NotResource are now visible to `policyGrants`). Residual, NOT fixed: the *new* statement's own NotAction/NotResource still can't be expanded into concrete (action,resource) pairs to diff -- doing so needs an action/resource universe this mock doesn't have (the actual reasoning problem). A new statement written with NotAction/NotResource is under-reported and may `PASS` when a real analyzer would `FAIL`. | **Real bounded check; disclosed residual gap on the unbounded (new-statement NotAction/NotResource) side.** |
 | `CheckNoPublicAccess` | `CheckNoPublicAccessOutput.Result types.CheckNoPublicAccessResult` | Real check: any Allow statement whose Principal is `"*"` or `{"AWS":"*"}` (`isPublicPrincipal`) fails, regardless of Action/Resource -- correctly independent of the NotAction/NotResource bug above (it never calls `actionAllowed`/`resourceAllowed`). Does not evaluate Condition (e.g. an `aws:SourceIp`-restricted wildcard principal is still flagged public); this is the *safe* direction of error (over-flagging, not a false PASS) and resourceType is parsed but not used for resource-type-specific rules (disclosed pre-existing gap, gopherstack-4a8v). | **Real bounded check, conservative in the direction that matters (never a false-safe PASS from Condition).** |
 
@@ -594,24 +594,35 @@ ops; `AccessDeniedException`/`InternalServerException`/`ThrottlingException` are
 unimplementable here (no auth/rate-limiting simulation) and unimplemented the same way
 across the whole repo, not specific to this audit. `InvalidParameterException`/
 `UnprocessableEntityException` on the three Check* ops ARE reachable in real AWS for a
-syntactically-invalid `policyDocument` and are NOT wired here -- see the invalid-JSON gap
-below.
+syntactically-invalid `policyDocument`; `UnprocessableEntityException` is now wired for that
+case -- see the invalid-JSON gap below (FIXED gopherstack-x9ff).
 
-**Follow-up gap, disclosed not fixed (report as a separate issue)**: `parsePolicy`
-(policy_analysis.go) silently discards `json.Unmarshal` errors and returns a zero-value
-`iamPolicy{}` (no statements). `ValidatePolicy` is the only one of the four ops that checks
-JSON-parseability itself (`INVALID_POLICY_SYNTAX`, via its own `json.Unmarshal` in the
-error path before calling `parsePolicy`); `CheckAccessNotGranted`/`CheckNoNewAccess`/
-`CheckNoPublicAccess` call `parsePolicy` directly and never check for a parse failure, so a
-malformed (non-JSON) `policyDocument` silently becomes an empty policy and all three report
-`PASS`/no-public-access instead of an error -- the same confident-wrong-answer shape the
-NotAction/NotResource bug was, now on garbage input instead of well-formed input. Not fixed
-this pass: `CheckAccessNotGranted`/`CheckNoNewAccess`/`CheckNoPublicAccess`/`policyGrants`/
-`stmtGrants` are all currently infallible (`PolicyCheckResult`, no error return); wiring a
-parse error through to an HTTP-level `InvalidParameterException`/`UnprocessableEntityException`
-touches all three call sites plus their handlers in `handler_policy_validation.go` and is a
-big enough surface to deserve its own reviewed change rather than folding into this pass's
-NotAction/NotResource fix.
+**Follow-up gap, FIXED 2026-09-07 (gopherstack-x9ff)**: `parsePolicy`
+(policy_analysis.go) used to silently discard `json.Unmarshal` errors and return a
+zero-value `iamPolicy{}` (no statements). `ValidatePolicy` is the only one of the four ops
+that checks JSON-parseability itself (`INVALID_POLICY_SYNTAX`, via its own `json.Unmarshal`
+in the error path before calling `parsePolicy`, unaffected by this bug); `CheckAccessNotGranted`/
+`CheckNoNewAccess`/`CheckNoPublicAccess` called `parsePolicy` directly and never checked for
+a parse failure, so a malformed (non-JSON) `policyDocument` silently became an empty policy
+and all three reported `PASS`/no-public-access instead of an error -- the same
+confident-wrong-answer shape the NotAction/NotResource bug was, on garbage input instead of
+well-formed input. Deferred at the time (gopherstack-xyu4) because
+`CheckAccessNotGranted`/`CheckNoNewAccess`/`CheckNoPublicAccess` were all infallible
+(`PolicyCheckResult`, no error return); fixing it meant widening all three signatures plus
+their call sites and handlers, a reviewable change of its own. Now fixed: `parsePolicy`
+returns `(iamPolicy, error)`, treating an empty/absent doc as a valid empty policy
+(unchanged PASS behavior) but returning `ErrMalformedPolicy` for anything else that fails to
+parse; all three ops now return `(PolicyCheckResult, error)`, and their handlers
+(`handler_policy_validation.go`) map that error to `UnprocessableEntityException`/422 --
+chosen over `InvalidParameterException` because "The specified entity could not be
+processed" (UnprocessableEntityException's doc comment, types/errors.go) fits a
+syntactically-invalid document better than "The specified parameter is invalid"
+(InvalidParameterException's), and matches HTTP 422's usual meaning (well-formed request,
+semantically-invalid payload). See `TestCheckAccessNotGrantedMalformedPolicy`,
+`TestCheckNoNewAccessMalformedPolicy`, `TestCheckNoPublicAccessMalformedPolicy`
+(policy_analysis_test.go) and `TestCheckPolicyOps_MalformedPolicyDocument`
+(handler_policy_validation_test.go), all proven to fail against pre-fix code by
+revert-and-run.
 
 **Files changed this pass**: `policy_analysis.go` (NotAction/NotResource complement
 matching in `actionAllowed`/`resourceAllowed`, plus a new `matchesAny` helper);
@@ -619,6 +630,63 @@ matching in `actionAllowed`/`resourceAllowed`, plus a new `matchesAny` helper);
 by revert-and-run, see commit history / session record). `access_previews.go` and
 `handler_access_previews.go`: read in full, no changes -- both already correctly disclosed
 (models.go:161-174, handler_access_previews.go:45-52/202-211).
+
+Gates: `go test -race ./services/accessanalyzer/...` and
+`golangci-lint run services/accessanalyzer/...` both clean, 0 issues.
+
+## gopherstack-x9ff: malformed policyDocument no longer silently PASSes (2026-09-07)
+
+Follow-up to the gopherstack-xyu4 deep-read audit above, which found and deliberately
+deferred this gap: `parsePolicy` (policy_analysis.go) discarded `json.Unmarshal` errors and
+returned a zero-value `iamPolicy{}`, so `CheckAccessNotGranted`/`CheckNoNewAccess`/
+`CheckNoPublicAccess` reported `PASS`/no-public-access for a syntactically-invalid
+`policyDocument` instead of an error. `ValidatePolicy` was and is unaffected -- it checks
+JSON-parseability itself before ever calling `parsePolicy`.
+
+**Error choice**: accessanalyzer@v1.51.4's `deserializeOpErrorCheck*` switches (verified by
+re-running the extraction) declare both `InvalidParameterException` and
+`UnprocessableEntityException` on all three Check* ops (`ValidatePolicy` declares neither --
+consistent with it never being able to receive a policyDocument this bad, since it validates
+syntax itself). Doc comments (types/errors.go): `InvalidParameterException` = "The specified
+parameter is invalid."; `UnprocessableEntityException` = "The specified entity could not be
+processed." Chose `UnprocessableEntityException`: a syntactically-broken policy document read
+as "an entity that could not be processed" more directly than "an invalid parameter" (which
+reads more naturally for a malformed enum/wrong-type field value), and 422 is the
+conventional HTTP status for a well-formed request whose payload is semantically invalid --
+exactly this case.
+
+**Empty vs malformed, preserved**: an empty or absent `policyDocument` (`""`) is still parsed
+as a valid empty policy (`iamPolicy{}`, no error) -- unchanged from before. Only a non-empty
+string that fails `json.Unmarshal` is now `ErrMalformedPolicy`. No pre-existing test asserted
+the bug: every existing "empty" test case used `policyEmpty()`
+(`{"Version":"2012-10-17","Statement":[]}`), a well-formed empty policy, not garbage; none
+needed correcting.
+
+**Fix**: `parsePolicy` now returns `(iamPolicy, error)`. `CheckAccessNotGranted`,
+`CheckNoNewAccess` (both existingPolicyDocument and newPolicyDocument), and
+`CheckNoPublicAccess` now return `(PolicyCheckResult, error)` and propagate a parse failure
+instead of continuing with an empty policy. `ValidatePolicy`'s own call site ignores the
+error (unreachable there -- it only calls `parsePolicy` after its own JSON-syntax check
+already succeeded). `errors.go` adds `ErrMalformedPolicy` (wraps
+`awserr.ErrInvalidParameter`, wire code `UnprocessableEntityException`); `handler.go`'s
+`handleError` maps it to HTTP 422. `handler_policy_validation.go`'s three handlers now check
+and forward the error from each Check* call.
+
+**Tests**: `TestCheckAccessNotGrantedMalformedPolicy`, `TestCheckNoNewAccessMalformedPolicy`
+(both `existing`/`new` positions), `TestCheckNoPublicAccessMalformedPolicy`
+(policy_analysis_test.go, function-level) and `TestCheckPolicyOps_MalformedPolicyDocument`
+(handler_policy_validation_test.go, HTTP-level: asserts 422 + `UnprocessableEntityException`)
+-- all four proven to fail against pre-fix code by revert-and-run (reverting `parsePolicy` to
+swallow the error while keeping the `(iamPolicy, error)` signature). Also added
+`TestCheckAccessNotGrantedEmptyPolicyNotMalformed` locking in the empty/absent behavior.
+The pre-existing gopherstack-xyu4 NotAction/NotResource regression subtests are untouched and
+still pass.
+
+**Files changed**: `errors.go` (new `ErrMalformedPolicy` sentinel), `handler.go` (new
+`handleError` case), `policy_analysis.go` (`parsePolicy` and the three Check* signatures),
+`handler_policy_validation.go` (three handlers forward the new error),
+`policy_analysis_test.go` and `handler_policy_validation_test.go` (signature-change fixups
+plus new regression tests).
 
 Gates: `go test -race ./services/accessanalyzer/...` and
 `golangci-lint run services/accessanalyzer/...` both clean, 0 issues.
