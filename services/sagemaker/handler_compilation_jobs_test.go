@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -110,34 +111,39 @@ func TestHandler_DescribeCompilationJob(t *testing.T) {
 func TestHandler_StopCompilationJob(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateCompilationJob itself schedules a delayed InProgress->Completed
+	// transition, so the whole body has to stay in one bubble from the
+	// start: runDelayed's goroutine touches the backend's WaitGroup, and
+	// that must not happen both inside and outside a bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	doSageMakerRequest(
-		t,
-		h,
-		"CreateCompilationJob",
-		map[string]any{
-			"CompilationJobName": "cj-stop",
-			"RoleArn":            "arn:test",
-			"OutputConfig":       map[string]any{"S3OutputLocation": "s3://bucket/out/"},
-			"StoppingCondition":  map[string]any{"MaxRuntimeInSeconds": 3600},
-		},
-	)
-	rec := doSageMakerRequest(t, h, "StopCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
-	assert.Equal(t, http.StatusOK, rec.Code)
+		doSageMakerRequest(
+			t,
+			h,
+			"CreateCompilationJob",
+			map[string]any{
+				"CompilationJobName": "cj-stop",
+				"RoleArn":            "arn:test",
+				"OutputConfig":       map[string]any{"S3OutputLocation": "s3://bucket/out/"},
+				"StoppingCondition":  map[string]any{"MaxRuntimeInSeconds": 3600},
+			},
+		)
+		rec := doSageMakerRequest(t, h, "StopCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
+		assert.Equal(t, http.StatusOK, rec.Code)
 
-	rec = doSageMakerRequest(t, h, "DescribeCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Equal(t, "STOPPING", resp["CompilationJobStatus"])
+		rec = doSageMakerRequest(t, h, "DescribeCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "STOPPING", resp["CompilationJobStatus"])
 
-	require.Eventually(t, func() bool {
-		descRec := doSageMakerRequest(t, h, "DescribeCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
-		var out map[string]any
-		require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &out))
+		time.Sleep(time.Second)
+		synctest.Wait()
 
-		return out["CompilationJobStatus"] == "STOPPED"
-	}, 2*time.Second, 10*time.Millisecond)
+		rec = doSageMakerRequest(t, h, "DescribeCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "STOPPED", resp["CompilationJobStatus"])
+	})
 }
 
 func TestHandler_ListCompilationJobs(t *testing.T) {

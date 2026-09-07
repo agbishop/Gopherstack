@@ -6075,3 +6075,85 @@ Gates: `go build ./services/sagemaker/...` clean; `go test -race
 'TestEndpointTransitions_ReachInService|TestEndpointTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate|TestInferenceComponentTransitions_ReachInService|TestInferenceComponentTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate'
 ./services/sagemaker/` 20/20; `golangci-lint run services/sagemaker/...`
 0 issues.
+
+## 2026-09-07 (gopherstack-iook): ten more `Eventually` polls converted to `synctest`; one site left, confirmed unmigratable
+
+Follow-up to gopherstack-7lrq/rh77's own conversions (above): eleven
+remaining `assert.Eventually`/`require.Eventually` sites across
+`handler_compilation_jobs_test.go`, `handler_labeling_test.go`,
+`handler_edge_packaging_jobs_test.go`, `handler_hp_tuning_jobs_test.go`,
+and `handler_inference_recommendations_jobs_test.go` polled a
+`runDelayed` FSM transition the same way the 7lrq bug was hiding in.
+Before converting, each transition's guard was read directly:
+`compilation_jobs.go` (Stop and auto-complete), `labeling.go` (both
+legs of `scheduleLabelingJobCompletion`, plus `StopLabelingJob`),
+`edge_packaging_jobs.go` (`scheduleEdgePackagingJobCompletion`,
+`StopEdgePackagingJob`), `hp_tuning_jobs.go`
+(`scheduleHPTuningJobCompletion`, `StopHyperParameterTuningJob`), and
+`inference_recommendations_jobs.go` (`scheduleInferenceRecommendationsJobCompletion`,
+`StopInferenceRecommendationsJob`) — all ten callbacks already carry a
+current-status guard matching `StopProcessingJob`'s shape
+(`processing_jobs.go:264-273`), and a same-delay overlap check (e.g.
+labeling's Initializing->InProgress and Stop's own Stopping->Stopped
+both scheduled at 150ms) confirmed no callback can clobber a later
+state. No new bug found; ten sites converted clean, matching the
+`lifecycle_test.go`/`pipeline_execution_start_test.go`/
+`handler_endpoints_test.go`/`handler_inference_components_test.go`
+pattern: `synctest.Test` wrapping the whole body (every one of these
+ten schedules its `runDelayed` goroutine synchronously inside
+`Create*`, so the whole body — not just the final wait — has to share
+one bubble), a `time.Sleep(time.Second)` + `synctest.Wait()` in place
+of the poll, then a single `assert.Equal`/`require.Equal` on the same
+final condition the `Eventually` checked (every intermediate assertion
+the original body made — e.g. the `STOPPING` check before the wait —
+was kept as-is; nothing was weakened).
+
+Eleventh site,
+`TestHandler_CompilationJob_ReachesCompleted_RealClient`
+(`handler_compilation_jobs_test.go`), left unconverted:  this test
+drives the backend through `newTestSageMakerClient`'s real SDK client
+over an `httptest.NewServer` HTTP round trip
+(`handler_create_tags_test.go:25`), not the direct in-process
+`doSageMakerRequest` the other ten use. `synctest.Test` bubble
+membership follows the goroutine tree from `go` statement time: the
+server's Accept-loop goroutine (and everything it spawns per
+connection, including the goroutine that actually calls
+`CreateCompilationJob`/`runDelayed`) is a descendant of whichever
+goroutine created the `httptest.Server` — so it, and the fake clock
+governing the scheduled transition, only join the bubble if the server
+itself is constructed inside `synctest.Test`. Confirmed empirically:
+wrapping the whole test (client construction included) in
+`synctest.Test` deadlocks — 20 iterations of `-race` were not
+attempted because a single run hung with zero test output and near-zero
+CPU for 452s (manually killed; go test's own 10-minute default would
+have eventually fatal'd it). This is a `testing/synctest` /
+real-network-I/O incompatibility, not a production bug, and not fixable
+within this test file alone — `newTestSageMakerClient` is a shared
+helper used by many other `_RealClient` tests across this package, so
+giving it a synctest-safe in-process transport is a separate,
+broader change. Left as `require.Eventually` (`handler_compilation_jobs_test.go:578`
+after the other edits shifted line numbers).
+
+Files changed: `handler_compilation_jobs_test.go`,
+`handler_labeling_test.go`, `handler_edge_packaging_jobs_test.go`,
+`handler_hp_tuning_jobs_test.go`,
+`handler_inference_recommendations_jobs_test.go` (all ten
+`Eventually`->`synctest` conversions); each gained a
+`"testing/synctest"` import.
+
+Timing: the ten migrated sites, run individually against the
+pre-migration code, took 0.15-0.31s each real time (`go test -race
+-count=1 -v -run '<the ten names>' ./services/sagemaker/...` totalled
+2.361s); the same run against the migrated code reports 0.00s per site
+(1.603s total, dominated by the still-real eleventh site's 0.31s) —
+the fake clock resolves each `time.Sleep(time.Second)` instantly
+instead of waiting out the real 150-450ms transition delay.
+
+Gates: `go test -race -count=1 ./services/sagemaker/...` — 2.522s,
+fully green. `go test -race -count=20 ./services/sagemaker/...` —
+29.674s, 20/20, no flakes. `golangci-lint run services/sagemaker/...`
+0 issues. `grep -rn 'assert\.Eventually\|require\.Eventually'
+services/sagemaker/*_test.go` returns exactly two lines: the live
+eleventh site above, and `lifecycle_test.go:68`, which is prose inside
+a comment (`// ... assert.Eventually hid that by returning the ...`),
+not a call.
