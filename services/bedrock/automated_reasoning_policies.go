@@ -281,11 +281,25 @@ func (b *InMemoryBackend) arpHasVersions(policyARN string) bool {
 	return false
 }
 
-// deleteARPArtifacts removes every build workflow, test case, and version
-// belonging to policyARN. Caller must hold the write lock.
+// deleteARPAnnotationState removes the annotation-state entries
+// (arpAnnotations/arpAnnotationSetHash/arpAnnotationsUpdatedAt) minted for
+// one build workflow. Plain maps, not store.Table -- delete() is correct
+// (see store_setup.go's registerAllTables doc comment). Caller must hold the
+// write lock.
+func (b *InMemoryBackend) deleteARPAnnotationState(policyARN, buildWorkflowID string) {
+	key := arpAnnotationsKey(policyARN, buildWorkflowID)
+	delete(b.arpAnnotations, key)
+	delete(b.arpAnnotationSetHash, key)
+	delete(b.arpAnnotationsUpdatedAt, key)
+}
+
+// deleteARPArtifacts removes every build workflow (and its annotation
+// state), test case, and version belonging to policyARN. Caller must hold
+// the write lock.
 func (b *InMemoryBackend) deleteARPArtifacts(policyARN string) {
 	for _, wf := range b.arpBuildWorkflows.All() {
 		if wf.PolicyArn == policyARN {
+			b.deleteARPAnnotationState(policyARN, wf.BuildWorkflowID)
 			b.arpBuildWorkflows.Delete(wf.BuildWorkflowID)
 		}
 	}
@@ -331,6 +345,7 @@ func (b *InMemoryBackend) DeleteAutomatedReasoningPolicy(policyARN string, force
 	}
 
 	delete(b.arpByName, policy.Name)
+	delete(b.arpVersionCountByPolicy, policyARN)
 	b.automatedReasoningPolicies.Delete(policyARN)
 	b.deleteARPArtifacts(policyARN)
 
@@ -425,6 +440,7 @@ func (b *InMemoryBackend) DeleteAutomatedReasoningPolicyBuildWorkflow(policyARN,
 		return fmt.Errorf("%w: build workflow %s not found", ErrNotFound, workflowID)
 	}
 
+	b.deleteARPAnnotationState(policyARN, workflowID)
 	b.arpBuildWorkflows.Delete(workflowID)
 
 	return nil

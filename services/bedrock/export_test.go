@@ -172,6 +172,50 @@ func (b *InMemoryBackend) AgentPreparationDueAtForTest(agentID string) time.Time
 	return a.preparationDueAt
 }
 
+// FlowVersionCounterForTest returns the current per-flow version counter for
+// flowID (0 if absent). flowVersionCounters is unexported plain-map state --
+// see store_setup.go's registerAllTables doc comment -- so black-box tests
+// need this bridge to assert it is pruned on flow delete.
+func (b *InMemoryBackend) FlowVersionCounterForTest(flowID string) int {
+	b.mu.RLock("FlowVersionCounterForTest")
+	defer b.mu.RUnlock()
+
+	return b.flowVersionCounters[flowID]
+}
+
+// PromptVersionCounterForTest returns the current per-prompt version counter
+// for promptID (0 if absent).
+func (b *InMemoryBackend) PromptVersionCounterForTest(promptID string) int {
+	b.mu.RLock("PromptVersionCounterForTest")
+	defer b.mu.RUnlock()
+
+	return b.promptVersionCounters[promptID]
+}
+
+// ARPVersionCountForTest returns the current per-policy version counter for
+// policyARN (0 if absent).
+func (b *InMemoryBackend) ARPVersionCountForTest(policyARN string) int {
+	b.mu.RLock("ARPVersionCountForTest")
+	defer b.mu.RUnlock()
+
+	return b.arpVersionCountByPolicy[policyARN]
+}
+
+// ARPAnnotationStateExistsForTest reports whether any of the annotation-state
+// maps (arpAnnotations, arpAnnotationSetHash, arpAnnotationsUpdatedAt) still
+// holds an entry for (policyARN, buildWorkflowID).
+func (b *InMemoryBackend) ARPAnnotationStateExistsForTest(policyARN, buildWorkflowID string) bool {
+	b.mu.RLock("ARPAnnotationStateExistsForTest")
+	defer b.mu.RUnlock()
+
+	key := arpAnnotationsKey(policyARN, buildWorkflowID)
+	_, hasAnn := b.arpAnnotations[key]
+	_, hasHash := b.arpAnnotationSetHash[key]
+	_, hasUpdated := b.arpAnnotationsUpdatedAt[key]
+
+	return hasAnn || hasHash || hasUpdated
+}
+
 // IngestionJobCompletionDueAtForTest returns the current completionDueAt for
 // the ingestion job identified by (kbID, dsID, jobID) (the zero Time if
 // absent). IngestionJob.completionDueAt is unexported -- see persistence.go's

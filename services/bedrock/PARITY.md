@@ -770,6 +770,130 @@ DeleteAutomatedReasoningPolicyBuildWorkflow; ingestionJobs/kbDocuments never
 pruned by DeleteKnowledgeBase; DeleteAgent doesn't implement
 SkipResourceInUseCheck.
 
+**All five of the above (except SkipResourceInUseCheck, which is unrelated --
+too strict, not a leak) are now fixed: see gopherstack-jkiu below.**
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
+both clean.
+
+## 2026-09-07 (gopherstack-jkiu): 5 filed-not-fixed leaks from the wg7i sweep, closed
+
+Follow-up to the 2026-09-06 sweep above, which filed five parent-delete prune
+gaps rather than fixing them (over budget that pass). All five premises held
+up under re-verification, with one correction on item 1's resource list.
+
+1. **agentTags leak for non-Agent taggable resources -- GHOST ROW, fixed.**
+   `ListAgentResourceTags` (agents.go) does zero existence validation on
+   `resourceArn`, so a resource's tags stay visible via `GET /tags/{arn}`
+   after the resource itself is deleted -- not merely a leak. Verified which
+   agent-domain resource types actually have an ARN a client could tag:
+   Agent (already pruned by DeleteAgent, gopherstack-cq0z), AgentAlias
+   (`AgentAliasArn`), KnowledgeBase (`KnowledgeBaseArn`), Flow (`FlowArn`),
+   FlowAlias (`FlowAliasArn`), Prompt (`PromptArn`). **Correction to the
+   filed premise:** `DataSource` has no ARN field at all (models.go:898-909)
+   -- `CreateDataSourceWithConfiguration` never mints one -- so there is no
+   natural ARN for `DeleteDataSource` to prune; it was never really "leaking"
+   in the sense the other five are, only nameable by a client passing an
+   arbitrary string (true of any nonexistent resource, not specific to data
+   sources). **FIXED**: `DeleteAgentAlias` (agent_aliases.go), `DeleteFlow`
+   (flows.go), `DeleteFlowAlias` (flow_aliases.go), `DeletePrompt`
+   (prompts.go), and `DeleteKnowledgeBase` (knowledge_bases.go) now each
+   `delete(b.agentTags, <ownArn>)` before returning, mirroring `DeleteAgent`'s
+   existing prune of `agentTags[ag.AgentArn]`.
+
+2. **flowVersions/flowVersionCounters/flowAliases orphaned by DeleteFlow --
+   mixed, fixed.** `flowVersions[flowID]` is a lazily-registered
+   `*store.Table[FlowVersion]` (store_setup.go's `flowVersionsStore`,
+   registered under `"flowVersions:"+flowID`); `GetFlowVersion`/
+   `ListFlowVersions` don't check the parent flow still exists, so this is a
+   GHOST ROW, proven by `TestDeleteFlow_PrunesTagsVersionsAndAliases`.
+   `flowAliases` is the single global `*store.Table[FlowAlias]` (not
+   per-parent); `GetFlowAlias`/`ListFlowAliases` likewise return rows for a
+   deleted flow -- also a GHOST ROW, same test. `flowVersionCounters` is a
+   plain `map[string]int` (store_setup.go's registerAllTables doc comment) --
+   a MEMORY LEAK ONLY, since flow IDs are never reused (monotonic counter),
+   so a stale counter entry is never observed by any accessor. **Reset-vs-
+   delete**: `flowVersions[flowID]` gets `.Reset()` (landmine: it is
+   registered once on `b.registry` under a composite name; `delete()`-ing the
+   map entry would make a later accessor re-`Register` the same name and
+   panic -- exact mirror of `DeleteAgent`'s existing comment in agents.go).
+   `flowAliases` gets a range-and-delete of matching entries (it is the
+   single global table, not a lazy per-parent one -- `Reset()` would wipe
+   every flow's aliases, not just this one -- mirrors `DeleteKnowledgeBase`'s
+   existing `dataSources` cascade). `flowVersionCounters[flowID]` gets a
+   plain `delete()` (ordinary map, no registry involvement).
+
+3. **promptVersions/promptVersionCounters orphaned by DeletePrompt -- mixed,
+   fixed.** Same shape as item 2's flow half: `promptVersions[promptID]` is a
+   lazily-registered per-parent `store.Table` -- GHOST ROW via
+   `GetPromptVersion`/`ListPromptVersions`, proven by
+   `TestDeletePrompt_PrunesTagsAndVersions`, fixed with `.Reset()` (same
+   landmine). `promptVersionCounters[promptID]` is a plain counter map --
+   MEMORY LEAK ONLY (prompt IDs are never reused), fixed with `delete()`.
+   Prompts have no alias concept in this API, so there is no third leg here
+   (unlike flows).
+
+4. **ARP annotation and version-count maps orphaned by
+   DeleteAutomatedReasoningPolicy and DeleteAutomatedReasoningPolicyBuildWorkflow
+   -- MEMORY LEAK ONLY, fixed.** `arpVersionCountByPolicy`,
+   `arpAnnotations`, `arpAnnotationSetHash`, and `arpAnnotationsUpdatedAt` are
+   all plain maps (store_setup.go's registerAllTables doc comment
+   explicitly lists them as not `store.Table`-backed), so `delete()` is
+   correct throughout -- no Reset-vs-delete landmine applies. None is a
+   ghost row: every annotation accessor (`GetAutomatedReasoningPolicyAnnotations`,
+   `UpdateAutomatedReasoningPolicyAnnotations`, ...) calls
+   `mustGetARPBuildWorkflow` first, which 404s once the build workflow is
+   gone, so a stale `arpAnnotations` entry is never read back.
+   **Correction/refinement to the filed premise**: `arpVersionCountByPolicy`
+   is keyed by `policyARN` alone (not by build workflow), so it can only be
+   orphaned by `DeleteAutomatedReasoningPolicy`, not by
+   `DeleteAutomatedReasoningPolicyBuildWorkflow` -- fixed with a `delete()`
+   in `DeleteAutomatedReasoningPolicy` only. The three annotation-state maps
+   are keyed by `policyARN+":"+buildWorkflowID` and are genuinely orphaned by
+   *both* delete paths (a whole-policy delete implicitly deletes every one of
+   its build workflows via `deleteARPArtifacts`, and a single build-workflow
+   delete removes just that key) -- fixed by extracting a shared
+   `deleteARPAnnotationState(policyARN, buildWorkflowID)` helper, called from
+   both `deleteARPArtifacts`'s per-workflow loop and
+   `DeleteAutomatedReasoningPolicyBuildWorkflow` directly. Tests:
+   `TestDeleteAutomatedReasoningPolicy_PrunesVersionCounterAndAnnotations`,
+   `TestDeleteAutomatedReasoningPolicyBuildWorkflow_PrunesAnnotations`.
+
+5. **ingestionJobs/kbDocuments orphaned by DeleteKnowledgeBase -- GHOST ROW,
+   fixed.** Same root cause as gopherstack-wg7i's `dataSources` fix in this
+   exact function: `ingestionJobs` and `kbDocuments` are both single global
+   `store.Table`s filtered by `KnowledgeBaseID`/`DataSourceID` in their List
+   accessors, with no check that the parent KB still exists.
+   `GetIngestionJob`/`ListIngestionJobs` and `ListKnowledgeBaseDocuments` all
+   kept returning rows for a deleted KB before this fix -- proven by
+   `TestDeleteKnowledgeBase_PrunesAgentTagsAndIngestionArtifacts`. **FIXED**:
+   `DeleteKnowledgeBase` now also ranges `b.ingestionJobs` and `b.kbDocuments`
+   and deletes every entry whose `KnowledgeBaseID` matches, mirroring the
+   existing `dataSources` cascade in the same function. Not extended to
+   `DeleteDataSource` (deleting a single data source without deleting its
+   parent KB) -- that path has the identical gap but is not one of this
+   issue's five items; noted for a future pass rather than silently widening
+   scope.
+
+Files changed: `services/bedrock/agent_aliases.go` (DeleteAgentAlias prunes
+agentTags), `services/bedrock/flow_aliases.go` (DeleteFlowAlias prunes
+agentTags), `services/bedrock/flows.go` (DeleteFlow prunes agentTags, Resets
+flowVersions, clears flowVersionCounters, cascades to flowAliases),
+`services/bedrock/prompts.go` (DeletePrompt prunes agentTags, Resets
+promptVersions, clears promptVersionCounters),
+`services/bedrock/knowledge_bases.go` (DeleteKnowledgeBase prunes agentTags,
+cascades to ingestionJobs and kbDocuments),
+`services/bedrock/automated_reasoning_policies.go` (DeleteAutomatedReasoningPolicy
+clears arpVersionCountByPolicy; new `deleteARPAnnotationState` helper shared
+by DeleteAutomatedReasoningPolicy's `deleteARPArtifacts` and
+DeleteAutomatedReasoningPolicyBuildWorkflow), `services/bedrock/export_test.go`
+(new test-only bridges: FlowVersionCounterForTest, PromptVersionCounterForTest,
+ARPVersionCountForTest, ARPAnnotationStateExistsForTest),
+`services/bedrock/ghost_row_jkiu_test.go` (new -- seven regression tests, each
+confirmed failing against the unmodified code before the fix, then restored;
+see commit history).
+
 Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
 `GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
 both clean.

@@ -112,7 +112,10 @@ func (b *InMemoryBackend) UpdateFlow(flowID, name, description string) (*Flow, e
 	return &cp, nil
 }
 
-// DeleteFlow deletes a Flow.
+// DeleteFlow deletes a Flow, its versions, and its aliases.
+// Without this, GetFlowVersion/ListFlowVersions and GetFlowAlias/
+// ListFlowAliases keep returning rows for a flow ID that no longer resolves
+// (gopherstack-jkiu, same shape as gopherstack-wg7i's DeleteKnowledgeBase fix).
 func (b *InMemoryBackend) DeleteFlow(flowID string) error {
 	b.mu.Lock("DeleteFlow")
 	defer b.mu.Unlock()
@@ -123,6 +126,25 @@ func (b *InMemoryBackend) DeleteFlow(flowID string) error {
 	}
 
 	delete(b.flowsByName, f.Name)
+	delete(b.agentTags, f.FlowArn)
+	delete(b.flowVersionCounters, flowID)
+
+	// Reset, not delete: flowVersionsStore registers the table under
+	// "flowVersions:"+flowID in b.registry once; deleting the map entry here
+	// would make a later accessor re-Register the same name and panic. See
+	// DeleteAgent's comment in agents.go for the full rationale.
+	if versions, versionsOK := b.flowVersions[flowID]; versionsOK {
+		versions.Reset()
+	}
+
+	b.flowAliases.Range(func(fa *FlowAlias) bool {
+		if fa.FlowID == flowID {
+			b.flowAliases.Delete(flowAliasKey(fa.FlowID, fa.FlowAliasID))
+		}
+
+		return true
+	})
+
 	b.flows.Delete(flowID)
 
 	return nil

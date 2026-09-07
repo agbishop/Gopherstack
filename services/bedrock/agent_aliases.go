@@ -138,10 +138,12 @@ func (b *InMemoryBackend) DeleteAgentAlias(agentID, aliasID string) error {
 
 	key := agentAliasKey(agentID, aliasID)
 
-	if _, ok := b.agentAliases.Get(key); !ok {
+	alias, ok := b.agentAliases.Get(key)
+	if !ok {
 		return fmt.Errorf("%w: agent alias %q not found", ErrNotFound, aliasID)
 	}
 
+	delete(b.agentTags, alias.AgentAliasArn)
 	b.agentAliases.Delete(key)
 
 	return nil

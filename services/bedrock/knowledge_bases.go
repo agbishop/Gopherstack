@@ -120,9 +120,11 @@ func (b *InMemoryBackend) UpdateKnowledgeBase(
 	return &cp, nil
 }
 
-// DeleteKnowledgeBase deletes a knowledge base and its data sources.
-// GetDataSource/ListDataSources otherwise keep returning orphaned rows for a
-// KB ID that no longer resolves (gopherstack-wg7i).
+// DeleteKnowledgeBase deletes a knowledge base and its data sources,
+// ingestion jobs, and documents. GetDataSource/ListDataSources otherwise keep
+// returning orphaned rows for a KB ID that no longer resolves
+// (gopherstack-wg7i); ingestionJobs/kbDocuments have the identical gap,
+// closed by gopherstack-jkiu.
 func (b *InMemoryBackend) DeleteKnowledgeBase(kbID string) error {
 	b.mu.Lock("DeleteKnowledgeBase")
 	defer b.mu.Unlock()
@@ -133,11 +135,28 @@ func (b *InMemoryBackend) DeleteKnowledgeBase(kbID string) error {
 	}
 
 	delete(b.kbByName, kb.Name)
+	delete(b.agentTags, kb.KnowledgeBaseArn)
 	b.knowledgeBases.Delete(kbID)
 
 	b.dataSources.Range(func(ds *DataSource) bool {
 		if ds.KnowledgeBaseID == kbID {
 			b.dataSources.Delete(ds.KnowledgeBaseID + "/" + ds.DataSourceID)
+		}
+
+		return true
+	})
+
+	b.ingestionJobs.Range(func(job *IngestionJob) bool {
+		if job.KnowledgeBaseID == kbID {
+			b.ingestionJobs.Delete(ingestionJobKey(job.KnowledgeBaseID, job.DataSourceID, job.IngestionJobID))
+		}
+
+		return true
+	})
+
+	b.kbDocuments.Range(func(doc *KnowledgeBaseDocument) bool {
+		if doc.KnowledgeBaseID == kbID {
+			b.kbDocuments.Delete(kbDocKey(doc.KnowledgeBaseID, doc.DataSourceID, doc.DocumentID))
 		}
 
 		return true
