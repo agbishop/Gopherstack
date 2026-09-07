@@ -318,6 +318,14 @@ func (b *InMemoryBackend) CreateCluster(ctx context.Context, req *createClusterR
 	if req.SnapshotName != "" {
 		s, ok := b.snapshotsStore(region).Get(req.SnapshotName)
 		if !ok {
+			// LANDMINE (gopherstack-me2v): CreateCluster's declared error set
+			// (deserializers.go deserializeOpErrorCreateCluster) has no
+			// SnapshotNotFoundFault -- unlike ACLName/SubnetGroupName/
+			// ParameterGroupName above, which all have their own declared
+			// NotFound faults. Do not "fix" this by guessing a replacement;
+			// candidates are InvalidParameterValueException (declared here)
+			// or leaving SnapshotNotFoundFault as-is if real AWS in fact
+			// returns it undeclared. Needs verified evidence either way.
 			return nil, fmt.Errorf("snapshot %q not found: %w", req.SnapshotName, ErrSnapshotNotFound)
 		}
 		restoreSnap = s

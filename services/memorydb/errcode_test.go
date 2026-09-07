@@ -39,6 +39,25 @@ func TestErrCode_ClusterNotFound(t *testing.T) {
 	assert.Equal(t, "ClusterNotFoundFault", responseType(t, rec.Body.Bytes()))
 }
 
+// TestErrCode_CreateCluster_SnapshotNotFound pins current behavior for
+// gopherstack-me2v: CreateCluster's declared error set has no
+// SnapshotNotFoundFault, so this asserts what the handler emits today
+// without endorsing it as correct -- see the landmine comment in
+// clusters.go's CreateCluster restore-from-snapshot branch.
+func TestErrCode_CreateCluster_SnapshotNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, "CreateCluster", map[string]any{
+		"ClusterName":  "restore-cluster",
+		"NodeType":     "db.r6g.large",
+		"SnapshotName": "no-such-snapshot",
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "SnapshotNotFoundFault", responseType(t, rec.Body.Bytes()))
+}
+
 func TestErrCode_ACLInUse(t *testing.T) {
 	t.Parallel()
 
