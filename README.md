@@ -511,7 +511,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Redshift](services/redshift/README.md) | A | 9 | clean |
 | [Redshift Data](services/redshiftdata/README.md) | A | 12 | 8 gaps; 1 deferred |
 | [Timestream Query](services/timestreamquery/README.md) | A | 12 | 5 gaps; 1 deferred |
-| [Timestream Write](services/timestreamwrite/README.md) | A | 19 | 6 gaps |
+| [Timestream Write](services/timestreamwrite/README.md) | A | 19 | 5 gaps |
 
 ### Networking & Content Delivery
 
@@ -661,7 +661,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 
 | Service | Parity | PARITY Entries | Notes |
 |---|---|---|---|
-| [MediaConvert](services/mediaconvert/README.md) | A | 34 | 7 gaps; 1 deferred |
+| [MediaConvert](services/mediaconvert/README.md) | A | 34 | 8 gaps; 1 deferred |
 | [MediaLive](services/medialive/README.md) | A | — | 26 families; 5 gaps |
 | [MediaPackage](services/mediapackage/README.md) | A | 19 | 1 deferred |
 | [MediaStore](services/mediastore/README.md) | A | 21 | clean |

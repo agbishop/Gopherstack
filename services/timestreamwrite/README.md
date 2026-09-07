@@ -9,13 +9,12 @@
 | --- | --- |
 | PARITY entries audited | 19 (16 ok, 3 partial) |
 | Feature families | 3 (3 ok) |
-| Known gaps | 6 |
+| Known gaps | 5 |
 | Deferred items | 0 |
 | Resource leaks | clean |
 
 ### Known gaps
 
-- ResumeBatchLoadTask's doc comment (PENDING_RESUME/FAILED) disagrees with its guard code (PROGRESS_STOPPED/FAILED) — not fixed, the pinned SDK has no doc text settling which BatchLoadStatus is the real resume precondition (bd: file if desired)
 - UpdateDatabase does not enforce KmsKeyId as required (real UpdateDatabaseRequest marks it required) — not fixed, conflicts with an existing intentional test that uses empty string to clear the key (bd: file if desired)
 - UntagResource/ListTagsForResource never return ResourceNotFoundException for an unknown ARN (real API can) — not fixed, would require an interface signature change and conflicts with existing post-delete cleanup test assertions; AWS's own docs note the two outcomes are meant to be treated as equivalent for DeleteDatabase's ARN-cleanup race anyway (bd: file if desired)
 - CreateBatchLoadTask does not validate ReportConfiguration as required, and ClientToken is accepted but not used for idempotent dedup (bd: file if desired)
