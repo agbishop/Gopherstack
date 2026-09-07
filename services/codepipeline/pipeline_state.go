@@ -246,6 +246,16 @@ func (b *InMemoryBackend) RetryStageExecution(
 		return nil, fmt.Errorf("%w: stage %q not found in pipeline %q", ErrStageNotFound, stageName, pipelineName)
 	}
 
+	// gopherstack-3djp (errtargetaudit): same undeclared-code issue as
+	// OverrideStageCondition above -- PipelineExecutionNotFoundException is
+	// not in RetryStageExecution's modeled error set
+	// (deserializeOpErrorRetryStageExecution: PipelineNotFoundException/
+	// StageNotFoundException/StageNotRetryableException/
+	// NotLatestPipelineExecutionException/
+	// ConcurrentPipelineExecutionsLimitExceededException/ConflictException/
+	// ValidationException only). Left unfixed: StageNotRetryableException
+	// ("the stage contains no failed actions") also plausibly covers a
+	// bogus executionID, but that's a guess, not a confirmed replacement.
 	exec := findExecution(b.executionsStore(region)[pipelineName], executionID)
 	if exec == nil {
 		return nil, fmt.Errorf("%w: pipeline %q execution %q", ErrExecutionNotFound, pipelineName, executionID)
@@ -448,6 +458,18 @@ func (b *InMemoryBackend) OverrideStageCondition(
 		return fmt.Errorf("%w: stage %q not found in pipeline %q", ErrStageNotFound, stageName, pipelineName)
 	}
 
+	// gopherstack-3djp (errtargetaudit): PipelineExecutionNotFoundException
+	// is not in OverrideStageCondition's modeled error set
+	// (deserializeOpErrorOverrideStageCondition, codepipeline@v1.49.4
+	// deserializers.go: PipelineNotFoundException/StageNotFoundException/
+	// ConditionNotOverridableException/NotLatestPipelineExecutionException/
+	// ConcurrentPipelineExecutionsLimitExceededException/ConflictException/
+	// ValidationException only). Left unfixed: no single declared code is an
+	// obvious replacement for "this executionID doesn't exist" --
+	// NotLatestPipelineExecutionException is the closest semantic fit but
+	// its doc text ("the pipelineExecutionId ... is out of date") describes
+	// a stale-but-once-valid ID, not a never-existed one, and this backend
+	// cannot tell the two cases apart from AWS docs alone.
 	if findExecution(b.executionsStoreRO(region)[pipelineName], executionID) == nil {
 		return fmt.Errorf("%w: pipeline %q execution %q", ErrExecutionNotFound, pipelineName, executionID)
 	}

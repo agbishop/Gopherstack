@@ -88,6 +88,17 @@ func (b *InMemoryBackend) UpdatePipeline(ctx context.Context, decl PipelineDecla
 	b.mu.Lock("UpdatePipeline")
 	defer b.mu.Unlock()
 
+	// gopherstack-3djp (errtargetaudit): PipelineNotFoundException is not in
+	// UpdatePipeline's modeled error set (deserializeOpErrorUpdatePipeline:
+	// InvalidActionDeclarationException/InvalidBlockerDeclarationException/
+	// InvalidStageDeclarationException/InvalidStructureException/
+	// LimitExceededException/ValidationException only). Left unfixed:
+	// unlike DeletePipeline/DeleteCustomActionType/CreateCustomActionType
+	// (also undeclared, but no-op-on-absent is a safe fix for those), an
+	// update against a nonexistent pipeline has no benign "success"
+	// meaning -- InvalidStructureException is a plausible replacement
+	// (updating something that isn't there is arguably a structurally
+	// invalid request) but that's inference, not a confirmed AWS behavior.
 	p, ok := b.pipelines.Get(regionKey(getRegion(ctx, b.region), decl.Name))
 	if !ok {
 		return nil, fmt.Errorf("%w: pipeline %q", ErrNotFound, decl.Name)
@@ -102,6 +113,18 @@ func (b *InMemoryBackend) UpdatePipeline(ctx context.Context, decl PipelineDecla
 }
 
 // DeletePipeline removes the pipeline with the given name and cleans up associated state.
+//
+// gopherstack-3djp (errtargetaudit): the guard below emits
+// PipelineNotFoundException on a nonexistent name, a code confirmed NOT in
+// this op's modeled error set (deserializeOpErrorDeletePipeline:
+// ConcurrentModificationException/ValidationException only; live docs
+// Errors section agrees). Left unfixed: an earlier pass removed this guard
+// citing the doc's "HTTP 200 response with an empty HTTP body" sentence as
+// evidence of idempotent delete -- that sentence is generic Response-shape
+// boilerplate present verbatim on ops that DO error on not-found (see
+// DisableStageTransition: same sentence, models PipelineNotFoundException),
+// so by itself it is not evidence of idempotent-delete semantics. No
+// declared code is an obvious replacement either.
 func (b *InMemoryBackend) DeletePipeline(ctx context.Context, name string) error {
 	b.mu.Lock("DeletePipeline")
 	defer b.mu.Unlock()
@@ -417,5 +440,12 @@ func (b *InMemoryBackend) StopPipelineExecution(
 		return &cp, nil
 	}
 
+	// gopherstack-3djp (errtargetaudit): same undeclared-code issue as
+	// OverrideStageCondition/RetryStageExecution -- PipelineExecutionNotFoundException
+	// is not in StopPipelineExecution's modeled error set
+	// (deserializeOpErrorStopPipelineExecution: PipelineNotFoundException/
+	// PipelineExecutionNotStoppableException/DuplicatedStopRequestException/
+	// ConflictException/ValidationException only). Left unfixed: no
+	// declared code obviously means "this executionID doesn't exist".
 	return nil, fmt.Errorf("%w: pipeline %q execution %q", ErrExecutionNotFound, pipelineName, executionID)
 }

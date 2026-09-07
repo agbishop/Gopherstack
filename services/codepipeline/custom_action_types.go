@@ -8,6 +8,28 @@ import (
 )
 
 // CreateCustomActionType stores a new custom action type.
+//
+// gopherstack-3djp (errtargetaudit): the guard below emits
+// InvalidStructureException on a duplicate category/provider/version, a
+// code confirmed NOT in this op's modeled error set
+// (deserializeOpErrorCreateCustomActionType, codepipeline@v1.49.4
+// deserializers.go: ConcurrentModificationException/InvalidTagsException/
+// LimitExceededException/TooManyTagsException/ValidationException only;
+// the live docs.aws.amazon.com/.../API_CreateCustomActionType Errors
+// section lists the identical five). Left unfixed: an earlier pass here
+// removed this guard on the theory that AWS treats re-creation as an
+// upsert, citing DeleteCustomActionType's "empty HTTP body" Response
+// Elements text and its restore-workflow doc paragraph as support -- both
+// don't hold up. The "HTTP 200 response with an empty HTTP body" sentence
+// is generic Response-shape boilerplate that appears verbatim on ops that
+// DO throw a not-found error (e.g. DisableStageTransition, which declares
+// PipelineNotFoundException and carries the exact same sentence), so it
+// says nothing about not-found/duplicate semantics either way.
+// DeleteCustomActionType's own doc text ("you must use a string in the
+// version field that has never been used before") argues AGAINST silent
+// reuse, not for it. No declared code is an obvious replacement either.
+// Candidate remedy if evidence surfaces: ValidationException, or leave the
+// guard as-is but swap the emitted code.
 func (b *InMemoryBackend) CreateCustomActionType(
 	ctx context.Context,
 	cat *CustomActionType,
@@ -37,6 +59,18 @@ func (b *InMemoryBackend) CreateCustomActionType(
 }
 
 // DeleteCustomActionType removes a custom action type.
+//
+// gopherstack-3djp (errtargetaudit): the guard below emits
+// ActionTypeNotFoundException on a nonexistent type, a code confirmed NOT
+// in this op's modeled error set (deserializeOpErrorDeleteCustomActionType:
+// ConcurrentModificationException/ValidationException only; live docs
+// Errors section agrees). Left unfixed: an earlier pass removed this guard
+// citing the doc's "HTTP 200 response with an empty HTTP body" sentence as
+// evidence of idempotent delete -- that sentence is generic Response-shape
+// boilerplate present on ops that DO error on not-found (see
+// DisableStageTransition, same sentence, models PipelineNotFoundException),
+// so it is not evidence either way. No declared code is an obvious
+// replacement.
 // Returns ResourceInUseException if any pipeline references the type.
 func (b *InMemoryBackend) DeleteCustomActionType(ctx context.Context, category, provider, version string) error {
 	b.mu.Lock("DeleteCustomActionType")
