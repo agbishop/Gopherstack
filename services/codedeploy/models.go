@@ -190,21 +190,25 @@ type RevisionLocation struct {
 
 // Deployment represents a CodeDeploy deployment.
 type Deployment struct {
-	CreateTime                    time.Time         `json:"createTime"`
-	CompleteTime                  *time.Time        `json:"completeTime,omitempty"`
-	Revision                      *RevisionLocation `json:"revision,omitempty"`
-	Status                        string            `json:"status"`
-	ApplicationName               string            `json:"applicationName"`
-	DeploymentGroupName           string            `json:"deploymentGroupName"`
-	DeploymentConfigName          string            `json:"deploymentConfigName"`
-	DeploymentID                  string            `json:"deploymentId"`
-	Creator                       string            `json:"creator"`
-	Description                   string            `json:"description,omitempty"`
-	FileExistsBehavior            string            `json:"fileExistsBehavior,omitempty"`
-	AccountID                     string            `json:"-"`
-	Region                        string            `json:"-"`
-	UpdateOutdatedInstancesOnly   bool              `json:"updateOutdatedInstancesOnly,omitempty"`
-	IgnoreApplicationStopFailures bool              `json:"ignoreApplicationStopFailures,omitempty"`
+	CreateTime           time.Time         `json:"createTime"`
+	CompleteTime         *time.Time        `json:"completeTime,omitempty"`
+	Revision             *RevisionLocation `json:"revision,omitempty"`
+	Status               string            `json:"status"`
+	ApplicationName      string            `json:"applicationName"`
+	DeploymentGroupName  string            `json:"deploymentGroupName"`
+	DeploymentConfigName string            `json:"deploymentConfigName"`
+	DeploymentID         string            `json:"deploymentId"`
+	Creator              string            `json:"creator"`
+	Description          string            `json:"description,omitempty"`
+	FileExistsBehavior   string            `json:"fileExistsBehavior,omitempty"`
+	// ExternalID is never populated: CreateDeploymentInput has no field for
+	// it (api_op_CreateDeployment.go), so it stays empty so ListDeployments'
+	// externalId filter matches zero deployments instead of being ignored.
+	ExternalID                    string `json:"externalId,omitempty"`
+	AccountID                     string `json:"-"`
+	Region                        string `json:"-"`
+	UpdateOutdatedInstancesOnly   bool   `json:"updateOutdatedInstancesOnly,omitempty"`
+	IgnoreApplicationStopFailures bool   `json:"ignoreApplicationStopFailures,omitempty"`
 }
 
 // OnPremisesInstance represents an on-premises instance registered with CodeDeploy.
@@ -298,6 +302,7 @@ type DeploymentFilter struct {
 	CreateTimeEnd       *time.Time
 	ApplicationName     string
 	DeploymentGroupName string
+	ExternalID          string
 	Statuses            []string
 }
 

@@ -93,6 +93,38 @@ func (b *InMemoryBackend) GetDeployment(deploymentID string) (*Deployment, error
 	return &cp, nil
 }
 
+// deploymentMatchesFilter reports whether d passes every criterion in filter.
+// statusSet is the precomputed set of filter.Statuses (empty means no status filter).
+func deploymentMatchesFilter(d *Deployment, filter DeploymentFilter, statusSet map[string]struct{}) bool {
+	if filter.ApplicationName != "" && d.ApplicationName != filter.ApplicationName {
+		return false
+	}
+
+	if filter.DeploymentGroupName != "" && d.DeploymentGroupName != filter.DeploymentGroupName {
+		return false
+	}
+
+	if filter.ExternalID != "" && d.ExternalID != filter.ExternalID {
+		return false
+	}
+
+	if len(statusSet) > 0 {
+		if _, ok := statusSet[d.Status]; !ok {
+			return false
+		}
+	}
+
+	if filter.CreateTimeStart != nil && d.CreateTime.Before(*filter.CreateTimeStart) {
+		return false
+	}
+
+	if filter.CreateTimeEnd != nil && d.CreateTime.After(*filter.CreateTimeEnd) {
+		return false
+	}
+
+	return true
+}
+
 // ListDeployments returns deployment IDs in sorted order, filtered by the provided criteria.
 func (b *InMemoryBackend) ListDeployments(filter DeploymentFilter) []string {
 	b.mu.RLock("ListDeployments")
@@ -107,29 +139,9 @@ func (b *InMemoryBackend) ListDeployments(filter DeploymentFilter) []string {
 	ids := make([]string, 0, len(all))
 
 	for _, d := range all {
-		if filter.ApplicationName != "" && d.ApplicationName != filter.ApplicationName {
-			continue
+		if deploymentMatchesFilter(d, filter, statusSet) {
+			ids = append(ids, d.DeploymentID)
 		}
-
-		if filter.DeploymentGroupName != "" && d.DeploymentGroupName != filter.DeploymentGroupName {
-			continue
-		}
-
-		if len(statusSet) > 0 {
-			if _, ok := statusSet[d.Status]; !ok {
-				continue
-			}
-		}
-
-		if filter.CreateTimeStart != nil && d.CreateTime.Before(*filter.CreateTimeStart) {
-			continue
-		}
-
-		if filter.CreateTimeEnd != nil && d.CreateTime.After(*filter.CreateTimeEnd) {
-			continue
-		}
-
-		ids = append(ids, d.DeploymentID)
 	}
 
 	sort.Strings(ids)
