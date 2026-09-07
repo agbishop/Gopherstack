@@ -272,7 +272,7 @@ func (b *InMemoryBackend) CompleteMultipartUpload(
 	v.Archives[archiveID] = a
 	v.NumberOfArchives++
 	v.SizeInBytes += archiveSize
-	v.WriteSinceLastInventory = true
+	v.WriteSinceLastInventory = new(true)
 	b.archiveData[archiveID] = assembled
 
 	b.multipartUploads.Delete(upKey)

@@ -147,11 +147,13 @@ func toDescribeVaultResponse(v *Vault) describeVaultResponse {
 		LastInventoryDate: v.LastInventoryDate,
 	}
 
-	if v.LastInventoryDate != "" {
-		numArchives := v.NumberOfArchivesAtLastInventory
-		sizeBytes := v.SizeInBytesAtLastInventory
-		resp.NumberOfArchives = &numArchives
-		resp.SizeInBytes = &sizeBytes
+	// A restored pre-x8em snapshot can have LastInventoryDate set but nil
+	// AtLastInventory fields -- the value is genuinely unknown (not "zero
+	// archives found"), so it stays omitted rather than fabricated
+	// (gopherstack-c8sa).
+	if v.LastInventoryDate != "" && v.NumberOfArchivesAtLastInventory != nil {
+		resp.NumberOfArchives = v.NumberOfArchivesAtLastInventory
+		resp.SizeInBytes = v.SizeInBytesAtLastInventory
 	}
 
 	return resp

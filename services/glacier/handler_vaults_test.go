@@ -371,7 +371,7 @@ func TestDeleteVault_RejectsNonEmpty(t *testing.T) {
 
 			bk.AddVaultInternal(testAccountID, testRegion, &glacier.Vault{
 				VaultName:                       nonEmptyVaultName,
-				NumberOfArchivesAtLastInventory: 1,
+				NumberOfArchivesAtLastInventory: new(int64(1)),
 			})
 			bk.AddArchiveInternal(testAccountID, testRegion, nonEmptyVaultName, &glacier.Archive{
 				ArchiveID: nonEmptyArchiveID,
@@ -429,7 +429,7 @@ func TestDeleteVault_NotEmpty_Returns409(t *testing.T) {
 
 			bk.AddVaultInternal(testAccountID, testRegion, &glacier.Vault{
 				VaultName:                       "v1",
-				NumberOfArchivesAtLastInventory: 1,
+				NumberOfArchivesAtLastInventory: new(int64(1)),
 			})
 			bk.AddArchiveInternal(
 				testAccountID,

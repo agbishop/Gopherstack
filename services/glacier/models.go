@@ -12,33 +12,41 @@ import "time"
 // scopes archives by vault and Archive itself carries no natural
 // cross-vault identity field to key a flat table by.
 type Vault struct {
-	Tags                 map[string]string   `json:"tags,omitempty"`
-	Archives             map[string]*Archive `json:"archives,omitempty"`
-	AccessPolicy         string              `json:"accessPolicy,omitempty"`
-	NotificationSNSTopic string              `json:"notificationSNSTopic,omitempty"`
-	VaultARN             string              `json:"vaultARN"`
-	VaultName            string              `json:"vaultName"`
-	AccountID            string              `json:"accountID"`
-	Region               string              `json:"region"`
-	CreationDate         string              `json:"creationDate"`
-	LastInventoryDate    string              `json:"lastInventoryDate,omitempty"`
-	NotificationEvents   []string            `json:"notificationEvents,omitempty"`
-	NumberOfArchives     int64               `json:"numberOfArchives"`
-	SizeInBytes          int64               `json:"sizeInBytes"`
+	Tags     map[string]string   `json:"tags,omitempty"`
+	Archives map[string]*Archive `json:"archives,omitempty"`
 	// NumberOfArchivesAtLastInventory is the archive count captured when
 	// LastInventoryDate was last set (InitiateJob for inventory-retrieval). Per
 	// api_op_DeleteVault.go's doc comment, DeleteVault checks this -- "no
 	// archives ... as of the last inventory" -- rather than live NumberOfArchives.
-	NumberOfArchivesAtLastInventory int64 `json:"numberOfArchivesAtLastInventory,omitempty"`
+	//
+	// Pointer, not int64: CreateVault always sets it (to a pointer-to-zero), so
+	// nil is reserved for a vault decoded from a pre-gopherstack-x8em snapshot,
+	// which never had this field at all. DeleteVault uses that nil to fall back
+	// to the pre-x8em live-archive-count check instead of guessing a value
+	// (gopherstack-c8sa).
+	NumberOfArchivesAtLastInventory *int64 `json:"numberOfArchivesAtLastInventory,omitempty"`
 	// SizeInBytesAtLastInventory is SizeInBytes captured at the same point as
 	// NumberOfArchivesAtLastInventory: DescribeVaultOutput.SizeInBytes carries
 	// the identical "as of the last inventory date" qualification
-	// (gopherstack-zpo5).
-	SizeInBytesAtLastInventory int64 `json:"sizeInBytesAtLastInventory,omitempty"`
+	// (gopherstack-zpo5). Pointer for the same pre-x8em-snapshot reason as
+	// NumberOfArchivesAtLastInventory.
+	SizeInBytesAtLastInventory *int64 `json:"sizeInBytesAtLastInventory,omitempty"`
 	// WriteSinceLastInventory tracks DeleteVault's other documented condition,
 	// "no writes ... since the last inventory": set on any archive add/remove,
-	// cleared when LastInventoryDate is refreshed.
-	WriteSinceLastInventory bool `json:"writeSinceLastInventory,omitempty"`
+	// cleared when LastInventoryDate is refreshed. Pointer for the same
+	// pre-x8em-snapshot reason as NumberOfArchivesAtLastInventory.
+	WriteSinceLastInventory *bool    `json:"writeSinceLastInventory,omitempty"`
+	AccessPolicy            string   `json:"accessPolicy,omitempty"`
+	NotificationSNSTopic    string   `json:"notificationSNSTopic,omitempty"`
+	VaultARN                string   `json:"vaultARN"`
+	VaultName               string   `json:"vaultName"`
+	AccountID               string   `json:"accountID"`
+	Region                  string   `json:"region"`
+	CreationDate            string   `json:"creationDate"`
+	LastInventoryDate       string   `json:"lastInventoryDate,omitempty"`
+	NotificationEvents      []string `json:"notificationEvents,omitempty"`
+	NumberOfArchives        int64    `json:"numberOfArchives"`
+	SizeInBytes             int64    `json:"sizeInBytes"`
 }
 
 // Archive stores metadata for a single archive uploaded to a vault.
