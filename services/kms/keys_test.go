@@ -622,7 +622,11 @@ func TestKMSCancelKeyDeletion_RequiresPendingDeletion(t *testing.T) {
 			setup: func(b *kms.InMemoryBackend, keyID string) {
 				require.NoError(t, b.DisableKey(context.Background(), &kms.DisableKeyInput{KeyID: keyID}))
 			},
-			wantErr: kms.ErrKeyDisabled,
+			// CancelKeyDeletion's own deserializeOpError (kms@v1.55.4 deserializers.go)
+			// does not recognize DisabledException, only KMSInvalidStateException
+			// (gopherstack-8u3f) -- "not pending deletion" is the same defect regardless
+			// of which other state the key happens to be in.
+			wantErr: kms.ErrKeyInvalidState,
 		},
 	}
 

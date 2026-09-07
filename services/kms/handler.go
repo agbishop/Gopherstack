@@ -336,6 +336,7 @@ func kmsErrorTable() []kmsErrorEntry {
 		{sentinel: ErrInvalidCiphertext, awsType: awsErrInvalidCiphertext},
 		{sentinel: ErrCiphertextTooShort, awsType: awsErrInvalidCiphertext},
 		{sentinel: ErrInvalidSignature, awsType: "KMSInvalidSignatureException"},
+		{sentinel: ErrInvalidMac, awsType: "KMSInvalidMacException"},
 		{sentinel: ErrUnsupportedOrigin, awsType: "UnsupportedOperationException"},
 		{sentinel: ErrValidation, awsType: awsErrValidation},
 		{sentinel: ErrInvalidDataKeySize, awsType: awsErrValidation},

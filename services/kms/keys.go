@@ -488,7 +488,7 @@ func (b *InMemoryBackend) CancelKeyDeletion(
 	}
 
 	if key.KeyState != KeyStatePendingDeletion && key.KeyState != KeyStatePendingReplicaDeletion {
-		return nil, keyStateError(key)
+		return nil, fmt.Errorf("%w: key %q is not pending deletion", ErrKeyInvalidState, key.KeyID)
 	}
 
 	key.KeyState = KeyStateDisabled

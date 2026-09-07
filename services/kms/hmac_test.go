@@ -160,7 +160,10 @@ func TestVerifyMac_WrongMac(t *testing.T) {
 		Message:      []byte("message"),
 		Mac:          []byte("wrong-mac"),
 	})
-	require.ErrorIs(t, err, kms.ErrInvalidSignature)
+	// VerifyMac's own deserializeOpError (kms@v1.55.4 deserializers.go) recognizes
+	// KMSInvalidMacException, not KMSInvalidSignatureException -- that code belongs to
+	// Verify only (gopherstack-8u3f).
+	require.ErrorIs(t, err, kms.ErrInvalidMac)
 }
 
 func TestVerifyMac_EmptyAlgorithm(t *testing.T) {

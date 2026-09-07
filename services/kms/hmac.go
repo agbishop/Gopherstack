@@ -112,7 +112,7 @@ func (b *InMemoryBackend) VerifyMac(
 	}
 
 	if !hmacEqual(expected, input.Mac) {
-		return nil, fmt.Errorf("%w: MAC verification failed", ErrInvalidSignature)
+		return nil, fmt.Errorf("%w: MAC verification failed", ErrInvalidMac)
 	}
 
 	b.recordLastUsage(region, key.KeyID, "VerifyMac")

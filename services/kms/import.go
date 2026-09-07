@@ -189,7 +189,7 @@ func (b *InMemoryBackend) ImportKeyMaterial(
 
 	// Only allow import when the key is awaiting material.
 	if key.KeyState != KeyStatePendingImport {
-		return keyStateError(key)
+		return fmt.Errorf("%w: key %q is not awaiting key material", ErrKeyInvalidState, key.KeyID)
 	}
 
 	// Only symmetric (AES-256) key material is supported for external import.

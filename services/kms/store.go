@@ -539,8 +539,12 @@ func (b *InMemoryBackend) keyRegion(keyARN string) string {
 	return parsed.Region
 }
 
-// checkKeyMaterialExpiry returns ErrExpiredKeyMaterial if the key's imported material
-// has passed its ValidTo date. Must be called with at least a read lock held.
+// checkKeyMaterialExpiry returns ErrKeyInvalidState if the key's imported material has
+// passed its ValidTo date. Only Encrypt/Decrypt call this; both declare
+// KMSInvalidStateException but not ExpiredImportTokenException (kms@v1.55.4
+// deserializers.go) -- real AWS auto-transitions an expired-material key back to
+// PendingImport, so it surfaces the same way any other non-Enabled state does.
+// Must be called with at least a read lock held.
 func (*InMemoryBackend) checkKeyMaterialExpiry(key *Key) error {
 	if key.Origin != KeyOriginExternal {
 		return nil
@@ -554,7 +558,7 @@ func (*InMemoryBackend) checkKeyMaterialExpiry(key *Key) error {
 	if now >= key.ValidTo {
 		return fmt.Errorf(
 			"%w: key %q imported material has expired",
-			ErrExpiredKeyMaterial,
+			ErrKeyInvalidState,
 			key.KeyID,
 		)
 	}

@@ -56,6 +56,11 @@ var (
 	ErrInvalidDataKeySize = errors.New("ValidationException: invalid data key size")
 	// ErrInvalidSignature is returned when a signature verification fails.
 	ErrInvalidSignature = errors.New("KMSInvalidSignatureException")
+	// ErrInvalidMac is returned when a VerifyMac HMAC comparison fails. Distinct from
+	// ErrInvalidSignature: VerifyMac's own deserializeOpError (kms@v1.55.4
+	// deserializers.go) recognizes KMSInvalidMacException, not KMSInvalidSignatureException
+	// (that code belongs to Verify only).
+	ErrInvalidMac = errors.New("KMSInvalidMacException")
 	// ErrKeyMaterialUnavailable is returned when key material is missing (e.g. restored from
 	// an older snapshot that predates key material persistence).
 	ErrKeyMaterialUnavailable = errors.New("key material unavailable for this key")
