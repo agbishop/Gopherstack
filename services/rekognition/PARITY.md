@@ -20,7 +20,7 @@ ops:
   DeleteFaces: {wire: ok, errors: ok, state: ok, persist: ok}
   ListFaces: {wire: ok, errors: ok, state: ok, persist: ok, note: "real pagination via facesByCollection index. FIXED (gopherstack wrapper-key sweep, 2026-08-29): FaceIds and UserId filters (own doc comments, api_op_ListFaces.go) were read by nothing at all -- listFacesReq had no such fields, so every call returned every face in the collection regardless of what was requested. UserId now resolved against the associating user's storedUser.FaceIDs (see AssociateFaces)."}
   SearchFaces: {wire: ok, errors: ok, state: ok, persist: ok, note: "deterministic per-identity similarity (same ExternalImageId => 100.0), not canned — see faceSimilarity"}
-  SearchFacesByImage: {wire: ok, errors: ok, state: ok, persist: ok, note: "similarity varies per imageKey (S3 path or byte length) via FNV-1a seed, not canned. 2026-09-06 (gopherstack-eshx): InvalidS3ObjectException now enforced when S3 is wired -- see Notes."}
+  SearchFacesByImage: {wire: ok, errors: ok, state: ok, persist: ok, note: "similarity varies per imageKey (S3 path or byte length) via FNV-1a seed, not canned. 2026-09-06 (gopherstack-eshx): InvalidS3ObjectException now enforced when S3 is wired. 2026-09-06 (gopherstack-qlqz): QualityFilter now parsed and enum-validated (was declared on no field at all -- see Notes #7) -- see Notes #9."}
   CreateUser: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this sweep: duplicate UserId now returns ConflictException (was ResourceAlreadyExistsException) — see Notes #2"}
   DeleteUser: {wire: ok, errors: ok, state: ok, persist: ok}
   ListUsers: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -63,7 +63,7 @@ ops:
   GetMediaAnalysisJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this sweep: CreationTimestamp string->epoch-seconds — see Notes #1"}
   ListMediaAnalysisJobs: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this sweep: CreationTimestamp string->epoch-seconds — see Notes #1"}
 families:
-  detect_and_recognize: {status: ok, note: "CompareFaces/DetectFaces/DetectLabels/DetectText/DetectCustomLabels/DetectModerationLabels/DetectProtectiveEquipment/RecognizeCelebrities/GetCelebrityInfo — inherently-ML ops, correctly deterministic mocks per parity-principles.md rule 4 (not flagged as bugs); DetectLabels' plausibleLabels() genuinely varies with MinConfidence/MaxLabels, CompareFaces/DetectFaces/RecognizeCelebrities always return an empty/fixed-shape result regardless of input — acceptable, these are stateless single-shot image ops with no backing resource to fake statefulness against. FIXED 2026-08-31 (gopherstack-uox6): DetectLabels' omitted-MinConfidence default was 50.0 but the op's own doc comment states 'The default is 55%.' — had zero observable effect against the current 7-entry synthetic label set (lowest confidence 55.4, above both values) but is now correct at the source (resolveMinConfidence, handler_labels.go) for any future addition to that set. See Notes #7. FIXED 2026-09-06 (gopherstack-eshx): CompareFaces (SourceImage+TargetImage)/DetectFaces/DetectLabels/DetectText/DetectCustomLabels/DetectModerationLabels/DetectProtectiveEquipment/RecognizeCelebrities all declare InvalidS3ObjectException and none checked Image.S3Object against real S3 state at all -- now enforced when S3 is wired, see Notes."
+  detect_and_recognize: {status: ok, note: "CompareFaces/DetectFaces/DetectLabels/DetectText/DetectCustomLabels/DetectModerationLabels/DetectProtectiveEquipment/RecognizeCelebrities/GetCelebrityInfo — inherently-ML ops, correctly deterministic mocks per parity-principles.md rule 4 (not flagged as bugs); DetectLabels' plausibleLabels() genuinely varies with MinConfidence/MaxLabels, CompareFaces/DetectFaces/RecognizeCelebrities always return an empty/fixed-shape result regardless of input — acceptable, these are stateless single-shot image ops with no backing resource to fake statefulness against. FIXED 2026-08-31 (gopherstack-uox6): DetectLabels' omitted-MinConfidence default was 50.0 but the op's own doc comment states 'The default is 55%.' — had zero observable effect against the current 7-entry synthetic label set (lowest confidence 55.4, above both values) but is now correct at the source (resolveMinConfidence, handler_labels.go) for any future addition to that set. See Notes #7. FIXED 2026-09-06 (gopherstack-eshx): CompareFaces (SourceImage+TargetImage)/DetectFaces/DetectLabels/DetectText/DetectCustomLabels/DetectModerationLabels/DetectProtectiveEquipment/RecognizeCelebrities all declare InvalidS3ObjectException and none checked Image.S3Object against real S3 state at all -- now enforced when S3 is wired, see Notes. AUDITED 2026-09-06 (gopherstack-qlqz): MinConfidence/QualityFilter/Attributes enum validation swept across all eight stateless detection ops. FIXED: DetectFaces.Attributes (was []string, unvalidated against types.Attribute) and CompareFaces/SearchFacesByImage.QualityFilter (declared on no field at all -- see Notes #7); both now enum-validated against the real SDK enum via types.Attribute(\"\").Values()/types.QualityFilter(\"\").Values(). MinConfidence left unvalidated by design, confirmed correct -- see Notes #9. FIXED 2026-09-06 (gopherstack-duj0): DetectProtectiveEquipment.SummarizationAttributes .MinConfidence/.RequiredEquipmentTypes are both required-when-SummarizationAttributes-set (validators.go, ProtectiveEquipmentSummarizationAttributes) but were float32/[]string with no way to distinguish omitted from zero/nil -- retyped to *float32/*[]string and enforced. See Notes #10; corrects the MinConfidence required-ness verdict in Notes #9."
   async_video_jobs: {status: ok, note: "Start*/Get* (CelebrityRecognition, ContentModeration, FaceDetection, FaceSearch, LabelDetection, PersonTracking, SegmentDetection, TextDetection) — real StartAsyncJob/GetAsyncJob state machine (IN_PROGRESS -> SUCCEEDED on 2nd poll, PollCount persisted). FIXED this sweep (Notes #6): JobTag and Video (S3 reference) were parsed from every Start* request and then discarded -- both are real GetXxxOutput members, now stored and echoed back. GetSegmentDetection.SelectedSegmentTypes now echoes the Type values from StartSegmentDetection's SegmentTypes (ModelVersion omitted, no legitimate source). GetLabelDetection/GetContentModeration now return GetRequestMetadata (SortBy/AggregateBy echo). Detection-result arrays (Celebrities/ModerationLabels/Faces/Labels/Persons/Segments/TextDetections) remain synthesized-empty — acceptable mock, ML-inherent-op exemption, see gaps/deferred. FIXED 2026-09-06 (gopherstack-eshx): every Start* op declares InvalidS3ObjectException and none checked Video.S3Object against real S3 state at all -- now enforced when S3 is wired, see Notes."}
 routing: {status: ok, note: "single X-Amz-Target: RekognitionService.<Op> POST endpoint (awsjson1.1), verified every op in the dispatch map (buildOps + appendixAOps) against a real op name in aws-sdk-go-v2/service/rekognition; no name mismatches found"}
 gaps:
@@ -447,7 +447,9 @@ uncommitted per this pass's instructions.
    **Recorded as the other axis (never read), not fixed here:**
    `QualityFilter` on `IndexFaces`/`CompareFaces`/`SearchFacesByImage` is
    declared on no request struct in this backend at all — not a wrong
-   algorithm, a field with no code path at all.
+   algorithm, a field with no code path at all. (`CompareFaces`/
+   `SearchFacesByImage` fixed 2026-09-06, gopherstack-qlqz — see Notes #9;
+   `IndexFaces` out of scope there, it's not a stateless detection op.)
 
    No web pages fetched this pass; everything resolved from the pinned
    module cache.
@@ -502,3 +504,229 @@ uncommitted per this pass's instructions.
 
    Gates: `go build ./...`, `go test -race -count=1 ./services/rekognition/...` and `.` (root),
    `golangci-lint run ./ services/rekognition/... services/textract/...` — all clean.
+
+9. **2026-09-06 (gopherstack-qlqz): MinConfidence/QualityFilter/Attributes enum
+   validation on the stateless detection ops.** Filed title-only, empty
+   description — an audit-coverage issue ("this area was never examined"),
+   not a known bug. Scope: the eight stateless image-analysis ops (take an
+   image, return detections, persist nothing) — `DetectFaces`,
+   `DetectLabels`, `DetectModerationLabels`, `DetectText`,
+   `DetectProtectiveEquipment`, `RecognizeCelebrities`, `CompareFaces`,
+   `SearchFacesByImage`. (`DetectCustomLabels` also matches the shape but
+   isn't in the issue's named list, so left alone; `IndexFaces` persists
+   real face state, out of scope.)
+
+   Which of the three parameters each op actually has (`rekognition@v1.54.4`
+   `api_op_Detect*.go`/`api_op_CompareFaces.go`/`api_op_SearchFacesByImage.go`/
+   `api_op_RecognizeCelebrities.go`):
+
+   | Op | MinConfidence | QualityFilter | Attributes |
+   |---|---|---|---|
+   | DetectFaces | — | — | `[]types.Attribute` |
+   | DetectLabels | `*float32` | — | — |
+   | DetectModerationLabels | `*float32` | — | — |
+   | DetectText | — | — | — |
+   | DetectProtectiveEquipment | `*float32` (nested, `SummarizationAttributes.MinConfidence`, required if `SummarizationAttributes` set) | — | — |
+   | RecognizeCelebrities | — | — | — (only field is `Image`) |
+   | CompareFaces | — | `types.QualityFilter` | — |
+   | SearchFacesByImage | — | `types.QualityFilter` | — |
+
+   **MinConfidence has two distinct axes — range and required-ness. Audited
+   both; the range verdict below is correct, the required-ness verdict
+   originally recorded here was wrong and was corrected 2026-09-06
+   (gopherstack-duj0) — see that entry for the fix. Left as a single
+   narrative here so the two verdicts stay next to their shared evidence.**
+
+   *Range (is an out-of-bounds value rejected): confirmed correct, not
+   fixed.* `validators.go`'s `validateOpDetect{Labels,ModerationLabels,
+   ProtectiveEquipment}Input` (and every other op's validator in this
+   service) never range-checks a numeric field, for any op, anywhere in this
+   SDK. Rekognition's modeled `types/errors.go` has no `ValidationException`
+   type at all (unlike REST-JSON AWS services that auto-reject Smithy
+   `@range` violations that way) — the only relevant declared error is
+   `InvalidParameterException`, which carries no evidence tying it
+   specifically to MinConfidence range violations. Decisive first-party
+   evidence instead points the other way:
+   `ProtectiveEquipmentSummarizationAttributes.MinConfidence`'s own doc
+   comment (`types/types.go:2111`) states plainly: "If you specify a value
+   that is less than 50%, the results are the same as specifying a value of
+   50%" — i.e. AWS **clamps/filters**, it does not **reject** an in-range
+   type but out-of-bounds value. This backend's existing behavior already
+   matches that: `detectLabelsReq` (`handler_labels.go`) treats an
+   omitted/non-positive value as the 55% default and otherwise uses the raw
+   value as a filter threshold (no labels above it), never erroring;
+   `detectModerationLabelsReq` and
+   `detectProtectiveEquipmentReq.SummarizationAttributes.MinConfidence` are
+   likewise threshold/gate values, never a rejection condition. No fix
+   applied here — inventing an `InvalidParameterException` rejection for an
+   out-of-range-but-present value would be adding a rejection AWS's own SDK
+   doc says doesn't happen.
+
+   *Required-ness (is a missing value rejected): audit originally missed
+   this, corrected as gopherstack-duj0.* `validators.go`'s
+   `validateProtectiveEquipmentSummarizationAttributes` (lines 1914-1925) is
+   exactly the same evidence class this entry used to justify the
+   QualityFilter/Attributes fixes below — a real generated client-side
+   validator — and it checks `v.MinConfidence == nil` /
+   `v.RequiredEquipmentTypes == nil`, both `smithy.NewErrParamRequired`. That
+   makes both members required *whenever `SummarizationAttributes` itself is
+   supplied* (the outer field stays optional). This backend's
+   `detectProtectiveEquipmentReq.SummarizationAttributes` had a plain
+   `float32`/`[]string` pair — omitted vs. explicit-zero/nil were
+   indistinguishable, so nothing could ever be rejected. See the
+   gopherstack-duj0 entry (Notes #10) for the fix.
+
+   **QualityFilter: real gap, fixed for `CompareFaces`/
+   `SearchFacesByImage`.** `types.QualityFilter.Values()`
+   (`types/enums.go:761`) is a closed 5-member enum (`NONE`, `AUTO`, `LOW`,
+   `MEDIUM`, `HIGH`); `InvalidParameterException` is declared in both ops'
+   `deserializeOpError` switch (raw extraction below). This backend's
+   `compareFacesReq`/`searchFacesByImageReq` (`handler_faces.go`) didn't
+   declare a `QualityFilter` field *at all* before this fix — already
+   recorded as a known-but-unfixed gap by the prior 2026-08-31 sweep (Notes
+   #7: "a field with no code path at all"). Fixed: both structs now have
+   `QualityFilter string`, validated via `isValidQualityFilter` (empty
+   string, meaning omitted, also accepted — matching the documented `NONE`
+   default) against `sdktypes.QualityFilter("").Values()` — derived from the
+   live SDK enum, not hand-copied, following this repo's
+   `isValidVaultEvent` (`services/backup/vault_policies.go`) precedent so
+   the check can't drift from the real enum. An invalid value now returns
+   `InvalidParameterException` via the existing `ErrValidation` sentinel
+   (`errors.go`), which `handler.go`'s `errors.Is(err,
+   awserr.ErrInvalidParameter)` branch already maps to that wire type. No
+   filtering *behavior* was added for `QualityFilter` (this mock has no face
+   "quality" signal to filter on) — only enum validation, matching the
+   issue's scope.
+
+   **Attributes: real gap, fixed for `DetectFaces`.** `types.Attribute
+   .Values()` (`types/enums.go:29`) is a closed 14-member enum (`DEFAULT`,
+   `ALL`, `AGE_RANGE`, `BEARD`, `EMOTIONS`, `EYE_DIRECTION`, `EYEGLASSES`,
+   `EYES_OPEN`, `GENDER`, `MOUTH_OPEN`, `MUSTACHE`, `FACE_OCCLUDED`,
+   `SMILE`, `SUNGLASSES`); `InvalidParameterException` is declared in
+   `DetectFaces`'s `deserializeOpError` switch. `detectFacesReq.Attributes`
+   (`[]string`) accepted any string, validated against nothing — the
+   response (`FaceDetails: []faceDetailEntry{}`, always empty regardless of
+   input) never even read the field. Fixed: each element now validated via
+   `isValidFaceAttribute`, likewise derived from `sdktypes.Attribute("")
+   .Values()`; an invalid element returns `InvalidParameterException`.
+
+   Raw error extractions (`awk "/^func awsAwsjson11_deserializeOpError<Op>\(/,/^}/"
+   deserializers.go | grep -oE '"[A-Za-z0-9]+"'`, `rekognition@v1.54.4`):
+   - `DetectFaces`: `AccessDeniedException InternalServerError
+     InvalidImageFormatException InvalidParameterException
+     InvalidS3ObjectException ImageTooLargeException
+     ProvisionedThroughputExceededException ThrottlingException
+     UnknownError`
+   - `CompareFaces`: same set as `DetectFaces`.
+   - `SearchFacesByImage`: same set as `DetectFaces`, plus
+     `ResourceNotFoundException`.
+   - `DetectLabels`/`DetectText`/`DetectProtectiveEquipment`/
+     `RecognizeCelebrities`: same set as `DetectFaces`.
+   - `DetectModerationLabels`: same set as `DetectFaces`, plus
+     `HumanLoopQuotaExceededException`/`ResourceNotFoundException`/
+     `ResourceNotReadyException`.
+
+   Regression tests (`handler_faces_test.go`):
+   `TestImageAnalysis_EnumValidation` (table: `DetectFaces` with a bogus
+   `Attributes` value, `CompareFaces`/`SearchFacesByImage` with a bogus
+   `QualityFilter` value — all three asserted `400`/`InvalidParameterException`)
+   and `TestImageAnalysis_EnumValidation_AcceptsValidValues` (sanity: `ALL`
+   attribute, `HIGH` quality filter both `200`). Confirmed failing against
+   unmodified code (reverted `handler_faces.go` to `HEAD`, kept the new
+   tests, ran `go test -run TestImageAnalysis_EnumValidation`): `DetectFaces`
+   and `CompareFaces` returned `200` instead of `400`;
+   `SearchFacesByImage` returned `400`/`ResourceNotFoundException`
+   (rejecting the never-created `sfbi-enum-coll` collection before ever
+   reaching `QualityFilter`) instead of `400`/`InvalidParameterException` —
+   confirming the fix, not just the collection lookup, is what the test
+   exercises. Restored the fix; all three then pass.
+
+   **Left for its own issue, not expanded into here:** `QualityFilter`
+   is validated but not *applied* — this mock never simulates a face
+   "quality" signal to filter on, for `CompareFaces`/`SearchFacesByImage`
+   or the still-unwired `IndexFaces`. Implementing actual quality-based
+   filtering behavior (as opposed to enum validation) is a feature gap,
+   not a validation gap, and out of this issue's scope.
+
+   Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/rekognition/...`
+   (pass), `GOTOOLCHAIN=go1.26.6 golangci-lint run
+   services/rekognition/...` (`0 issues.`).
+
+10. **2026-09-06 (gopherstack-duj0): DetectProtectiveEquipment.
+    SummarizationAttributes required-ness, correcting Notes #9.** Notes #9
+    audited MinConfidence only on the range axis (is an in-range-type,
+    out-of-bounds *value* rejected — correctly "no", see that entry) and
+    missed the required-ness axis (is a *missing* member rejected). Caught
+    on review: `validators.go`'s `validateProtectiveEquipmentSummarizationAttributes`
+    (lines 1914-1925) —
+
+    ```go
+    if v.MinConfidence == nil {
+        invalidParams.Add(smithy.NewErrParamRequired("MinConfidence"))
+    }
+    if v.RequiredEquipmentTypes == nil {
+        invalidParams.Add(smithy.NewErrParamRequired("RequiredEquipmentTypes"))
+    }
+    ```
+
+    — is a real generated client-side validator, the same evidence class
+    Notes #9 used to justify the QualityFilter/Attributes fixes. Both
+    members are required *whenever `SummarizationAttributes` itself is
+    supplied* (the outer field stays optional — `DetectProtectiveEquipmentInput
+    .SummarizationAttributes` itself is not required, only checked with
+    `if v.SummarizationAttributes != nil` in `validateOpDetectProtectiveEquipmentInput`).
+
+    **The nil-vs-empty question (settled before implementing, as asked):**
+    AWS's check is `RequiredEquipmentTypes == nil`, a nil check, not
+    `len(...) == 0`. Standard Smithy list-member "required" semantics: must
+    be *set*, not must be *non-empty*. Mirrored faithfully rather than
+    treating both as missing — an explicitly-empty array satisfies the
+    requirement, matching what the real client-side validator itself
+    accepts. `TestDetectProtectiveEquipment_SummarizationAttributesValidation
+    /explicit_empty_RequiredEquipmentTypes_array_is_not_the_same_as_missing`
+    asserts this directly (200, not 400).
+
+    Fixed (`handler_moderation.go`): `detectProtectiveEquipmentReq
+    .SummarizationAttributes` was `struct { RequiredEquipmentTypes []string;
+    MinConfidence float32 }` — a plain slice and float32 can't distinguish
+    "omitted" from "nil/zero", so nothing could ever be rejected. Retyped to
+    `*[]string`/`*float32` (same absent-vs-zero fix pattern as
+    gopherstack-7bxb's mediaconvert `ConcurrentJobs`): unmarshaling a JSON
+    array (even `[]`) into `*[]string` yields a non-nil pointer, while an
+    absent key or explicit `null` leaves it nil; likewise `*float32`
+    distinguishes an omitted `MinConfidence` from an explicit `0`.
+    `handleDetectProtectiveEquipment` now checks, only when
+    `SummarizationAttributes != nil`: `MinConfidence == nil` and
+    `RequiredEquipmentTypes == nil`, each returning `InvalidParameterException`
+    via the existing `ErrValidation` sentinel. No behavior change to the
+    (always-empty) `Persons` response — this is a required-ness check only,
+    not new filtering logic.
+
+    No pre-existing test sent a partial `SummarizationAttributes` (the one
+    existing `DetectProtectiveEquipment` test, `TestModeration_ImageAnalysis
+    /DetectProtectiveEquipment_returns_empty_list`, omits
+    `SummarizationAttributes` entirely and still expects 200 — unaffected,
+    the outer field stays optional) — nothing to correct.
+
+    Regression test (`handler_moderation_test.go`):
+    `TestDetectProtectiveEquipment_SummarizationAttributesValidation` —
+    missing `MinConfidence` (400/`InvalidParameterException`), missing
+    `RequiredEquipmentTypes` (400/`InvalidParameterException`), both present
+    (200), `RequiredEquipmentTypes: []` present-but-empty (200), and
+    `SummarizationAttributes` omitted entirely (200). Confirmed failing
+    against unmodified code (reverted `handler_moderation.go` to `HEAD`,
+    kept the new tests): both required-field subtests returned `200` instead
+    of `400`; the empty-array and omitted-struct subtests passed either way,
+    as expected (they're not exercising the fix). Restored the fix; all five
+    then pass.
+
+    Snapshot guard (`pkgs/persistence/...` `TestSnapshotVersionGuard`) run
+    read-only (no `-update`) after the retype: `detectProtectiveEquipmentReq`
+    is a request DTO, not a `*Snapshot`-suffixed struct or a `store.Register`ed
+    type, so it's outside the guard's scan surface — passed clean, no golden
+    diff, as expected.
+
+    Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/rekognition/...`
+    (pass), `GOTOOLCHAIN=go1.26.6 golangci-lint run
+    services/rekognition/...` (`0 issues.` — required reordering the new
+    test's table struct fields, `fieldalignment` flagged the first attempt).

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	sdktypes "github.com/aws/aws-sdk-go-v2/service/rekognition/types"
+
 	"github.com/blackbirdworks/gopherstack/pkgs/service"
 )
 
@@ -201,14 +203,31 @@ func (h *Handler) handleSearchFaces(_ context.Context, req *searchFacesReq) (*se
 }
 
 type searchFacesByImageReq struct {
-	CollectionID string   `json:"CollectionId"`
-	Image        imageRef `json:"Image"`
-	MaxFaces     int32    `json:"MaxFaces"`
+	CollectionID  string   `json:"CollectionId"`
+	QualityFilter string   `json:"QualityFilter"`
+	Image         imageRef `json:"Image"`
+	MaxFaces      int32    `json:"MaxFaces"`
 }
 
 type searchFacesByImageResp struct {
 	FaceModelVersion string           `json:"FaceModelVersion"`
 	FaceMatches      []faceMatchEntry `json:"FaceMatches"`
+}
+
+// isValidQualityFilter derives its answer from types.QualityFilter.Values()
+// so it cannot drift from the real enum; "" is also valid (field omitted).
+func isValidQualityFilter(v string) bool {
+	if v == "" {
+		return true
+	}
+
+	for _, qf := range sdktypes.QualityFilter("").Values() {
+		if string(qf) == v {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (h *Handler) handleSearchFacesByImage(
@@ -217,6 +236,10 @@ func (h *Handler) handleSearchFacesByImage(
 ) (*searchFacesByImageResp, error) {
 	if req.CollectionID == "" {
 		return nil, fmt.Errorf("%w: CollectionId is required", ErrValidation)
+	}
+
+	if !isValidQualityFilter(req.QualityFilter) {
+		return nil, fmt.Errorf("%w: QualityFilter value %q is not valid", ErrValidation, req.QualityFilter)
 	}
 
 	if err := h.checkImageRef(ctx, req.Image); err != nil {
@@ -252,6 +275,7 @@ func (h *Handler) handleSearchFacesByImage(
 // --- Face image analysis (stateless mock results) ---
 
 type compareFacesReq struct {
+	QualityFilter       string   `json:"QualityFilter"`
 	SourceImage         imageRef `json:"SourceImage"`
 	TargetImage         imageRef `json:"TargetImage"`
 	SimilarityThreshold float64  `json:"SimilarityThreshold"`
@@ -299,6 +323,10 @@ const (
 )
 
 func (h *Handler) handleCompareFaces(ctx context.Context, req *compareFacesReq) (*compareFacesResp, error) {
+	if !isValidQualityFilter(req.QualityFilter) {
+		return nil, fmt.Errorf("%w: QualityFilter value %q is not valid", ErrValidation, req.QualityFilter)
+	}
+
 	if err := h.checkImageRef(ctx, req.SourceImage); err != nil {
 		return nil, err
 	}
@@ -340,6 +368,18 @@ type detectFacesReq struct {
 	Attributes []string `json:"Attributes"`
 }
 
+// isValidFaceAttribute derives its answer from types.Attribute.Values() so it
+// cannot drift from the real enum.
+func isValidFaceAttribute(v string) bool {
+	for _, a := range sdktypes.Attribute("").Values() {
+		if string(a) == v {
+			return true
+		}
+	}
+
+	return false
+}
+
 type faceDetailEntry struct {
 	BoundingBox struct {
 		Height float32 `json:"Height"`
@@ -358,6 +398,12 @@ type detectFacesResp struct {
 func (h *Handler) handleDetectFaces(ctx context.Context, req *detectFacesReq) (*detectFacesResp, error) {
 	if err := h.checkImageRef(ctx, req.Image); err != nil {
 		return nil, err
+	}
+
+	for _, a := range req.Attributes {
+		if !isValidFaceAttribute(a) {
+			return nil, fmt.Errorf("%w: Attributes value %q is not valid", ErrValidation, a)
+		}
 	}
 
 	return &detectFacesResp{

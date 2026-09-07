@@ -2,6 +2,7 @@ package rekognition
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/service"
 )
@@ -56,8 +57,8 @@ func (h *Handler) handleDetectModerationLabels(
 
 type detectProtectiveEquipmentReq struct {
 	SummarizationAttributes *struct {
-		RequiredEquipmentTypes []string `json:"RequiredEquipmentTypes"`
-		MinConfidence          float32  `json:"MinConfidence"`
+		RequiredEquipmentTypes *[]string `json:"RequiredEquipmentTypes"`
+		MinConfidence          *float32  `json:"MinConfidence"`
 	} `json:"SummarizationAttributes"`
 	Image imageRef `json:"Image"`
 }
@@ -77,6 +78,16 @@ func (h *Handler) handleDetectProtectiveEquipment(
 ) (*detectProtectiveEquipmentResp, error) {
 	if err := h.checkImageRef(ctx, req.Image); err != nil {
 		return nil, err
+	}
+
+	if sa := req.SummarizationAttributes; sa != nil {
+		if sa.MinConfidence == nil {
+			return nil, fmt.Errorf("%w: SummarizationAttributes.MinConfidence is required", ErrValidation)
+		}
+
+		if sa.RequiredEquipmentTypes == nil {
+			return nil, fmt.Errorf("%w: SummarizationAttributes.RequiredEquipmentTypes is required", ErrValidation)
+		}
 	}
 
 	return &detectProtectiveEquipmentResp{

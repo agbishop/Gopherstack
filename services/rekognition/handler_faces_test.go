@@ -633,6 +633,99 @@ func TestImageAnalysis_DetectFaces(t *testing.T) {
 }
 
 // =============================================================================
+// gopherstack-qlqz: MinConfidence / QualityFilter / Attributes enum validation
+// =============================================================================
+
+func TestImageAnalysis_EnumValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		body   map[string]any
+		name   string
+		action string
+	}{
+		{
+			name:   "DetectFaces rejects unknown Attributes value",
+			action: "DetectFaces",
+			body: map[string]any{
+				"Image":      map[string]any{},
+				"Attributes": []string{"NOT_A_REAL_ATTRIBUTE"},
+			},
+		},
+		{
+			name:   "CompareFaces rejects unknown QualityFilter value",
+			action: "CompareFaces",
+			body: map[string]any{
+				"SourceImage":   map[string]any{},
+				"TargetImage":   map[string]any{},
+				"QualityFilter": "NOT_A_REAL_FILTER",
+			},
+		},
+		{
+			name:   "SearchFacesByImage rejects unknown QualityFilter value",
+			action: "SearchFacesByImage",
+			body: map[string]any{
+				"CollectionId":  "sfbi-enum-coll",
+				"Image":         map[string]any{},
+				"QualityFilter": "NOT_A_REAL_FILTER",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestHandler(t)
+
+			rec := doRequest(t, h, tc.action, tc.body)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			assert.Equal(t, "InvalidParameterException", resp["__type"])
+		})
+	}
+}
+
+func TestImageAnalysis_EnumValidation_AcceptsValidValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		body   map[string]any
+		name   string
+		action string
+	}{
+		{
+			name:   "DetectFaces accepts ALL attribute",
+			action: "DetectFaces",
+			body: map[string]any{
+				"Image":      map[string]any{},
+				"Attributes": []string{"ALL"},
+			},
+		},
+		{
+			name:   "CompareFaces accepts HIGH quality filter",
+			action: "CompareFaces",
+			body: map[string]any{
+				"SourceImage":   map[string]any{},
+				"TargetImage":   map[string]any{},
+				"QualityFilter": "HIGH",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTestHandler(t)
+
+			rec := doRequest(t, h, tc.action, tc.body)
+			assert.Equal(t, http.StatusOK, rec.Code)
+		})
+	}
+}
+
+// =============================================================================
 // Async Video Jobs: face detection / face search
 // =============================================================================
 
