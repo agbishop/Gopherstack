@@ -86,12 +86,12 @@ func (b *InMemoryBackend) sweepOnce(now time.Time) sweepStats {
 	var total sweepStats
 
 	for _, q := range b.queues {
-		total.add(sweepMessageQueueLocked(&q.messageQueue, now))
+		total.add(sweepMessageQueueLocked(&q.messageQueue, q.Config, now))
 	}
 
 	for _, t := range b.topics {
 		for _, sub := range t.Subscriptions {
-			total.add(sweepMessageQueueLocked(&sub.messageQueue, now))
+			total.add(sweepMessageQueueLocked(&sub.messageQueue, sub.Config, now))
 		}
 	}
 
@@ -105,8 +105,17 @@ func (b *InMemoryBackend) sweepOnce(now time.Time) sweepStats {
 // state. The dead-letter sub-queue itself is swept only for TTL expiry (a
 // dead-lettered message that also expires is simply dropped -- there is
 // nowhere further for it to go). Callers must hold b.mu for writing.
-func sweepMessageQueueLocked(mq *messageQueue, now time.Time) sweepStats {
+func sweepMessageQueueLocked(mq *messageQueue, cfg EntityConfig, now time.Time) sweepStats {
 	var stats sweepStats
+	// notifyNeeded tracks whether this sweep made a message newly visible
+	// anywhere on mq -- released back to the live list, or moved into the
+	// dead-letter sub-queue (a PeekLockWait long-poll on $DeadLetterQueue
+	// must wake immediately when the Janitor dead-letters something, not
+	// wait out the 1s recheck backstop). Both lists share one notify
+	// channel, so a single broadcast at the end covers either case; a
+	// waiter on the list that didn't change simply re-checks and goes back
+	// to sleep.
+	notifyNeeded := false
 
 	kept := mq.Messages[:0]
 
@@ -124,6 +133,7 @@ func sweepMessageQueueLocked(mq *messageQueue, now time.Time) sweepStats {
 			mq.DeadLetter = append(mq.DeadLetter, msg)
 
 			stats.Expired++
+			notifyNeeded = true
 		case msg.isLocked(now):
 			kept = append(kept, msg)
 		default:
@@ -142,8 +152,9 @@ func sweepMessageQueueLocked(mq *messageQueue, now time.Time) sweepStats {
 			msg.LockToken = ""
 			msg.LockedUntil = time.Time{}
 			stats.Unlocked++
+			notifyNeeded = true
 
-			if msg.DeliveryCount >= MaxDeliveryCount {
+			if msg.DeliveryCount >= cfg.maxDeliveryCount() {
 				mq.DeadLetter = append(mq.DeadLetter, msg)
 				stats.DeadLettered++
 
@@ -155,6 +166,10 @@ func sweepMessageQueueLocked(mq *messageQueue, now time.Time) sweepStats {
 	}
 
 	mq.Messages = final
+
+	if notifyNeeded {
+		mq.broadcastLocked()
+	}
 
 	// Dead-lettered messages are still subject to their own TTL: drop (not
 	// re-dead-letter) any that have expired while sitting in DeadLetter.

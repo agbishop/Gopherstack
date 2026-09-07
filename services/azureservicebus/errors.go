@@ -14,6 +14,7 @@ var (
 	ErrLockTokenMismatch    = errors.New("azureservicebus: lock token mismatch")
 	ErrMessageNotLocked     = errors.New("azureservicebus: message is not locked")
 	ErrInvalidEntityRef     = errors.New("azureservicebus: invalid entity reference")
+	ErrInvalidEntityConfig  = errors.New("azureservicebus: invalid entity configuration")
 
 	// ErrSnapshotNull* are returned by Restore when a snapshot map/slice holds
 	// a JSON null entry, which decodes to a nil pointer that would panic on

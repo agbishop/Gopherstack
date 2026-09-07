@@ -83,8 +83,27 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 	b.queues = snap.Queues
 	b.topics = snap.Topics
 	b.seq = snap.Seq
+	reinitNotifyChannelsLocked(b.queues, b.topics)
 
 	return nil
+}
+
+// reinitNotifyChannelsLocked (re-)creates every messageQueue's notify
+// channel after a Restore. notify is unexported precisely so it is never
+// part of the JSON snapshot shape (see messageQueue's doc comment) --
+// meaning every messageQueue decoded from a snapshot starts with notify nil
+// and would panic on first PeekLockWait wait (nil channel, unbuffered close)
+// without this pass. Callers must hold b.mu for writing.
+func reinitNotifyChannelsLocked(queues map[string]*storedQueue, topics map[string]*storedTopic) {
+	for _, q := range queues {
+		q.messageQueue.ensureNotifyLocked()
+	}
+
+	for _, t := range topics {
+		for _, sub := range t.Subscriptions {
+			sub.messageQueue.ensureNotifyLocked()
+		}
+	}
 }
 
 // validateQueueSnapshot rejects a queues map containing null entries, name

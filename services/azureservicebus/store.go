@@ -21,6 +21,14 @@ const (
 	// entity's dead-letter sub-queue, matching real Service Bus's own
 	// default MaxDeliveryCount.
 	MaxDeliveryCount = 10
+	// MaxLockDuration is real Service Bus's documented maximum LockDuration
+	// for a queue or subscription (its default is 1 minute; 5 minutes is the
+	// upper bound a CreateQueue/CreateSubscription request may configure --
+	// see https://learn.microsoft.com/en-us/azure/service-bus-messaging/message-transfers-locks-settlement#peeklock,
+	// which documents "the maximum value is 5 minutes"). handler.go's
+	// validateEntityConfig rejects a create request specifying more than
+	// this with 400 Bad Request, matching real Service Bus's own behavior.
+	MaxLockDuration = 5 * time.Minute
 )
 
 // storedMessage is the backend's internal representation of one message
@@ -70,26 +78,58 @@ func (m *storedMessage) info() MessageInfo {
 // for one brokered-messaging entity (a queue, or a single topic
 // subscription). Both storedQueue and storedSubscription embed one.
 type messageQueue struct {
+	notify     chan struct{}
 	Messages   []*storedMessage
 	DeadLetter []*storedMessage
+}
+
+// newMessageQueue returns a messageQueue with its notify channel ready to
+// use.
+func newMessageQueue() messageQueue {
+	return messageQueue{notify: make(chan struct{})}
+}
+
+// broadcastLocked wakes every goroutine currently waiting on mq's notify
+// channel and installs a fresh one for the next generation of waiters.
+// Callers must hold the backend's mu for writing.
+func (mq *messageQueue) broadcastLocked() {
+	if mq.notify != nil {
+		close(mq.notify)
+	}
+
+	mq.notify = make(chan struct{})
+}
+
+// ensureNotifyLocked lazily initializes mq's notify channel if it is nil
+// (e.g. a messageQueue just decoded from a snapshot that predates this
+// field, or the zero value more generally). Callers must hold the backend's
+// mu for at least reading; the assignment itself requires the write lock
+// already held by every caller site in this package.
+func (mq *messageQueue) ensureNotifyLocked() {
+	if mq.notify == nil {
+		mq.notify = make(chan struct{})
+	}
 }
 
 type storedQueue struct {
 	CreatedAt time.Time
 	Name      string
 	messageQueue
+	Config EntityConfig
 }
 
 type storedTopic struct {
-	Subscriptions map[string]*storedSubscription
 	CreatedAt     time.Time
+	Subscriptions map[string]*storedSubscription
 	Name          string
+	Config        EntityConfig
 }
 
 type storedSubscription struct {
 	CreatedAt time.Time
 	Name      string
 	messageQueue
+	Config EntityConfig
 }
 
 // InMemoryBackend implements StorageBackend using in-memory maps guarded by
@@ -141,32 +181,45 @@ func (b *InMemoryBackend) Reset() {
 	b.seq = 0
 }
 
-// resolveMessageQueueLocked resolves ref to its underlying *messageQueue.
-// Callers must hold b.mu (either read or write). Returns ErrQueueNotFound,
-// ErrTopicNotFound, ErrSubscriptionNotFound, or ErrInvalidEntityRef.
+// resolveMessageQueueLocked resolves ref to its underlying *messageQueue,
+// discarding the entity's EntityConfig. Callers must hold b.mu (either read
+// or write). Returns ErrQueueNotFound, ErrTopicNotFound,
+// ErrSubscriptionNotFound, or ErrInvalidEntityRef.
 func (b *InMemoryBackend) resolveMessageQueueLocked(ref EntityRef) (*messageQueue, error) {
+	mq, _, err := b.resolveEntityLocked(ref)
+
+	return mq, err
+}
+
+// resolveEntityLocked resolves ref to its underlying *messageQueue and the
+// EntityConfig of the entity that owns it (the queue itself, or the
+// subscription -- a topic ref with no Subscription set never reaches here;
+// see EntityRef's doc comment). Callers must hold b.mu (either read or
+// write). Returns ErrQueueNotFound, ErrTopicNotFound,
+// ErrSubscriptionNotFound, or ErrInvalidEntityRef.
+func (b *InMemoryBackend) resolveEntityLocked(ref EntityRef) (*messageQueue, EntityConfig, error) {
 	if ref.IsQueue() {
 		q, ok := b.queues[ref.Queue]
 		if !ok {
-			return nil, ErrQueueNotFound
+			return nil, EntityConfig{}, ErrQueueNotFound
 		}
 
-		return &q.messageQueue, nil
+		return &q.messageQueue, q.Config, nil
 	}
 
 	if ref.Topic == "" || ref.Subscription == "" {
-		return nil, ErrInvalidEntityRef
+		return nil, EntityConfig{}, ErrInvalidEntityRef
 	}
 
 	t, ok := b.topics[ref.Topic]
 	if !ok {
-		return nil, ErrTopicNotFound
+		return nil, EntityConfig{}, ErrTopicNotFound
 	}
 
 	sub, ok := t.Subscriptions[ref.Subscription]
 	if !ok {
-		return nil, ErrSubscriptionNotFound
+		return nil, EntityConfig{}, ErrSubscriptionNotFound
 	}
 
-	return &sub.messageQueue, nil
+	return &sub.messageQueue, sub.Config, nil
 }
