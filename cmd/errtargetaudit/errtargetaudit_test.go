@@ -450,6 +450,90 @@ func TestScan_ConstructorPropagation_NameConventionOnly(t *testing.T) {
 	require.Equal(t, "constructor classifier: notFoundError", sr.Findings[0].Sites[0].Mechanism)
 }
 
+// builtinShadowFixture is services/forecast/store.go's real shape
+// (gopherstack-bfb3): Backend.delete is a real method reached via selector
+// from handleDeleteThing, but its own body also calls Go's builtin
+// delete(map, key) bare and unqualified -- the same identifier as the
+// method's own name.
+const builtinShadowFixture = `
+package fixture
+
+import (
+	"errors"
+	"fmt"
+)
+
+var errNotFoundSentinel = errors.New("resource not found")
+
+func classifyError(err error) string {
+	switch {
+	case errors.Is(err, errNotFoundSentinel):
+		return "ResourceNotFoundException"
+	}
+	return "InternalServerException"
+}
+
+type Handler struct {
+	Backend *Backend
+}
+
+func (h *Handler) handleDeleteThing() error {
+	return h.Backend.delete("thing", "id")
+}
+
+type Backend struct {
+	arnIndex map[string]string
+	tags     map[string]string
+}
+
+func (b *Backend) delete(kind, nameOrARN string) error {
+	if nameOrARN == "" {
+		return fmt.Errorf("%w: %s %q", errNotFoundSentinel, kind, nameOrARN)
+	}
+
+	delete(b.arnIndex, nameOrARN)
+	delete(b.tags, nameOrARN)
+
+	return nil
+}
+`
+
+// TestScan_BuiltinDeleteNotConstructorClassifier is gopherstack-bfb3's
+// regression: before the fix, callExprEmissions matched every bare `delete`
+// call against cls.Funcs["delete"] (populated by the same-named method),
+// so the two builtin delete(map, key) calls inside Backend.delete's own
+// body -- which cannot raise at all -- were double-counted as their own
+// "constructor classifier: delete" emission sites.
+func TestScan_BuiltinDeleteNotConstructorClassifier(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, builtinShadowFixture)
+
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{"DeleteThing": {"SomePlaceholderCode": true}},
+		map[string]bool{"ResourceNotFoundException": true, "SomePlaceholderCode": true},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Len(t, sr.Findings, 1)
+
+	f := sr.Findings[0]
+	require.Equal(t, "DeleteThing", f.Op)
+	require.Equal(t, "ResourceNotFoundException", f.Code)
+
+	var ctorSites int
+	for _, s := range f.Sites {
+		if s.Mechanism == "constructor classifier: delete" {
+			ctorSites++
+		}
+	}
+
+	require.Equal(t, 1, ctorSites,
+		"only the selector call h.Backend.delete(...) is a real constructor-classifier site; "+
+			"the two bare builtin delete(map,key) calls inside Backend.delete's own body must not count")
+}
+
 // TestCoverageWarnings_ImplausibleResolution covers the loud-failure guard:
 // a service where most ground-truth operations never resolved to a handler
 // is reported as UNVERIFIED, not silently clean.

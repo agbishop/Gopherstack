@@ -308,7 +308,7 @@ func scanBodyEmissions(
 	var out []emission
 
 	ast.Inspect(body, func(n ast.Node) bool {
-		for _, e := range nodeEmissions(n, cls) {
+		for _, e := range nodeEmissions(n, idx, cls) {
 			e.EnclosingFunc = enclosingFunc
 			out = append(out, e)
 		}
@@ -323,12 +323,12 @@ func scanBodyEmissions(
 	return out
 }
 
-func nodeEmissions(n ast.Node, cls *classifiers) []emission {
+func nodeEmissions(n ast.Node, idx *pkgIndex, cls *classifiers) []emission {
 	switch v := n.(type) {
 	case *ast.ReturnStmt:
 		return returnStmtEmissions(v, cls)
 	case *ast.CallExpr:
-		return callExprEmissions(v, cls)
+		return callExprEmissions(v, idx, cls)
 	case *ast.CompositeLit:
 		return compositeLitEmissions(v)
 	case *ast.AssignStmt:
@@ -360,10 +360,10 @@ func returnStmtEmissions(ret *ast.ReturnStmt, cls *classifiers) []emission {
 // (services/networkmanager's notFoundError/validationError shape) and the
 // direct-literal mechanisms this repo also uses outside the sentinel-mapper
 // pattern (awserr.New/Newf).
-func callExprEmissions(call *ast.CallExpr, cls *classifiers) []emission {
+func callExprEmissions(call *ast.CallExpr, idx *pkgIndex, cls *classifiers) []emission {
 	var out []emission
 
-	if name, ok := calleeSimpleName(call.Fun); ok {
+	if name, ok := calleeSimpleName(call.Fun); ok && !bareBuiltinCall(call.Fun, name, idx) {
 		if code, known := cls.Funcs[name]; known {
 			out = append(out, emission{Code: code, Mechanism: "constructor classifier: " + name, Pos: call.Pos()})
 		}
@@ -383,6 +383,41 @@ func calleeSimpleName(fn ast.Expr) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// isPredeclaredFuncIdent reports whether name is one of Go's predeclared
+// function identifiers (language spec, "Predeclared identifiers").
+func isPredeclaredFuncIdent(name string) bool {
+	switch name {
+	case "append", "cap", "clear", "close", "complex", "copy", "delete", "imag",
+		"len", "make", "max", "min", "new", "panic", "print", "println", "real", "recover":
+		return true
+	default:
+		return false
+	}
+}
+
+// bareBuiltinCall reports whether fn is Go's builtin, not a same-named
+// package method (gopherstack-bfb3): services/forecast's InMemoryBackend.delete
+// method and the builtin delete(map, key) it calls internally share the
+// identifier "delete", and cls.Funcs indexes by bare name alone. A method
+// can only be invoked through a selector (b.delete(...)) or a method value
+// -- never as a bare unqualified identifier -- so a bare call to a
+// predeclared name resolves to a declared function only when the package
+// itself declares a receiver-less func of that name (idx.Funcs) shadowing
+// the builtin at package scope; otherwise it can only be the builtin.
+func bareBuiltinCall(fn ast.Expr, name string, idx *pkgIndex) bool {
+	if _, selector := fn.(*ast.SelectorExpr); selector {
+		return false
+	}
+
+	if !isPredeclaredFuncIdent(name) {
+		return false
+	}
+
+	_, shadowed := idx.Funcs[name]
+
+	return !shadowed
 }
 
 // awserrLiteralEmissions covers services/ecs's own direct mechanism:
