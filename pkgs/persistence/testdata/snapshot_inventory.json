@@ -2531,6 +2531,37 @@
     ],
     "version": 1
   },
+  "azureservicebus": {
+    "fields": [
+      "backendSnapshot.Queues map[string]*storedQueue `json:\"queues\"`",
+      "backendSnapshot.Seq int64 `json:\"seq\"`",
+      "backendSnapshot.Topics map[string]*storedTopic `json:\"topics\"`",
+      "messageQueue.DeadLetter []*storedMessage",
+      "messageQueue.Messages []*storedMessage",
+      "storedMessage.Body []byte",
+      "storedMessage.ContentType string",
+      "storedMessage.CorrelationID string",
+      "storedMessage.CustomHeaders map[string]string",
+      "storedMessage.DeliveryCount int64",
+      "storedMessage.EnqueuedTime time.Time",
+      "storedMessage.ExpiresAt time.Time",
+      "storedMessage.Label string",
+      "storedMessage.LockToken string",
+      "storedMessage.LockedUntil time.Time",
+      "storedMessage.MessageID string",
+      "storedMessage.ReplyTo string",
+      "storedMessage.SequenceNumber int64",
+      "storedMessage.SessionID string",
+      "storedQueue.CreatedAt time.Time",
+      "storedQueue.Name string",
+      "storedSubscription.CreatedAt time.Time",
+      "storedSubscription.Name string",
+      "storedTopic.CreatedAt time.Time",
+      "storedTopic.Name string",
+      "storedTopic.Subscriptions map[string]*storedSubscription"
+    ],
+    "version": 1
+  },
   "azuretable": {
     "fields": [
       "EntityProperty.Type EdmType",

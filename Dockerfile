@@ -46,8 +46,8 @@ EXPOSE 8000
 # Expose MQTT broker port
 EXPOSE 1883
 
-# Expose Azure Blob/Queue/Table (Azurite-compatible) and Cosmos DB ports
-EXPOSE 10000 10001 10002 8081
+# Expose Azure Blob/Queue/Table (Azurite-compatible), Service Bus, and Cosmos DB ports
+EXPOSE 10000 10001 10002 10003 8081
 
 # OCI label pointing to the source repository
 LABEL org.opencontainers.image.source="https://github.com/blackbirdworks/gopherstack"

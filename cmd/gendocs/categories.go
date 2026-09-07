@@ -13,15 +13,16 @@ type categoryGroup struct {
 	Slugs []string
 }
 
-// The four Azure service slugs, as constants rather than repeated string
+// The five Azure service slugs, as constants rather than repeated string
 // literals -- each one is referenced from categoryGroups, the display-name
 // overrides, and categories_test.go, which would otherwise trip goconst's
 // repeated-literal check.
 const (
-	slugAzureBlob  = "azureblob"
-	slugAzureQueue = "azurequeue"
-	slugAzureTable = "azuretable"
-	slugCosmosDB   = "cosmosdb"
+	slugAzureBlob       = "azureblob"
+	slugAzureQueue      = "azurequeue"
+	slugAzureTable      = "azuretable"
+	slugAzureServiceBus = "azureservicebus"
+	slugCosmosDB        = "cosmosdb"
 )
 
 // categoryGroups is the curated slug -> category assignment for every
@@ -99,7 +100,7 @@ func categoryGroups() []categoryGroup {
 			"datasync", "dms", "transfer",
 		}},
 		{"Azure", []string{
-			slugAzureBlob, slugAzureQueue, slugAzureTable, slugCosmosDB,
+			slugAzureBlob, slugAzureQueue, slugAzureTable, slugAzureServiceBus, slugCosmosDB,
 		}},
 		{"Other", []string{
 			"appstream", "managedblockchain", "omics", "support", "workspaces",
@@ -170,6 +171,7 @@ func displayNamesA() map[string]string {
 		slugAzureBlob:             "Azure Blob Storage",
 		slugAzureQueue:            "Azure Queue Storage",
 		slugAzureTable:            "Azure Table Storage",
+		slugAzureServiceBus:       "Azure Service Bus",
 		"backup":                  "Backup",
 		"batch":                   "Batch",
 		"bedrock":                 "Bedrock",

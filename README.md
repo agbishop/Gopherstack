@@ -692,6 +692,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Azure Blob Storage](services/azureblob/README.md) | C | 8 | 8 gaps; 2 deferred |
 | [Azure Cosmos DB](services/cosmosdb/README.md) | C | 15 | 9 gaps; 5 deferred |
 | [Azure Queue Storage](services/azurequeue/README.md) | C | 9 | 7 gaps; 1 deferred |
+| [Azure Service Bus](services/azureservicebus/README.md) | C | 11 | 8 gaps; 1 deferred |
 | [Azure Table Storage](services/azuretable/README.md) | C | 10 | 6 gaps; 3 deferred |
 
 ### Other
