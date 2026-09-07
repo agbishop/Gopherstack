@@ -348,10 +348,19 @@ func TestFilter_NestedPatterns(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		pattern   string
-		msgBody   string
-		wantMatch bool
+		name    string
+		pattern string
+		msgBody string
+		// rawPattern marks a pattern that CreatePipe's Filter.Pattern
+		// validation (gopherstack-sphp) now rejects at creation time -- the
+		// pipe is created with an empty pattern and the invalid pattern is
+		// injected directly into the backend afterward, via
+		// SetFilterPatternForTest, so the case still exercises filter.go's
+		// runtime fail-closed matching (the defense-in-depth layer behind
+		// creation-time validation, gopherstack-lrgk) rather than a
+		// CreatePipe rejection.
+		rawPattern bool
+		wantMatch  bool
 	}{
 		{
 			name:      "nested_dynamodb_newimage_matches",
@@ -428,22 +437,27 @@ func TestFilter_NestedPatterns(t *testing.T) {
 		{
 			// A bare (non-array) pattern value is not valid EventBridge
 			// syntax (services/eventbridge/pattern.go's validatePatternObject
-			// rejects it outright at compile time); Pipes has no separate
-			// pattern-validation step, so matching fails closed instead of
-			// silently treating the scalar as an exact-match value.
-			name:      "bare_scalar_pattern_value_never_matches",
-			pattern:   `{"type":"order"}`,
-			msgBody:   `{"type":"order"}`,
-			wantMatch: false,
+			// rejects it outright at compile time; pipes' own CreatePipe now
+			// rejects it too, gopherstack-sphp) -- filter.go's matching still
+			// fails closed instead of silently treating the scalar as an
+			// exact-match value, for a pattern that reaches it by some other
+			// path (a pre-existing pipe from before validation shipped).
+			name:       "bare_scalar_pattern_value_never_matches",
+			pattern:    `{"type":"order"}`,
+			msgBody:    `{"type":"order"}`,
+			rawPattern: true,
+			wantMatch:  false,
 		},
 		{
 			// An unrecognized matcher-object key (not one of exists/prefix/
 			// suffix/numeric/anything-but/cidr) must never silently match
-			// everything -- deliberately fails closed.
-			name:      "unrecognized_matcher_object_never_matches",
-			pattern:   `{"type":[{"wildcard":"ord*"}]}`,
-			msgBody:   `{"type":"order"}`,
-			wantMatch: false,
+			// everything -- deliberately fails closed. CreatePipe now
+			// rejects this pattern too (gopherstack-sphp).
+			name:       "unrecognized_matcher_object_never_matches",
+			pattern:    `{"type":[{"wildcard":"ord*"}]}`,
+			msgBody:    `{"type":"order"}`,
+			rawPattern: true,
+			wantMatch:  false,
 		},
 	}
 
@@ -452,6 +466,10 @@ func TestFilter_NestedPatterns(t *testing.T) {
 			t.Parallel()
 
 			b := b3Backend()
+			createPattern := tt.pattern
+			if tt.rawPattern {
+				createPattern = ""
+			}
 			_, err := b.CreatePipe(t.Context(), pipes.CreatePipeInput{
 				Name:         "np-" + tt.name,
 				RoleARN:      "arn:aws:iam::111122223333:role/r",
@@ -460,11 +478,14 @@ func TestFilter_NestedPatterns(t *testing.T) {
 				DesiredState: "RUNNING",
 				SourceParameters: &pipes.SourceParameters{
 					FilterCriteria: &pipes.FilterCriteria{
-						Filters: []pipes.Filter{{Pattern: tt.pattern}},
+						Filters: []pipes.Filter{{Pattern: createPattern}},
 					},
 				},
 			})
 			require.NoError(t, err)
+			if tt.rawPattern {
+				b.SetFilterPatternForTest("np-"+tt.name, tt.pattern)
+			}
 			pipes.WaitPipeRunning(t, b, "np-"+tt.name)
 
 			sqsReader := &b3MockSQSReader{
@@ -502,10 +523,16 @@ func TestFilter_ExactMatchTypeSensitivity(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		pattern   string
-		msgBody   string
-		wantMatch bool
+		name    string
+		pattern string
+		msgBody string
+		// rawPattern: see the identical field on TestFilter_NestedPatterns's
+		// table -- this pattern is also rejected by CreatePipe's Filter.Pattern
+		// validation (gopherstack-sphp), since a raw JSON array is not a
+		// valid matcher-array element under real EventBridge pattern syntax
+		// either.
+		rawPattern bool
+		wantMatch  bool
 	}{
 		{
 			name:      "string_pattern_vs_numeric_value_no_match",
@@ -537,10 +564,11 @@ func TestFilter_ExactMatchTypeSensitivity(t *testing.T) {
 			// the message field is also an array -- both decode to the same
 			// non-comparable dynamic type ([]any), which is exactly the
 			// shape that panics under == but not under reflect.DeepEqual.
-			name:      "array_pattern_element_vs_array_value_no_match_no_panic",
-			pattern:   `{"payload":[[1,2]]}`,
-			msgBody:   `{"payload":[3,4]}`,
-			wantMatch: false,
+			name:       "array_pattern_element_vs_array_value_no_match_no_panic",
+			pattern:    `{"payload":[[1,2]]}`,
+			msgBody:    `{"payload":[3,4]}`,
+			rawPattern: true,
+			wantMatch:  false,
 		},
 	}
 
@@ -549,6 +577,10 @@ func TestFilter_ExactMatchTypeSensitivity(t *testing.T) {
 			t.Parallel()
 
 			b := b3Backend()
+			createPattern := tt.pattern
+			if tt.rawPattern {
+				createPattern = ""
+			}
 			_, err := b.CreatePipe(t.Context(), pipes.CreatePipeInput{
 				Name:         "ts-" + tt.name,
 				RoleARN:      "arn:aws:iam::111122223333:role/r",
@@ -557,11 +589,14 @@ func TestFilter_ExactMatchTypeSensitivity(t *testing.T) {
 				DesiredState: "RUNNING",
 				SourceParameters: &pipes.SourceParameters{
 					FilterCriteria: &pipes.FilterCriteria{
-						Filters: []pipes.Filter{{Pattern: tt.pattern}},
+						Filters: []pipes.Filter{{Pattern: createPattern}},
 					},
 				},
 			})
 			require.NoError(t, err)
+			if tt.rawPattern {
+				b.SetFilterPatternForTest("ts-"+tt.name, tt.pattern)
+			}
 			pipes.WaitPipeRunning(t, b, "ts-"+tt.name)
 
 			sqsReader := &b3MockSQSReader{

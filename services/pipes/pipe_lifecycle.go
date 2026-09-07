@@ -42,6 +42,11 @@ func validateCreatePipeInput(in CreatePipeInput) error {
 	if err := validateSourceRequiredFields(in.SourceParameters); err != nil {
 		return err
 	}
+	if in.SourceParameters != nil {
+		if err := validateFilterCriteria(in.SourceParameters.FilterCriteria); err != nil {
+			return err
+		}
+	}
 	if err := validateTargetRequiredFields(in.TargetParameters); err != nil {
 		return err
 	}
@@ -167,6 +172,11 @@ func (b *InMemoryBackend) UpdatePipe(ctx context.Context, name string, in Update
 	}
 	if err := validateUpdateSourceRequiredFields(in.SourceParameters); err != nil {
 		return nil, err
+	}
+	if in.SourceParameters != nil {
+		if err := validateFilterCriteria(in.SourceParameters.FilterCriteria); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateTargetRequiredFields(in.TargetParameters); err != nil {
 		return nil, err

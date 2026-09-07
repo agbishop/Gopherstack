@@ -77,6 +77,22 @@ func WaitPipeStopped(t *testing.T, b *InMemoryBackend, name string) {
 	t.Fatalf("pipe %q did not reach STOPPED state within 500ms", name)
 }
 
+// SetFilterPatternForTest overwrites a pipe's first filter pattern directly
+// in the backend, bypassing CreatePipe/UpdatePipe's Filter.Pattern
+// validation (gopherstack-sphp). For pinning matchesAnyFilter's runtime
+// fail-closed behavior on patterns creation-time validation now rejects.
+func (b *InMemoryBackend) SetFilterPatternForTest(name, pattern string) {
+	b.mu.Lock("SetFilterPatternForTest")
+	defer b.mu.Unlock()
+
+	p, ok := b.pipesTable(b.region).Get(name)
+	if !ok {
+		return
+	}
+
+	p.SourceParameters.FilterCriteria.Filters[0].Pattern = pattern
+}
+
 // EnrichmentCallCountForTest returns the enrichment call count for a pipe in the default region.
 func (b *InMemoryBackend) EnrichmentCallCountForTest(pipeName string) int64 {
 	return b.GetEnrichmentCallCount(context.Background(), pipeName)

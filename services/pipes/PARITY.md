@@ -816,3 +816,146 @@ cidr, `reflect.DeepEqual` exact-match hardening, corrected doc comment),
 `services/pipes/PARITY.md` (this entry plus the `filter_semantics` YAML note
 update above). No file outside `services/pipes/` touched; no shared/`pkgs/`
 code lifted this pass (see the reuse-vs-rewrite decision above).
+
+## 2026-09-06 (gopherstack-sphp): Filter.Pattern syntax validation at CreatePipe/UpdatePipe
+
+**Premise verified against real AWS, not assumed.** The filed issue claimed
+real AWS Pipes rejects a malformed `FilterCriteria.Filters[].Pattern` at
+creation time, the way this repo's own `services/eventbridge` already does
+for `EventPattern` at `PutRule`/`PutTargets`/`TestEventPattern`
+(`validatePatternObject`/`validateMatcherObject`/`isKnownMatcher`,
+`pattern.go`). Checked three sources:
+
+1. **aws-sdk-go-v2 error sets.** Both ops list `ValidationException`:
+   `CreatePipe`: `UnknownError, ConflictException, InternalException,
+   NotFoundException, ServiceQuotaExceededException, ThrottlingException,
+   ValidationException`. `UpdatePipe`: same minus
+   `ServiceQuotaExceededException`. (`aws-sdk-go-v2/service/pipes@v1.26.4/
+   deserializers.go`, `awk`-extracted.) Necessary but not sufficient --
+   `ValidationException`'s doc comment ("Indicates that an error has occurred
+   while performing a validate operation") is generic and doesn't confirm
+   pattern-shape checking specifically.
+2. **SDK client-side validator.** `validateOpCreatePipeInput` /
+   `validatePipeSourceParameters` in `validators.go` walk every
+   `SourceParameters` variant (Kinesis, DynamoDB, brokers, Kafka) but never
+   call into `FilterCriteria` at all -- no `validateFilterCriteria` function
+   exists in the SDK. The client-side validator is pure-required-field
+   checking; it does not confirm server-side pattern validation either way.
+3. **AWS docs, decisive.** `eb-pipes-event-filtering.html`'s
+   "Filtering Kinesis and DynamoDB messages" table states outright: *"Non-JSON
+   | Any | EventBridge throws an exception at the time of Pipe creation or
+   update. The filter pattern must be valid JSON format."* Real AWS Pipes
+   does reject a malformed pattern at `CreatePipe`/`UpdatePipe`, not only at
+   delivery time. **Verdict: real bug, confirmed. Implemented.**
+
+**Design decision: pipes' own operator subset, not eventbridge's validator
+verbatim.** `services/eventbridge/pattern.go`'s `isKnownMatcher` accepts
+`prefix, suffix, exists, numeric, anything-but, cidr, wildcard,
+equals-ignore-case`, plus a top-level `$or` combinator, plus anything-but's
+object-negation forms. `services/pipes/filter.go`'s runtime matcher
+(`matchesRuleObject`) implements only `prefix, suffix, exists, numeric,
+anything-but, cidr` -- and its `anything-but` only decodes a string or a
+list of strings (not numbers, not object-form), and its `prefix`/`suffix`
+only decode a plain string (not the nested `{"equals-ignore-case": ...}`
+form). This gap is tracked separately as **gopherstack-5eok** (not this
+issue's job). Real AWS's own comparison-operators table
+(`eb-create-pattern-operators.html`, "Pipe support" column) confirms pipes
+*does* support `$or`, `equals-ignore-case`, and ignore-case prefix/suffix in
+real life -- only bare `wildcard` and anything-but's object-negation forms
+are genuinely eventbridge-only. So the filed issue's claim that pipes
+supports "none of" `$or`/wildcard/equals-ignore-case/object-form
+anything-but is only half right: two of those four (`$or`,
+`equals-ignore-case`) are real, documented AWS Pipes syntax that
+**gopherstack's own matcher just hasn't implemented yet**.
+
+Reusing eventbridge's validator verbatim would therefore accept `$or` and
+`equals-ignore-case` patterns as syntactically valid (correctly, per real
+AWS) while `filter.go` can never actually match them -- `CreatePipe` says
+yes, delivery silently never matches, exactly the anti-pattern the issue
+warns against. The validator added here (`filter_validation.go`) instead
+recognizes only the six matcher keys `filter.go` implements, and further
+requires `prefix`/`suffix` values to be plain strings and `anything-but`
+values to be a string or list of strings -- mirroring exactly what
+`matchesPrefixRule`/`matchesSuffixRule`/`matchesAnythingBut` can actually
+decode. `$or` gets no special top-level handling (eventbridge's validator
+special-cases it to descend into each alternative; pipes' does not), so a
+pattern using it is rejected. Every rejection message for an
+eventbridge-real/pipes-unimplemented construct cites gopherstack-5eok, so
+whoever picks that issue up knows to loosen this validator in step.
+
+**What happens to an eventbridge-only or eventbridge-real-but-pipes-
+unimplemented operator:** rejected at `CreatePipe`/`UpdatePipe` with
+`ValidationException`, not silently accepted. Covers: `$or` (top-level and
+nested), bare `wildcard`, standalone `equals-ignore-case`, the nested
+`{"prefix"/"suffix": {"equals-ignore-case": ...}}` form, and `anything-but`
+in numeric, mixed-list, or object-negation form.
+
+**Non-JSON (substring) patterns are untouched.** `filter.go`'s
+`matchesSingleFilter` only treats a pattern as an EventBridge JSON pattern
+when it starts with `{`; anything else is a documented backward-compatible
+literal substring match (matches real AWS's own SQS filtering table, which
+allows a plain-string pattern against a plain-string message body). The new
+validator mirrors this split exactly: only `{`-prefixed patterns are
+structurally validated; a plain string like `"order"` is accepted
+unconditionally, same as before.
+
+**Files changed:**
+- `services/pipes/filter_validation.go` (new): `validateFilterCriteria`,
+  `validateFilterPattern`, `validatePipePatternObject`,
+  `validatePipeMatcherArray`, `validatePipeMatcherObject`,
+  `validatePipeAnythingButValue`, `isKnownPipeMatcher`.
+- `services/pipes/pipe_lifecycle.go`: `validateCreatePipeInput` and
+  `UpdatePipe` both now call `validateFilterCriteria` on
+  `in.SourceParameters.FilterCriteria` when `SourceParameters` is set.
+- `services/pipes/export_test.go`: added `SetFilterPatternForTest`, a
+  test-only backend method that overwrites a pipe's first filter pattern
+  directly, bypassing the new validation -- needed to keep exercising
+  `filter.go`'s runtime fail-closed behavior (the defense-in-depth layer
+  behind creation-time validation, gopherstack-lrgk) for patterns that are
+  no longer constructible via `CreatePipe`.
+- `services/pipes/filter_test.go`: `TestFilter_NestedPatterns`'s
+  `bare_scalar_pattern_value_never_matches` and
+  `unrecognized_matcher_object_never_matches` subtests, and
+  `TestFilter_ExactMatchTypeSensitivity`'s
+  `array_pattern_element_vs_array_value_no_match_no_panic` subtest (a raw
+  JSON array as a matcher-array element -- also not a valid EventBridge
+  matcher shape, so also now rejected by `CreatePipe`), now create their
+  pipe with an empty pattern and inject the invalid pattern afterward via
+  `SetFilterPatternForTest`, instead of passing it directly to `CreatePipe`.
+  The runtime fail-closed assertion (`wantMatch: false`, no message
+  delivered) is unchanged and still exercised -- only how the pipe gets its
+  invalid pattern changed. See the `rawPattern` field added to both test
+  tables and its doc comment for the mechanics.
+- `services/pipes/filter_validation_test.go` (new):
+  `TestFilterPatternValidation_CreatePipe` and
+  `TestFilterPatternValidation_UpdatePipe`, 20 shared table cases each
+  (10 valid, 10 invalid) run against both ops.
+
+**Revert-proof.** Neutered `validateFilterCriteria` to `return nil`
+in-place, rebuilt (compiles -- `fc` is an unused parameter, which Go does
+not flag), and ran
+`GOTOOLCHAIN=go1.26.6 go test ./services/pipes/... -run 'TestFilterPatternValidation_CreatePipe|TestFilterPatternValidation_UpdatePipe' -v`:
+all 10 invalid-pattern subtests failed per op (`invalid_bare_scalar_field_value`,
+`invalid_number_field_value`, `invalid_malformed_json`,
+`invalid_unknown_matcher_wildcard`, `invalid_unknown_matcher_equals_ignore_case`,
+`invalid_or_combinator`, `invalid_nested_prefix_ignore_case`,
+`invalid_anything_but_numeric`, `invalid_anything_but_object_form`,
+`invalid_anything_but_mixed_list`), each `Error: An error is expected but
+got nil.`; the 10 valid-pattern subtests still passed. Restored
+`validateFilterCriteria`'s real body immediately after.
+
+**Gates:** `GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/pipes/...`
+-- PASS. `GOTOOLCHAIN=go1.26.6 golangci-lint run services/pipes/...` --
+`0 issues.` No `//nolint` for `cyclop`/`gocyclo`/`gocognit`/`funlen` added.
+
+**Fragile points, for the record:** `isKnownPipeMatcher` is the single
+source of truth for what `CreatePipe`/`UpdatePipe` accept; it must stay in
+lockstep with `matchesRuleObject`'s dispatch table in `filter.go` as
+gopherstack-5eok lands new operators, or the validator will start rejecting
+patterns the runtime can newly match. `validatePipePatternObject` has an
+explicit `if key == "$or"` branch that returns a clear error before falling
+into the generic array/matcher-object path; if that branch is ever removed,
+`$or` still gets rejected (its nested pattern objects fail the generic
+matcher-object check), but the error message degrades to a confusing
+"unknown matcher %q for field \"$or\"" naming the wrong thing. Keep the
+explicit branch.
