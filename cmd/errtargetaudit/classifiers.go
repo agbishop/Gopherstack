@@ -934,7 +934,7 @@ func flattenStringParamIndices(fl *ast.FieldList) []int {
 		}
 
 		id, isString := f.Type.(*ast.Ident)
-		isString = isString && id.Name == "string"
+		isString = isString && id.Name == stringTypeName
 
 		for range n {
 			if isString {

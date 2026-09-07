@@ -51,7 +51,7 @@ func buildPkgIndexFromFiles(files []*ast.File, fset *token.FileSet) *pkgIndex {
 	idx.PkgConsts = collectPackageStringConsts(files)
 	idx.FuncTypeNames = collectLocalFuncTypeNames(files)
 	idx.WrapOpWrappers = collectLocalWrapOpWrappers(files)
-	idx.Dispatch = collectDispatchEntries(files, idx.PkgConsts, idx.FuncTypeNames)
+	idx.Dispatch = collectDispatchEntries(files, idx.PkgConsts, idx.FuncTypeNames, idx.Funcs)
 	idx.Sentinels = collectSentinelVars(files)
 	idx.PkgVars = collectPackageVarExprs(files)
 
