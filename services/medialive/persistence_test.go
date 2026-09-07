@@ -84,7 +84,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	input, err := original.CreateInput("input-1", "UDP_PUSH", "role-arn", nil)
+	input, err := original.CreateInput("input-1", "UDP_PUSH", "role-arn", nil, nil)
 	require.NoError(t, err)
 
 	_, err = original.CreateInputSecurityGroup(

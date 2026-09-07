@@ -17542,6 +17542,7 @@
       "storedInput.InputType string `json:\"inputType\"`",
       "storedInput.Name string `json:\"name\"`",
       "storedInput.RoleARN string `json:\"roleArn\"`",
+      "storedInput.SdiSources []string `json:\"sdiSources\"`",
       "storedInput.State string `json:\"state\"`",
       "storedInput.Tags map[string]string `json:\"tags\"`",
       "storedInputDevice.ARN string `json:\"arn\"`",

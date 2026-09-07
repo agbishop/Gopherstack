@@ -1452,3 +1452,123 @@ passing after the fix.
 
 Gates: `go test -race -count=1 ./services/medialive/...`,
 `golangci-lint run services/medialive/...` -- both clean.
+
+## 2026-09-07 (gopherstack-ir0p)
+
+`CreateInputInput.SdiSources` and `UpdateInputInput.SdiSources`
+(`api_op_CreateInput.go`, `api_op_UpdateInput.go`) both document only "SDI
+Sources for this Input." -- no element-kind detail, no tri-state note.
+`types.Input.SdiSources` carries the identical doc comment and identical
+`[]string` element type, so an attach must be echoed back through
+`DescribeInput`. Neither handler parsed the field: `handleCreateInput` and
+`handleUpdateInput` (`handler_inputs.go`) never read `body["sdiSources"]`,
+`CreateInput`/`UpdateInput` (`inputs.go`) never accepted it, and
+`inputOutput` never emitted it -- so an SdiSource could never be attached
+to an Input through the public API.
+
+Identifier kind: an ID, not an ARN. `types.Input.SecurityGroups`'s doc
+comment ("A list of IDs for all the Input Security Groups attached to the
+input") and `UpdateInputInput.InputSecurityGroups`'s ("A list of security
+groups referenced by IDs") are the two sibling attachment-list fields in
+the same structs, both explicitly IDs; `types.SdiSource.Id`'s own comment
+("Unique in the AWS account. The ID is the resource-id portion of the
+ARN.") backs the same convention. gopherstack's own `sdiSources` table
+already keys by ID (`DescribeSdiSource(sdiSourceID string)`,
+`storedSdiSource.ID` from `newID()`), so IDs are also what the sibling
+store already speaks.
+
+Validation: none added. `deserializeOpErrorCreateInput` declares only
+`UnknownError`, `BadGatewayException`, `BadRequestException`,
+`ForbiddenException`, `GatewayTimeoutException`,
+`InternalServerErrorException`, `TooManyRequestsException` --
+`deserializeOpErrorUpdateInput` adds `ConflictException` and
+`NotFoundException` in place of `TooManyRequestsException`. Neither doc
+comment states that a nonexistent SdiSource is rejected, and this
+service's own `CreateSdiSource`/`DescribeSdiSource` give no cross-op
+validation precedent for CreateInput/UpdateInput to inherit. Implemented
+as plain passthrough: whatever ID list is given is stored verbatim, no
+existence check against the `sdiSources` table.
+
+Update semantics: `UpdateInputInput.SdiSources`'s doc comment says nothing
+about absent-vs-empty -- that stays true, and this is not a documented
+AWS tri-state. An absent key must still leave the existing list untouched:
+`UpdateInput`'s own `name` and `roleArn` parameters, immediately above in
+the same function, already treat "" (Go's zero value for an absent form
+field) as no-change, and an unconditional `SdiSources` replace would
+silently wipe attachments on a plain rename -- destroying state the caller
+never mentioned is a bug regardless of what AWS's doc omits, and matches
+how the function's other fields already behave. (An earlier version of
+this fix unconditionally replaced `SdiSources` on every update, following
+`UpdateInputSecurityGroup`'s `WhitelistRules` -- the wrong precedent,
+because that op's rules list *is* the entire payload, not one field among
+several. Caught in review before landing; see the follow-up note below.)
+Presence is decided in the handler, where the raw `map[string]any` body is
+still available (`_, ok := body["sdiSources"]`), and passed down as an
+explicit `sdiSourcesSet bool` -- not inferred from the slice's nilness or
+length in the backend, since `extractStringSlice` always returns a
+non-nil slice regardless of whether the key was present.
+
+Fix:
+- `interfaces.go`: `Input.SdiSources []string` (placed last in the struct
+  -- a slice's non-pointer tail is the only field-ordering choice
+  `fieldalignment` can win back once every other field is a string/map, so
+  it goes after the strings, not before); `CreateInput` interface
+  signature gained an `sdiSources []string` parameter, `UpdateInput`
+  gained `sdiSources []string, sdiSourcesSet bool`.
+- `models.go`: `storedInput.SdiSources []string` (persisted field, `toInput()`
+  copies it out).
+- `inputs.go`: `CreateInput` stores a defensive copy of `sdiSources` on
+  create; `UpdateInput` replaces `inp.SdiSources` with a defensive copy
+  only when `sdiSourcesSet` is true, leaving it untouched otherwise.
+- `handler_inputs.go`: `inputOutput.SdiSources`, `toInputOutput` defaults
+  it to `[]string{}` like `Tags`; `handleCreateInput` extracts
+  `sdiSources` via `extractStringSlice(body, "sdiSources")` unconditionally
+  (create has no prior list to preserve); `handleUpdateInput` extracts the
+  same way but also computes `sdiSourcesSet` from key presence and passes
+  both through.
+- `persistence_test.go`: updated the one direct-backend `CreateInput` call
+  site to the new 5-arg signature (compile-only change, no assertions
+  touched).
+
+Tests: 3 in `handler_inputs_test.go`, all driven through the HTTP handler
+(`doRequest`), not the backend directly.
+- `TestInput_SdiSources_CreateAndUpdate`: create without `sdiSources`
+  yields an empty list (no documented default to assert otherwise); create
+  with two distinct IDs (`sdi-aaa`, `sdi-bbb`) round-trips the exact list
+  through both the create response and a subsequent `DescribeInput`;
+  update *with* an explicit, wholly disjoint pair (`sdi-ccc`, `sdi-ddd`)
+  replaces it exactly, with no survivor from the original list, in both
+  the update response and a follow-up `DescribeInput`.
+- `TestInput_SdiSources_UpdateWithoutFieldPreservesList`: create with
+  (`sdi-aaa`, `sdi-bbb`), update with a body containing only `"name"` (no
+  `sdiSources` key at all), asserts both entries survive in the update
+  response and a follow-up `DescribeInput`. Pins the review-caught bug.
+- `TestInput_SdiSources_UpdateWithExplicitEmptyClearsList`: same setup,
+  update with `"sdiSources": []` (key present, empty), asserts the list is
+  actually cleared -- distinguishing "absent" from "explicit empty" rather
+  than conflating them.
+
+All three confirmed failing against unmodified (pre-`gopherstack-ir0p`)
+code: `sdiSources` assertions returned `actual: <nil>` throughout, proven
+by reverting `interfaces.go`, `models.go`, `inputs.go`,
+`handler_inputs.go`, and the `persistence_test.go` call-site edit, running
+the tests, observing the failures, then restoring all five files.
+`TestInput_SdiSources_UpdateWithoutFieldPreservesList` was separately
+confirmed failing (`actual: []` instead of `["sdi-aaa","sdi-bbb"]`)
+against the intermediate unconditional-replace version of this fix, by
+neutering just the `if sdiSourcesSet` guard in `UpdateInput` back to an
+unconditional replace, re-running, then restoring the guard -- the other
+two tests still passed at that point, confirming they don't depend on the
+guard and so weren't accidentally masking the bug.
+
+Snapshot golden: `storedInput` is persisted and gained a field, so
+`TestSnapshotVersionGuard` (`pkgs/persistence`) was run read-only (no
+`-update`) and confirms exactly that -- "medialive: backendSnapshot fields
+changed without a version bump; golden is out of date... this is
+bookkeeping, not a version-bump case: every old field is still present
+unchanged, so the diff is additive only and needs no bump." No version
+bump was made; the golden needs a `-update` refresh, left to the committer
+per instructions.
+
+Gates: `go test -race -count=1 ./services/medialive/...`,
+`golangci-lint run services/medialive/...` -- both clean.

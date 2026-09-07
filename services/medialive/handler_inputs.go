@@ -8,15 +8,16 @@ import (
 
 // --- Input handlers ---
 
-// Tags first: reduces GC pointer scan from 104 to 96 bytes.
+// Tags first, SdiSources last: reduces GC pointer scan from 120 to 112 bytes.
 type inputOutput struct {
-	Tags    map[string]string `json:"tags"`
-	Arn     string            `json:"arn"`
-	ID      string            `json:"id"`
-	Name    string            `json:"name"`
-	Type    string            `json:"type"`
-	RoleArn string            `json:"roleArn"`
-	State   string            `json:"state"`
+	Tags       map[string]string `json:"tags"`
+	Arn        string            `json:"arn"`
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	Type       string            `json:"type"`
+	RoleArn    string            `json:"roleArn"`
+	State      string            `json:"state"`
+	SdiSources []string          `json:"sdiSources"`
 }
 
 func toInputOutput(inp *Input) inputOutput {
@@ -25,14 +26,20 @@ func toInputOutput(inp *Input) inputOutput {
 		tags = map[string]string{}
 	}
 
+	sdiSources := inp.SdiSources
+	if sdiSources == nil {
+		sdiSources = []string{}
+	}
+
 	return inputOutput{
-		Tags:    tags,
-		Arn:     inp.ARN,
-		ID:      inp.ID,
-		Name:    inp.Name,
-		Type:    inp.InputType,
-		RoleArn: inp.RoleARN,
-		State:   inp.State,
+		Tags:       tags,
+		SdiSources: sdiSources,
+		Arn:        inp.ARN,
+		ID:         inp.ID,
+		Name:       inp.Name,
+		Type:       inp.InputType,
+		RoleArn:    inp.RoleARN,
+		State:      inp.State,
 	}
 }
 
@@ -40,9 +47,10 @@ func (h *Handler) handleCreateInput(c *echo.Context, body map[string]any) error 
 	name, _ := body["name"].(string)
 	inputType, _ := body["type"].(string)
 	roleArn, _ := body["roleArn"].(string)
+	sdiSources := extractStringSlice(body, "sdiSources")
 	tags := extractTags(body)
 
-	inp, err := h.Backend.CreateInput(name, inputType, roleArn, tags)
+	inp, err := h.Backend.CreateInput(name, inputType, roleArn, sdiSources, tags)
 	if err != nil {
 		return respondErr(c, err)
 	}
@@ -62,8 +70,10 @@ func (h *Handler) handleDescribeInput(c *echo.Context, inputID string) error {
 func (h *Handler) handleUpdateInput(c *echo.Context, inputID string, body map[string]any) error {
 	name, _ := body["name"].(string)
 	roleArn, _ := body["roleArn"].(string)
+	sdiSources := extractStringSlice(body, "sdiSources")
+	_, sdiSourcesSet := body["sdiSources"]
 
-	inp, err := h.Backend.UpdateInput(inputID, name, roleArn)
+	inp, err := h.Backend.UpdateInput(inputID, name, roleArn, sdiSources, sdiSourcesSet)
 	if err != nil {
 		return respondErr(c, err)
 	}

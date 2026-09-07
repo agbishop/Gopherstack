@@ -64,6 +64,122 @@ func TestInput_CRUD(t *testing.T) {
 	assert.Equal(t, "DELETED", deletedResp["state"])
 }
 
+// TestInput_SdiSources_CreateAndUpdate covers gopherstack-ir0p: CreateInput
+// and UpdateInput both carry SdiSources (api_op_CreateInput.go,
+// api_op_UpdateInput.go), and types.Input.SdiSources means DescribeInput
+// must echo whatever was attached, but the handlers never parsed the field.
+func TestInput_SdiSources_CreateAndUpdate(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	// No documented default in CreateInputInput.SdiSources's doc comment;
+	// an omitted field yields an empty list.
+	rec := doRequest(t, h, http.MethodPost, "/prod/inputs", map[string]any{
+		"name": "no-sdi", "type": "UDP_PUSH",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	noSdi := decodeBody(t, rec.Body.Bytes())["input"].(map[string]any)
+	assert.Empty(t, noSdi["sdiSources"])
+
+	// Create with two distinct SdiSources: DescribeInput must report the
+	// exact list, not merely "non-empty".
+	rec = doRequest(t, h, http.MethodPost, "/prod/inputs", map[string]any{
+		"name": "with-sdi", "type": "UDP_PUSH",
+		"sdiSources": []any{"sdi-aaa", "sdi-bbb"},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	created := decodeBody(t, rec.Body.Bytes())["input"].(map[string]any)
+	inputID := created["id"].(string)
+	assert.Equal(t, []any{"sdi-aaa", "sdi-bbb"}, created["sdiSources"])
+
+	rec = doRequest(t, h, http.MethodGet, "/prod/inputs/"+inputID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	desc := decodeBody(t, rec.Body.Bytes())
+	assert.Equal(t, []any{"sdi-aaa", "sdi-bbb"}, desc["sdiSources"])
+
+	// Update to a wholly different pair: a partial-replace bug (e.g. only
+	// overwriting index 0, or appending instead of replacing) would leave a
+	// survivor from the original list.
+	rec = doRequest(t, h, http.MethodPut, "/prod/inputs/"+inputID, map[string]any{
+		"sdiSources": []any{"sdi-ccc", "sdi-ddd"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	updated := decodeBody(t, rec.Body.Bytes())["input"].(map[string]any)
+	assert.Equal(t, []any{"sdi-ccc", "sdi-ddd"}, updated["sdiSources"])
+
+	rec = doRequest(t, h, http.MethodGet, "/prod/inputs/"+inputID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	desc = decodeBody(t, rec.Body.Bytes())
+	assert.Equal(t, []any{"sdi-ccc", "sdi-ddd"}, desc["sdiSources"])
+}
+
+// TestInput_SdiSources_UpdateWithoutFieldPreservesList pins the fix for the
+// data-loss regression found in review: UpdateInput must not touch
+// SdiSources when the caller's body doesn't mention the key at all. Neither
+// api_op_UpdateInput.go's SdiSources doc comment nor any other AWS source
+// documents this as a tri-state -- the guard exists because an unconditional
+// replace would silently wipe attachments on a plain rename, which is a bug
+// independent of what the doc omits, and it matches how this same handler
+// already treats an absent name or roleArn.
+func TestInput_SdiSources_UpdateWithoutFieldPreservesList(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/prod/inputs", map[string]any{
+		"name": "keep-sdi", "type": "UDP_PUSH",
+		"sdiSources": []any{"sdi-aaa", "sdi-bbb"},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	created := decodeBody(t, rec.Body.Bytes())["input"].(map[string]any)
+	inputID := created["id"].(string)
+
+	// Update mentions only "name" -- no "sdiSources" key anywhere in the body.
+	rec = doRequest(t, h, http.MethodPut, "/prod/inputs/"+inputID, map[string]any{
+		"name": "renamed",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	updated := decodeBody(t, rec.Body.Bytes())["input"].(map[string]any)
+	assert.Equal(t, "renamed", updated["name"])
+	assert.Equal(t, []any{"sdi-aaa", "sdi-bbb"}, updated["sdiSources"])
+
+	rec = doRequest(t, h, http.MethodGet, "/prod/inputs/"+inputID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	desc := decodeBody(t, rec.Body.Bytes())
+	assert.Equal(t, []any{"sdi-aaa", "sdi-bbb"}, desc["sdiSources"])
+}
+
+// TestInput_SdiSources_UpdateWithExplicitEmptyClearsList distinguishes the
+// no-change case above from a caller-intended clear: an explicit
+// "sdiSources": [] is present in the body and must replace the list with
+// empty, not be conflated with an absent key.
+func TestInput_SdiSources_UpdateWithExplicitEmptyClearsList(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/prod/inputs", map[string]any{
+		"name": "clear-sdi", "type": "UDP_PUSH",
+		"sdiSources": []any{"sdi-aaa", "sdi-bbb"},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	created := decodeBody(t, rec.Body.Bytes())["input"].(map[string]any)
+	inputID := created["id"].(string)
+
+	rec = doRequest(t, h, http.MethodPut, "/prod/inputs/"+inputID, map[string]any{
+		"sdiSources": []any{},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	updated := decodeBody(t, rec.Body.Bytes())["input"].(map[string]any)
+	assert.Equal(t, []any{}, updated["sdiSources"])
+
+	rec = doRequest(t, h, http.MethodGet, "/prod/inputs/"+inputID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	desc := decodeBody(t, rec.Body.Bytes())
+	assert.Equal(t, []any{}, desc["sdiSources"])
+}
+
 func TestInput_MissingName(t *testing.T) {
 	t.Parallel()
 

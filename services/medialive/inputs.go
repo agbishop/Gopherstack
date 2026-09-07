@@ -12,6 +12,7 @@ import (
 // CreateInput creates a new input.
 func (b *InMemoryBackend) CreateInput(
 	name, inputType, roleArn string,
+	sdiSources []string,
 	tags map[string]string,
 ) (*Input, error) {
 	if name == "" {
@@ -22,15 +23,19 @@ func (b *InMemoryBackend) CreateInput(
 		inputType = inputTypeUDPPush
 	}
 
+	sources := make([]string, len(sdiSources))
+	copy(sources, sdiSources)
+
 	id := newID()
 	inp := &storedInput{
-		ARN:       b.inputARN(id),
-		ID:        id,
-		Name:      name,
-		InputType: inputType,
-		RoleARN:   roleArn,
-		State:     stateDetached,
-		Tags:      copyTags(tags),
+		ARN:        b.inputARN(id),
+		ID:         id,
+		Name:       name,
+		InputType:  inputType,
+		RoleARN:    roleArn,
+		State:      stateDetached,
+		Tags:       copyTags(tags),
+		SdiSources: sources,
 	}
 
 	b.mu.Lock("CreateInput")
@@ -54,8 +59,16 @@ func (b *InMemoryBackend) DescribeInput(inputID string) (*Input, error) {
 	return inp.toInput(), nil
 }
 
-// UpdateInput updates an input's mutable fields.
-func (b *InMemoryBackend) UpdateInput(inputID, name, roleArn string) (*Input, error) {
+// UpdateInput updates an input's mutable fields. sdiSourcesSet distinguishes
+// "caller didn't mention sdiSources" from "caller sent an explicit []":
+// like name and roleArn above, an absent field must leave the existing
+// value alone -- AWS's doc comment doesn't say so, but silently wiping
+// SdiSources on a rename would be a bug regardless of what the doc omits.
+func (b *InMemoryBackend) UpdateInput(
+	inputID, name, roleArn string,
+	sdiSources []string,
+	sdiSourcesSet bool,
+) (*Input, error) {
 	b.mu.Lock("UpdateInput")
 	defer b.mu.Unlock()
 
@@ -70,6 +83,12 @@ func (b *InMemoryBackend) UpdateInput(inputID, name, roleArn string) (*Input, er
 
 	if roleArn != "" {
 		inp.RoleARN = roleArn
+	}
+
+	if sdiSourcesSet {
+		sources := make([]string, len(sdiSources))
+		copy(sources, sdiSources)
+		inp.SdiSources = sources
 	}
 
 	return inp.toInput(), nil

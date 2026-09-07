@@ -93,27 +93,32 @@ func (c *storedChannel) toSummary() *ChannelSummary {
 }
 
 type storedInput struct {
-	Tags      map[string]string `json:"tags"`
-	ARN       string            `json:"arn"`
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	InputType string            `json:"inputType"`
-	RoleARN   string            `json:"roleArn"`
-	State     string            `json:"state"`
+	Tags       map[string]string `json:"tags"`
+	ARN        string            `json:"arn"`
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	InputType  string            `json:"inputType"`
+	RoleARN    string            `json:"roleArn"`
+	State      string            `json:"state"`
+	SdiSources []string          `json:"sdiSources"`
 }
 
 func (i *storedInput) toInput() *Input {
 	tags := make(map[string]string, len(i.Tags))
 	maps.Copy(tags, i.Tags)
 
+	sdiSources := make([]string, len(i.SdiSources))
+	copy(sdiSources, i.SdiSources)
+
 	return &Input{
-		ARN:       i.ARN,
-		ID:        i.ID,
-		Name:      i.Name,
-		InputType: i.InputType,
-		RoleARN:   i.RoleARN,
-		State:     i.State,
-		Tags:      tags,
+		ARN:        i.ARN,
+		ID:         i.ID,
+		Name:       i.Name,
+		InputType:  i.InputType,
+		RoleARN:    i.RoleARN,
+		State:      i.State,
+		Tags:       tags,
+		SdiSources: sdiSources,
 	}
 }
 
