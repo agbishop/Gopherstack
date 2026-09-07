@@ -9,13 +9,14 @@
 | --- | --- |
 | PARITY entries audited | 95 (92 ok, 3 partial) |
 | Feature families | 29 (27 ok, 2 partial) |
-| Known gaps | 5 |
+| Known gaps | 6 |
 | Structural gaps (can't be emulated) | 2 |
 | Deferred items | 0 |
 | Resource leaks | clean |
 
 ### Known gaps
 
+- 2026-09-06 (gopherstack-3fkj): FIXED this pass. DeregisterTransitGateway now cascades CustomerGatewayAssociations (PENDING/AVAILABLE -> DELETING -> gone, matching DisassociateCustomerGateway's own transition) via a new EC2Resolver.CustomerGatewayArnsForTransitGateway (crossservice.go) backed by services/ec2's VpnConnection.CustomerGatewayID/TransitGatewayID -- the same pair AssociateCustomerGateway's own doc says AWS uses. Outstanding: cli.go's networkManagerEC2ResolverAdapter does not implement the new method yet, so the cascade is a no-op in the real running server (identical to a nil resolver) until that adapter is wired -- deliberate, matching the established repo split where the consuming service adds the interface method and cli.go's owner wires the adapter separately (precedent: gopherstack-5c3m/services/elb). `go build ./...` at the repo root fails on exactly that one missing adapter method until wired; services/networkmanager/... itself builds, tests, and lints clean. Regression coverage: TestDeregisterTransitGateway_CascadesScopedCustomerGatewayAssociations (cascade fires, scoped to the right TGW) and TestDeregisterTransitGateway_NilResolverLeavesAssociationsUntouched (nil-resolver no-op, require.Never) in deregister_transit_gateway_cascade_test.go.
 - AttachmentState's PENDING_NETWORK_UPDATE/PENDING_TAG_ACCEPTANCE/UPDATING/FAILED values are real but never entered by this backend -- no segment-reassignment or tag-acceptance workflow is modeled; every attachment's real path is PENDING_ATTACHMENT_ACCEPTANCE -> (Accept ->) CREATING -> AVAILABLE or -> (Reject ->) REJECTED. Buildable with more effort (a real cross-account-acceptance/tag-acceptance state machine); not attempted this pass.
 - StartRouteAnalysis's real walk is single-hop (anchor attachment's own TGW route table only) -- it does not chain across TGW-to-TGW peering attachments, so CYCLIC_PATH_DETECTED/MAX_HOPS_EXCEEDED/the real 64-hop limit are never exercised. Buildable with more effort (multi-hop traversal + cycle detection over services/ec2's modeled TransitGatewayPeeringAttachment state); not attempted this pass.
 - GetCoreNetworkChangeSet/GetCoreNetworkChangeEvents's diff engine is document-level (segments/network-function-groups/segment-actions/attachment-policies/core-network-configuration sections), not correlated against live attachment membership -- 5 of the real 14 ChangeType values are covered (ATTACHMENT_MAPPING/ATTACHMENT_ROUTE_PROPAGATION/ATTACHMENT_ROUTE_STATIC/ROUTING_POLICY_* remain unproduced). Buildable with more effort (resolving which attachments belong to which segment); not attempted this pass.

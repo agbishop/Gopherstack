@@ -701,7 +701,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Lightsail](services/lightsail/README.md) | A | — | 28 families; 11 gaps; 2 deferred |
 | [Managed Blockchain](services/managedblockchain/README.md) | A | 27 | 5 gaps |
 | [Mgn](services/mgn/README.md) | A | 95 | 1 gap; 5 structural gaps; 1 deferred |
-| [Networkmanager](services/networkmanager/README.md) | A | 95 | 5 gaps; 2 structural gaps |
+| [Networkmanager](services/networkmanager/README.md) | A | 95 | 6 gaps; 2 structural gaps |
 | [Outposts](services/outposts/README.md) | A | 43 | 3 gaps; 7 structural gaps |
 | [Resiliencehub](services/resiliencehub/README.md) | A | 63 | 1 gap; 7 structural gaps |
 | [Support](services/support/README.md) | A | 16 | 1 deferred |
