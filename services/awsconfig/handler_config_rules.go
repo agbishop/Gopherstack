@@ -85,7 +85,7 @@ func (h *Handler) handleDescribeConfigRules(
 	in *describeConfigRulesInput,
 ) (*describeConfigRulesOutput, error) {
 	if err := page.ValidateToken(in.NextToken); err != nil {
-		return nil, fmt.Errorf("%w: invalid NextToken", ErrValidation)
+		return nil, fmt.Errorf("%w: invalid NextToken", ErrInvalidNextToken)
 	}
 
 	all, err := h.Backend.DescribeConfigRules(in.ConfigRuleNames)

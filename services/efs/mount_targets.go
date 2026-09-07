@@ -188,9 +188,11 @@ func (b *InMemoryBackend) CreateMountTarget(
 	case ipAddressTypeIPv4Only, ipAddressTypeIPv6Only, ipAddressTypeDualStack:
 		// valid
 	default:
+		// CreateMountTarget declares BadRequest, never ValidationException, for malformed
+		// input (efs@v1.44.4 deserializers.go).
 		return nil, fmt.Errorf(
 			"%w: invalid IpAddressType %q, must be IPV4_ONLY, IPV6_ONLY, or DUAL_STACK",
-			ErrValidation,
+			ErrBadRequest,
 			req.IPAddressType,
 		)
 	}

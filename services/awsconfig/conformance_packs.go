@@ -35,7 +35,7 @@ func (b *InMemoryBackend) PutConformancePack(
 	tags []Tag,
 ) error {
 	if name == "" {
-		return fmt.Errorf("%w: ConformancePackName is required", ErrValidation)
+		return fmt.Errorf("%w: ConformancePackName is required", ErrInvalidParameterValue)
 	}
 
 	sourceCount := 0
@@ -48,7 +48,7 @@ func (b *InMemoryBackend) PutConformancePack(
 	if sourceCount > 1 {
 		return fmt.Errorf(
 			"%w: specify only one of TemplateBody, TemplateS3Uri, or TemplateSSMDocumentDetails",
-			ErrValidation,
+			ErrInvalidParameterValue,
 		)
 	}
 
@@ -116,6 +116,8 @@ func (b *InMemoryBackend) replacePackRulesLocked(packName string, newRules []*Co
 // managed rules it created.
 func (b *InMemoryBackend) DeleteConformancePack(name string) error {
 	if name == "" {
+		// Declared set is NoSuchConformancePackException/ResourceInUseException only --
+		// no validation-shaped code fits an empty name (configservice@v1.68.4 deserializers.go).
 		return fmt.Errorf("%w: ConformancePackName is required", ErrValidation)
 	}
 

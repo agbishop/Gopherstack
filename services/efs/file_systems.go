@@ -312,7 +312,9 @@ func (b *InMemoryBackend) DeleteFileSystem(ctx context.Context, fileSystemID str
 }
 
 // applyThroughputModeChange validates and applies a throughput mode change to
-// a file system. Must be called under b.mu write lock.
+// a file system. Must be called under b.mu write lock. UpdateFileSystem (this
+// helper's only caller) declares BadRequest, never ValidationException, for
+// malformed input (efs@v1.44.4 deserializers.go).
 func (b *InMemoryBackend) applyThroughputModeChange(
 	fs *FileSystem,
 	req UpdateFileSystemRequest,
@@ -322,7 +324,7 @@ func (b *InMemoryBackend) applyThroughputModeChange(
 		req.ThroughputMode != throughputModeElastic {
 		return fmt.Errorf(
 			"%w: invalid ThroughputMode %q, must be bursting, provisioned, or elastic",
-			ErrValidation,
+			ErrBadRequest,
 			req.ThroughputMode,
 		)
 	}
@@ -340,7 +342,7 @@ func (b *InMemoryBackend) applyThroughputModeChange(
 		if req.ProvisionedThroughputMib < 1 || req.ProvisionedThroughputMib > 1024 {
 			return fmt.Errorf(
 				"%w: ProvisionedThroughputInMibps must be between 1 and 1024 when ThroughputMode is provisioned, got %g",
-				ErrValidation,
+				ErrBadRequest,
 				req.ProvisionedThroughputMib,
 			)
 		}
@@ -400,13 +402,13 @@ func (b *InMemoryBackend) UpdateFileSystem(
 		if fs.ThroughputMode != throughputModeProvisioned {
 			return nil, fmt.Errorf(
 				"%w: ProvisionedThroughputInMibps is only valid when ThroughputMode is provisioned",
-				ErrValidation,
+				ErrBadRequest,
 			)
 		}
 		if req.ProvisionedThroughputMib < 1 || req.ProvisionedThroughputMib > 1024 {
 			return nil, fmt.Errorf(
 				"%w: ProvisionedThroughputInMibps must be between 1 and 1024, got %g",
-				ErrValidation,
+				ErrBadRequest,
 				req.ProvisionedThroughputMib,
 			)
 		}

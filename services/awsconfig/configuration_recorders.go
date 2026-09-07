@@ -129,6 +129,9 @@ func (b *InMemoryBackend) DescribeConfigurationRecorders(names []string) []Confi
 // StartConfigurationRecorder starts a configuration recorder.
 func (b *InMemoryBackend) StartConfigurationRecorder(name string) error {
 	if name == "" {
+		// Declared set is NoAvailableDeliveryChannelException/
+		// NoSuchConfigurationRecorderException/UnmodifiableEntityException -- no
+		// validation-shaped code fits an empty name (configservice@v1.68.4 deserializers.go).
 		return fmt.Errorf("%w: ConfigurationRecorderName is required", ErrValidation)
 	}
 
@@ -152,6 +155,8 @@ func (b *InMemoryBackend) StartConfigurationRecorder(name string) error {
 // StopConfigurationRecorder stops an active configuration recorder.
 func (b *InMemoryBackend) StopConfigurationRecorder(name string) error {
 	if name == "" {
+		// Declared set is NoSuchConfigurationRecorderException/UnmodifiableEntityException --
+		// no validation-shaped code fits an empty name (configservice@v1.68.4 deserializers.go).
 		return fmt.Errorf("%w: ConfigurationRecorderName is required", ErrValidation)
 	}
 
@@ -171,6 +176,8 @@ func (b *InMemoryBackend) StopConfigurationRecorder(name string) error {
 // DeleteConfigurationRecorder removes a configuration recorder by name.
 func (b *InMemoryBackend) DeleteConfigurationRecorder(name string) error {
 	if name == "" {
+		// Same declared set as StopConfigurationRecorder -- no validation-shaped code
+		// fits an empty name.
 		return fmt.Errorf("%w: ConfigurationRecorderName is required", ErrValidation)
 	}
 

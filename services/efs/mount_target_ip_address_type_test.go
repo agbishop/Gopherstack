@@ -15,6 +15,11 @@ import (
 // IpAddressType (IPV4_ONLY/IPV6_ONLY/DUAL_STACK, default IPV4_ONLY when
 // omitted, matching real AWS's documented default) and rejects unknown values,
 // per aws-sdk-go-v2/service/efs's types.IpAddressType enum.
+//
+// The rejection was efs.ErrValidation until this pass; CreateMountTarget
+// declares BadRequest, never ValidationException (efs@v1.44.4
+// deserializers.go) -- the old assertion locked in the exact wire-code
+// defect this pass fixed.
 func TestCreateMountTarget_IPAddressType(t *testing.T) {
 	t.Parallel()
 
@@ -44,7 +49,7 @@ func TestCreateMountTarget_IPAddressType(t *testing.T) {
 			mt, err := b.CreateMountTarget(context.Background(), req)
 
 			if tt.wantErr {
-				require.ErrorIs(t, err, efs.ErrValidation)
+				require.ErrorIs(t, err, efs.ErrBadRequest)
 
 				return
 			}

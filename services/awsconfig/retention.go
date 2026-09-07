@@ -5,7 +5,7 @@ import "fmt"
 // PutRetentionConfiguration creates or updates a retention configuration.
 func (b *InMemoryBackend) PutRetentionConfiguration(name string, days int32) error {
 	if name == "" {
-		return fmt.Errorf("%w: RetentionConfiguration name is required", ErrValidation)
+		return fmt.Errorf("%w: RetentionConfiguration name is required", ErrInvalidParameterValue)
 	}
 
 	b.mu.Lock("PutRetentionConfiguration")

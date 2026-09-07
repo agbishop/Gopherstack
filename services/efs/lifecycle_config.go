@@ -65,13 +65,15 @@ func (b *InMemoryBackend) DescribeLifecycleConfiguration(
 	return result, nil
 }
 
-// validateLifecyclePolicies checks that each policy's transition fields are valid AWS enum values.
+// validateLifecyclePolicies checks that each policy's transition fields are valid AWS enum
+// values. PutLifecycleConfiguration (this function's only caller) declares BadRequest,
+// never ValidationException, for malformed input (efs@v1.44.4 deserializers.go).
 func validateLifecyclePolicies(policies []LifecyclePolicy) error {
 	for i, p := range policies {
 		if p.TransitionToIA != "" && !isValidTransitionToIA(p.TransitionToIA) {
 			return fmt.Errorf(
 				"%w: invalid TransitionToIA value %q at index %d",
-				ErrValidation,
+				ErrBadRequest,
 				p.TransitionToIA,
 				i,
 			)
@@ -80,7 +82,7 @@ func validateLifecyclePolicies(policies []LifecyclePolicy) error {
 			!isValidTransitionToPrimary(p.TransitionToPrimaryStorageClass) {
 			return fmt.Errorf(
 				"%w: invalid TransitionToPrimaryStorageClass value %q at index %d",
-				ErrValidation,
+				ErrBadRequest,
 				p.TransitionToPrimaryStorageClass,
 				i,
 			)
@@ -88,7 +90,7 @@ func validateLifecyclePolicies(policies []LifecyclePolicy) error {
 		if p.TransitionToArchive != "" && !isValidTransitionToArchive(p.TransitionToArchive) {
 			return fmt.Errorf(
 				"%w: invalid TransitionToArchive value %q at index %d",
-				ErrValidation,
+				ErrBadRequest,
 				p.TransitionToArchive,
 				i,
 			)

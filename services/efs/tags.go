@@ -9,11 +9,14 @@ import (
 )
 
 // validateTags returns an error if any tag key/value violates AWS constraints.
+// Callers (CreateAccessPoint, CreateFileSystem, TagResource, CreateTags) all declare
+// BadRequest, never ValidationException, for a malformed request (efs@v1.44.4
+// deserializers.go).
 func validateTags(kv map[string]string) error {
 	if len(kv) > maxTagsPerResource {
 		return fmt.Errorf(
 			"%w: too many tags: %d (max %d)",
-			ErrValidation,
+			ErrBadRequest,
 			len(kv),
 			maxTagsPerResource,
 		)
@@ -23,18 +26,18 @@ func validateTags(kv map[string]string) error {
 		if len(k) == 0 || len(k) > maxTagKeyLen {
 			return fmt.Errorf(
 				"%w: tag key length must be 1-%d, got %d",
-				ErrValidation,
+				ErrBadRequest,
 				maxTagKeyLen,
 				len(k),
 			)
 		}
 		if strings.HasPrefix(k, "aws:") {
-			return fmt.Errorf("%w: tag key must not start with 'aws:'", ErrValidation)
+			return fmt.Errorf("%w: tag key must not start with 'aws:'", ErrBadRequest)
 		}
 		if len(v) > maxTagValueLen {
 			return fmt.Errorf(
 				"%w: tag value length must be 0-%d, got %d",
-				ErrValidation,
+				ErrBadRequest,
 				maxTagValueLen,
 				len(v),
 			)

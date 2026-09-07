@@ -209,9 +209,11 @@ func (b *InMemoryBackend) UpdateFileSystemProtection(
 	case protectionEnabled, protectionDisabled, protectionReplicating:
 		// valid
 	default:
+		// UpdateFileSystemProtection declares BadRequest, never ValidationException, for
+		// malformed input (efs@v1.44.4 deserializers.go).
 		return fmt.Errorf(
 			"%w: invalid ReplicationOverwriteProtection value %q, must be ENABLED, DISABLED, or REPLICATING",
-			ErrValidation,
+			ErrBadRequest,
 			replicationOverwriteProtection,
 		)
 	}

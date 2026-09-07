@@ -663,6 +663,10 @@ func TestThroughputCooldown(t *testing.T) {
 }
 
 // TestUpdateFileSystem_ProvisionedThroughput verifies throughput updates are validated.
+//
+// wantErrIs was efs.ErrValidation until this pass; UpdateFileSystem declares
+// BadRequest, never ValidationException (efs@v1.44.4 deserializers.go) -- the
+// old assertion locked in the exact wire-code defect this pass fixed.
 func TestUpdateFileSystem_ProvisionedThroughput(t *testing.T) {
 	t.Parallel()
 
@@ -684,7 +688,7 @@ func TestUpdateFileSystem_ProvisionedThroughput(t *testing.T) {
 				ProvisionedThroughputMib: 2048,
 			},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name: "provisioned_throughput_on_bursting_invalid",
@@ -693,7 +697,7 @@ func TestUpdateFileSystem_ProvisionedThroughput(t *testing.T) {
 				ProvisionedThroughputMib: 100,
 			},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 	}
 

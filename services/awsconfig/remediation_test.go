@@ -172,13 +172,17 @@ func TestAWSConfigBackend_StartRemediationExecution(t *testing.T) {
 		assert.ErrorIs(t, err, awsconfig.ErrNoSuchRemediationConfiguration)
 	})
 
+	// wantErr was awsconfig.ErrValidation until this pass; StartRemediationExecution's
+	// deserializer declares InvalidParameterValueException, never ValidationException
+	// (configservice@v1.68.4 deserializers.go) -- the old assertion locked in the
+	// exact wire-code defect this pass fixed.
 	t.Run("empty_rule_name_is_validation_error", func(t *testing.T) {
 		t.Parallel()
 
 		b := awsconfig.NewInMemoryBackend()
 		err := b.StartRemediationExecution("", nil)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, awsconfig.ErrValidation)
+		assert.ErrorIs(t, err, awsconfig.ErrInvalidParameterValue)
 	})
 
 	t.Run("records_execution_readable_via_describe", func(t *testing.T) {

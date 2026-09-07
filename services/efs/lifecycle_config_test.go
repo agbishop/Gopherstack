@@ -13,6 +13,10 @@ import (
 )
 
 // TestLifecyclePolicyValidation verifies invalid enum values are rejected.
+//
+// wantErrIs was efs.ErrValidation until this pass; PutLifecycleConfiguration
+// declares BadRequest, never ValidationException (efs@v1.44.4 deserializers.go)
+// -- the old assertion locked in the exact wire-code defect this pass fixed.
 func TestLifecyclePolicyValidation(t *testing.T) {
 	t.Parallel()
 
@@ -34,19 +38,19 @@ func TestLifecyclePolicyValidation(t *testing.T) {
 			name:      "invalid_transition_to_ia",
 			policy:    efs.LifecyclePolicy{TransitionToIA: "AFTER_FOREVER"},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name:      "invalid_transition_to_primary",
 			policy:    efs.LifecyclePolicy{TransitionToPrimaryStorageClass: "NEVER"},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name:      "none_not_a_real_enum_member_rejected",
 			policy:    efs.LifecyclePolicy{TransitionToIA: "NONE"},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name:   "empty_policy_valid",

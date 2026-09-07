@@ -600,6 +600,7 @@ type errClassification struct {
 func efsErrClassifications() []errClassification {
 	return []errClassification{
 		{ErrValidation, "ValidationException", http.StatusBadRequest},
+		{ErrBadRequest, "BadRequest", http.StatusBadRequest},
 		{ErrInvalidPolicy, "InvalidPolicyException", http.StatusBadRequest},
 		{ErrTooManyRequests, "TooManyRequests", http.StatusTooManyRequests},
 		{ErrFileSystemInUse, "FileSystemInUse", http.StatusConflict},

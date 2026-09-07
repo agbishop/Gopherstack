@@ -35,6 +35,12 @@ var (
 	// which declares InsufficientPermissionsException/
 	// InvalidParameterValueException only).
 	ErrInvalidParameterValue = awserr.New("InvalidParameterValueException", awserr.ErrInvalidParameter)
+	// ErrInvalidNextToken is returned for a malformed pagination token on an op whose
+	// declared error model has InvalidNextTokenException instead of ValidationException --
+	// e.g. DescribeConfigRules (verified against aws-sdk-go-v2/service/configservice's
+	// awsAwsjson11_deserializeOpErrorDescribeConfigRules, which declares
+	// InvalidNextTokenException/InvalidParameterValueException, never ValidationException).
+	ErrInvalidNextToken = awserr.New("InvalidNextTokenException", awserr.ErrInvalidParameter)
 	// ErrResourceNotFound is returned when a referenced resource evaluation does not exist.
 	ErrResourceNotFound = awserr.New("ResourceNotFoundException", awserr.ErrNotFound)
 	// ErrResourceNotDiscovered is returned when GetAggregateResourceConfig's

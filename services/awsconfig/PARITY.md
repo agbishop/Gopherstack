@@ -145,6 +145,22 @@ gaps:
     InvalidS3KeyPrefixException, InvalidS3KmsKeyArnException, InvalidSNSTopicARNException,
     and the full per-op taxonomy for every other Put* op (bd: gopherstack-eboy, updated
     this pass with a comment noting partial completion -- not closed)
+  - FIXED (gopherstack-jkma triage, 2026-09-07): errtargetaudit's module-conditional
+    genericProtocolCodes (gopherstack-udkm) surfaced 19 ops emitting ValidationException
+    that configservice@v1.68.4 does not declare for them. 8 had a fitting declared
+    alternative and were fixed: DeleteAggregationAuthorization/PutConfigurationAggregator/
+    DeletePendingAggregationRequest/PutConfigRule/PutConformancePack/
+    StartRemediationExecution/PutRetentionConfiguration now raise ErrInvalidParameterValue
+    (InvalidParameterValueException, the same generic-fallback sentinel PutRemediationExceptions
+    already used); DescribeConfigRules' invalid-NextToken check now raises a new
+    ErrInvalidNextToken (InvalidNextTokenException, a word-for-word match per its doc
+    comment). The remaining 11 (DeleteConfigurationAggregator, DeleteConfigRule,
+    DeleteEvaluationResults, StartConfigurationRecorder, StopConfigurationRecorder,
+    DeleteConfigurationRecorder, DeleteConformancePack, PutDeliveryChannel's s3BucketName
+    check, DeleteDeliveryChannel, DeleteOrganizationConfigRule,
+    DeleteOrganizationConformancePack) have no declared validation-shaped code at all
+    (verified per-op against deserializers.go) -- left on ErrValidation with a landmine
+    comment at each site rather than inventing a code, per this campaign's no-swap rule.
   - PutConformancePack's TemplateS3Uri/TemplateSSMDocumentDetails template sources
     (bd: gopherstack-ag85, JSON+YAML TemplateBody parsing FIXED this pass) still deploy
     zero rules rather than being fetched/parsed: real fetching needs cross-service S3/SSM

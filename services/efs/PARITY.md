@@ -73,6 +73,26 @@ families:
   ReplicationConfiguration: {status: ok, note: "pagination implemented + Destination timestamp typing/population fixed this pass -- previously deferred, now closed for real; 2026-08-21 required-output Region fix, see below"}
   AccountPreferences: {status: ok}
 gaps:
+  - FIXED (gopherstack-jkma triage, 2026-09-07): errtargetaudit's module-conditional
+    genericProtocolCodes (gopherstack-udkm) surfaced 8 ops emitting ValidationException
+    that efs@v1.44.4 declares nowhere in the module (only CreateReplicationConfiguration/
+    DescribeBackupPolicy/DescribeReplicationConfigurations/PutBackupPolicy declare it, and
+    none of the 8 are among them). All 8 -- CreateAccessPoint, PutAccountPreferences,
+    UpdateFileSystem, PutLifecycleConfiguration, CreateMountTarget,
+    UpdateFileSystemProtection, TagResource, CreateTags -- instead declare the generic
+    BadRequest ("Returned if the request is malformed or contains an error such as an
+    invalid parameter value or a missing required parameter"), matching this file's own
+    PutFileSystemPolicy precedent (fix #4 below: InvalidPolicyException over
+    ValidationException). Added ErrBadRequest and swapped every backend-level ErrValidation
+    raise reachable from these 8 ops (access_points.go, account_preferences.go,
+    file_systems.go's applyThroughputModeChange/UpdateFileSystem, lifecycle_config.go's
+    validateLifecyclePolicies, mount_targets.go, replication.go, tags.go's shared
+    validateTags). validateTags is also reachable from CreateFileSystem (which already
+    declares BadRequest), so CreateFileSystem's tag validation incidentally gained the same
+    fix as a side effect of fixing the shared helper -- not separately investigated beyond
+    confirming BadRequest is correct for it too. The wire-layer BadRequest checks already in
+    handler_*.go (required-field checks done before the backend call) were untouched, only
+    the backend-level ones were wrong.
   - DeleteFileSystem rejects (FileSystemInUse) while access points exist for the file
     system. efs@v1.44.4 types/errors.go's FileSystemInUse doc is scoped strictly to
     mount targets ("Returned if a file system has mount targets"), and

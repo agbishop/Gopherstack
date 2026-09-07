@@ -36,6 +36,13 @@ var (
 	ErrInvalidPolicy = awserr.New("InvalidPolicyException", awserr.ErrInvalidParameter)
 	// ErrValidation is returned when input validation fails.
 	ErrValidation = awserr.New("ValidationException", awserr.ErrInvalidParameter)
+	// ErrBadRequest is returned for malformed input on ops whose declared error model has
+	// BadRequest instead of ValidationException -- efs@v1.44.4 declares ValidationException
+	// on only 4 of its 31 ops (CreateReplicationConfiguration, DescribeBackupPolicy,
+	// DescribeReplicationConfigurations, PutBackupPolicy); every other op's generic bad-input
+	// code is BadRequest ("Returned if the request is malformed or contains an error such as
+	// an invalid parameter value or a missing required parameter" -- types/errors.go).
+	ErrBadRequest = awserr.New("BadRequest", awserr.ErrInvalidParameter)
 	// ErrFileSystemInUse is returned when attempting to delete a file system that has mount targets.
 	ErrFileSystemInUse = awserr.New("FileSystemInUse", awserr.ErrConflict)
 	// ErrMountTargetConflict is returned when a duplicate mount target is created in the same

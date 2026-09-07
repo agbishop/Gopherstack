@@ -48,7 +48,7 @@ func (b *InMemoryBackend) CreateAccessPoint(
 		if req.RootDirectory.CreationInfo == nil {
 			return nil, fmt.Errorf(
 				"%w: CreationInfo is required when RootDirectory.Path is not /",
-				ErrValidation,
+				ErrBadRequest,
 			)
 		}
 	}

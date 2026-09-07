@@ -11,7 +11,7 @@ import (
 // PutConfigRule creates or updates a config rule with full metadata.
 func (b *InMemoryBackend) PutConfigRule(input *ConfigRule) error {
 	if input == nil || input.ConfigRuleName == "" {
-		return fmt.Errorf("%w: ConfigRuleName is required", ErrValidation)
+		return fmt.Errorf("%w: ConfigRuleName is required", ErrInvalidParameterValue)
 	}
 
 	b.mu.Lock("PutConfigRule")
@@ -100,6 +100,8 @@ func (b *InMemoryBackend) DescribeConfigRules(names []string) ([]ConfigRule, err
 // DeleteConfigRule deletes a config rule by name.
 func (b *InMemoryBackend) DeleteConfigRule(name string) error {
 	if name == "" {
+		// DeleteConfigRule declares only NoSuchConfigRuleException/ResourceInUseException --
+		// no validation-shaped code fits an empty name (configservice@v1.68.4 deserializers.go).
 		return fmt.Errorf("%w: ConfigRuleName is required", ErrValidation)
 	}
 
@@ -139,6 +141,8 @@ func (b *InMemoryBackend) clearRuleEvaluationsLocked(ruleName string) {
 // aws-sdk-go-v2/service/configservice's DeleteEvaluationResults deserializer).
 func (b *InMemoryBackend) DeleteEvaluationResults(ruleName string) error {
 	if ruleName == "" {
+		// Same as DeleteConfigRule: declared set is NoSuchConfigRuleException/
+		// ResourceInUseException only, no fitting validation code.
 		return fmt.Errorf("%w: ConfigRuleName is required", ErrValidation)
 	}
 

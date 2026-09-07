@@ -75,6 +75,13 @@ func TestAccessPointPosixUser(t *testing.T) {
 }
 
 // TestAccessPointRootDirectory verifies RootDirectory is stored and validated.
+//
+// wantErrIs was efs.ErrValidation ("ValidationException") until this pass;
+// CreateAccessPoint declares BadRequest ("Returned if the request is malformed
+// or contains an error such as an invalid parameter value or a missing required
+// parameter"), never ValidationException (efs@v1.44.4 deserializers.go/
+// types/errors.go) -- the old assertion locked in the exact wire-code defect
+// this pass fixed.
 func TestAccessPointRootDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -107,7 +114,7 @@ func TestAccessPointRootDirectory(t *testing.T) {
 				Path: "/data",
 			},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name:          "nil_root_directory_ok",

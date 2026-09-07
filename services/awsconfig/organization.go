@@ -45,6 +45,9 @@ func (b *InMemoryBackend) organizationConfigRuleArnLocked(name string) string {
 // DeleteOrganizationConfigRule deletes an organization config rule by name.
 func (b *InMemoryBackend) DeleteOrganizationConfigRule(name string) error {
 	if name == "" {
+		// Declared set is NoSuchOrganizationConfigRuleException/
+		// OrganizationAccessDeniedException/ResourceInUseException only -- no
+		// validation-shaped code fits an empty name (configservice@v1.68.4 deserializers.go).
 		return fmt.Errorf("%w: OrganizationConfigRuleName is required", ErrValidation)
 	}
 
@@ -77,6 +80,9 @@ func (b *InMemoryBackend) PutOrganizationConformancePack(name string) error {
 // DeleteOrganizationConformancePack deletes an organization conformance pack by name.
 func (b *InMemoryBackend) DeleteOrganizationConformancePack(name string) error {
 	if name == "" {
+		// Same shape as DeleteOrganizationConfigRule -- declared set is
+		// NoSuchOrganizationConformancePackException/OrganizationAccessDeniedException/
+		// ResourceInUseException only, no fitting validation code.
 		return fmt.Errorf("%w: OrganizationConformancePackName is required", ErrValidation)
 	}
 
