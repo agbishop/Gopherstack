@@ -562,12 +562,29 @@ func (*InMemoryBackend) checkKeyMaterialExpiry(key *Key) error {
 	return nil
 }
 
-// requireKeyMaterial returns the key material for keyID in the given region or an error if absent.
-// Must be called with at least a read lock held.
-func (b *InMemoryBackend) requireKeyMaterial(region, keyID string) (*keyMaterial, error) {
-	km, ok := b.keyMaterialsStore(region)[keyID]
+// requireKeyMaterial returns the key material for key in the given region, or an error if the
+// material is absent or key's backing custom key store is not CONNECTED. Must be called with at
+// least a read lock held.
+//
+// Every crypto op (Encrypt, Decrypt, ReEncrypt, GenerateDataKey*, Sign, Verify, GetPublicKey,
+// GenerateMac, VerifyMac, DeriveSharedSecret) fetches material through this one function, so it
+// is where DisconnectCustomKeyStore's doc-mandated guard belongs: "all attempts to ... use
+// existing KMS keys in cryptographic operations will fail" while the store is disconnected
+// (kms@v1.55.4 api_op_DisconnectCustomKeyStore.go).
+func (b *InMemoryBackend) requireKeyMaterial(region string, key *Key) (*keyMaterial, error) {
+	if key.CustomKeyStoreID != "" {
+		if ks, ok := b.customKeyStoresStore(region).Get(key.CustomKeyStoreID); ok &&
+			ks.ConnectionState != ConnectionStateConnected {
+			return nil, fmt.Errorf(
+				"%w: custom key store %q backing key %q is not connected (state: %s)",
+				ErrKeyInvalidState, key.CustomKeyStoreID, key.KeyID, ks.ConnectionState,
+			)
+		}
+	}
+
+	km, ok := b.keyMaterialsStore(region)[key.KeyID]
 	if !ok || km == nil {
-		return nil, fmt.Errorf("%w: keyID %q", ErrKeyMaterialUnavailable, keyID)
+		return nil, fmt.Errorf("%w: keyID %q", ErrKeyMaterialUnavailable, key.KeyID)
 	}
 
 	return km, nil

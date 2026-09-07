@@ -610,3 +610,41 @@ func TestDeleteCustomKeyStore_HasKeys_WireErrorType(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
 	assert.Equal(t, "CustomKeyStoreHasCMKsException", errResp.Type)
 }
+
+// TestEncrypt_DisconnectedCustomKeyStore_WireErrorType drives the full HTTP handler path for
+// gopherstack-o3rp: DisconnectCustomKeyStore's own doc says "all attempts to ... use existing
+// KMS keys in cryptographic operations will fail" while the store is disconnected
+// (kms@v1.55.4 api_op_DisconnectCustomKeyStore.go). Encrypt's own deserializeOpError
+// recognizes KMSInvalidStateException, not CustomKeyStoreInvalidStateException -- the latter
+// is CreateKey/GenerateRandom's error, confirmed absent from Encrypt's declared list.
+func TestEncrypt_DisconnectedCustomKeyStore_WireErrorType(t *testing.T) {
+	t.Parallel()
+
+	h := ab2NewHandler(t)
+
+	createRec := doKMSRequest(t, h, "CreateCustomKeyStore", `{"CustomKeyStoreName":"wire-crypto-disconnected"}`)
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	var createOut kms.CreateCustomKeyStoreOutput
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createOut))
+
+	idBody := `{"CustomKeyStoreId":"` + createOut.CustomKeyStoreID + `"}`
+	require.Equal(t, http.StatusOK, doKMSRequest(t, h, "ConnectCustomKeyStore", idBody).Code)
+
+	createKeyBody := `{"CustomKeyStoreId":"` + createOut.CustomKeyStoreID + `"}`
+	createKeyRec := doKMSRequest(t, h, "CreateKey", createKeyBody)
+	require.Equal(t, http.StatusOK, createKeyRec.Code)
+
+	var createKeyOut kms.CreateKeyOutput
+	require.NoError(t, json.Unmarshal(createKeyRec.Body.Bytes(), &createKeyOut))
+
+	require.Equal(t, http.StatusOK, doKMSRequest(t, h, "DisconnectCustomKeyStore", idBody).Code)
+
+	encryptBody := `{"KeyId":"` + createKeyOut.KeyMetadata.KeyID + `","Plaintext":"aGVsbG8="}`
+	rec := doKMSRequest(t, h, "Encrypt", encryptBody)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp kms.ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "KMSInvalidStateException", errResp.Type)
+}

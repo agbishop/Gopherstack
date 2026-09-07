@@ -43,7 +43,7 @@ func (b *InMemoryBackend) GenerateMac(
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func (b *InMemoryBackend) VerifyMac(
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}

@@ -78,7 +78,7 @@ func (b *InMemoryBackend) Encrypt(
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func (b *InMemoryBackend) Decrypt(
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +355,7 @@ func (b *InMemoryBackend) reEncryptDecrypt(
 		)
 	}
 
-	sourceKM, err := b.requireKeyMaterial(region, sourceKeyID)
+	sourceKM, err := b.requireKeyMaterial(region, sourceKey)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -403,7 +403,7 @@ func (b *InMemoryBackend) reEncryptEncrypt(
 		)
 	}
 
-	destKM, err := b.requireKeyMaterial(region, destKey.KeyID)
+	destKM, err := b.requireKeyMaterial(region, destKey)
 	if err != nil {
 		return nil, nil, err
 	}

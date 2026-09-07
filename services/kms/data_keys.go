@@ -63,7 +63,7 @@ func (b *InMemoryBackend) generateDataKey(
 		return nil, randErr
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +169,7 @@ func (b *InMemoryBackend) generateDataKeyPair(
 		return nil, err
 	}
 
-	wrapKM, err := b.requireKeyMaterial(region, wrapKey.KeyID)
+	wrapKM, err := b.requireKeyMaterial(region, wrapKey)
 	if err != nil {
 		return nil, err
 	}

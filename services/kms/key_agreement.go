@@ -46,7 +46,7 @@ func (b *InMemoryBackend) DeriveSharedSecret(
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}

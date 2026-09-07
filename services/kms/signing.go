@@ -50,7 +50,7 @@ func (b *InMemoryBackend) Sign(ctx context.Context, input *SignInput) (*SignOutp
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +119,7 @@ func (b *InMemoryBackend) Verify(ctx context.Context, input *VerifyInput) (*Veri
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func (b *InMemoryBackend) GetPublicKey(
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
