@@ -197,6 +197,9 @@ func (b *InMemoryBackend) RegisterTransitGateway(
 	return r.clone(), nil
 }
 
+// DeregisterTransitGateway cascades to CustomerGatewayAssociations, matching the real op's doc
+// (api_op_DeregisterTransitGateway.go): "This action removes any customer gateway associations."
+// (gopherstack-3fkj).
 func (b *InMemoryBackend) DeregisterTransitGateway(
 	globalNetworkID, transitGatewayArn string,
 ) (*TransitGatewayRegistration, error) {
@@ -217,7 +220,35 @@ func (b *InMemoryBackend) DeregisterTransitGateway(
 	r.State.Code = tgwRegStateDeleting
 	scheduleRemoval(b, "TransitGatewayRegistrationDeleted", b.transitGatewayRegistrations, key)
 
+	b.cascadeDeregisterCustomerGatewayAssociations(globalNetworkID, transitGatewayArn)
+
 	return r.clone(), nil
+}
+
+// cascadeDeregisterCustomerGatewayAssociations transitions to DELETING (matching
+// DisassociateCustomerGateway's own PENDING->DELETING->gone pattern, not a hard delete) every
+// CustomerGatewayAssociation whose customer gateway's real EC2 VpnConnection points at
+// transitGatewayArn -- the link AssociateCustomerGateway's doc says AWS uses (see
+// CustomerGatewayArnsForTransitGateway's doc, crossservice.go). A nil ec2Resolver -- the default
+// in isolated unit tests and any backend cli.go hasn't wired yet -- leaves every association
+// untouched, matching this package's existing nil-resolver no-op convention throughout
+// associations.go/globalnetworks.go/peerings.go. Callers must hold b.mu.
+func (b *InMemoryBackend) cascadeDeregisterCustomerGatewayAssociations(globalNetworkID, transitGatewayArn string) {
+	if b.ec2Resolver == nil {
+		return
+	}
+
+	for _, cgwArn := range b.ec2Resolver.CustomerGatewayArnsForTransitGateway(transitGatewayArn) {
+		key := customerGatewayAssociationKey(globalNetworkID, cgwArn)
+
+		a, ok := b.customerGatewayAssociations.Get(key)
+		if !ok || a.State == stateDeleting {
+			continue
+		}
+
+		a.State = stateDeleting
+		scheduleRemoval(b, "CustomerGatewayAssociationDeleted", b.customerGatewayAssociations, key)
+	}
 }
 
 func (b *InMemoryBackend) GetTransitGatewayRegistrations(

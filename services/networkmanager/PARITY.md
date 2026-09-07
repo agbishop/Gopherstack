@@ -1,4 +1,52 @@
 ---
+# 2026-09-06 (gopherstack-3fkj, title-only issue -- re-derived from scratch): audited
+# "DeregisterTransitGateway does not remove customer gateway associations as documented;
+# CustomerGatewayAssociation carries no link back to the transit gateway". Claim 1 confirmed:
+# api_op_DeregisterTransitGateway.go's doc comment verbatim says "This action removes any
+# customer gateway associations." Claim 2 is true of this backend but its implied premise (that
+# AWS's own type models the link and this repo simply forgot to mirror a field) is false: the
+# real SDK's types.CustomerGatewayAssociation (types/types.go) carries exactly
+# {CustomerGatewayArn, DeviceId, GlobalNetworkId, LinkId, State} -- no TransitGatewayArn/Id
+# member -- and AssociateCustomerGatewayInput likewise has no TransitGatewayArn parameter, so
+# there is no accepted-but-discarded input here either. This package's own models.go
+# CustomerGatewayAssociation mirrors the real type field-for-field, and DeleteDevice/DeleteLink/
+# DisassociateLink already correctly gate on live CustomerGatewayAssociations exactly as their
+# own SDK doc comments require. The real linkage AWS uses to decide the cascade is cross-service:
+# an EC2 VpnConnection row's CustomerGatewayID+TransitGatewayID (AssociateCustomerGateway's own
+# doc: "customer gateways that are connected to a VPN attachment on a transit gateway ... use
+# the DescribeVpnConnections EC2 API and filter by transit-gateway-id"). services/ec2's
+# VpnConnection (advanced_networking.go:118-129) already carries both fields -- confirming the
+# fact exists in this repo, just in services/ec2, not here -- but this is the SAME
+# already-flagged, deliberately-deferred category as Q3's note (below, Site-to-Site VPN
+# Attachments: "VpnConnection already carries its own TransitGatewayID/VpnGatewayID fields, so
+# this attachment is validating a resource that itself may already reference a registered TGW")
+# -- recognized, never exploited, anywhere in this service. A faithful fix needs a new
+# EC2Resolver method sourced from services/ec2's VpnConnection table plus cli.go wiring
+# (networkManagerEC2ResolverAdapter). Initially concluded this was out of scope for a
+# networkmanager-only pass; corrected on review, citing an established repo split
+# (gopherstack-5c3m/services/elb): the consuming service adds the interface method and the real
+# logic, cli.go's adapter is wired separately -- an unwired cross-service hook is this repo's
+# normal silent no-op, not a rejection. IMPLEMENTED this pass:
+# crossservice.go's EC2Resolver gained CustomerGatewayArnsForTransitGateway(transitGatewayArn
+# string) []string; DeregisterTransitGateway (associations.go) now calls it via a new
+# cascadeDeregisterCustomerGatewayAssociations helper and transitions every matching
+# CustomerGatewayAssociation PENDING/AVAILABLE -> DELETING -> gone, reusing
+# DisassociateCustomerGateway's own transition (not a hard delete; CustomerGatewayAssociationState
+# has a real DELETED terminal value). A nil ec2Resolver -- the default in every isolated unit
+# test and any backend cli.go has not wired -- is a no-op, proven by
+# TestDeregisterTransitGateway_NilResolverLeavesAssociationsUntouched
+# (deregister_transit_gateway_cascade_test.go) via require.Never. The wired-resolver cascade,
+# scoped so a DIFFERENT transit gateway's association is untouched, is proven by
+# TestDeregisterTransitGateway_CascadesScopedCustomerGatewayAssociations, revert-proofed: reverting
+# just the cascadeDeregisterCustomerGatewayAssociations call made that test fail with "Condition
+# never satisfied" while the nil-resolver test kept passing, confirmed, then restored.
+# cli.go's networkManagerEC2ResolverAdapter is NOT wired this pass (out of scope,
+# services/networkmanager/ ONLY) -- `go build ./...` at the repo root fails on that one adapter
+# (missing method CustomerGatewayArnsForTransitGateway) until it is, by design, matching
+# gopherstack-5c3m's precedent; `go build`/`go test -race`/`golangci-lint run`, all scoped to
+# ./services/networkmanager/..., are clean on their own. See gaps: below and
+# DeregisterTransitGateway's ops-table note.
+#
 # 2026-08-29: errcodeaudit ERROR-path sweep. 2 confident findings
 # (corenetworks.go:43,171 "InvalidPolicyDocument"), both verified clean false positives. The
 # string lives inside CoreNetworkPolicyError.ErrorCode, a *string field with no enum
@@ -92,7 +140,7 @@ ops:
   GetCustomerGatewayAssociations: {wire: ok, errors: ok, state: ok, persist: ok}
   # H. Transit Gateway Registrations (3)
   RegisterTransitGateway: {wire: ok, errors: ok, state: ok, persist: ok, note: "TransitGatewayArn validated against services/ec2's real TransitGateway state via EC2Resolver (this pass)"}
-  DeregisterTransitGateway: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeregisterTransitGateway: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-3fkj: now cascades CustomerGatewayAssociations to DELETING via a new EC2Resolver.CustomerGatewayArnsForTransitGateway (crossservice.go), sourced from services/ec2's VpnConnection.CustomerGatewayID/TransitGatewayID; nil-resolver no-op preserved. cli.go's adapter wiring is a separate outstanding step (repo precedent gopherstack-5c3m), see 2026-09-06 changelog entry above"}
   GetTransitGatewayRegistrations: {wire: ok, errors: ok, state: ok, persist: ok}
   # I. Transit Gateway Connect Peer Associations (3)
   AssociateTransitGatewayConnectPeer: {wire: ok, errors: ok, state: ok, persist: ok, note: "TransitGatewayConnectPeerArn validated against services/ec2's real TransitGatewayConnectPeer state via EC2Resolver (this pass)"}
@@ -216,6 +264,7 @@ families:
   resource_policy: {status: ok, note: "3 ops, real JSON-document store with JSON-validity checking on Put"}
   tagging: {status: ok, note: "3 ops, standard ARN-keyed tag store shared across all 9 taggable resource kinds. STALE NOTE CORRECTED 2026-08-13 (gopherstack-jqh2 pass 2): this family's routing previously needed a MatchPriority workaround for a bedrockagent bug (see gaps: history below); that workaround was reverted in ef896bcf1 once bedrockagent's real bug was fixed -- handler.go now returns the plain service.PriorityPathVersioned, no custom priority constant. Re-verified via TestExtractOperation_SDKRouteTable."}
 gaps:
+  - "2026-09-06 (gopherstack-3fkj): FIXED this pass. DeregisterTransitGateway now cascades CustomerGatewayAssociations (PENDING/AVAILABLE -> DELETING -> gone, matching DisassociateCustomerGateway's own transition) via a new EC2Resolver.CustomerGatewayArnsForTransitGateway (crossservice.go) backed by services/ec2's VpnConnection.CustomerGatewayID/TransitGatewayID -- the same pair AssociateCustomerGateway's own doc says AWS uses. Outstanding: cli.go's networkManagerEC2ResolverAdapter does not implement the new method yet, so the cascade is a no-op in the real running server (identical to a nil resolver) until that adapter is wired -- deliberate, matching the established repo split where the consuming service adds the interface method and cli.go's owner wires the adapter separately (precedent: gopherstack-5c3m/services/elb). `go build ./...` at the repo root fails on exactly that one missing adapter method until wired; services/networkmanager/... itself builds, tests, and lints clean. Regression coverage: TestDeregisterTransitGateway_CascadesScopedCustomerGatewayAssociations (cascade fires, scoped to the right TGW) and TestDeregisterTransitGateway_NilResolverLeavesAssociationsUntouched (nil-resolver no-op, require.Never) in deregister_transit_gateway_cascade_test.go."
   - "AttachmentState's PENDING_NETWORK_UPDATE/PENDING_TAG_ACCEPTANCE/UPDATING/FAILED values are real but never entered by this backend -- no segment-reassignment or tag-acceptance workflow is modeled; every attachment's real path is PENDING_ATTACHMENT_ACCEPTANCE -> (Accept ->) CREATING -> AVAILABLE or -> (Reject ->) REJECTED. Buildable with more effort (a real cross-account-acceptance/tag-acceptance state machine); not attempted this pass."
   - "StartRouteAnalysis's real walk is single-hop (anchor attachment's own TGW route table only) -- it does not chain across TGW-to-TGW peering attachments, so CYCLIC_PATH_DETECTED/MAX_HOPS_EXCEEDED/the real 64-hop limit are never exercised. Buildable with more effort (multi-hop traversal + cycle detection over services/ec2's modeled TransitGatewayPeeringAttachment state); not attempted this pass."
   - "GetCoreNetworkChangeSet/GetCoreNetworkChangeEvents's diff engine is document-level (segments/network-function-groups/segment-actions/attachment-policies/core-network-configuration sections), not correlated against live attachment membership -- 5 of the real 14 ChangeType values are covered (ATTACHMENT_MAPPING/ATTACHMENT_ROUTE_PROPAGATION/ATTACHMENT_ROUTE_STATIC/ROUTING_POLICY_* remain unproduced). Buildable with more effort (resolving which attachments belong to which segment); not attempted this pass."

@@ -3193,6 +3193,30 @@ func (a *networkManagerEC2ResolverAdapter) TransitGatewayRouteTableForAttachment
 	return "", false
 }
 
+// CustomerGatewayArnsForTransitGateway answers networkmanager's
+// DeregisterTransitGateway cascade from the EC2 VpnConnection table, which is
+// where AssociateCustomerGateway's own doc says the linkage lives ("use the
+// DescribeVpnConnections EC2 API and filter by transit-gateway-id") --
+// CustomerGatewayAssociation itself carries no transit-gateway member.
+func (a *networkManagerEC2ResolverAdapter) CustomerGatewayArnsForTransitGateway(
+	transitGatewayArn string,
+) []string {
+	tgwID := arnResourceID(transitGatewayArn)
+
+	var out []string
+
+	for _, vc := range a.backend.DescribeVpnConnections(nil) {
+		if vc.TransitGatewayID != tgwID || vc.CustomerGatewayID == "" {
+			continue
+		}
+
+		out = append(out, "arn:aws:ec2:"+a.backend.Region+":"+a.backend.AccountID+
+			":customer-gateway/"+vc.CustomerGatewayID)
+	}
+
+	return out
+}
+
 func (a *networkManagerEC2ResolverAdapter) TransitGatewayRoutes(
 	routeTableID string,
 ) []networkmanagerbackend.EC2TransitGatewayRoute {

@@ -45,6 +45,14 @@ type EC2Resolver interface {
 	// TransitGatewayRoutes returns every route in the named TGW route
 	// table, for the same real walk.
 	TransitGatewayRoutes(routeTableID string) []EC2TransitGatewayRoute
+
+	// CustomerGatewayArnsForTransitGateway returns the ARNs of every EC2
+	// CustomerGateway whose VpnConnection.TransitGatewayID names
+	// transitGatewayArn, for DeregisterTransitGateway's real cascade
+	// (AssociateCustomerGateway's doc: "To list customer gateways that
+	// are connected to a transit gateway, use the DescribeVpnConnections
+	// EC2 API and filter by transit-gateway-id").
+	CustomerGatewayArnsForTransitGateway(transitGatewayArn string) []string
 }
 
 // EC2TransitGatewayRoute is the subset of services/ec2's
