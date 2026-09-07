@@ -192,6 +192,26 @@ func TestStartReplicationTaskAssessment(t *testing.T) {
 		require.Equal(t, http.StatusOK, taskRec.Code)
 		taskArn := parseJSON(t, taskRec)["ReplicationTask"].(map[string]any)["ReplicationTaskArn"].(string)
 
+		// Real AWS requires the task to be stopped with successful prior
+		// connection tests to both endpoints before an assessment can run
+		// (api_op_StartReplicationTaskAssessment.go:16-23); a freshly
+		// created task is "ready", not "stopped", so drive it through
+		// Start/Stop and test both connections first.
+		require.Equal(t, http.StatusOK, doDMS(t, h, "TestConnection", map[string]any{
+			"ReplicationInstanceArn": riArn,
+			"EndpointArn":            srcArn,
+		}).Code)
+		require.Equal(t, http.StatusOK, doDMS(t, h, "TestConnection", map[string]any{
+			"ReplicationInstanceArn": riArn,
+			"EndpointArn":            tgtArn,
+		}).Code)
+		require.Equal(t, http.StatusOK, doDMS(t, h, "StartReplicationTask", map[string]any{
+			"ReplicationTaskArn": taskArn,
+		}).Code)
+		require.Equal(t, http.StatusOK, doDMS(t, h, "StopReplicationTask", map[string]any{
+			"ReplicationTaskArn": taskArn,
+		}).Code)
+
 		assessRec := doDMS(t, h, "StartReplicationTaskAssessment", map[string]any{
 			"ReplicationTaskArn": taskArn,
 		})
@@ -204,11 +224,78 @@ func TestStartReplicationTaskAssessment(t *testing.T) {
 		assert.NotEqual(t, "test-failed", rt["Status"],
 			"StartReplicationTaskAssessment must not return test-failed as initial status")
 	})
+
+	t.Run("rejects_task_not_stopped", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestDMSHandler()
+		taskArn, riArn, srcArn, tgtArn := setupAssessmentTaskWithEndpoints(t, h, "notstopped")
+
+		// Both endpoints have successful connections, isolating this case
+		// to the task-state guard: task is freshly created ("ready"), not
+		// stopped, and AWS requires the task to be stopped
+		// (api_op_StartReplicationTaskAssessment.go:16-23).
+		require.Equal(t, http.StatusOK, doDMS(t, h, "TestConnection", map[string]any{
+			"ReplicationInstanceArn": riArn,
+			"EndpointArn":            srcArn,
+		}).Code)
+		require.Equal(t, http.StatusOK, doDMS(t, h, "TestConnection", map[string]any{
+			"ReplicationInstanceArn": riArn,
+			"EndpointArn":            tgtArn,
+		}).Code)
+
+		rec := doDMS(t, h, "StartReplicationTaskAssessment", map[string]any{
+			"ReplicationTaskArn": taskArn,
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		assert.Equal(t, "InvalidResourceStateFault", body["__type"])
+	})
+
+	t.Run("rejects_task_without_successful_connections", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestDMSHandler()
+		taskArn := setupAssessmentTask(t, h, "noconn")
+
+		require.Equal(t, http.StatusOK, doDMS(t, h, "StartReplicationTask", map[string]any{
+			"ReplicationTaskArn": taskArn,
+		}).Code)
+		require.Equal(t, http.StatusOK, doDMS(t, h, "StopReplicationTask", map[string]any{
+			"ReplicationTaskArn": taskArn,
+		}).Code)
+
+		// Task is stopped, but neither endpoint has a recorded TestConnection.
+		rec := doDMS(t, h, "StartReplicationTaskAssessment", map[string]any{
+			"ReplicationTaskArn": taskArn,
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+
+		var body map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+		assert.Equal(t, "InvalidResourceStateFault", body["__type"])
+	})
 }
 
 // setupAssessmentTask creates a replication instance, source/target
 // endpoints, and a replication task, returning the task's ARN.
 func setupAssessmentTask(t *testing.T, h *dms.Handler, prefix string) string {
+	t.Helper()
+
+	taskArn, _, _, _ := setupAssessmentTaskWithEndpoints(t, h, prefix)
+
+	return taskArn
+}
+
+// setupAssessmentTaskWithEndpoints creates a replication instance,
+// source/target endpoints, and a replication task, returning the task's ARN
+// alongside the replication instance and endpoint ARNs (needed to drive
+// TestConnection in assessment-precondition tests).
+func setupAssessmentTaskWithEndpoints(
+	t *testing.T, h *dms.Handler, prefix string,
+) (string, string, string, string) {
 	t.Helper()
 
 	riRec := doDMS(t, h, "CreateReplicationInstance", map[string]any{
@@ -242,8 +329,9 @@ func setupAssessmentTask(t *testing.T, h *dms.Handler, prefix string) string {
 		"MigrationType":             "full-load",
 	})
 	require.Equal(t, http.StatusOK, taskRec.Code)
+	taskArn := parseJSON(t, taskRec)["ReplicationTask"].(map[string]any)["ReplicationTaskArn"].(string)
 
-	return parseJSON(t, taskRec)["ReplicationTask"].(map[string]any)["ReplicationTaskArn"].(string)
+	return taskArn, riArn, srcArn, tgtArn
 }
 
 // TestStartReplicationTaskAssessmentRun_RequiredFields verifies

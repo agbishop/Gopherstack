@@ -196,7 +196,7 @@ ops:
   CancelReplicationTaskAssessmentRun: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass -- output was a hand-rolled {ReplicationTaskAssessmentRunArn, Status} map; now the real {ReplicationTaskAssessmentRun: ReplicationTaskAssessmentRun} shape"}
   DeleteReplicationTaskAssessmentRun: {wire: ok, errors: ok, state: ok, persist: ok, note: "same wire-shape fix as CancelReplicationTaskAssessmentRun"}
   DescribeReplicationTaskAssessmentRuns: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass -- output items were a hand-rolled 4-field map; now the real ReplicationTaskAssessmentRun shape (AssessmentProgress, ResultStatistic, ResultLocationBucket/Folder, ServiceAccessRoleArn, creation-date epoch, IsLatestTaskAssessmentRun). Filters extended to replication-task-assessment-run-arn/replication-instance-arn/status (previously only replication-task-arn)"}
-  StartReplicationTaskAssessment: {wire: ok, errors: ok, state: ok, persist: n/a}
+  StartReplicationTaskAssessment: {wire: ok, errors: ok, state: ok, persist: n/a, note: "FIXED 2026-09-06 (gopherstack-cq25) -- errors: ok was wrong; the op previously enforced neither documented precondition. Now enforces task-must-be-stopped (InvalidResourceStateFault). See dated entry below for the ready-vs-stopped verdict and why the connection-test precondition is now also enforced (TestConnection results are modeled, unlike gopherstack-cq25's initial assumption)."}
 families:
   fleet-advisor: {status: ok, note: "CreateFleetAdvisorCollector/DeleteFleetAdvisorCollector/DescribeFleetAdvisorCollectors/DescribeFleetAdvisorDatabases/DeleteFleetAdvisorDatabases all mutate/read real backend state and persist. DescribeFleetAdvisorLsaAnalysis/SchemaObjectSummary/Schemas field-diffed this pass (deferred item #2, now resolved): response field names (Analysis/FleetAdvisorSchemaObjects/FleetAdvisorSchemas + NextToken) match types.go exactly; the lists are legitimately always-empty since no LSA-analysis or schema-conversion engine exists to populate them (rule 4). AWS ended support for Fleet Advisor entirely on 2026-05-20 (already past as of this audit) -- low future value. FIXED 2026-08-20 -- DescribeFleetAdvisorCollectors's request struct used a fabricated Marker field; the real DescribeFleetAdvisorCollectorsInput's pagination token field is NextToken (api_op_DescribeFleetAdvisorCollectors.go), like its 4 siblings in this family, not the Marker/MaxRecords convention most other DMS Describe ops use. The response struct was also missing NextToken entirely. Both now match. Low severity: no pagination logic exists for this op (list is always returned in full, same as its siblings), and nothing read the old Marker field, so this was a pure wire-shape correction with no behavioral difference to prove via a discriminating test -- documented here rather than backed by a dedicated test for that reason. FIXED 2026-08-29 (error-path sweep) -- DeleteFleetAdvisorCollector's own deserializeOpError models CollectorNotFoundFault, not the service-wide ResourceNotFoundFault every other DMS delete op raises (deserializers.go:2875-2913, confirmed against all 119 ops' error switches); the backend was returning ErrNotFound (ResourceNotFoundFault) for a missing collector, which a real client's errors.As(&types.CollectorNotFoundFault{}) would never match. Now returns the dedicated ErrCollectorNotFound sentinel. An existing test (TestDeleteFleetAdvisorCollector_NotFound) asserted the old wrong code as correct via a raw __type string check; converted to drive the real SDK client and assert the typed exception via errors.As. FIXED 2026-08-29 (gopherstack-21my, parameter-honoring sweep) -- DescribeFleetAdvisorCollectors and DescribeFleetAdvisorDatabases both had real backing state (a real filterable list, unlike the legitimately-always-empty LsaAnalysis/SchemaObjectSummary/Schemas siblings) but their handlers took `_ *describeFleetAdvisorXInput` -- the request struct was never even bound to a named parameter, so Filters/MaxRecords/NextToken were unreachable however the handler was written (class 1/2). Collectors now applies collector-name/collector-referenced-id (both documented, api_op_DescribeFleetAdvisorCollectors.go); Databases applies all 5 documented names (database-id/database-name/database-engine/database-ip-address/server-ip-address(same field, one IP modeled)/collector-name, api_op_DescribeFleetAdvisorDatabases.go, the last via a join against the collector list). Both now paginate through NextToken/MaxRecords via dmsPaginate. ADJACENT BUG found and fixed while building the real-SDK-client test for this: fleetAdvisorCollectorJSON.CollectorHealthCheck was wired as a bare string (\"HEALTHY\", not even a real CollectorStatus enum value -- the real enum only has UNREGISTERED/ACTIVE, types/enums.go:120-121); the real wire shape (types.CollectorHealthCheck, types/types.go:108) is a nested object with CollectorStatus + 3 access booleans, so a real SDK client's DescribeFleetAdvisorCollectors call failed deserialization outright (\"unexpected JSON type HEALTHY\") rather than merely showing a wrong value. Now a proper nested object with CollectorStatus:\"ACTIVE\" and all 3 access booleans true (this backend never models a collector that fails its S3/role checks). See TestDescribeFleetAdvisorCollectorsFilter/TestDescribeFleetAdvisorDatabasesFilter (list_filter_params_test.go), real SDK client round trip."}
   metadata-model: {status: ok, note: "FIXED this pass -- DescribeMetadataModel/DescribeMetadataModelChildren/the six Describe*Requests list ops/Cancel*/GetTargetSelectionRules/ExportMetadataModelAssessment/StartExtensionPackAssociation were all field-diffed against types.go and api_op_*.go this pass (deferred item #1, now resolved) and every wire-shape bug found was fixed -- see the per-op notes above. Definition/MetadataModelName/MetadataModelType/schema-object contents stay legitimately empty; no schema-conversion SQL-generation engine exists, matching the SDK doc's 'might not be populated' language."}
@@ -809,3 +809,55 @@ anything.
 
 Gates: `go build`, `go vet`, `go test -race -count=1`, `golangci-lint run`
 -- all clean (`./services/dms/...` and `./cmd/reqfieldscan/...`).
+
+- **2026-09-06 (gopherstack-cq25) StartReplicationTaskAssessment
+  preconditions**: `api_op_StartReplicationTaskAssessment.go:16-23`
+  (databasemigrationservice@v1.66.4) requires "The task must be in the
+  stopped state" and "The task must have successful connections to the
+  source and target," else `InvalidResourceStateFault`. Neither was
+  enforced; `handleStartReplicationTaskAssessment` only checked the task
+  existed.
+  - **ready vs. stopped**: settled against `types/types.go`'s
+    `ReplicationTask.Status` doc (no formal enum type -- `Status` is a
+    documented `*string`). AWS defines `"ready"` and `"stopped"` as
+    distinct, mutually exclusive statuses: `"ready"` is "the task is in a
+    ready state where it can respond to other task operations" (reached
+    after `"creating"`), while `"stopped"` is reached only "in response to
+    running the StopReplicationTask operation." This backend's own
+    `CreateReplicationTask` already sets a fresh task's `Status` to
+    `statusReady` (`replication_tasks.go`), distinct from `statusStopped`
+    (only reachable via `StopReplicationTask`, which itself requires
+    `statusRunning` first) -- the backend's own state machine already
+    tracks AWS's distinction correctly. Treating `ready` as satisfying
+    "must be stopped" would fabricate an equivalence AWS's docs explicitly
+    reject. Verdict: enforce `Status == "stopped"`, literally.
+  - **connection-test precondition**: settled by checking whether this
+    backend models `TestConnection` results at all. It does:
+    `InMemoryBackend.TestConnection` (`connections.go`) records a
+    `Connection{..., Status: statusSuccessful}` keyed by
+    `<region>|<replicationInstanceArn>:<endpointArn>`, queryable via
+    `DescribeConnections`/the same store. This is a real, queryable
+    connection-result model, not something that would need inventing.
+    Verdict: enforceable -- and enforced, checking a successful recorded
+    `TestConnection` for both `(ReplicationInstanceArn, SourceEndpointArn)`
+    and `(ReplicationInstanceArn, TargetEndpointArn)`.
+  - **implementation**: new `InMemoryBackend.StartReplicationTaskAssessment`
+    (`assessment_runs.go`) replaces the handler's direct
+    `DescribeReplicationTasks` call; it returns `ErrInvalidState`
+    (`InvalidResourceStateFault`) for either unmet precondition, matching
+    the existing `ReloadTables`/`StopReplicationTask` guard convention
+    (`replication_tasks.go`).
+  - **pre-existing test corrected**: `TestStartReplicationTaskAssessment/returns_task_on_success`
+    ran against a freshly created ("ready") task with no `TestConnection`
+    calls -- asserting the un-enforced behavior. Corrected to call
+    `TestConnection` for both endpoints and drive the task through
+    `StartReplicationTask`/`StopReplicationTask` before asserting success,
+    so it still tests the real success path (not weakened). Two new
+    subtests, `rejects_task_not_stopped` and
+    `rejects_task_without_successful_connections`, isolate each guard
+    (each holds the other precondition constant) and were confirmed to
+    fail against the pre-fix code (400 expected, got 200) by temporarily
+    reverting each guard in turn, running the isolated subtest, and
+    restoring.
+  - Nothing left unenforceable for this op: both documented preconditions
+    are backed by real, queryable state in this backend.
