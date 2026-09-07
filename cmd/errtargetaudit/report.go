@@ -217,12 +217,15 @@ func printOrphanFindings(findings []finding, opsResolved int) {
 // from 122 independent defects without doing this collapse by hand, which
 // is exactly what gopherstack-mq6m had to do manually.
 type siteGroup struct {
-	File       string
-	Code       string
-	Mechanism  string
-	Ops        []string
-	AcceptedBy []string
-	Line       int
+	File      string
+	Code      string
+	Mechanism string
+	// EnclosingFunc mirrors evidenceSite.EnclosingFunc -- invariant per site
+	// (a file:line's enclosing function never changes finding to finding).
+	EnclosingFunc string
+	Ops           []string
+	AcceptedBy    []string
+	Line          int
 }
 
 type siteKey struct {
@@ -236,9 +239,10 @@ type siteKey struct {
 // site via more than one finding path (rare, but AcceptedBy's own per-code
 // invariance below assumes nothing about it).
 type siteAccum struct {
-	ops        map[string]bool
-	mechanism  string
-	acceptedBy []string
+	ops           map[string]bool
+	mechanism     string
+	enclosingFunc string
+	acceptedBy    []string
 }
 
 // groupFindingsBySite is the collapse gopherstack-2evc asks for. AcceptedBy
@@ -254,7 +258,12 @@ func groupFindingsBySite(findings []finding) []siteGroup {
 
 			g, ok := groups[key]
 			if !ok {
-				g = &siteAccum{mechanism: s.Mechanism, acceptedBy: f.AcceptedBy, ops: map[string]bool{}}
+				g = &siteAccum{
+					mechanism:     s.Mechanism,
+					enclosingFunc: s.EnclosingFunc,
+					acceptedBy:    f.AcceptedBy,
+					ops:           map[string]bool{},
+				}
 				groups[key] = g
 			}
 
@@ -277,12 +286,13 @@ func finalizeSiteGroups(groups map[siteKey]*siteAccum) []siteGroup {
 		sort.Strings(ops)
 
 		out = append(out, siteGroup{
-			File:       key.File,
-			Line:       key.Line,
-			Code:       key.Code,
-			Mechanism:  g.mechanism,
-			Ops:        ops,
-			AcceptedBy: g.acceptedBy,
+			File:          key.File,
+			Line:          key.Line,
+			Code:          key.Code,
+			Mechanism:     g.mechanism,
+			EnclosingFunc: g.enclosingFunc,
+			Ops:           ops,
+			AcceptedBy:    g.acceptedBy,
 		})
 	}
 
@@ -330,6 +340,91 @@ func isSharedPlumbing(nOps, opsResolved int) bool {
 	return float64(nOps)/float64(opsResolved) >= sharedPlumbingRatio
 }
 
+// ctorMechanismPrefix marks a call-site emission resolved through
+// classifiers.go's constructor-classifier table, e.g. "constructor
+// classifier: validateQuantities" -- ctorName strips it to bare fn.
+const ctorMechanismPrefix = "constructor classifier: "
+
+func ctorName(mechanism string) (string, bool) {
+	if !strings.HasPrefix(mechanism, ctorMechanismPrefix) {
+		return "", false
+	}
+
+	return mechanism[len(ctorMechanismPrefix):], true
+}
+
+// ctorUnions maps (code, fn) to the union of ops across every
+// "constructor classifier: fn" row in groups sharing that code -- the
+// population a same-fn "sentinel reference" row (deep in fn's OWN body, one
+// row per fn regardless of caller count) is checked against below.
+func ctorUnions(groups []siteGroup) map[[2]string]map[string]bool {
+	out := map[[2]string]map[string]bool{}
+
+	for _, g := range groups {
+		fn, ok := ctorName(g.Mechanism)
+		if !ok {
+			continue
+		}
+
+		key := [2]string{g.Code, fn}
+
+		u, exists := out[key]
+		if !exists {
+			u = map[string]bool{}
+			out[key] = u
+		}
+
+		for _, op := range g.Ops {
+			u[op] = true
+		}
+	}
+
+	return out
+}
+
+// rollupTag reports gopherstack-s0dw's duplication: g is a "sentinel
+// reference" site sitting inside a constructor's OWN body, reached at hop 1
+// from every op that calls it at hop 0 -- so g's op set can only ever be a
+// SUBSET of the union of that same constructor's own "constructor
+// classifier" call-site rows (an op reaches g only by having made that call
+// first). Measured across the full corpus (2026-09-07): 18 (service, code,
+// fn) tuples show both mechanisms for the same fn, every one a subset --
+// exact in 15, a proper subset in 3 (a caller reaching the constructor only
+// at hop 1 itself, past this scan's one-hop recursion budget, so its own
+// call-site row never appears) -- never the reverse, never a partial
+// overlap neither side contains. A g outside that shape (no matching
+// "constructor classifier" rows for its own fn, or an op present that no
+// such row has -- structurally impossible per the above, checked anyway
+// rather than assumed) gets no tag.
+func rollupTag(g siteGroup, unions map[[2]string]map[string]bool) string {
+	if g.Mechanism != "sentinel reference" || g.EnclosingFunc == "" {
+		return ""
+	}
+
+	union, ok := unions[[2]string{g.Code, g.EnclosingFunc}]
+	if !ok || len(union) == 0 {
+		return ""
+	}
+
+	for _, op := range g.Ops {
+		if !union[op] {
+			return ""
+		}
+	}
+
+	if len(g.Ops) == len(union) {
+		return fmt.Sprintf(
+			"  -- ROLLUP: same ops as %s's own call-site row(s) elsewhere in this list -- do not add to totals",
+			g.EnclosingFunc,
+		)
+	}
+
+	return fmt.Sprintf(
+		"  -- PARTIAL ROLLUP: a subset of %s's own call-site row(s) elsewhere in this list -- do not add to totals",
+		g.EnclosingFunc,
+	)
+}
+
 // printSiteGroups prints one line per emission site: the site, the code, how
 // many of the service's resolved ops route through it, the emission
 // mechanism (composite literal field vs sentinel reference is gopherstack-
@@ -343,13 +438,18 @@ func isSharedPlumbing(nOps, opsResolved int) bool {
 func printSiteGroups(findings []finding, opsResolved int) {
 	const percentScale = 100
 
-	for _, g := range groupFindingsBySite(findings) {
+	groups := groupFindingsBySite(findings)
+	unions := ctorUnions(groups)
+
+	for _, g := range groups {
 		n := len(g.Ops)
 
 		tag := ""
 		if isSharedPlumbing(n, opsResolved) {
 			tag = fmt.Sprintf("  -- SHARED PLUMBING (>=%.0f%% of resolved ops)", sharedPlumbingRatio*percentScale)
 		}
+
+		tag += rollupTag(g, unions)
 
 		fmt.Fprintf(os.Stdout, "  %s:%d  %s  %d/%d ops  [%s]%s\n",
 			g.File, g.Line, g.Code, n, opsResolved, g.Mechanism, tag)

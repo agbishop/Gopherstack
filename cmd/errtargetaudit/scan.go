@@ -14,7 +14,11 @@ import (
 type evidenceSite struct {
 	File      string `json:"file"`
 	Mechanism string `json:"mechanism"`
-	Line      int    `json:"line"`
+	// EnclosingFunc mirrors emission.EnclosingFunc -- "" for a site found in
+	// an operation's own hop-0 body, otherwise the hop-1 callee whose body
+	// it sits in.
+	EnclosingFunc string `json:"enclosingFunc,omitempty"`
+	Line          int    `json:"line"`
 }
 
 // finding is one class A error-envelope-shape bug candidate: a real,
@@ -362,5 +366,7 @@ func classifyAndAddFinding(
 		target[key] = f
 	}
 
-	f.Sites = append(f.Sites, evidenceSite{File: file, Line: pos.Line, Mechanism: e.Mechanism})
+	f.Sites = append(f.Sites, evidenceSite{
+		File: file, Line: pos.Line, Mechanism: e.Mechanism, EnclosingFunc: e.EnclosingFunc,
+	})
 }

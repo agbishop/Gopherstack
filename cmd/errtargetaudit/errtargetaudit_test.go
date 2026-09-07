@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -2022,4 +2024,191 @@ func TestIsSharedPlumbing_ThresholdFromCorpus(t *testing.T) {
 			require.Equal(t, tt.want, isSharedPlumbing(tt.nOps, tt.opsResolved))
 		})
 	}
+}
+
+// quantityValidationFixture reproduces cloudfront's real duplication
+// (gopherstack-s0dw): validateQuantities wraps its sentinel via fmt.Errorf,
+// and BOTH AdjustQuantity and ReviseQuantity call it directly from their own
+// hop-0 body, so each op's walk both (a) sees the call itself at hop 0
+// ("constructor classifier: validateQuantities") and (b) recurses one hop
+// into validateQuantities' own body and finds the same bare sentinel return
+// there ("sentinel reference") -- the two mechanisms' op sets come out
+// identical, not just overlapping.
+const quantityValidationFixture = `
+package fixture
+
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrBadQuantity = errors.New("bad quantity")
+
+func classifyQuantityError(err error) string {
+	switch {
+	case errors.Is(err, ErrBadQuantity):
+		return "InconsistentQuantities"
+	}
+	return "InternalServerException"
+}
+
+func validateQuantities(n int) error {
+	if n < 0 {
+		return fmt.Errorf("%w: negative quantity", ErrBadQuantity)
+	}
+	return nil
+}
+
+type Handler struct{}
+
+func (h *Handler) AdjustQuantity() error {
+	return validateQuantities(1)
+}
+
+func (h *Handler) ReviseQuantity() error {
+	return validateQuantities(2)
+}
+`
+
+func quantityValidationTruth() *serviceModuleTruth {
+	return singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{
+			"AdjustQuantity":               {},
+			"ReviseQuantity":               {},
+			"DeclareQuantityCodeElsewhere": {"InconsistentQuantities": true},
+		},
+		map[string]bool{"InconsistentQuantities": true, fixtureInternalServerException: true},
+	))
+}
+
+// partialQuantityFixture is kms's real InvalidGrantTokenException/
+// validateGrantTokenPresence shape (gopherstack-s0dw's measured "partial"
+// case): DirectFix calls validateWidget straight from its own hop-0 body
+// (both mechanisms fire), but IndirectFix reaches the SAME constructor only
+// through Backend.DoIndirect -- one hop already spent getting there, so
+// recursing a further hop into validateWidget's own body to find its
+// sentinel return exceeds maxEmitHop, and IndirectFix never gets a
+// "sentinel reference" row at all, only "constructor classifier".
+const partialQuantityFixture = `
+package fixture
+
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrBadWidget = errors.New("bad widget")
+
+func classifyWidgetError(err error) string {
+	switch {
+	case errors.Is(err, ErrBadWidget):
+		return "BadWidgetException"
+	}
+	return "InternalServerException"
+}
+
+func validateWidget(n int) error {
+	if n < 0 {
+		return fmt.Errorf("%w: negative widget", ErrBadWidget)
+	}
+	return nil
+}
+
+type Handler struct {
+	Backend *Backend
+}
+
+func (h *Handler) DirectFix() error {
+	return validateWidget(1)
+}
+
+func (h *Handler) IndirectFix() error {
+	return h.Backend.DoIndirect()
+}
+
+type Backend struct{}
+
+func (b *Backend) DoIndirect() error {
+	return validateWidget(2)
+}
+`
+
+func partialQuantityTruth() *serviceModuleTruth {
+	return singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{
+			"DirectFix":                  {},
+			"IndirectFix":                {},
+			"DeclareWidgetCodeElsewhere": {"BadWidgetException": true},
+		},
+		map[string]bool{"BadWidgetException": true, fixtureInternalServerException: true},
+	))
+}
+
+// captureStdout redirects os.Stdout for fn's duration -- printSiteGroups
+// (report.go) writes there directly, with no injectable writer. Not run
+// t.Parallel(): a later top-level test mutating the package-global
+// os.Stdout must not race a still-pending parallel one, and it does not,
+// because every t.Parallel() test in this file pauses at that call until
+// every top-level test (this one included) has been started and returned.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+
+	orig := os.Stdout
+	os.Stdout = w //nolint:reassign // captured and restored below; see this func's own doc comment
+
+	fn()
+
+	require.NoError(t, w.Close())
+	os.Stdout = orig //nolint:reassign // restoring the original value
+
+	out, err := io.ReadAll(r)
+	require.NoError(t, err)
+
+	return string(out)
+}
+
+// TestPrintSiteGroups_RollupTag_ExactMatch is gopherstack-s0dw's own
+// regression guard: report.go's printSiteGroups (unchanged signature, so
+// this test also compiles against the pre-fix source) must flag
+// validateQuantities' shared definition-site row as a ROLLUP of the two
+// call-site rows below it, since AdjustQuantity/ReviseQuantity's op sets on
+// both sides come out identical -- before this fix, printSiteGroups had no
+// such concept, and this line does not appear at all.
+//
+//nolint:paralleltest // mutates the package-global os.Stdout; see captureStdout's own doc comment
+func TestPrintSiteGroups_RollupTag_ExactMatch(t *testing.T) {
+	idx := parseSrc(t, quantityValidationFixture)
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, quantityValidationTruth())
+
+	require.Len(t, sr.Findings, 2, "both ops must be flagged for the misplaced code")
+
+	out := captureStdout(t, func() {
+		printSiteGroups(sr.Findings, sr.OpsResolved)
+	})
+
+	require.Contains(t, out, "ROLLUP: same ops as validateQuantities's own call-site row(s)")
+	require.NotContains(t, out, "PARTIAL ROLLUP")
+}
+
+// TestPrintSiteGroups_RollupTag_PartialSubset is the other confirmed corpus
+// shape (kms's validateGrantTokenPresence): the definition-site row's op
+// set is a proper SUBSET of its constructor's own call-site rows, not
+// equal, so it must be flagged PARTIAL ROLLUP -- collapsing it outright
+// would silently drop IndirectFix's own evidence.
+//
+//nolint:paralleltest // mutates the package-global os.Stdout; see captureStdout's own doc comment
+func TestPrintSiteGroups_RollupTag_PartialSubset(t *testing.T) {
+	idx := parseSrc(t, partialQuantityFixture)
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, partialQuantityTruth())
+
+	require.Len(t, sr.Findings, 2, "both ops must be flagged for the misplaced code")
+
+	out := captureStdout(t, func() {
+		printSiteGroups(sr.Findings, sr.OpsResolved)
+	})
+
+	require.Contains(t, out, "PARTIAL ROLLUP: a subset of validateWidget's own call-site row(s)")
 }

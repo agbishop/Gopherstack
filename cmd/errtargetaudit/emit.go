@@ -27,7 +27,13 @@ const maxEmitHop = 1
 type emission struct {
 	Code      string
 	Mechanism string
-	Pos       token.Pos
+	// EnclosingFunc is the name of the hop-1 callee whose OWN body this
+	// emission was found in ("" at hop 0, the op's own root) -- lets
+	// report.go's rollup detection (gopherstack-s0dw) tell a "sentinel
+	// reference" deep in a constructor's body apart from one sitting
+	// directly in an operation's own code, without re-parsing anything.
+	EnclosingFunc string
+	Pos           token.Pos
 	// WeakLabel is true when Code was resolved via the ambiguous "Type"
 	// composite-literal field label specifically (isCodeFieldLabel's
 	// comment already flags the risk: AWS Query's <Error><Type>Sender
@@ -59,7 +65,7 @@ func walkOpEmissions(roots []opRoot, idx *pkgIndex, cls *classifiers) []emission
 	out := make([]emission, 0, len(roots))
 
 	for _, r := range roots {
-		out = append(out, scanBodyEmissions(r.Body, idx, effective, 0, visited)...)
+		out = append(out, scanBodyEmissions(r.Body, idx, effective, 0, visited, "")...)
 	}
 
 	return filterUnreachable(dedupEmissions(out), roots, idx, cls)
@@ -282,12 +288,16 @@ func dedupEmissions(in []emission) []emission {
 	return out
 }
 
+// enclosingFunc names the hop-1 callee body being walked ("" at hop 0) --
+// stamped onto every emission found in it (emission.EnclosingFunc's own doc
+// comment).
 func scanBodyEmissions(
 	body *ast.BlockStmt,
 	idx *pkgIndex,
 	cls *classifiers,
 	hop int,
 	visited map[*ast.BlockStmt]bool,
+	enclosingFunc string,
 ) []emission {
 	if body == nil || visited[body] {
 		return nil
@@ -298,7 +308,10 @@ func scanBodyEmissions(
 	var out []emission
 
 	ast.Inspect(body, func(n ast.Node) bool {
-		out = append(out, nodeEmissions(n, cls)...)
+		for _, e := range nodeEmissions(n, cls) {
+			e.EnclosingFunc = enclosingFunc
+			out = append(out, e)
+		}
 
 		if hop < maxEmitHop {
 			out = append(out, recurseCallEmissions(n, idx, cls, hop, visited)...)
@@ -577,7 +590,7 @@ func recurseCallEmissions(
 	var out []emission
 
 	for _, fd := range calleeFuncDecls(call.Fun, idx) {
-		out = append(out, scanBodyEmissions(fd.Body, idx, cls, hop+1, visited)...)
+		out = append(out, scanBodyEmissions(fd.Body, idx, cls, hop+1, visited, fd.Name.Name)...)
 	}
 
 	return out
