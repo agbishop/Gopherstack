@@ -221,3 +221,54 @@ present only in some old (misresolved) runs, never at HEAD. Read the source
 genuine -- not a bug.
 
 Verdict: zero real bugs, safe direction only.
+
+## cmd/errtargetaudit class A finding on ChangeMessageVisibilityBatch (2026-09-07, gopherstack-opzq)
+
+`cmd/errtargetaudit -dir sqs` reported one class A finding: `ChangeMessageVisibilityBatch`
+emits `MessageNotInflight` (`message_visibility.go:411`, via the `changeVisibility`
+constructor classifier), a code `deserializeOpErrorChangeMessageVisibilityBatch` does not
+declare. Compared the two deserializers directly:
+`deserializeOpErrorChangeMessageVisibilityBatch` declares `UnknownError`,
+`BatchEntryIdsNotDistinct`, `EmptyBatchRequest`, `InvalidAddress`, `InvalidBatchEntryId`,
+`InvalidSecurity`, `QueueDoesNotExist`, `RequestThrottled`, `TooManyEntriesInBatchRequest`,
+`UnsupportedOperation`; `deserializeOpErrorChangeMessageVisibility` (singular) declares
+`UnknownError`, `InvalidAddress`, `InvalidSecurity`, `MessageNotInflight`,
+`QueueDoesNotExist`, `ReceiptHandleIsInvalid`, `RequestThrottled`, `UnsupportedOperation`.
+`MessageNotInflight` is real, but declared only on the singular op's top-level exception
+list, never the batch op's.
+
+**False positive.** `ChangeMessageVisibilityBatchOutput` (`api_op_ChangeMessageVisibilityBatch.go`)
+is `{ Failed []types.BatchResultErrorEntry; Successful []types.ChangeMessageVisibilityBatchResultEntry }`.
+`types.BatchResultErrorEntry` is `{ Code *string; Id *string; SenderFault bool; Message *string }`
+(`types/types.go:11-32`) -- a per-entry business-data field inside a 200-response body, not a
+top-level wire error. The SDK's own deserializer confirms this: `awsAwsjson10_deserializeDocumentBatchResultErrorEntry`
+(`deserializers.go:4062+`) reads `Code` as a bare JSON string field with no `errors.As`/exception-type
+resolution -- it is never checked against the operation's declared top-level exception list at
+all, on either side of the wire. This repo already emits at exactly that layer:
+`message_visibility.go:411-419`'s `ChangeMessageVisibilityBatch` captures `changeVisibility`'s
+error into `out.Failed = append(..., BatchErrorEntry{Code: "MessageNotInflight", ...})` and
+continues the loop -- it does not `return nil, err`. Contrast the singular op
+(`message_visibility.go:334`, `return ErrMessageNotInflight`), which *does* propagate to the
+top level, where `handler.go:492-493`'s `sqsCoreErrorDetails` maps it to the real namespaced
+wire code `com.amazonaws.sqs#MessageNotInflight` in the `__type` field -- correctly declared by
+the singular op's own deserializer. The two ops emit `MessageNotInflight` at two different wire
+layers on purpose; the tool's constructor-classifier walk doesn't distinguish a per-entry
+`Failed`-slice append from a top-level `return ..., err` and flagged both as "this operation's
+top-level error code." No code change made.
+
+Added `TestHandlerActions_ChangeMessageVisibilityBatch/partial_failure`
+(`handler_message_visibility_test.go`) driving the JSON handler directly: a batch of two
+good entries plus one entry with an invalid receipt handle returns HTTP 200 with
+`Failed: [{Id: "bad", Code: "MessageNotInflight", SenderFault: true}]` (no
+`com.amazonaws.sqs#` prefix, matching the SDK's plain-string per-entry field) and
+`Successful: [{Id: "good-1"}, {Id: "good-2"}]`, then re-receives both messages to confirm
+their visibility actually changed. Neutered to confirm the test isn't hollow: reverting the
+literal to `"WrongCode"` compiles and fails the test on the `Code` assertion; reverting the
+per-entry `Failed` append to an early `return nil, err` (simulating a wholesale-fail bug)
+compiles and fails the test on the HTTP-200 assertion. Both reverted back to the original
+before running the gates below.
+
+Gates: `go test -race -count=1 ./services/sqs/...` (pass), `golangci-lint run
+./services/sqs/...` (0 issues).
+
+Verdict: tool false positive, current behaviour correct -- no fix needed.
