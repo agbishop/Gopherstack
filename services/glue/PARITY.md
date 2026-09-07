@@ -1985,3 +1985,18 @@ either op.
 Gates: `go build ./services/glue/...`, `go vet ./...` (repo-wide, clean),
 `go test -race -count=1 ./services/glue/...`, `golangci-lint run
 ./services/glue/...` all clean. No code changed in this service this pass.
+
+## 2026-09-07 (gopherstack-yatn, orphan-code screen)
+
+BatchStopJobRun "IllegalStateException" was flagged by errtargetaudit's new
+orphan-code class (a code declared by no operation anywhere in the module).
+False positive of the per-entry batch shape, not a bug: jobs.go:496-503
+appends the string into BatchStopJobRunError.ErrorDetail.ErrorCode inside the
+`errs` slice returned in a normal 200 BatchStopJobRunOutput.Errors -- it never
+reaches a sentinel or handleError. The real SDK's ErrorDetail.ErrorCode
+(glue types/types.go) is an unconstrained *string with no enum, so there is
+no declared set for it to be missing from; BatchStopJobRun's own
+deserializeOpError models only InternalServiceException, InvalidInputException
+and OperationTimeoutException, which govern the HTTP error path alone.
+
+No code changed. Recorded so a later orphan-code pass does not re-derive this.
