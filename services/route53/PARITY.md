@@ -654,3 +654,95 @@ Gates: `go build ./services/route53/...`, `go vet ./services/route53/...`,
 `go test -race -count=1 ./services/route53/...` (pass, no test changes),
 `golangci-lint run ./services/route53/...` (0 issues). No `nolint`
 directives exist in this service.
+
+## 2026-09-07 pass (gopherstack-ns7j): full backendErrorTable × ops cross-product audit
+
+Systematic (not sampled) audit of every `backendErrorTable` row (35, not the
+title's "roughly 33") against every one of route53's 71 ops (`ls
+api_op_*.go` in the pinned `aws-sdk-go-v2/service/route53@v1.65.6`). Per-op
+declared error codes were extracted by scripting `awk
+"/^func awsRestxml_deserializeOpError<Op>\(/,/^}/"` over `deserializers.go`
+for all 71 ops in one pass, `grep -oE '"[A-Za-z0-9]+"'` (digit class
+included, per the issue's own warning), then dropping the `"UnknownError"`
+placeholder every deserializer's default-branch initializes `errorCode` to
+before the real `<Code>` is parsed off the wire (confirmed by reading
+`awsRestxml_deserializeOpErrorActivateKeySigningKey`'s body — it is not a
+real declared code, just a Go zero-value string).
+
+**Reachability tracing**: for each of the 35 sentinels in `errors.go`, grep
+found every backend/handler call site, the enclosing function determined the
+originating backend method, and each such method's callers were traced
+(directly, or via the shared helpers `checkTagResourceExists`,
+`resolveZoneNameServers`/`resolveSourceZoneNameServers`,
+`matchExistingHostedZone`, `CountResourceRecordSets`/`CountAssociatedVPCs`/
+`CountZonesByReusableDelegationSet`) up to the handler function and from
+there to its op, using this service's REST-XML path+method routing (mostly
+1:1 handler-function-to-op, unlike header-dispatched JSON services). Every
+call site was reachability-confirmed by reading the actual function body,
+not inferred from naming.
+
+**Result: all 35 rows' codes are declared by every op that can reach them.
+Zero rows emit an undeclared code.** The 12 `Err*Record` sentinels
+(`ErrInvalidARecord`, `ErrInvalidAAAARecord`, etc.) exist in `errors.go` but
+correctly have no table row: `validateChangeRecordValues` stringifies them
+into `ErrInvalidAction`'s message via `err.Error()` rather than `%w`-wrapping
+them, so they are never `errors.Is`-matchable and never reach
+`handleBackendError` — confirmed by reading `record_sets.go`.
+
+**Sentinel-with-no-row (the KMS bug class) check: zero found.** Every
+`fmt.Errorf` in the package's non-test `.go` files wraps one of the 35 table
+sentinels (`grep 'fmt\.Errorf(' *.go | grep -v 'Err[A-Za-z]'` returned
+nothing) — there is no code path that can fall through to the generic
+`InternalError` 500 for a case AWS models with a specific code.
+
+**Dead-row check (no op can reach it): 1 found.** `ErrNoSuchGeoLocation` /
+`"NoSuchGeoLocation"` has a table row, but `getGeoLocation`
+(`handler_record_sets.go`) never constructs an error that wraps it — its
+not-found branch calls `xmlError(c, http.StatusNotFound, "NoSuchGeoLocation",
+"the specified geographic location was not found")` directly, bypassing
+`ErrNoSuchGeoLocation`/`handleBackendError`/`backendErrorTable` entirely (the
+same pattern that made 2 KMS sentinels fall through to a 500 in the prior
+KMS sweep — except here the hardcoded call site happens to already emit the
+*correct* code, so no wire-behavior bug results). Confirmed this is the only
+such case: every other direct (non-`handleBackendError`) `xmlError(c, ...)`
+call site in the package emits only `"InvalidInput"` (declared by all but 3
+ops, and unreachable from those 3 anyway) or `"NoSuchOperation"`/`"InternalError"`
+(routing/generic, outside the op-error cross-product).
+
+**Left unfixed, for a judgement call**: whether to wire `getGeoLocation`'s
+not-found branch through `ErrNoSuchGeoLocation`/`handleBackendError` (making
+the row live, matching every other op's pattern — but with no black-box wire
+difference, since the emitted status/code are already correct either way),
+or instead delete the now-provably-dead row from `backendErrorTable`
+(shrinks the table to what's actually reachable, but removes the guard that
+would currently catch a future regression if someone *does* wire
+`getGeoLocation` through the sentinel later and gets the mapping wrong). No
+fix applied to `handler_record_sets.go` — it is byte-identical to before
+this pass.
+
+**Regression tests added** (both pass against the *current, unfixed* code,
+by construction — the finding is a dead table row, not a wire-output bug):
+`TestGetGeoLocation`'s `not_found` subtest (`record_sets_routing_test.go`)
+now asserts the raw XML body contains `<Code>NoSuchGeoLocation</Code>`, not
+just HTTP 404. `TestGetGeoLocation_NotFound_RealClient` and
+`TestGetGeoLocation_Found_RealClient` (`error_path_sweep_test.go`) drive the
+handler through the real `aws-sdk-go-v2` client (`newTestRoute53Client`,
+already used by this file's `TestUpdateHostedZoneFeatures_UnknownZone_RealClient`)
+and assert `errors.As` into the SDK's typed `*route53types.NoSuchGeoLocation`
+for the failing case, and the correct `ContinentCode` round-trip for the
+succeeding case. Each assertion was neutered (wrong wire-code string, wrong
+typed error, wrong expected continent) and confirmed to still compile and
+fail before being restored.
+
+Error-response shape confirmed by reading `handler.go`'s `xmlError`: writes
+`Content-Type: application/xml`, then `<?xml version="1.0"
+encoding="UTF-8"?>` followed by an `<ErrorResponse
+xmlns="…">Error>Type>Sender</Type><Code>…</Code><Message>…</Message>` body —
+quoted verbatim from a neuter-run test failure diff:
+`<ErrorResponse xmlns="https://route53.amazonaws.com/doc/2013-04-01/"><Error><Type>Sender</Type><Code>NoSuchGeoLocation</Code><Message>the specified geographic location was not found</Message></Error></ErrorResponse>`.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/route53/...`
+(pass), `GOTOOLCHAIN=go1.26.6 golangci-lint run services/route53/...` (0
+issues). Files touched this pass: `record_sets_routing_test.go`,
+`error_path_sweep_test.go`, this `PARITY.md` entry — no production code
+changed.
