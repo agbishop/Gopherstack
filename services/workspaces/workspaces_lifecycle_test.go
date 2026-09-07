@@ -40,11 +40,17 @@ func TestConnectionStatus_Stopped_IsNotConnected(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	wsID := createWorkspace(t, h)
+	wsID := createStartStopEligibleWorkspace(t, h)
 
-	doTargetRequest(t, h, "StopWorkspaces", map[string]any{
+	stopRec := doTargetRequest(t, h, "StopWorkspaces", map[string]any{
 		"StopWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
 	})
+	require.Equal(t, http.StatusOK, stopRec.Code)
+
+	var stopResp map[string]any
+	require.NoError(t, json.Unmarshal(stopRec.Body.Bytes(), &stopResp))
+	stopFailures, _ := stopResp["FailedRequests"].([]any)
+	require.Empty(t, stopFailures, "StopWorkspaces must succeed to reach STOPPED")
 
 	rec := doTargetRequest(t, h, "DescribeWorkspacesConnectionStatus", map[string]any{
 		"WorkspaceIds": []string{wsID},
@@ -127,7 +133,7 @@ func TestRebuildWorkspaces_DoesNotChangeState(t *testing.T) {
 
 	backend := workspaces.NewInMemoryBackend("000000000000", "us-east-1")
 	h := workspaces.NewHandler(backend)
-	wsID := createWorkspace(t, h)
+	wsID := createStartStopEligibleWorkspace(t, h)
 
 	// Stop first to verify the state is NOT reset on rebuild.
 	doTargetRequest(t, h, "StopWorkspaces", map[string]any{
@@ -232,13 +238,18 @@ func TestRebootWorkspaces_AllowsAvailableAndStopped(t *testing.T) {
 
 			backend := workspaces.NewInMemoryBackend("000000000000", "us-east-1")
 			h := workspaces.NewHandler(backend)
-			wsID := createWorkspace(t, h)
+			wsID := createStartStopEligibleWorkspace(t, h)
 
 			if tc.stop {
 				stopRec := doTargetRequest(t, h, "StopWorkspaces", map[string]any{
 					"StopWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
 				})
 				require.Equal(t, http.StatusOK, stopRec.Code)
+
+				var stopResp map[string]any
+				require.NoError(t, json.Unmarshal(stopRec.Body.Bytes(), &stopResp))
+				stopFailures, _ := stopResp["FailedRequests"].([]any)
+				require.Empty(t, stopFailures, "StopWorkspaces must succeed to reach STOPPED")
 			}
 
 			rec := doTargetRequest(t, h, "RebootWorkspaces", map[string]any{

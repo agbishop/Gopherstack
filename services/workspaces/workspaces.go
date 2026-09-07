@@ -69,21 +69,40 @@ func isRebuildableWorkspaceState(state string) bool {
 // isStartableWorkspaceState matches StartWorkspaces's real precondition:
 // "You cannot start a WorkSpace unless it has a running mode of AutoStop or
 // Manual and a state of STOPPED" (api_op_StartWorkspaces.go doc comment).
-func isStartableWorkspaceState(state string) bool {
-	return state == stateStopped
+func isStartableWorkspaceState(state, runningMode string) bool {
+	return state == stateStopped && isEligibleRunningMode(runningMode)
 }
 
 // isStoppableWorkspaceState matches StopWorkspaces's real precondition:
 // "You cannot stop a WorkSpace unless it has a running mode of AutoStop or
 // Manual and a state of AVAILABLE, IMPAIRED, UNHEALTHY, or ERROR"
 // (api_op_StopWorkspaces.go doc comment).
-func isStoppableWorkspaceState(state string) bool {
+func isStoppableWorkspaceState(state, runningMode string) bool {
 	switch state {
 	case stateAvailable, "IMPAIRED", stateUnhealthy, "ERROR":
-		return true
+		return isEligibleRunningMode(runningMode)
 	}
 
 	return false
+}
+
+// isEligibleRunningMode matches the running-mode half of the Start/StopWorkspaces
+// precondition ("a running mode of AutoStop or Manual", api_op_StartWorkspaces.go /
+// api_op_StopWorkspaces.go doc comments). MANUAL is WorkSpaces Core-only and
+// unreachable here -- isValidRunningMode rejects it in ModifyWorkspaceProperties --
+// but is still checked, matching isRebootableWorkspaceState's precedent for
+// unreachable-but-documented values.
+func isEligibleRunningMode(mode string) bool {
+	return mode == string(sdktypes.RunningModeAutoStop) || mode == string(sdktypes.RunningModeManual)
+}
+
+// workspaceRunningMode returns w's running mode, or "" if it has no properties set.
+func workspaceRunningMode(w *storedWorkspace) string {
+	if w.Properties == nil {
+		return ""
+	}
+
+	return w.Properties.RunningMode
 }
 
 // isValidComputeTypeName derives its answer from types.Compute.Values() so it
@@ -461,7 +480,7 @@ func (b *InMemoryBackend) RebuildWorkspaces(workspaceIDs []string) ([]FailedRequ
 
 // StartWorkspaces starts the given workspaces, transitioning STOPPED workspaces to
 // AVAILABLE. Returns a per-item failure for unknown IDs or a workspace whose state
-// doesn't support starting.
+// or running mode doesn't support starting.
 func (b *InMemoryBackend) StartWorkspaces(workspaceIDs []string) ([]FailedRequest, error) {
 	b.mu.Lock("StartWorkspaces")
 	defer b.mu.Unlock()
@@ -480,8 +499,8 @@ func (b *InMemoryBackend) StartWorkspaces(workspaceIDs []string) ([]FailedReques
 			continue
 		}
 
-		if !isStartableWorkspaceState(w.State) {
-			failures = append(failures, stateFailure(id, w.State))
+		if !isStartableWorkspaceState(w.State, workspaceRunningMode(w)) {
+			failures = append(failures, startStopFailure(id, w.State, workspaceRunningMode(w)))
 
 			continue
 		}
@@ -493,8 +512,8 @@ func (b *InMemoryBackend) StartWorkspaces(workspaceIDs []string) ([]FailedReques
 }
 
 // StopWorkspaces stops the given workspaces, transitioning them to STOPPED state.
-// Returns a per-item failure for unknown IDs or a workspace whose state doesn't
-// support stopping.
+// Returns a per-item failure for unknown IDs or a workspace whose state or
+// running mode doesn't support stopping.
 func (b *InMemoryBackend) StopWorkspaces(workspaceIDs []string) ([]FailedRequest, error) {
 	b.mu.Lock("StopWorkspaces")
 	defer b.mu.Unlock()
@@ -513,8 +532,8 @@ func (b *InMemoryBackend) StopWorkspaces(workspaceIDs []string) ([]FailedRequest
 			continue
 		}
 
-		if !isStoppableWorkspaceState(w.State) {
-			failures = append(failures, stateFailure(id, w.State))
+		if !isStoppableWorkspaceState(w.State, workspaceRunningMode(w)) {
+			failures = append(failures, startStopFailure(id, w.State, workspaceRunningMode(w)))
 
 			continue
 		}
@@ -525,18 +544,20 @@ func (b *InMemoryBackend) StopWorkspaces(workspaceIDs []string) ([]FailedRequest
 	return failures, nil
 }
 
-// stateFailure builds a per-item FailedRequest for a workspace whose current
-// state doesn't support the requested operation. Start/StopWorkspaces uniquely
-// model InvalidResourceStateException at the operation level (unlike Reboot/
-// Rebuild, which model only OperationNotSupportedException -- see
-// collectStateFailures), so that is the ErrorCode used here.
-func stateFailure(id, state string) FailedRequest {
+// startStopFailure builds a per-item FailedRequest for a workspace whose current
+// state or running mode doesn't support Start/StopWorkspaces. Start/StopWorkspaces
+// uniquely model InvalidResourceStateException at the operation level (unlike
+// Reboot/Rebuild, which model only OperationNotSupportedException -- see
+// collectStateFailures), so that is the ErrorCode used here for both halves of
+// their documented precondition.
+func startStopFailure(id, state, runningMode string) FailedRequest {
 	return FailedRequest{
 		WorkspaceID: id,
 		ErrorCode:   errInvalidResourceState,
 		ErrorMessage: fmt.Sprintf(
-			"WorkSpace %s is not in a state that supports this operation (current state: %s)",
-			id, state,
+			"WorkSpace %s is not in a state that supports this operation "+
+				"(current state: %s, running mode: %s)",
+			id, state, runningMode,
 		),
 	}
 }

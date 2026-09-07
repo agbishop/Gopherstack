@@ -26,6 +26,18 @@ func WorkspaceState(b *InMemoryBackend, id string) string {
 	return w.State
 }
 
+// SetWorkspaceState force-sets a workspace's state, bypassing ModifyWorkspaceState's
+// AVAILABLE/ADMIN_MAINTENANCE restriction, for tests that need to isolate the
+// running-mode half of Start/StopWorkspaces's precondition from the state half.
+func SetWorkspaceState(b *InMemoryBackend, id, state string) {
+	b.mu.Lock("SetWorkspaceState")
+	defer b.mu.Unlock()
+
+	if w, ok := b.workspaces.Get(id); ok {
+		w.State = state
+	}
+}
+
 // WorkspaceProps returns a copy of the properties stored for a workspace.
 func WorkspaceProps(b *InMemoryBackend, id string) *WorkspaceProperties {
 	b.mu.RLock("WorkspaceProps")

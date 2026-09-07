@@ -2,6 +2,34 @@ service: workspaces
 sdk_module: aws-sdk-go-v2/service/workspaces@v1.73.1
 last_audit_commit: 7c8077891728
 last_audit_date: 2026-08-28
+# 2026-09-07 (gopherstack-3b8k): Start/StopWorkspaces's eligibility guards checked only workspace
+# state, silently ignoring the running-mode half of their documented precondition. Real doc
+# comments (api_op_StartWorkspaces.go / api_op_StopWorkspaces.go): "You cannot start a WorkSpace
+# unless it has a running mode of AutoStop or Manual and a state of STOPPED" /
+# "...AutoStop or Manual and a state of AVAILABLE, IMPAIRED, UNHEALTHY, or ERROR". RunningMode IS
+# modeled here (WorkspaceProperties.RunningMode, interfaces.go), so this was a real gap, not a
+# structural one -- isStartableWorkspaceState/isStoppableWorkspaceState (workspaces.go) took only
+# `state`, so an ALWAYS_ON workspace in an otherwise-eligible state (AVAILABLE for Stop, STOPPED
+# for Start) wrongly succeeded. Fixed: both now also take `runningMode` and require it be AUTO_STOP
+# or MANUAL (new isEligibleRunningMode helper; MANUAL is WorkSpaces Core-only and unreachable here
+# since ModifyWorkspaceProperties's isValidRunningMode rejects it, same precedent as
+# isRebootableWorkspaceState's unreachable-but-checked REBOOTING/UNHEALTHY). Failures still surface
+# via FailedRequests (these are batch ops; Start/StopWorkspaces uniquely model
+# InvalidResourceStateException at the operation level per the existing stateFailure precedent,
+# renamed startStopFailure). 8 pre-existing tests were silently exercising the unguarded path
+# (created workspaces via the shared `createWorkspace` test helper, which leaves RunningMode unset,
+# then relied on Start/Stop actually succeeding) -- corrected to use a new
+# createStartStopEligibleWorkspace/createWorkspaceWithRunningMode helper instead of changing the
+# widely-shared `createWorkspace` helper (which TestModifyWorkspaceProperties_Persisted depends on
+# leaving Properties nil). A 9th, TestStopWorkspaces_AlreadyStopped_Fails, kept passing but for the
+# wrong reason (its setup Stop call was itself silently failing on running mode, not reaching
+# STOPPED) -- also corrected. Regression tests added and proven to fail against the unmodified
+# guard (reverted workspaces.go, ran, restored):
+# TestStopWorkspaces_AlwaysOnRunningMode_Fails, TestStartWorkspaces_AlwaysOnRunningMode_Fails
+# (state forced to STOPPED via new test-only SetWorkspaceState, since ModifyWorkspaceState only
+# supports AVAILABLE/ADMIN_MAINTENANCE and a real ALWAYS_ON workspace can never reach STOPPED
+# through StopWorkspaces itself), plus TestStopStartWorkspaces_AutoStopRunningMode_Succeeds pinning
+# the success side.
 # 2026-08-30: cursor-population sweep (does every List/Describe response struct that DECLARES a
 # NextToken actually SET one before the collection can exceed a page?). Enumerated all 17 SDK ops
 # whose Input/Output declare NextToken. This service has NO shared pagination chokepoint (only

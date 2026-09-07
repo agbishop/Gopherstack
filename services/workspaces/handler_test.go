@@ -32,7 +32,7 @@ func newTestHandler(t *testing.T) *workspaces.Handler {
 // newTestHandlerWithBackend creates a handler and returns both handler and backend.
 func newTestHandlerWithBackend(
 	t *testing.T,
-) (*workspaces.Handler, *workspaces.InMemoryBackend) { //nolint:unparam // existing issue.
+) (*workspaces.Handler, *workspaces.InMemoryBackend) {
 	t.Helper()
 
 	b := workspaces.NewInMemoryBackend("111122223333", "us-east-1")
@@ -116,6 +116,57 @@ func createWorkspace(t *testing.T, h *workspaces.Handler) string {
 				"UserName":    "testuser",
 				"DirectoryId": "d-1234567890",
 				"BundleId":    "wsb-bh8rsxt14",
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	pending, ok := resp["PendingRequests"].([]any)
+	require.True(t, ok, "PendingRequests missing from response")
+	require.Len(t, pending, 1)
+
+	ws, ok := pending[0].(map[string]any)
+	require.True(t, ok)
+
+	id, ok := ws["WorkspaceId"].(string)
+	require.True(t, ok)
+
+	return id
+}
+
+// createStartStopEligibleWorkspace creates a workspace with RunningMode AUTO_STOP,
+// the running mode Start/StopWorkspaces require (api_op_StartWorkspaces.go /
+// api_op_StopWorkspaces.go doc comments: "a running mode of AutoStop or Manual").
+// Use this instead of createWorkspace in any test that needs a Start/Stop call to
+// actually succeed -- createWorkspace leaves RunningMode unset, which fails that
+// precondition.
+func createStartStopEligibleWorkspace(t *testing.T, h *workspaces.Handler) string {
+	t.Helper()
+
+	return createWorkspaceWithRunningMode(t, h, "AUTO_STOP")
+}
+
+// createWorkspaceWithRunningMode creates a workspace with the given
+// WorkspaceProperties.RunningMode.
+func createWorkspaceWithRunningMode(t *testing.T, h *workspaces.Handler, runningMode string) string {
+	t.Helper()
+
+	doTargetRequest(t, h, "RegisterWorkspaceDirectory", map[string]any{
+		"DirectoryId": "d-1234567890",
+	})
+
+	rec := doTargetRequest(t, h, "CreateWorkspaces", map[string]any{
+		"Workspaces": []map[string]any{
+			{
+				"UserName":    "testuser",
+				"DirectoryId": "d-1234567890",
+				"BundleId":    "wsb-bh8rsxt14",
+				"WorkspaceProperties": map[string]any{
+					"RunningMode": runningMode,
+				},
 			},
 		},
 	})
@@ -420,10 +471,16 @@ func TestWorkSpaces_Operations(t *testing.T) {
 			name:   "StartWorkspaces with known stopped workspace returns no failures",
 			target: "StartWorkspaces",
 			setup: func(h *workspaces.Handler) string {
-				wsID := createWorkspace(t, h)
-				doTargetRequest(t, h, "StopWorkspaces", map[string]any{
+				wsID := createStartStopEligibleWorkspace(t, h)
+				stopRec := doTargetRequest(t, h, "StopWorkspaces", map[string]any{
 					"StopWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
 				})
+				require.Equal(t, http.StatusOK, stopRec.Code)
+
+				var stopResp map[string]any
+				require.NoError(t, json.Unmarshal(stopRec.Body.Bytes(), &stopResp))
+				stopFailures, _ := stopResp["FailedRequests"].([]any)
+				require.Empty(t, stopFailures, "setup: StopWorkspaces must succeed to reach STOPPED")
 
 				return wsID
 			},
@@ -448,7 +505,7 @@ func TestWorkSpaces_Operations(t *testing.T) {
 			name:   "StopWorkspaces with known workspace returns no failures",
 			target: "StopWorkspaces",
 			setup: func(h *workspaces.Handler) string {
-				return createWorkspace(t, h)
+				return createStartStopEligibleWorkspace(t, h)
 			},
 			body: func(wsID string) any {
 				return map[string]any{
