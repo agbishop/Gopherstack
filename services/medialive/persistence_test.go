@@ -147,7 +147,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	require.NotEmpty(t, offerings)
 
 	reservation, err := original.PurchaseOffering(
-		offerings[0].OfferingID, "reservation-1", 1,
+		offerings[0].OfferingID, "reservation-1", "", 1,
 		medialive.RenewalSettings{AutomaticRenewal: "ENABLED", RenewalCount: 2},
 		nil,
 	)

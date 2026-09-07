@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,7 +80,7 @@ func TestReservations_PurchaseListDescribeDeleteUpdate(t *testing.T) {
 	resv := purchaseResp["reservation"].(map[string]any)
 	reservationID := resv["reservationId"].(string)
 	assert.NotEmpty(t, reservationID)
-	assert.Equal(t, "EXPIRED", resv["state"], "the purchased term already ended, so state derives to EXPIRED")
+	assert.Equal(t, "ACTIVE", resv["state"], "a term starting now hasn't ended yet")
 	assert.InDelta(t, float64(2), resv["count"], 0.001)
 
 	// Describe
@@ -103,8 +104,10 @@ func TestReservations_PurchaseListDescribeDeleteUpdate(t *testing.T) {
 	updatedResv := updatedResp["reservation"].(map[string]any)
 	assert.Equal(t, "renamed-reservation", updatedResv["name"])
 
-	// Delete (cancel) on an ACTIVE reservation is rejected -- real
 	// DeleteReservation requires the reservation to already be EXPIRED
+	// (covered separately by TestReservations_DeleteRequiresExpired); force
+	// the term into the past here so this round-trip can reach delete.
+	medialive.ForceReservationEnd(h.Backend.(*medialive.InMemoryBackend), reservationID, "2000-01-01T00:00:00Z")
 	rec = doRequest(t, h, http.MethodDelete, "/prod/reservations/"+reservationID, nil)
 	assert.Equal(t, http.StatusOK, rec.Code)
 
@@ -166,6 +169,63 @@ func TestReservations_RenewalSettings(t *testing.T) {
 	assert.False(t, hasRenewal)
 }
 
+// TestPurchaseOffering_DerivesTermFromDuration covers gopherstack-b668:
+// PurchaseOffering used to fabricate a frozen Start=2024-01-01/End=2025-01-01
+// on every purchase instead of deriving the term from the offering's
+// Duration/DurationUnits (medialive/types/types.go's Offering -- the only
+// declared OfferingDurationUnits value is MONTHS, types/enums.go). With no
+// "start" in the request, Start must default to now and End must be exactly
+// Start plus Duration months.
+func TestPurchaseOffering_DerivesTermFromDuration(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	offRec := doRequest(t, h, http.MethodGet, "/prod/offerings/87654321", nil)
+	require.Equal(t, http.StatusOK, offRec.Code)
+	offering := decodeBody(t, offRec.Body.Bytes())
+	duration := int(offering["duration"].(float64))
+	require.Equal(t, "MONTHS", offering["durationUnits"])
+
+	rec := doRequest(t, h, http.MethodPost, "/prod/offerings/87654321/purchase", map[string]any{
+		"name": "term-test",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	resv := decodeBody(t, rec.Body.Bytes())["reservation"].(map[string]any)
+
+	start, err := time.Parse(time.RFC3339, resv["start"].(string))
+	require.NoError(t, err)
+	end, err := time.Parse(time.RFC3339, resv["end"].(string))
+	require.NoError(t, err)
+
+	assert.WithinDuration(t, time.Now().UTC(), start, time.Minute, "Start must default to now, not a fixed past date")
+	assert.Equal(
+		t, start.AddDate(0, duration, 0), end,
+		"End must be Start plus the offering's Duration in DurationUnits, not a fixed date",
+	)
+}
+
+// TestPurchaseOffering_HonorsExplicitStart covers gopherstack-b668:
+// PurchaseOfferingInput.Start (api_op_PurchaseOffering.go: "Requested
+// reservation start time ... If no value is given, the default is now")
+// lets a caller pin the term start; the fabricated Start/End ignored it
+// entirely.
+func TestPurchaseOffering_HonorsExplicitStart(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/prod/offerings/87654321/purchase", map[string]any{
+		"name":  "explicit-start-test",
+		"start": "2030-03-01T00:00:00Z",
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	resv := decodeBody(t, rec.Body.Bytes())["reservation"].(map[string]any)
+
+	assert.Equal(t, "2030-03-01T00:00:00Z", resv["start"])
+	assert.Equal(t, "2031-03-01T00:00:00Z", resv["end"], "12-month term derived from Duration/DurationUnits")
+}
+
 // TestReservations_DeleteRequiresExpired locks in a fix for
 // gopherstack-1um: DeleteReservation had no state guard at all, so any
 // ACTIVE (or CANCELED) reservation could be deleted -- real DeleteReservation
@@ -208,6 +268,7 @@ func TestReservations_DeleteRequiresExpired(t *testing.T) {
 
 		h := newTestHandler(t)
 		id := purchase(t, h, "expired-test")
+		medialive.ForceReservationEnd(h.Backend.(*medialive.InMemoryBackend), id, "2000-01-01T00:00:00Z")
 
 		rec := doRequest(t, h, http.MethodGet, "/prod/reservations/"+id, nil)
 		require.Equal(t, http.StatusOK, rec.Code)

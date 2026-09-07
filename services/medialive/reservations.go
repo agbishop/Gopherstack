@@ -41,9 +41,12 @@ func (b *InMemoryBackend) DescribeOffering(offeringID string) (*Offering, error)
 
 // --- Reservation operations ---
 
-// PurchaseOffering creates a Reservation from an Offering.
+// PurchaseOffering creates a Reservation from an Offering. start is the
+// caller's requested term start (PurchaseOfferingInput.Start, ISO-8601); an
+// empty string means "now", matching the SDK doc ("If no value is given,
+// the default is now").
 func (b *InMemoryBackend) PurchaseOffering(
-	offeringID, name string,
+	offeringID, name, start string,
 	count int32,
 	renewalSettings RenewalSettings,
 	tags map[string]string,
@@ -65,6 +68,15 @@ func (b *InMemoryBackend) PurchaseOffering(
 	if count <= 0 {
 		count = 1
 	}
+	startTime := b.now()
+	if start != "" {
+		parsed, err := time.Parse(time.RFC3339, start)
+		if err != nil {
+			return nil, fmt.Errorf("%w: start %q is not RFC3339", ErrInvalidParameter, start)
+		}
+		startTime = parsed.UTC()
+	}
+	endTime := addOfferingTerm(startTime, off.Duration, off.DurationUnits)
 	id := newID()
 	r := &storedReservation{
 		Tags:                  copyTags(tags),
@@ -81,8 +93,8 @@ func (b *InMemoryBackend) PurchaseOffering(
 		UsagePrice:            off.UsagePrice,
 		Duration:              off.Duration,
 		DurationUnits:         off.DurationUnits,
-		Start:                 "2024-01-01T00:00:00Z",
-		End:                   "2025-01-01T00:00:00Z",
+		Start:                 startTime.Format(time.RFC3339),
+		End:                   endTime.Format(time.RFC3339),
 		Region:                b.region,
 		State:                 "ACTIVE",
 		Count:                 count,
@@ -90,6 +102,17 @@ func (b *InMemoryBackend) PurchaseOffering(
 	b.reservations.Put(r)
 
 	return r.toReservation(), nil
+}
+
+// addOfferingTerm adds a lease term to t. OfferingDurationUnits
+// (medialive/types/enums.go) declares exactly one value, MONTHS, so no
+// other unit is handled.
+func addOfferingTerm(t time.Time, duration int32, units string) time.Time {
+	if units != offeringDurationMonths {
+		return t
+	}
+
+	return t.AddDate(0, int(duration), 0)
 }
 
 // ReservationFilter mirrors the ResourceSpecification-backed

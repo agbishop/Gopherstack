@@ -1362,3 +1362,51 @@ this pass's edits and remain in active use per `golangci-lint run` returning 0 i
 Gates: `go build ./services/medialive/...`, `go vet ./services/medialive/...`,
 `go test ./services/medialive/... -race -count=1`, `golangci-lint run ./services/medialive/...` --
 all clean. Work left uncommitted per this session's hard constraints.
+
+## 2026-09-07 (gopherstack-b668)
+
+`PurchaseOffering` (`reservations.go`) fabricated a frozen `Start:
+"2024-01-01T00:00:00Z"`/`End: "2025-01-01T00:00:00Z"` on every purchase,
+regardless of the offering's `Duration`/`DurationUnits` or the caller's
+`PurchaseOfferingInput.Start` (`api_op_PurchaseOffering.go`: "Requested
+reservation start time ... If no value is given, the default is now").
+`OfferingDurationUnits` (`types/enums.go`) declares exactly one value,
+`MONTHS`.
+
+Fixed: `PurchaseOffering` now takes the caller's `start` (wired through from
+the `"start"` request-body key, previously dropped entirely by
+`handlePurchaseOffering`), defaults it to `b.now()` when omitted, and derives
+`End` as `Start + Duration` months via a new `addOfferingTerm` helper. Added
+`nowFunc func() time.Time` to `InMemoryBackend` (`store.go`), following the
+existing `azurequeue`/`azuretable`/`cosmosdb`/`resourcegroupstaggingapi`
+convention (`nowFunc` defaulting to `time.Now`, a `now()` method returning
+`.UTC()`) rather than calling `time.Now()` inline, so the time source stays
+overridable for tests. An invalid (non-RFC3339) explicit `start` now returns
+`BadRequestException` (`ErrInvalidParameter`), a declared
+`PurchaseOffering` error.
+
+Two pre-existing tests in `handler_reservations_test.go` were asserting the
+fabrication as if it were correct behavior and are corrected:
+- `TestReservations_PurchaseListDescribeDeleteUpdate` asserted
+  `resv["state"] == "EXPIRED"` immediately after purchase (true only because
+  the fabricated `End` was always in the past by the time any real clock ran
+  this test). Now asserts `"ACTIVE"` ("a term starting now hasn't ended
+  yet"), and the subsequent delete call now forces the term into the past
+  via `ForceReservationEnd` first (previously it worked by accident of the
+  same fabrication).
+- `TestReservations_DeleteRequiresExpired`'s `past_term_end_is_deletable`
+  subtest relied on the same fabricated past `End` to reach `EXPIRED`
+  without forcing it; now calls `ForceReservationEnd` explicitly, same as
+  its sibling `still_within_term_is_rejected` subtest already did.
+
+Tests: 2 new in `handler_reservations_test.go` --
+`TestPurchaseOffering_DerivesTermFromDuration` (no `start` given: asserts
+`Start` is within a minute of now and `End == Start.AddDate(0, duration,
+0)`) and `TestPurchaseOffering_HonorsExplicitStart` (an explicit `start`
+round-trips verbatim and `End` is exactly 12 months later). Both confirmed
+failing against the unmodified fabricated-dates code (`Start`/`End` pinned
+to 2024-01-01/2025-01-01, `ACTIVE` still read back as `EXPIRED`), then
+passing after the fix.
+
+Gates: `go test -race -count=1 ./services/medialive/...`,
+`golangci-lint run services/medialive/...` -- both clean.

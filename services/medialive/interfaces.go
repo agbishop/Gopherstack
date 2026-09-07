@@ -241,7 +241,7 @@ type StorageBackend interface {
 
 	// Reservations
 	PurchaseOffering(
-		offeringID, name string,
+		offeringID, name, start string,
 		count int32,
 		renewalSettings RenewalSettings,
 		tags map[string]string,
