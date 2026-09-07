@@ -17,10 +17,6 @@ func (b *InMemoryBackend) ReplicateKey(
 	ctx context.Context,
 	input *ReplicateKeyInput,
 ) (*ReplicateKeyOutput, error) {
-	// gopherstack-i4q8: ReplicateKey declares LimitExceededException, TagException
-	// and UnsupportedOperationException, but a missing ReplicaRegion is a
-	// required-field violation, not a length/quota condition or an
-	// unsupported-value one -- none fit. Landmine.
 	if strings.TrimSpace(input.ReplicaRegion) == "" {
 		return nil, fmt.Errorf("%w: ReplicaRegion must not be empty", ErrValidation)
 	}
@@ -128,10 +124,6 @@ func (b *InMemoryBackend) UpdatePrimaryRegion(
 	ctx context.Context,
 	input *UpdatePrimaryRegionInput,
 ) error {
-	// gopherstack-i4q8: UpdatePrimaryRegion's declared set (DisabledException,
-	// InvalidArnException, KMSInvalidStateException, NotFoundException,
-	// UnsupportedOperationException) has nothing for a required-field check.
-	// Landmine.
 	if strings.TrimSpace(input.PrimaryRegion) == "" {
 		return fmt.Errorf("%w: PrimaryRegion must not be empty", ErrValidation)
 	}

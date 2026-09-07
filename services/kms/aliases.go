@@ -199,9 +199,6 @@ func (b *InMemoryBackend) ListAliases(
 	limit := int32(default50ListLimit)
 
 	if input.Limit != nil {
-		// gopherstack-i4q8: ListAliases declares InvalidMarkerException, but its
-		// doc ("...the marker...is not valid") covers Marker, not Limit; nothing
-		// fits an out-of-range Limit, landmine.
 		if *input.Limit < 1 || *input.Limit > 1000 {
 			return nil, fmt.Errorf("%w: Limit must be between 1 and 1000", ErrValidation)
 		}

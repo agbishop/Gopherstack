@@ -19,10 +19,6 @@ func (b *InMemoryBackend) GenerateRandom(
 		n = *input.NumberOfBytes
 	}
 
-	// gopherstack-i4q8: GenerateRandom declares UnsupportedOperationException,
-	// but its doc covers an unsupported parameter VALUE (an enum-style check,
-	// as used for KeySpec elsewhere), not this numeric range; rejected, and
-	// nothing else fits. Landmine.
 	if n <= 0 || n > maxDataKeyBytes {
 		return nil, fmt.Errorf(
 			"%w: NumberOfBytes must be between 1 and %d, got %d",

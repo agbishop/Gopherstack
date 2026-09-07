@@ -759,10 +759,6 @@ func validateSigningAlgorithm(signingAlgorithm, keySpec string) error {
 // by buildEncryptionContextAAD: sorted "key=value" pairs separated by NUL
 // bytes (we omit the leading keyID and treat keyID separator weight as 1 byte
 // per pair, matching the AAD shape minus the prefix).
-// gopherstack-i4q8: reached by GenerateDataKey(WithoutPlaintext) (via
-// validateGenerateDataKeyInput below), GenerateDataKeyPair(WithoutPlaintext),
-// Encrypt, Decrypt and ReEncrypt (via validateReEncryptInput below) --
-// none of their declared sets has an EncryptionContext-size code. Landmine.
 func validateEncryptionContextSize(ctx map[string]string) error {
 	if len(ctx) == 0 {
 		return nil
@@ -792,9 +788,6 @@ func validateEncryptionContextSize(ctx map[string]string) error {
 }
 
 // validateGenerateDataKeyInput enforces the same shape rules as the AWS KMS API.
-// gopherstack-i4q8: reached by both GenerateDataKey and
-// GenerateDataKeyWithoutPlaintext, whose declared sets are identical and
-// contain nothing for either check below. Landmine.
 func validateGenerateDataKeyInput(input *GenerateDataKeyInput) error {
 	if input.KeySpec != "" && input.NumberOfBytes != nil {
 		return fmt.Errorf(
@@ -827,8 +820,6 @@ func validateMacAlgorithm(macAlgorithm, keySpec string) error {
 }
 
 // validateReEncryptInput enforces non-empty destination key and encryption context size limits.
-// gopherstack-i4q8: reached only by ReEncrypt, which declares nothing for a
-// missing DestinationKeyId. Landmine.
 func validateReEncryptInput(input *ReEncryptInput) error {
 	if strings.TrimSpace(input.DestinationKeyID) == "" {
 		return fmt.Errorf("%w: DestinationKeyId must not be empty", ErrValidation)

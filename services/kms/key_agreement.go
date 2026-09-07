@@ -10,12 +10,9 @@ import (
 func (b *InMemoryBackend) DeriveSharedSecret(
 	ctx context.Context, input *DeriveSharedSecretInput,
 ) (*DeriveSharedSecretOutput, error) {
-	// gopherstack-i4q8: DeriveSharedSecret's declared set (DisabledException,
-	// InvalidGrantTokenException, InvalidKeyUsageException, KMSInvalidStateException,
-	// KeyUnavailableException, NotFoundException, ...) has nothing for either
-	// check below, despite this op's own doc quoting "ValidationException" for a
-	// malformed PublicKey -- that's not a modeled type this SDK can deserialize.
-	// Landmine.
+	// DeriveSharedSecret's own doc quotes a live wire ValidationException for a
+	// malformed PublicKey, unmodeled per-op -- confirmed real for KMS at the
+	// protocol level (gopherstack-q9bs), so ErrValidation below is correct.
 	if input.KeyAgreementAlgorithm != "" && input.KeyAgreementAlgorithm != algoECDH {
 		return nil, fmt.Errorf(
 			"%w: KeyAgreementAlgorithm must be ECDH, got %q",

@@ -10,8 +10,16 @@ package main
 // own module DOES declare the code (gt.codes[c.Code]) is never routed
 // through this allowlist at all -- consulting it only matters, and is only
 // correct, for a service whose own SDK module has no record of the code
-// anywhere. Sources for the entries below: the six named directly in this
-// tool's brief
+// anywhere. gopherstack-q9bs checked that zero-record case for kms
+// specifically (kms@v1.55.4 and its full api-2.json model have no
+// ValidationException anywhere -- gopherstack-i4q8) and confirmed the entry
+// still holds: kms's own GetPublicKey doc (aws-sdk-go models/apis/kms/
+// 2014-11-01/docs-2.json) quotes a live wire ValidationException for a
+// malformed PublicKey that no operation declares, and deserializeOpError's
+// default case (kms@v1.55.4 deserializers.go) preserves an unmodeled wire
+// code rather than rejecting it -- exactly the pre-dispatch, model-independent
+// fault this allowlist exists for. Sources for the entries below: the six
+// named directly in this tool's brief
 // (ValidationError, InvalidAction, MissingParameter, Throttling,
 // InternalFailure, AccessDenied) plus their common Query/JSON-RPC siblings
 // confirmed by the same "gateway rejects the request before any

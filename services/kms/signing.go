@@ -13,9 +13,6 @@ func (b *InMemoryBackend) Sign(ctx context.Context, input *SignInput) (*SignOutp
 		msgType = messageTypeRaw
 	}
 
-	// gopherstack-i4q8: Sign does not declare LimitExceededException (unlike
-	// CreateKey/CreateGrant, which do and use it for this same "exceeds a
-	// length" shape); nothing in Sign's declared set fits. Landmine.
 	if msgType == messageTypeRaw && len(input.Message) > maxSignMessageBytes {
 		return nil, fmt.Errorf(
 			"%w: message must not exceed %d bytes for RAW message type, got %d",
@@ -85,8 +82,6 @@ func (b *InMemoryBackend) Verify(ctx context.Context, input *VerifyInput) (*Veri
 		msgType = messageTypeRaw
 	}
 
-	// gopherstack-i4q8: same declared-set gap as Sign above -- Verify does not
-	// declare LimitExceededException either. Landmine.
 	if msgType == messageTypeRaw && len(input.Message) > maxSignMessageBytes {
 		return nil, fmt.Errorf(
 			"%w: message must not exceed %d bytes for RAW message type, got %d",

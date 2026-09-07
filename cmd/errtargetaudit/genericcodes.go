@@ -13,7 +13,14 @@ package main
 // (scan.go) therefore consults this map only when the code is absent from
 // allCodes (the service's own module-wide AllCodes union) too -- a code
 // present in allCodes is real for this service and reported class A
-// instead, never waved through unconditionally. Same list as
+// instead, never waved through unconditionally. That still leaves the
+// reverse gap open -- a service whose module has NO record of a
+// genericProtocolCodes entry anywhere is excused unconditionally, same as
+// one that models it correctly per-op. gopherstack-q9bs checked that gap for
+// kms and ValidationException (kms@v1.55.4 has zero occurrences, per
+// gopherstack-i4q8) and confirmed the entry, not kms's 32 landmine
+// comments: see cmd/errcodeaudit/genericcodes.go's doc comment for the
+// evidence. Same list as
 // cmd/errcodeaudit/genericcodes.go (reimplemented, not imported -- see this
 // package's doc comment for why); see that file's doc comment for the
 // sourcing and live confirmations behind each entry. ONE ADDITION beyond

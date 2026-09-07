@@ -34,11 +34,6 @@ func isValidGrantOperation(op string) bool {
 // simulation exists in this mock (no IAM/authorization layer at all), so
 // these fields are validated and round-tripped for wire parity only -- see
 // their doc comments on Grant/CreateGrantInput in models.go.
-// gopherstack-i4q8: every check below is reached only by CreateGrant.
-// CreateGrant declares LimitExceededException, but these are mutual-exclusivity
-// and dependency rules between principal fields, not a length or quota
-// condition, so it does not fit; nothing else in the declared set does either.
-// Landmine.
 func validateGrantPrincipals(input *CreateGrantInput) error {
 	granteeSet := strings.TrimSpace(input.GranteePrincipal) != ""
 	granteeServiceSet := strings.TrimSpace(input.GranteeServicePrincipal) != ""
@@ -90,9 +85,6 @@ func (b *InMemoryBackend) CreateGrant(
 		return nil, err
 	}
 
-	// gopherstack-i4q8: an empty list fails a minimum, not a length/quota
-	// maximum -- LimitExceededException's "exceeded" doesn't cover it, and
-	// nothing else in CreateGrant's declared set does. Landmine.
 	if len(input.Operations) == 0 {
 		return nil, fmt.Errorf("%w: Operations must contain at least one entry", ErrValidation)
 	}
@@ -107,10 +99,6 @@ func (b *InMemoryBackend) CreateGrant(
 		)
 	}
 
-	// gopherstack-i4q8: CreateGrant does not declare UnsupportedOperationException
-	// (unlike CreateKey/GenerateDataKeyPair, which do and use it for this same
-	// shape of "value not among the allowed set" check) -- no declared code fits
-	// an invalid Operations entry. Landmine, 5rjn-class (no fitting code at all).
 	for _, op := range input.Operations {
 		if !isValidGrantOperation(op) {
 			return nil, fmt.Errorf(
@@ -436,10 +424,6 @@ func (b *InMemoryBackend) RetireGrant(ctx context.Context, input *RetireGrantInp
 // RetiringServicePrincipal (kms@v1.55.4 api_op_ListRetirableGrants.go: "You
 // must specify either RetiringPrincipal or RetiringServicePrincipal, but not
 // both.").
-// gopherstack-i4q8: ListRetirableGrants declares InvalidMarkerException,
-// KMSInternalException, InvalidArnException, NotFoundException,
-// DependencyTimeoutException -- none fit this Retiring*Principal exclusivity
-// rule. Landmine.
 func (b *InMemoryBackend) ListRetirableGrants(
 	ctx context.Context,
 	input *ListRetirableGrantsInput,

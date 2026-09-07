@@ -72,24 +72,13 @@ var (
 	// ErrUnsupportedOrigin is returned when an operation is incompatible with the key's origin.
 	ErrUnsupportedOrigin = errors.New("UnsupportedOperationException")
 	// ErrValidation is returned for invalid request parameters (maps to ValidationException).
-	// NOTE: "ValidationException" names no real type in kms@v1.55.4 (not in
-	// types/errors.go, not in any op's deserializeOpError). Sites with a real
-	// per-op fit (see ErrInvalidAliasName, ErrInvalidTag, ErrUnsupportedParameter,
-	// ErrInvalidImportToken, and the CustomKeyStoreNotFoundException /
-	// LimitExceededException / NotFoundException reuses) have been remapped.
-	// gopherstack-i4q8 re-derived and re-checked every remaining call site
-	// (36 as of 2026-09-07, up from the ~35 e3yu left) individually against its
-	// reaching operation's own deserializeOpError, quoting each candidate's own
-	// doc comment rather than trusting e3yu's blanket claim -- see the per-site
-	// landmine comments this added. Two more had a real fit and were remapped
-	// (CreateKey's and CreateGrant's own length checks, both to
-	// ErrLimitExceeded; PutKeyPolicy's PolicyName check, to
-	// ErrUnsupportedParameter). The rest have no fitting recognized code --
-	// mostly smithy-required-field, range-trait or cross-field checks a real
-	// AWS SDK client already rejects before the request reaches the wire, plus
-	// two shared helpers reached by ops with differing declared sets
-	// (validateEncryptionContextSize in crypto.go, resolveKeyID in store.go)
-	// and two unreachable defensive checks (import.go, store.go).
+	// "ValidationException" names no per-operation typed exception in kms@v1.55.4 (not in
+	// types/errors.go, not in any op's deserializeOpError, and absent from the full
+	// api-2.json model too) -- it is real for KMS at the pre-dispatch, protocol level
+	// regardless: KMS's own GetPublicKey doc quotes a live wire ValidationException for a
+	// malformed PublicKey that no op declares, and deserializeOpError's default case
+	// preserves an unmodeled wire code rather than rejecting it. Settled by
+	// gopherstack-q9bs; the sites below using it are correct, not landmines.
 	ErrValidation = errors.New("ValidationException")
 	// ErrExpiredKeyMaterial is returned when a key's imported material has passed its ValidTo date.
 	ErrExpiredKeyMaterial = errors.New("ExpiredImportTokenException")
