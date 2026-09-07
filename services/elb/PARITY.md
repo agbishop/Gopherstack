@@ -550,3 +550,35 @@ persisted struct, so the `pkgs/persistence` guard was not run. Re-ran the tool a
 fix: `resolved: 29, with an emission found: 23`, `class A findings (2)` -- the two
 dismissed findings above (`CreateLoadBalancer`/`LoadBalancerNotFound`,
 `DeleteLoadBalancerPolicy`/`PolicyNotFound`); `DeleteLoadBalancer`'s finding is gone.
+
+## 2026-09-07 gopherstack-39ip: verified the negative claim directly, no remedy found
+
+Re-derived `DeleteLoadBalancerPolicy`'s declared set from
+`elasticloadbalancing@v1.36.4/deserializers.go`'s
+`awsAwsquery_deserializeOpErrorDeleteLoadBalancerPolicy`: exactly `InvalidConfigurationRequest`
+(`InvalidConfigurationRequestException`, "The requested configuration change is not
+valid.") and `LoadBalancerNotFound` (`AccessPointNotFoundException`, "The specified load
+balancer does not exist."). Cross-checked against the live `API_DeleteLoadBalancerPolicy.html`
+page: same two codes, same doc text, nothing else.
+
+The prior pass's central claim -- no equivalent to `DeleteLoadBalancer`'s idempotent-success
+sentence exists for this op -- checked personally this pass rather than inherited: fetched
+both the pinned SDK's doc comment (`api_op_DeleteLoadBalancerPolicy.go`, just "Deletes the
+specified policy from the specified load balancer. This policy must not be enabled for any
+listeners.") and the live API reference page in full. Neither carries any sentence about
+behavior for a missing load balancer or policy. Claim confirmed negative.
+
+Also confirmed `PolicyNotFoundException` ("One or more of the specified policies do not
+exist.", `types/errors.go`) is a semantically perfect match for this guard's condition but,
+per the extraction above, is not in this op's declared set -- same right-code-wrong-op shape
+as memorydb's `SnapshotNotFoundFault` (gopherstack-2i0c). Neither declared code's own doc text
+fits a missing policy: `LoadBalancerNotFound` names the wrong resource, and
+`InvalidConfigurationRequest`'s doc is a generic stretch. No fix applied; sharpened the
+landmine comment (policies.go:308-318) with this direct verification.
+
+`TestPolicyNotFoundReturns400` left unchanged -- still pins the current (unendorsed)
+`PolicyNotFound` behavior, correctly, since nothing changed.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/elb/...` ok;
+`GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/elb/...` 0 issues. Re-ran
+`cmd/errtargetaudit`: same finding, same line, confirming no emission change.

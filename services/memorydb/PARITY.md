@@ -484,3 +484,30 @@ a documented landmine, not a fix).
 
 Gates: `go test -race -count=1 ./services/memorydb/...` (pass), `golangci-lint run
 services/memorydb/...` (0 issues).
+
+## 2026-09-07 gopherstack-2i0c: re-derived and confirmed the asymmetry, no remedy found
+
+Re-verified the `CreateCluster` / `SnapshotNotFoundFault` finding above (item 3) rather
+than trusting the prior pass's summary. Re-extracted the declared set directly from
+`memorydb@v1.36.4/deserializers.go`'s `awsAwsjson11_deserializeOpErrorCreateCluster` (18
+codes, matches the bd issue's list exactly) and cross-checked it against the live
+`API_CreateCluster.html` Errors section: identical 18 codes, no `SnapshotNotFoundFault`.
+This rules out model staleness as the explanation for the asymmetry -- it is a genuine
+AWS modelling choice, not an artifact of the pinned SDK version.
+
+Confirmed `SnapshotNotFoundFault` ("The specified snapshot does not exist.",
+`types/errors.go`) *is* declared by `CopySnapshot` and `DeleteSnapshot` (both take a
+`SnapshotName`), just not by `CreateCluster` -- textbook right-code-wrong-op. No doc
+sentence anywhere (pinned SDK field comment, `docs-2.json`, or the live API reference)
+states what `CreateCluster` actually returns for an unresolvable `SnapshotName`; the
+`InvalidParameterValueException` candidate named in the landmine remains unconfirmed by
+any such sentence -- its doc text ("The specified parameter value is not valid.") is
+generic, not specific to this case. No fix applied; sharpened the landmine comment
+(clusters.go) with this verification instead of leaving it as a bare assertion.
+
+`TestErrCode_CreateCluster_SnapshotNotFound` left unchanged -- still pins the current
+(unendorsed) `SnapshotNotFoundFault` behavior, correctly, since nothing changed.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/memorydb/...` ok;
+`GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/memorydb/...` 0 issues. Re-ran
+`cmd/errtargetaudit`: same finding, same line, confirming no emission change.
