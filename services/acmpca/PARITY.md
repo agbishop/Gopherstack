@@ -511,3 +511,56 @@ the same previously-recorded refusal (all 3 distinct sites, none fixed, per
 the earlier entry's own per-op `deserializeOpError` verification and its
 "no `ValidationException` type exists anywhere in this SDK module" finding).
 No code changed.
+
+### 2026-09-07 Error-envelope re-run, third confirmation (gopherstack-qrnq, errtargetaudit)
+
+`errtargetaudit` filed 6 fresh class-A findings for acmpca; same 3 call
+sites as the two entries above (`CreatePermission` x4 sites,
+`DeleteCertificateAuthority`, `ListCertificateAuthorities`), same
+`InvalidArgsException` code, same `sentinel reference` mechanism. Re-verified
+independently rather than trusting the prior write-up:
+
+- Re-extracted each op's declared set straight from
+  `aws-sdk-go-v2/service/acmpca@v1.50.0/deserializers.go`
+  (`awk '/deserializeOpError<Op>\(/,/^}/'` + code-string grep):
+  `CreatePermission` -> `InvalidArnException, InvalidStateException,
+  LimitExceededException, PermissionAlreadyExistsException,
+  RequestFailedException, ResourceNotFoundException`;
+  `DeleteCertificateAuthority` -> `ConcurrentModificationException,
+  InvalidArnException, InvalidStateException, ResourceNotFoundException`;
+  `ListCertificateAuthorities` -> `InvalidNextTokenException`. None include
+  `InvalidArgsException` (`errors.go`'s `ErrInvalidArgs` sentinel) --
+  confirms all 3 findings are real declared-set mismatches, not tool noise.
+- Confirmed the two false-positive classes this repeat sweep would most
+  likely hit both don't apply: no shared helper with `services/acm/`
+  (`acm/` and `acmpca/` import neither package, confirmed by grep -- acmpca's
+  parity issue gopherstack-ftkd covered a structurally unrelated SDK
+  module) and no handler-level override -- `jsonCreatePermission`,
+  `jsonDeleteCA`, `jsonListCAs` (`handler_permissions.go`,
+  `handler_certificate_authorities.go`) pass backend errors straight to
+  `handleOpError`'s `errors.Is(opErr, ErrInvalidArgs) -> "InvalidArgsException"`
+  switch (`handler.go`) with no call-site remap.
+- Protocol: awsjson1.1. `handleOpError` writes `{"__type": code, "message":
+  ...}` via `writeJSONError` at HTTP 400 (500 only for the unmapped-sentinel
+  `InternalFailure` default case) -- confirmed by reading `handler.go`
+  directly, not assumed.
+- Pre-existing tests (`certificate_authorities_test.go`,
+  `list_certificate_authorities_resource_owner_test.go`,
+  `permissions_test.go`) already assert `require.ErrorIs(t, err,
+  acmpca.ErrInvalidArgs)` for these three call sites -- correct, since
+  `ErrInvalidArgs`/`InvalidArgsException` is what the handler actually
+  emits and no better code exists; none needed correcting.
+
+**No fix applied** -- unchanged from the two prior entries. This is the
+third independent audit pass (`gopherstack-6flj`/`uox6`, then a
+reachability re-run, now `gopherstack-qrnq`) to land on the same
+conclusion: the operation's own declared error set has no member that
+fits the validation failure, so no code substitution is correct. Left as a
+landmine (see `permissions.go:26-33`, `certificate_authorities.go:384-389`,
+`certificate_authorities.go:427-433`) rather than guessed at a fourth time.
+
+Gates: `go test -race -count=1 ./services/acmpca/...` pass (unchanged
+assertion counts, no new tests needed since no behavior changed);
+`golangci-lint run services/acmpca/...` 0 issues. `errtargetaudit` re-run
+post-pass: still 6 class-A findings, identical sites -- expected, since no
+code changed.
