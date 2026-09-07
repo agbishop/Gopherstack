@@ -15925,6 +15925,7 @@
       "Instance.Ports []InstancePortInfo",
       "Instance.PrivateIPAddress string",
       "Instance.PublicIPAddress string",
+      "Instance.PublicIPGeneration int32",
       "Instance.RAMSizeInGb float32",
       "Instance.SSHKeyName string",
       "Instance.StateCode int32",
