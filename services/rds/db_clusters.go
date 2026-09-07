@@ -33,6 +33,17 @@ func (b *InMemoryBackend) CreateDBCluster(
 	if _, exists := b.clusters.Get(normalizeID(id)); exists {
 		return nil, fmt.Errorf("%w: cluster %s already exists", ErrClusterAlreadyExists, id)
 	}
+
+	var replicationSource *DBCluster
+	if opts.ReplicationSourceIdentifier != "" {
+		var srcExists bool
+		replicationSource, srcExists = b.clusters.Get(normalizeID(opts.ReplicationSourceIdentifier))
+		if !srcExists {
+			return nil, fmt.Errorf(
+				"%w: source cluster %s not found", ErrClusterNotFound, opts.ReplicationSourceIdentifier,
+			)
+		}
+	}
 	if engine == "" {
 		engine = "aurora-postgresql"
 	}
@@ -80,9 +91,15 @@ func (b *InMemoryBackend) CreateDBCluster(
 		StorageEncrypted:             opts.StorageEncrypted,
 		CopyTagsToSnapshot:           opts.CopyTagsToSnapshot,
 		DeletionProtection:           opts.DeletionProtection,
+		ReplicationSourceIdentifier:  opts.ReplicationSourceIdentifier,
 		DBClusterMembers:             []DBClusterMember{},
 	}
 	b.clusters.Put(cluster)
+
+	if replicationSource != nil {
+		replicationSource.ReadReplicaIdentifiers = append(replicationSource.ReadReplicaIdentifiers, id)
+	}
+
 	cp := *cluster
 
 	return &cp, nil
@@ -255,6 +272,16 @@ func (b *InMemoryBackend) DeleteDBClusterWithOptions(
 	// themselves, so they must be keyed off the same casing used when they
 	// were populated -- see normalizeID's doc comment.
 	canonicalID := cluster.DBClusterIdentifier
+
+	// Remove this cluster from its source's ReadReplicaIdentifiers.
+	if cluster.ReplicationSourceIdentifier != "" {
+		if src, srcExists := b.clusters.Get(normalizeID(cluster.ReplicationSourceIdentifier)); srcExists {
+			src.ReadReplicaIdentifiers = slices.DeleteFunc(src.ReadReplicaIdentifiers, func(s string) bool {
+				return idEqual(s, canonicalID)
+			})
+		}
+	}
+
 	b.clusters.Delete(normalizeID(id))
 	delete(b.tags, b.rdsARN("cluster", canonicalID))
 	delete(b.fisFailoverFaults, canonicalID)

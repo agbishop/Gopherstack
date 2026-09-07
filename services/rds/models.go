@@ -277,10 +277,12 @@ type DBCluster struct {
 	NetworkType                     string                            `json:"networkType,omitempty"`
 	ReaderEndpoint                  string                            `json:"readerEndpoint,omitempty"`
 	Endpoint                        string                            `json:"endpoint"`
+	ReplicationSourceIdentifier     string                            `json:"replicationSourceIdentifier,omitempty"`
 	EnabledCloudwatchLogsExports    []string                          `json:"enabledCloudwatchLogsExports,omitempty"`
 	ReaderAvailabilityZones         []string                          `json:"readerAvailabilityZones,omitempty"`
 	AvailabilityZones               []string                          `json:"availabilityZones,omitempty"`
 	DBClusterMembers                []DBClusterMember                 `json:"dbClusterMembers,omitempty"`
+	ReadReplicaIdentifiers          []string                          `json:"readReplicaIdentifiers,omitempty"`
 	BacktrackWindow                 int64                             `json:"backtrackWindow,omitempty"`
 	Port                            int                               `json:"port"`
 	BackupRetentionPeriod           int                               `json:"backupRetentionPeriod"`
@@ -685,6 +687,7 @@ type DBClusterOptions struct {
 	StorageType                  string
 	NetworkType                  string
 	EngineLifecycleSupport       string
+	ReplicationSourceIdentifier  string
 	EnabledCloudwatchLogsExports []string
 	AvailabilityZones            []string
 	BacktrackWindow              int64

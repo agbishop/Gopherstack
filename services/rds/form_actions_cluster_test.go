@@ -103,6 +103,72 @@ func TestRDSHandler_FormActions_Clusters(t *testing.T) {
 			wantCode:     http.StatusOK,
 			wantContains: []string{"ModifyDBClusterResponse", "my-cluster-pg"},
 		},
+		{
+			name: "CreateDBCluster_ReplicationSourceIdentifier",
+			setupBodies: []string{
+				"Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=src-repl&Engine=aurora-postgresql",
+			},
+			body: "Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=replica-repl" +
+				"&Engine=aurora-postgresql&ReplicationSourceIdentifier=src-repl",
+			wantCode: http.StatusOK,
+			wantContains: []string{
+				"CreateDBClusterResponse", "replica-repl",
+				"<ReplicationSourceIdentifier>src-repl</ReplicationSourceIdentifier>",
+			},
+		},
+		{
+			name: "CreateDBCluster_ReplicationSourceIdentifier_NotFound",
+			body: "Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=replica-no-src" +
+				"&Engine=aurora-postgresql&ReplicationSourceIdentifier=nonexistent",
+			wantCode:     http.StatusBadRequest,
+			wantContains: []string{"DBClusterNotFound"},
+		},
+		{
+			name: "DescribeDBClusters_ReadReplicaIdentifiers",
+			setupBodies: []string{
+				"Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=src-rr&Engine=aurora-postgresql",
+				"Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=replica-rr" +
+					"&Engine=aurora-postgresql&ReplicationSourceIdentifier=src-rr",
+			},
+			body:     "Action=DescribeDBClusters&Version=2014-10-31&DBClusterIdentifier=src-rr",
+			wantCode: http.StatusOK,
+			wantContains: []string{
+				"<ReadReplicaIdentifiers><ReadReplicaIdentifier>replica-rr</ReadReplicaIdentifier></ReadReplicaIdentifiers>",
+			},
+		},
+		{
+			name: "DeleteDBCluster_ReplicaRemovedFromSourceReadReplicaIdentifiers",
+			setupBodies: []string{
+				"Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=src-del-rr&Engine=aurora-postgresql",
+				"Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=replica-del-rr" +
+					"&Engine=aurora-postgresql&ReplicationSourceIdentifier=src-del-rr",
+				"Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=replica-keep-rr" +
+					"&Engine=aurora-postgresql&ReplicationSourceIdentifier=src-del-rr",
+				"Action=DeleteDBCluster&Version=2014-10-31&DBClusterIdentifier=replica-del-rr" +
+					"&SkipFinalSnapshot=true",
+			},
+			body:     "Action=DescribeDBClusters&Version=2014-10-31&DBClusterIdentifier=src-del-rr",
+			wantCode: http.StatusOK,
+			wantContains: []string{
+				"<ReadReplicaIdentifiers><ReadReplicaIdentifier>replica-keep-rr</ReadReplicaIdentifier></ReadReplicaIdentifiers>",
+			},
+			wantNotContains: []string{"replica-del-rr"},
+		},
+		{
+			name: "DeleteDBCluster_SourceDeletionOrphansReplica",
+			setupBodies: []string{
+				"Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=src-orphan-rr&Engine=aurora-postgresql",
+				"Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=replica-orphan-rr" +
+					"&Engine=aurora-postgresql&ReplicationSourceIdentifier=src-orphan-rr",
+				"Action=DeleteDBCluster&Version=2014-10-31&DBClusterIdentifier=src-orphan-rr" +
+					"&SkipFinalSnapshot=true",
+			},
+			body:     "Action=DescribeDBClusters&Version=2014-10-31&DBClusterIdentifier=replica-orphan-rr",
+			wantCode: http.StatusOK,
+			wantContains: []string{
+				"<ReplicationSourceIdentifier>src-orphan-rr</ReplicationSourceIdentifier>",
+			},
+		},
 		// Cluster Parameter Group tests
 		{
 			name: "CreateDBClusterParameterGroup",
