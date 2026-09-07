@@ -46,7 +46,48 @@ func coverageWarnings(sr serviceScan) []string {
 		}
 	}
 
+	warnings = append(warnings, emissionCoverageWarnings(sr)...)
+
 	return warnings
+}
+
+// emissionCoverageWarnings guards the other half of this tool's own
+// reliability: a service can resolve every operation to a handler (the
+// guard above stays quiet) while this scan's emission mechanisms still
+// don't recognise its error-mapping shape at all -- kms and sqs's
+// data-driven tables were exactly this, reported as a silent "zero class A
+// findings" (a clean bill of health) rather than a loud one, until this
+// guard existed. Mirrors the resolution guard above in shape: an
+// unconditional check at exactly zero (unambiguous regardless of N), and a
+// ratio check at N >= minOpsForResolutionGuard for the partial case
+// (services/s3's own append-composed table, still only reaching 19/109
+// resolved ops through mechanisms this scan does understand).
+func emissionCoverageWarnings(sr serviceScan) []string {
+	if sr.OpsResolved == 0 {
+		return nil
+	}
+
+	if sr.OpsWithEmission == 0 {
+		return []string{fmt.Sprintf(
+			"%d operations resolved to a handler but ZERO emissions were found for any of them -- "+
+				"treat this service as BLIND, not clean; this scan's emission mechanisms likely don't "+
+				"recognise this service's own error-mapping shape (a report of zero class A findings "+
+				"below is not a clean bill of health)", sr.OpsResolved)}
+	}
+
+	if sr.OpsResolved >= minOpsForResolutionGuard {
+		ratio := float64(sr.OpsWithEmission) / float64(sr.OpsResolved)
+		if ratio < lowResolutionThreshold {
+			return []string{fmt.Sprintf(
+				"only %d/%d (%.0f%%) of resolved operations had ANY emission found -- treat this "+
+					"service as MOSTLY BLIND, not clean; likely a partial emission-mechanism gap in "+
+					"this tool (services/s3's own append-composed error table is a confirmed instance), "+
+					"not a service this thin on error paths",
+				sr.OpsWithEmission, sr.OpsResolved, pct(sr.OpsWithEmission, sr.OpsResolved))}
+		}
+	}
+
+	return nil
 }
 
 func pct(n, total int) float64 {

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // pkgErrors is the stdlib "errors" package identifier this file and emit.go
@@ -156,6 +157,8 @@ func funcSentinelCodes(idx *pkgIndex) map[string]map[string]string {
 				addSwitchSentinelCodes(v, idx, table)
 			case *ast.IfStmt:
 				addIfSentinelCodes(v, idx, table)
+			case *ast.RangeStmt:
+				addRangeTableSentinelCodes(v, idx, body, table)
 			}
 
 			return true
@@ -277,6 +280,312 @@ func addIfSentinelCodes(ifs *ast.IfStmt, idx *pkgIndex, out map[string]string) {
 	for name := range names {
 		out[name] = code
 	}
+}
+
+// maxTableResolveHop bounds how far addRangeTableSentinelCodes follows a
+// range loop's source expression before giving up: a local var assigned in
+// the SAME function (services/autoscaling's own shape, `mappings :=
+// []errorMapping{...}` inside autoscalingErrorCode), a package-level var
+// (services/route53's package-scoped backendErrorTable), or a zero-arg
+// package-local function call that returns the literal directly
+// (services/kms's kmsErrorTable()) -- each one hop, so a function whose OWN
+// table is itself another function call still resolves. Does NOT follow an
+// append(...) composition (services/s3's errorTable(), which concatenates
+// three sub-tables) or a sync.OnceValue-wrapped closure
+// (services/servicediscovery's sentinelErrorCodes) -- both stay a
+// disclosed blind spot, caught loudly by coverageWarnings' zero-emission
+// guard rather than silently.
+const maxTableResolveHop = 4
+
+// addRangeTableSentinelCodes recognises services/kms, services/sqs,
+// services/route53 and roughly two dozen other services' own mapper shape:
+// `for _, m := range table { if errors.Is(err, m.sentinel) { ... m.code
+// ... } }` -- a runtime loop over a data table, invisible to
+// addSwitchSentinelCodes/addIfSentinelCodes because the comparison's second
+// argument is a SELECTOR (m.sentinel), never a bare sentinel identifier.
+// Only fires when the loop body actually guards on errors.Is against a
+// selector rooted at the range loop's OWN value variable -- an ordinary
+// range loop that happens to iterate a slice is not, by itself, evidence of
+// an error-code table.
+func addRangeTableSentinelCodes(rs *ast.RangeStmt, idx *pkgIndex, body *ast.BlockStmt, out map[string]string) {
+	valueName, ok := rangeValueName(rs)
+	if !ok || rs.Body == nil || !rangeGuardsErrorsIs(rs.Body, valueName) {
+		return
+	}
+
+	for _, row := range resolveTableRows(rs.X, idx, body, 0) {
+		addRowSentinelCode(row, idx, out)
+	}
+}
+
+func rangeValueName(rs *ast.RangeStmt) (string, bool) {
+	id, ok := rs.Value.(*ast.Ident)
+	if !ok || id.Name == "_" {
+		return "", false
+	}
+
+	return id.Name, true
+}
+
+// rangeGuardsErrorsIs reports whether body contains an errors.Is(<x>,
+// <valueName>.<field>) call -- the loop variable's OWN field, not a bare
+// identifier (that shape is addIfSentinelCodes' job, not this one's).
+func rangeGuardsErrorsIs(body *ast.BlockStmt, valueName string) bool {
+	found := false
+
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) != 2 {
+			return true
+		}
+
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Is" {
+			return true
+		}
+
+		pkgIdent, ok := sel.X.(*ast.Ident)
+		if !ok || pkgIdent.Name != pkgErrors {
+			return true
+		}
+
+		argSel, ok := call.Args[1].(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+
+		argIdent, ok := argSel.X.(*ast.Ident)
+		if ok && argIdent.Name == valueName {
+			found = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return found
+}
+
+// resolveTableRows follows expr -- a range loop's source, or one hop of
+// indirection from it -- to the row literals it ultimately names: a slice
+// composite literal directly, a local variable defined earlier in the SAME
+// function body, a package-level variable, or a zero-arg package-local
+// function's own (single, non-composed) returned literal.
+func resolveTableRows(expr ast.Expr, idx *pkgIndex, body *ast.BlockStmt, hop int) []*ast.CompositeLit {
+	if hop > maxTableResolveHop {
+		return nil
+	}
+
+	switch e := expr.(type) {
+	case *ast.CompositeLit:
+		return compositeLitRows(e)
+	case *ast.Ident:
+		return resolveTableIdent(e.Name, idx, body, hop)
+	case *ast.CallExpr:
+		return resolveTableCall(e, idx, hop)
+	default:
+		return nil
+	}
+}
+
+func resolveTableIdent(name string, idx *pkgIndex, body *ast.BlockStmt, hop int) []*ast.CompositeLit {
+	if body != nil {
+		if rhs, ok := resolveLocalVar(body, name); ok {
+			return resolveTableRows(rhs, idx, body, hop+1)
+		}
+	}
+
+	if rhs, ok := idx.PkgVars[name]; ok {
+		return resolveTableRows(rhs, idx, nil, hop+1)
+	}
+
+	return nil
+}
+
+func resolveTableCall(call *ast.CallExpr, idx *pkgIndex, hop int) []*ast.CompositeLit {
+	name, ok := calleeSimpleName(call.Fun)
+	if !ok || len(call.Args) != 0 {
+		return nil
+	}
+
+	fd, ok := idx.Funcs[name]
+	if !ok || fd.Body == nil {
+		return nil
+	}
+
+	var out []*ast.CompositeLit
+
+	for _, ret := range funcReturnExprs(fd.Body) {
+		out = append(out, resolveTableRows(ret, idx, fd.Body, hop+1)...)
+	}
+
+	return out
+}
+
+// funcReturnExprs collects every top-level ReturnStmt's own single result
+// expression in fd's body -- deliberately not recursing into nested
+// FuncLits, whose own returns belong to a different function.
+func funcReturnExprs(body *ast.BlockStmt) []ast.Expr {
+	var out []ast.Expr
+
+	ast.Inspect(body, func(n ast.Node) bool {
+		if _, isFuncLit := n.(*ast.FuncLit); isFuncLit {
+			return false
+		}
+
+		ret, ok := n.(*ast.ReturnStmt)
+		if ok && len(ret.Results) == 1 {
+			out = append(out, ret.Results[0])
+		}
+
+		return true
+	})
+
+	return out
+}
+
+// resolveLocalVar finds `name := <expr>` defined anywhere in body -- the
+// SAME function the range loop itself lives in (services/autoscaling's
+// `mappings := []errorMapping{...}` inside autoscalingErrorCode).
+func resolveLocalVar(body *ast.BlockStmt, name string) (ast.Expr, bool) {
+	var result ast.Expr
+
+	var found bool
+
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+
+		as, ok := n.(*ast.AssignStmt)
+		if !ok || as.Tok != token.DEFINE {
+			return true
+		}
+
+		for i, lhs := range as.Lhs {
+			id, idOK := lhs.(*ast.Ident)
+			if idOK && id.Name == name && i < len(as.Rhs) {
+				result, found = as.Rhs[i], true
+
+				return false
+			}
+		}
+
+		return true
+	})
+
+	return result, found
+}
+
+func compositeLitRows(cl *ast.CompositeLit) []*ast.CompositeLit {
+	var out []*ast.CompositeLit
+
+	for _, elt := range cl.Elts {
+		if row, ok := elt.(*ast.CompositeLit); ok {
+			out = append(out, row)
+		}
+	}
+
+	return out
+}
+
+// maxTableRowHop bounds how far addRowSentinelCode descends into a row's
+// own nested composite literal before giving up -- services/s3's real shape
+// needs exactly one: {ErrNoSuchBucket, s3ErrorInfo{"NoSuchBucket", "...",
+// http.StatusNotFound}} nests its code one level inside the row.
+const maxTableRowHop = 1
+
+// addRowSentinelCode pairs the sentinel identifier this scan already knows
+// about (idx.Sentinels) with the code-shaped string literal(s) sitting
+// beside it in the SAME row -- positional ({ErrKeyNotFound, awsErrNotFound})
+// or keyed ({sentinel: ErrX, awsType: "Y"}); field NAME is deliberately
+// ignored, since it varies across every one of this shape's confirmed
+// instances (kms's own field is "awsType"; route53's and sqs's rows are
+// positional, no field name at all). Only the row's OWN top-level elements
+// are checked for the sentinel -- not a nested composite literal -- because
+// every confirmed instance keeps the sentinel as a direct sibling field.
+func addRowSentinelCode(row *ast.CompositeLit, idx *pkgIndex, out map[string]string) {
+	sentinel, ok := rowSentinelName(row, idx)
+	if !ok {
+		return
+	}
+
+	codes := rowCodeLiterals(row, 0)
+	if len(codes) == 0 {
+		return
+	}
+
+	out[sentinel] = codes[0]
+}
+
+func rowSentinelName(row *ast.CompositeLit, idx *pkgIndex) (string, bool) {
+	for _, elt := range row.Elts {
+		id, ok := eltValue(elt).(*ast.Ident)
+		if ok && idx.Sentinels[id.Name] {
+			return id.Name, true
+		}
+	}
+
+	return "", false
+}
+
+func rowCodeLiterals(row *ast.CompositeLit, hop int) []string {
+	var out []string
+
+	for _, elt := range row.Elts {
+		switch e := eltValue(elt).(type) {
+		case *ast.BasicLit:
+			if code, ok := rowCodeLiteral(e); ok {
+				out = append(out, code)
+			}
+		case *ast.CompositeLit:
+			if hop < maxTableRowHop {
+				out = append(out, rowCodeLiterals(e, hop+1)...)
+			}
+		}
+	}
+
+	return out
+}
+
+// rowCodeLiteral mirrors literalCode, but additionally strips a smithy
+// AWS-JSON-protocol namespace prefix ("com.amazonaws.sqs#") before applying
+// the code-shape filter -- services/sqs's own wire literal for its error
+// table's code field, matching the BARE name aws-sdk-go-v2's own
+// ErrorCode() method returns (service/sqs/types/errors.go), which is what
+// this scan's ground truth is keyed by.
+func rowCodeLiteral(lit *ast.BasicLit) (string, bool) {
+	if lit.Kind != token.STRING {
+		return "", false
+	}
+
+	v, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return "", false
+	}
+
+	if i := strings.LastIndexByte(v, '#'); i >= 0 {
+		v = v[i+1:]
+	}
+
+	if !looksLikeCode(v) {
+		return "", false
+	}
+
+	return v, true
+}
+
+func eltValue(elt ast.Expr) ast.Expr {
+	if kv, ok := elt.(*ast.KeyValueExpr); ok {
+		return kv.Value
+	}
+
+	return elt
 }
 
 // collectErrorsIsSentinels finds every errors.Is(<x>, <sentinel>) call

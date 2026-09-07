@@ -26,6 +26,7 @@ type pkgIndex struct {
 	WrapOpWrappers map[string]bool
 	Dispatch       map[string]ast.Expr
 	Sentinels      map[string]bool
+	PkgVars        map[string]ast.Expr
 	Files          []*ast.File
 }
 
@@ -52,8 +53,39 @@ func buildPkgIndexFromFiles(files []*ast.File, fset *token.FileSet) *pkgIndex {
 	idx.WrapOpWrappers = collectLocalWrapOpWrappers(files)
 	idx.Dispatch = collectDispatchEntries(files, idx.PkgConsts, idx.FuncTypeNames)
 	idx.Sentinels = collectSentinelVars(files)
+	idx.PkgVars = collectPackageVarExprs(files)
 
 	return idx
+}
+
+// collectPackageVarExprs indexes every package-level `var X = <expr>`
+// declaration (one name, one value) by name, regardless of the value's own
+// shape -- classifiers.go's resolveTableRows uses this to follow a
+// range-loop's source identifier (services/route53's backendErrorTable,
+// services/kms's declared-elsewhere tables) back to its own literal, the
+// same one hop of indirection idx.PkgConsts already gives string constants.
+func collectPackageVarExprs(files []*ast.File) map[string]ast.Expr {
+	out := map[string]ast.Expr{}
+
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.VAR {
+				continue
+			}
+
+			for _, spec := range gd.Specs {
+				vs, vsOK := spec.(*ast.ValueSpec)
+				if !vsOK || len(vs.Names) != 1 || len(vs.Values) != 1 {
+					continue
+				}
+
+				out[vs.Names[0].Name] = vs.Values[0]
+			}
+		}
+	}
+
+	return out
 }
 
 func parseNonTestDirFiles(fset *token.FileSet, dir string) ([]*ast.File, error) {

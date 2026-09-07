@@ -256,9 +256,9 @@ func TestCoverageWarnings_ImplausibleResolution(t *testing.T) {
 		wantWarned bool
 	}{
 		{"zero resolved of many", serviceScan{OpsGroundTruth: 40, OpsResolved: 0}, true},
-		{"low ratio", serviceScan{OpsGroundTruth: 40, OpsResolved: 10}, true},
-		{"healthy ratio", serviceScan{OpsGroundTruth: 40, OpsResolved: 38}, false},
-		{"small N below guard threshold", serviceScan{OpsGroundTruth: 3, OpsResolved: 1}, false},
+		{"low ratio", serviceScan{OpsGroundTruth: 40, OpsResolved: 10, OpsWithEmission: 10}, true},
+		{"healthy ratio", serviceScan{OpsGroundTruth: 40, OpsResolved: 38, OpsWithEmission: 38}, false},
+		{"small N below guard threshold", serviceScan{OpsGroundTruth: 3, OpsResolved: 1, OpsWithEmission: 1}, false},
 		{"no ground truth at all", serviceScan{OpsGroundTruth: 0, OpsResolved: 0}, false},
 	}
 
@@ -989,4 +989,222 @@ func TestReachability_MessageSubstringGuard_OnlyReachableReported(t *testing.T) 
 	require.True(t, pairs["GetThing/ResourceNotFoundException"])
 	require.False(t, pairs["GetThing/ConflictException"],
 		"GetThing's backend never returns a message containing ConflictException")
+}
+
+// directCallFixture exercises this scan's oldest mechanism -- a direct
+// awserr.New("Code", ...) call at the actual emission site
+// (awserrLiteralEmissions), services/ecs's own shape -- as a control: this
+// must keep working exactly as it did before gopherstack-yn2o's fix.
+const directCallFixture = `
+package fixture
+
+import "github.com/blackbirdworks/gopherstack/pkgs/awserr"
+
+const opGetThing = "GetThing"
+
+type Handler struct {
+	Backend *Backend
+}
+
+func (h *Handler) dispatch(action string) error {
+	switch action {
+	case opGetThing:
+		return h.handleGetThing()
+	}
+	return nil
+}
+
+func (h *Handler) handleGetThing() error {
+	return h.Backend.GetThing()
+}
+
+type Backend struct{}
+
+func (b *Backend) GetThing() error {
+	return awserr.New("ResourceNotFoundException", "thing not found")
+}
+`
+
+// TestScan_DirectCall_Detected is the control case: a direct-literal
+// emission must be detected exactly as before -- gopherstack-yn2o's fix
+// must not have disturbed this pre-existing mechanism.
+func TestScan_DirectCall_Detected(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, directCallFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{"GetThing": {}},
+		map[string]bool{"ResourceNotFoundException": true},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Equal(t, 1, sr.OpsWithEmission, "a direct awserr.New call must be detected as an emission")
+	require.Equal(
+		t, "ResourceNotFoundException", findingCodes(sr.Findings)["GetThing"],
+		"GetThing's own declared set is empty, so the undeclared code must be flagged",
+	)
+}
+
+// tableShapeFixture is services/kms and services/sqs's own real mechanism,
+// reduced to its essential shape: a data-driven table of {sentinel, code}
+// rows, iterated at runtime via a for-range loop and errors.Is against the
+// loop VARIABLE's own field (m.sentinel) -- never a bare sentinel
+// identifier, which is exactly what made addIfSentinelCodes /
+// addSwitchSentinelCodes blind to it before gopherstack-yn2o. classify is
+// deliberately never called from any op's own body -- kms's real
+// classifyKMSError is reached only through a framework error callback, not
+// through any per-operation call graph -- to prove this scan's package-wide
+// mapper-table resolution does not depend on hop-reachability the way
+// walkOpEmissions' own sentinel-return detection still correctly does.
+const tableShapeFixture = `
+package fixture
+
+import "errors"
+
+var ErrThingNotFound = errors.New("not found")
+
+type errorMapping struct {
+	sentinel error
+	code     string
+}
+
+func classify(err error) string {
+	mappings := []errorMapping{
+		{ErrThingNotFound, "ResourceNotFoundException"},
+	}
+	for _, m := range mappings {
+		if errors.Is(err, m.sentinel) {
+			return m.code
+		}
+	}
+	return ""
+}
+
+const opGetThing = "GetThing"
+
+type Handler struct {
+	Backend *Backend
+}
+
+func (h *Handler) dispatch(action string) error {
+	switch action {
+	case opGetThing:
+		return h.handleGetThing()
+	}
+	return nil
+}
+
+func (h *Handler) handleGetThing() error {
+	return h.Backend.GetThing()
+}
+
+type Backend struct{}
+
+func (b *Backend) GetThing() error {
+	return ErrThingNotFound
+}
+`
+
+// TestScan_TableShape_DetectedAfterFix is the case gopherstack-yn2o exists
+// to fix: this fixture is a REDUCTION of services/kms's real
+// kmsErrorTable/classifyKMSError shape, and must be detected as an
+// emission source. Hollow before addRangeTableSentinelCodes existed --
+// see this file's revert-proof note below.
+func TestScan_TableShape_DetectedAfterFix(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, tableShapeFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{"GetThing": {}},
+		map[string]bool{"ResourceNotFoundException": true},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Equal(
+		t, 1, sr.OpsWithEmission,
+		"the for-range table mapper (services/kms's own shape) must be detected as an emission source",
+	)
+	require.Equal(
+		t, "ResourceNotFoundException", findingCodes(sr.Findings)["GetThing"],
+		"GetThing's own declared set is empty, so the undeclared table-mapped code must be flagged",
+	)
+}
+
+// unknownShapeFixture is services/docdb's own real shape: a bare `[]error`
+// slice (no code field at all -- the sentinel's OWN .Error() message IS the
+// code, resolved only at runtime) walked the same errors.Is-in-a-for-range
+// way as tableShapeFixture. Neither addIfSentinelCodes/addSwitchSentinelCodes
+// nor addRangeTableSentinelCodes can extract a code from this: there is no
+// code-shaped literal anywhere in the row, because there is no row -- the
+// slice element IS the sentinel. This is the shape gopherstack-yn2o's design
+// question (A vs B) turns on: A cannot reach it, so only B -- reporting
+// zero emissions as a loud, distinct BLIND warning -- keeps this scan
+// honest about it.
+const unknownShapeFixture = `
+package fixture
+
+import "errors"
+
+var ErrThingNotFound = errors.New("ThingNotFoundFault")
+
+const opGetThing = "GetThing"
+
+type Handler struct {
+	Backend *Backend
+}
+
+func (h *Handler) dispatch(action string) error {
+	switch action {
+	case opGetThing:
+		return h.handleGetThing()
+	}
+	return nil
+}
+
+func (h *Handler) handleGetThing() error {
+	return h.Backend.GetThing()
+}
+
+type Backend struct{}
+
+func (b *Backend) GetThing() error {
+	return ErrThingNotFound
+}
+
+func classify(err error) string {
+	sentinels := []error{ErrThingNotFound}
+	for _, s := range sentinels {
+		if errors.Is(err, s) {
+			return s.Error()
+		}
+	}
+	return ""
+}
+`
+
+// TestScan_UnknownShape_ReportedBlindNotZero is the third, load-bearing
+// case: a shape NEITHER mechanism understands must surface as a loud BLIND
+// warning, not a silent "zero class A findings" clean bill of health --
+// this is the whole point of implementing option B (see emissionCoverageWarnings).
+func TestScan_UnknownShape_ReportedBlindNotZero(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, unknownShapeFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{"GetThing": {}},
+		map[string]bool{"ThingNotFoundFault": true},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Equal(t, 1, sr.OpsResolved)
+	require.Equal(
+		t, 0, sr.OpsWithEmission,
+		"this scan cannot statically resolve a code computed via sentinel.Error() at runtime",
+	)
+	require.NotEmpty(t, sr.Warnings, "zero emissions with ops resolved must be reported as BLIND, never silently clean")
+	require.Contains(t, sr.Warnings[0], "BLIND")
+	require.Empty(t, sr.Findings, "nothing was detected, so there is nothing to find")
 }
