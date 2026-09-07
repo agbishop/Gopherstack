@@ -737,3 +737,54 @@ Gates: `go build ./...` (repo-wide), `go vet ./...` (repo-wide, clean),
 touched this pass (store.go, persistence.go, handler_resource_policy.go,
 handler_resource_policy_test.go, persistence_test.go). Pages fetched: 0
 (pinned module cache only).
+
+## 2026-09-07 (gopherstack-ejfu: KMS/language-code findings from commit adbe69143, triaged -- not a defect)
+
+adbe69143 (gopherstack-sgbw) taught `cmd/errtargetaudit` to trace comprehend's
+`CreateResource`/`h.batch` shared-dispatch shapes (85/85 resolved, up from
+27/85), surfacing 3 class A findings never previously triaged: `store.go:230`
+(`ModelKmsKeyId`) and `:233` (`VolumeKmsKeyId`), both `KmsKeyValidationException`
+attributed to `CreateDataset`/`CreateEndpoint`; `handler_detection.go:542`
+(`validateLanguageCode`), `UnsupportedLanguageException` attributed to
+`BatchDetectDominantLanguage`. The originating bd issue called the KMS pair
+"a real class A mismatch" with the open question being whether a declared
+alternative fits -- that framing doesn't survive a reachability check.
+
+**Verdict: all 3 are false positives from the tracer's own documented
+over-approximation (`cmd/errtargetaudit/dispatch_datamap.go`'s
+`collectSharedExecutorFallback`: "recover a key -> root-expression binding
+... over-inclusively"), not live bugs. No code change.**
+
+- `store.go:230`/`:233`: `CreateResource` is the one shared constructor for
+  all 5 resource types (`resourceSpecs()`), and unconditionally calls
+  `validateKmsKeyID` against `values["ModelKmsKeyId"]`/`values["VolumeKmsKeyId"]`
+  for every type, `values` being the raw request body. But
+  `CreateDatasetInput`/`CreateEndpointInput` (aws-sdk-go-v2/service/comprehend@v1.43.4,
+  api_op_CreateDataset.go/api_op_CreateEndpoint.go) declare no such fields at
+  all -- confirmed by reading both structs directly. A real SDK client's
+  marshaler can never emit either key for these two ops, so `values[...]`
+  is always `""`, and `validateKmsKeyID("")` returns `nil` (store.go:803-805,
+  "empty is valid"). The check executes on every call (real code, genuinely
+  reached) but can never observably fire for these two ops -- the same
+  "guarded field doesn't exist in the op's real wire shape" shape as
+  gopherstack-03rb (cloudfront), not gopherstack-mq6m/jpfk's shape. It is
+  correctly reachable and required for the other 3 resourceSpecs entries
+  (DocumentClassifier/EntityRecognizer/Flywheel, whose Create*Input structs
+  do carry `ModelKmsKeyId`), which is why "declared correctly by" in the
+  audit output samples exactly those.
+- `handler_detection.go:542`: `BatchDetectDominantLanguage` dispatches via
+  `h.batch(h.detectDominantLanguage, nil)` (handler.go:260) -- the `nil`
+  second argument. `h.batch`'s body gates the entire language-code check
+  behind `if allowedLanguages != nil` (handler_detection.go:466-470) before
+  ever calling `requireLanguageCode`/`validateLanguageCode`. For this one op
+  the guard is always false; `validateLanguageCode` (line 542) is
+  structurally unreachable from it, matching
+  `DetectDominantLanguage`/`BatchDetectDominantLanguage` having no
+  `LanguageCode` field at all (already documented above, "LanguageCode is
+  required ... except two"). The other 9 `Batch*` ops pass a real
+  `allowedLanguages` map and correctly reach and declare this exception.
+
+No regression test added -- nothing was fixed; both sites are proven
+unreachable via a real `aws-sdk-go-v2` client, not merely undertested.
+Gates: `golangci-lint run ./services/comprehend/...` (0 issues),
+`go test -race ./services/comprehend/...` (pass) -- no source changed.

@@ -513,3 +513,74 @@ Gates: `go build ./services/forecast/...`, `go vet ./services/forecast/...`,
 `go test ./services/forecast/... -race -count=1`, `golangci-lint run ./services/forecast/...` -- all
 clean. `go vet ./...` repo-wide also clean (both changed `InMemoryBackend` methods are unexported and
 called only from within this package). Work left uncommitted per this session's hard constraints.
+
+## 2026-09-07 (gopherstack-ejfu: 127 findings from commit adbe69143, triaged -- not a defect, a 4th shape)
+
+adbe69143 (gopherstack-sgbw) taught `cmd/errtargetaudit` to trace forecast's
+`map[string]operationSpec` dispatch through `addCRUD`/`h.execute` (63/63
+resolved, up from 6/63), surfacing 217 raw rows that collapse, by (op, code)
+pair, to 127 class A findings across 5 codes: `InvalidNextTokenException`
+(42 ops), `ResourceAlreadyExistsException` (41), `ResourceInUseException`
+(28), `ResourceNotFoundException` (14), `InvalidInputException` (2) -- that
+127 total already equals 42+41+28+14+2, confirming the tool's own count is
+per-(op,code)-pair, not per raw row. The 14 raw site rows this produces
+collapse further to **11 genuine physical sites**: `store.go:189/190/191`
+are not independent emission points at all -- they are the Go *builtin*
+`delete(map, key)` statements a few lines inside `InMemoryBackend`'s own
+`delete` *method* (store.go:188-191), evidently misattributed by the
+classifier via the shared name `delete`; the one real raise for that path is
+`store.go:181`. Distinct SITE count: 11. Distinct (op, code) pairs: 127.
+
+**Verdict: a 4th shape, none of the prior three (mq6m shared-helper,
+jpfk idiomatic-guard, 03rb wire-shape-absent) exactly, but closest to 03rb --
+provably unreachable given forecast's own dispatch table. No code change.**
+
+Every one of the 5 codes is the SAME root cause: `h.ops[action]` (built by
+`addCRUD`/`withMode`, handler.go:782-804) binds each op to an
+`operationSpec` whose `mode` field is a **fixed constant set once at
+map-construction time**, never derived from request input. `h.execute`
+(handler.go:169-219) switches on that fixed `spec.mode`, and each backend
+method it calls (`create`/`describe`/`update`/`delete`/`list`, store.go) is
+called from **exactly one** call site in that switch (confirmed:
+`grep -n "\.describe(\|\.delete(\|\.update(\|\.create(\|\.list("
+services/forecast/*.go` finds each verb exactly once, all inside
+`execute`). So a `CreateDataset` call, whose spec is permanently
+`mode: modeCreate`, can never take the `modeList` branch and therefore can
+never reach `listOutput`'s `InvalidNextTokenException` at handler.go:447 --
+and symmetrically for every other mode/code pair (`store.go:104`
+`ResourceAlreadyExistsException` only from `create`; `store.go:141`/`:159`/
+`:181` `ResourceNotFoundException` only from `describe`/`update`/`delete`
+respectively; `store.go:184` `ResourceInUseException` only from `delete`;
+`store.go:77`/`:81`/`:88` `InvalidInputException` only from `create`).
+Verified the counts are exactly consistent with this: `h.ops` has 55 entries
+(create=14, describe=14, list=13, delete=13, update=1 --
+`TestCountModes`, scratch, not committed). `create+describe+update =
+14+14+1 = 42` matches the `InvalidNextTokenException` finding count
+exactly (every non-`list` op); `55-14=41` matches
+`ResourceAlreadyExistsException` (every non-`create` op); the
+`ResourceInUseException` findings list (`CreateDataset` + all 14
+`Describe*` + all 13 `List*` = 28) matches every op that is neither
+`delete` nor one of the 13 other `create` ops. `handler.go:217` (the
+switch's `default:` case, `InvalidInputException`) is dead code by the
+same argument: every spec built by `addCRUD`/`withMode` has one of the 5
+known `mode` constants, so `default` can never execute. The other 8 ops
+(`ListMonitorEvaluations`,
+`DeleteResourceTree`, `StopResource`, `ResumeResource`,
+`GetAccuracyMetrics`, `ListTagsForResource`, `TagResource`,
+`UntagResource`) bypass `h.ops`/`execute` entirely (dispatched directly,
+handler.go:130-154) and are absent from both the findings and the
+"declared correctly" sets, consistent with this.
+
+This is the tool's own documented tradeoff, not a bug in it:
+`dispatch_datamap.go`'s `collectSharedExecutorFallback` binds every
+data-typed dispatch-map key to the single shared root function "over-inclusively",
+deliberately unable to narrow by a struct field's per-key constant value --
+the same mechanism, applied to a compile-time-fixed enum field instead of a
+wire-shape-absent one, that produced this pass's comprehend verdict
+(gopherstack-ejfu, comprehend PARITY.md) and gopherstack-03rb before it.
+
+Not fixed: nothing is broken. No regression test added -- there is no
+observable client-facing behavior to pin; a test asserting these codes are
+never returned would just restate the dispatch table already enforcing it.
+Gates: `golangci-lint run ./services/forecast/...` (0 issues),
+`go test -race ./services/forecast/...` (pass) -- no source changed.
