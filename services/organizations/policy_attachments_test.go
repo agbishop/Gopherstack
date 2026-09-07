@@ -463,9 +463,6 @@ func TestListTargetsForPolicy_Sorted(t *testing.T) {
 			roots, err := b.ListRoots()
 			require.NoError(t, err)
 
-			_, err = b.EnablePolicyType(roots[0].ID, "SERVICE_CONTROL_POLICY")
-			require.NoError(t, err)
-
 			p, err := b.CreatePolicy("sorted-pol", "", `{"Version":"2012-10-17"}`, "SERVICE_CONTROL_POLICY", nil)
 			require.NoError(t, err)
 

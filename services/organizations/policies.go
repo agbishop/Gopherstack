@@ -140,6 +140,10 @@ func (b *InMemoryBackend) seedFullAWSAccessPolicyLocked(featureSet, rootID strin
 	if featureSet == featureSetAll {
 		b.policyTargets[fullAWSAccessPolicyID] = append(b.policyTargets[fullAWSAccessPolicyID], rootID)
 		b.targetPolicies[rootID] = append(b.targetPolicies[rootID], fullAWSAccessPolicyID)
+		b.root.PolicyTypes = append(b.root.PolicyTypes, PolicyTypeSummary{
+			Type:   policyTypeSCP,
+			Status: policyStatusEnabled,
+		})
 	}
 }
 

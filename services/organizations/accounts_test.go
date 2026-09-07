@@ -792,11 +792,7 @@ func TestCreateAccount_EmailUniqueness_AfterReset(t *testing.T) {
 func TestRemoveAccount_CleansPolicyTargets(t *testing.T) {
 	t.Parallel()
 
-	b, rootID := newOrgBackend(t)
-
-	// Enable SCP and create an account.
-	_, err := b.EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
-	require.NoError(t, err)
+	b, _ := newOrgBackend(t)
 
 	status, err := b.CreateAccount("to-remove", "remove@example.com", "", "", nil)
 	require.NoError(t, err)
