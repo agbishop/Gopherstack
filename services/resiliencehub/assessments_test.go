@@ -106,3 +106,40 @@ func TestDeleteAppAssessment_RejectsWhileRunning(t *testing.T) {
 	var conflict *types.ConflictException
 	require.ErrorAs(t, err, &conflict)
 }
+
+// TestListAppAssessmentDrifts_UnknownArnStillEmpty verifies
+// ListAppAssessmentComplianceDrifts/ListAppAssessmentResourceDrifts do NOT
+// surface ResourceNotFoundException for an unknown AssessmentArn
+// (gopherstack-ulsj) -- confirmed via the SDK's own deserializeOpError<Op>
+// switch in deserializers.go that neither op's declared error set includes
+// ResourceNotFoundException, unlike a sibling op that keys on the same
+// resource (DescribeAppAssessment, which does declare it and still must).
+func TestListAppAssessmentDrifts_UnknownArnStillEmpty(t *testing.T) {
+	t.Parallel()
+
+	_, client := newTestHandlerAndClient(t)
+	ctx := t.Context()
+
+	unknownArn := aws.String("arn:aws:resiliencehub:us-east-1:000000000000:app-assessment/nonexistent")
+
+	compliance, err := client.ListAppAssessmentComplianceDrifts(
+		ctx, &resiliencehubsdk.ListAppAssessmentComplianceDriftsInput{AssessmentArn: unknownArn},
+	)
+	require.NoError(t, err)
+	require.Empty(t, compliance.ComplianceDrifts)
+
+	resource, err := client.ListAppAssessmentResourceDrifts(
+		ctx, &resiliencehubsdk.ListAppAssessmentResourceDriftsInput{AssessmentArn: unknownArn},
+	)
+	require.NoError(t, err)
+	require.Empty(t, resource.ResourceDrifts)
+
+	// DescribeAppAssessment, which keys on the same AssessmentArn, must still
+	// reject the same unknown ARN -- proves the fix is scoped to these two
+	// ops, not a service-wide relaxation of assessment-arn validation.
+	_, err = client.DescribeAppAssessment(ctx, &resiliencehubsdk.DescribeAppAssessmentInput{AssessmentArn: unknownArn})
+	require.Error(t, err)
+
+	var nf *types.ResourceNotFoundException
+	require.ErrorAs(t, err, &nf)
+}
