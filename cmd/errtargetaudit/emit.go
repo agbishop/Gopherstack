@@ -189,7 +189,9 @@ func mergeMapperTable(table, out map[string]string, conflict map[string]bool) {
 
 // localSentinelOverrides scans hop0Roots' OWN bodies (never recursing) for
 // a call to a known override function, reading the actual sentinel argument
-// passed at that call site.
+// passed at that call site -- and, for a respondAsConflictCode-shaped
+// override (CodeParamIndex >= 0), the actual CODE argument too, since that
+// helper's own body never contains the literal at all.
 func localSentinelOverrides(hop0Roots []opRoot, idx *pkgIndex, overrides map[string]overrideFunc) map[string]string {
 	out := map[string]string{}
 
@@ -215,8 +217,12 @@ func localSentinelOverrides(hop0Roots []opRoot, idx *pkgIndex, overrides map[str
 			}
 
 			id, ok := call.Args[ov.ParamIndex].(*ast.Ident)
-			if ok && idx.Sentinels[id.Name] {
-				out[id.Name] = ov.Code
+			if !ok || !idx.Sentinels[id.Name] {
+				return true
+			}
+
+			if code, codeOK := resolveOverrideCallCode(call, ov, idx); codeOK {
+				out[id.Name] = code
 			}
 
 			return true
@@ -224,6 +230,26 @@ func localSentinelOverrides(hop0Roots []opRoot, idx *pkgIndex, overrides map[str
 	}
 
 	return out
+}
+
+// resolveOverrideCallCode returns the code an override call site actually
+// renders: the helper's own fixed Code, or, when CodeParamIndex is >= 0, the
+// code-shaped literal (or package-level const) passed as THAT call's own
+// argument -- a call site passing anything else there (a variable, a
+// computed expression) resolves to nothing, matching this tool's standing
+// "silent miss over false finding" discipline elsewhere in this package: the
+// operation falls back to the package-wide sentinel table rather than being
+// suppressed on a guess.
+func resolveOverrideCallCode(call *ast.CallExpr, ov overrideFunc, idx *pkgIndex) (string, bool) {
+	if ov.CodeParamIndex < 0 {
+		return ov.Code, true
+	}
+
+	if ov.CodeParamIndex >= len(call.Args) {
+		return "", false
+	}
+
+	return firstCodeLiteral(call.Args[ov.CodeParamIndex], idx, 0)
 }
 
 func dedupEmissions(in []emission) []emission {

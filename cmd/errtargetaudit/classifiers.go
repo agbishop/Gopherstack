@@ -48,14 +48,24 @@ type classifiers struct {
 
 // overrideFunc is a helper like services/iot's respondAsInvalidRequest(c,
 // err, sentinel error) -- a function that takes the COMPARISON sentinel as
-// its OWN parameter rather than a fixed identifier, and emits Code
+// its OWN parameter rather than a fixed identifier, and emits a code
 // specifically when errors.Is(err, thatParam) holds. ParamIndex is the
 // flattened parameter position of the comparison argument, so a call site
 // passing a literal sentinel there can be resolved without knowing the
 // helper's implementation.
+//
+// The emitted code itself is either FIXED (Code, baked into the helper's own
+// body -- respondAsInvalidRequest's shape) or, when CodeParamIndex is >= 0,
+// itself a parameter (services/iot's respondAsConflictCode(c, err, sentinel
+// error, code string) shape): the helper's own body never contains a code
+// literal at all, only `awsErrBody{code, ...}`, so the real value can only be
+// read from each CALL SITE's own CodeParamIndex argument -- resolveOverrideCode
+// in emit.go does that. Exactly one of Code/CodeParamIndex applies;
+// CodeParamIndex is -1 when Code is used.
 type overrideFunc struct {
-	Code       string
-	ParamIndex int
+	Code           string
+	ParamIndex     int
+	CodeParamIndex int
 }
 
 // buildClassifiers finds the package's own errors.Is-to-code mapper(s)
@@ -829,13 +839,19 @@ func isFmtErrorfCall(call *ast.CallExpr) bool {
 // services/iot's respondAsInvalidRequest(c, err, sentinel error): it takes
 // the comparison sentinel as ITS OWN parameter (rather than a fixed package
 // identifier) and, in an `if errors.Is(<x>, <thatParam>) { ... }` branch,
-// emits a fixed code. Detecting this matters for PRECISION, not recall: a
-// service that only ever uses such a helper post-fix (this repo's own
-// pattern for the fix commits this tool validates against) would otherwise
-// have its call sites misread as still emitting the PRE-fix, general
-// mapper's code -- confirmed as a false positive on services/iot's
-// (post-fix) CancelJob/DeleteThing during this tool's own validation pass,
-// before this detector was added.
+// emits either a fixed code (findOverrideShape) or a code read from another
+// of the helper's own STRING-typed parameters (services/iot's
+// respondAsConflictCode(c, err, sentinel error, code string) shape --
+// findParamCodeOverrideShape). Detecting this matters for PRECISION, not
+// recall: a service that only ever uses such a helper post-fix (this repo's
+// own pattern for the fix commits this tool validates against) would
+// otherwise have its call sites misread as still emitting the PRE-fix,
+// general mapper's code -- confirmed as a false positive on services/iot's
+// (post-fix) CancelJob/DeleteThing (fixed code) and, separately, on
+// CreateCommand/CreateJobTemplate/CreatePackage/CreatePackageVersion/
+// StartAuditMitigationActionsTask/StartDetectMitigationActionsTask
+// (per-call-site code, gopherstack-il42) during this tool's own validation
+// passes, before each detector was added.
 func detectOverrideFuncs(idx *pkgIndex) map[string]overrideFunc {
 	out := map[string]overrideFunc{}
 
@@ -847,7 +863,9 @@ func detectOverrideFuncs(idx *pkgIndex) map[string]overrideFunc {
 			}
 
 			params := flattenParamNames(fd.Type.Params)
-			if ov, found := findOverrideShape(fd.Body, idx, params); found {
+			stringParams := flattenStringParamIndices(fd.Type.Params)
+
+			if ov, found := findOverrideShape(fd.Body, idx, params, stringParams); found {
 				out[fd.Name.Name] = ov
 			}
 		}
@@ -878,7 +896,43 @@ func flattenParamNames(fl *ast.FieldList) []string {
 	return out
 }
 
-func findOverrideShape(body *ast.BlockStmt, idx *pkgIndex, params []string) (overrideFunc, bool) {
+// flattenStringParamIndices returns, in the same flattened order
+// flattenParamNames uses, the parameter indices whose declared type is the
+// bare builtin `string` -- respondAsConflictCode's `code string` is one, its
+// `err, sentinel error` are not, so filtering on this alone already excludes
+// the comparison arguments without needing to know which index
+// errorsIsParamIndex picked.
+func flattenStringParamIndices(fl *ast.FieldList) []int {
+	if fl == nil {
+		return nil
+	}
+
+	var out []int
+
+	idx := 0
+
+	for _, f := range fl.List {
+		n := len(f.Names)
+		if n == 0 {
+			n = 1
+		}
+
+		id, isString := f.Type.(*ast.Ident)
+		isString = isString && id.Name == "string"
+
+		for range n {
+			if isString {
+				out = append(out, idx)
+			}
+
+			idx++
+		}
+	}
+
+	return out
+}
+
+func findOverrideShape(body *ast.BlockStmt, idx *pkgIndex, params []string, stringParams []int) (overrideFunc, bool) {
 	var result overrideFunc
 
 	var found bool
@@ -898,14 +952,53 @@ func findOverrideShape(body *ast.BlockStmt, idx *pkgIndex, params []string) (ove
 			return true
 		}
 
-		code, codeOK := firstCodeLiteral(ifs.Body, idx, 0)
-		if !codeOK {
+		if code, codeOK := firstCodeLiteral(ifs.Body, idx, 0); codeOK {
+			result, found = overrideFunc{ParamIndex: paramIdx, Code: code, CodeParamIndex: -1}, true
+
+			return false
+		}
+
+		if codeParamIdx, paramOK := firstStringParamRef(ifs.Body, params, stringParams); paramOK {
+			result, found = overrideFunc{ParamIndex: paramIdx, CodeParamIndex: codeParamIdx}, true
+
+			return false
+		}
+
+		return true
+	})
+
+	return result, found
+}
+
+// firstStringParamRef finds the first identifier in n referencing one of the
+// enclosing function's own string-typed parameters (stringParams, flattened
+// indices into params), for the respondAsConflictCode shape where the
+// emitted code is itself a parameter rather than a literal in the helper's
+// own body -- the real value only exists at each call site.
+func firstStringParamRef(n ast.Node, params []string, stringParams []int) (int, bool) {
+	var result int
+
+	var found bool
+
+	ast.Inspect(n, func(node ast.Node) bool {
+		if found {
+			return false
+		}
+
+		id, ok := node.(*ast.Ident)
+		if !ok {
 			return true
 		}
 
-		result, found = overrideFunc{ParamIndex: paramIdx, Code: code}, true
+		for _, pi := range stringParams {
+			if pi < len(params) && params[pi] == id.Name {
+				result, found = pi, true
 
-		return false
+				return false
+			}
+		}
+
+		return true
 	})
 
 	return result, found

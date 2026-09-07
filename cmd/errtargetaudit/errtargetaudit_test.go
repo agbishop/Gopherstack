@@ -400,6 +400,181 @@ func TestDetectOverrideFuncs(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 1, ov.ParamIndex)
 	require.Equal(t, "InvalidRequestException", ov.Code)
+	require.Equal(t, -1, ov.CodeParamIndex, "fixed-code override must not also carry a code param index")
+}
+
+// paramCodeOverrideFixture is services/iot's real respondAsConflictCode
+// shape (gopherstack-il42): the override helper takes BOTH the comparison
+// sentinel AND the emitted code as its OWN parameters, so -- unlike
+// respondAsInvalidRequest above -- the code literal never appears inside the
+// helper's own body at all, only at each call site. CreateThing routes
+// through the override (ConflictException); GetThing does NOT, and stays on
+// the general mapper's ResourceAlreadyExistsException -- exercising both
+// paths from the same package so the override detector's precision fix can't
+// be mistaken for a recall loss.
+const paramCodeOverrideFixture = `
+package fixture
+
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrAlreadyExists = errors.New("already exists")
+
+func writeError(err error) string {
+	switch {
+	case errors.Is(err, ErrAlreadyExists):
+		return "ResourceAlreadyExistsException"
+	}
+	return "UnmappedFailureCode"
+}
+
+func respondAsConflictCode(err, sentinel error, code string) string {
+	if errors.Is(err, sentinel) {
+		return code
+	}
+	return writeError(err)
+}
+
+type Handler struct {
+	Backend *Backend
+}
+
+func (h *Handler) handleCreateThing() string {
+	err := h.Backend.CreateThing()
+	if err != nil {
+		return respondAsConflictCode(err, ErrAlreadyExists, "ConflictException")
+	}
+	return ""
+}
+
+func (h *Handler) handleGetThing() string {
+	err := h.Backend.GetThing()
+	if err != nil {
+		return writeError(err)
+	}
+	return ""
+}
+
+type Backend struct{}
+
+func (b *Backend) CreateThing() error {
+	return fmt.Errorf("%w: thing", ErrAlreadyExists)
+}
+
+func (b *Backend) GetThing() error {
+	return fmt.Errorf("%w: thing", ErrAlreadyExists)
+}
+`
+
+func TestDetectOverrideFuncs_ParamCode(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, paramCodeOverrideFixture)
+	cls := buildClassifiers(idx, map[string]bool{"CreateThing": true, "GetThing": true})
+
+	ov, ok := cls.Overrides["respondAsConflictCode"]
+	require.True(t, ok)
+	require.Equal(t, 1, ov.ParamIndex, "sentinel is respondAsConflictCode's 2nd param")
+	require.Equal(t, 2, ov.CodeParamIndex, "code is respondAsConflictCode's 3rd (string-typed) param")
+	require.Empty(t, ov.Code, "a param-code override has no fixed code baked into its own body")
+}
+
+// TestScan_ParamCodeOverride_SuppressesGeneralMapping confirms the
+// respondAsConflictCode shape: CreateThing's own declared set includes
+// ConflictException (the override's call-site code) but not
+// ResourceAlreadyExistsException (the general mapper's code) -- with the
+// call-site code resolved, this must be CLEAN, not the false positive
+// gopherstack-il42 reported (six of ten iot findings were exactly this
+// shape). GetThing, which never touches the override, correctly declares the
+// general mapper's own code and must also stay clean -- proving the fix
+// doesn't accidentally widen suppression to non-override call sites in the
+// same package.
+func TestScan_ParamCodeOverride_SuppressesGeneralMapping(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, paramCodeOverrideFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{
+			"CreateThing": {"ConflictException": true},
+			"GetThing":    {"ResourceAlreadyExistsException": true},
+		},
+		map[string]bool{
+			"ResourceAlreadyExistsException": true,
+			"ConflictException":              true,
+			"UnmappedFailureCode":            true,
+		},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	require.Empty(t, sr.Findings, "override resolution must prevent the general-mapper false positive on CreateThing")
+}
+
+// TestScan_ParamCodeOverride_RegressionGuard is the regression guard the
+// override fix must not defeat: GetThing never calls respondAsConflictCode,
+// so its own genuinely undeclared code (the general mapper's
+// ResourceAlreadyExistsException) must still be reported -- proving the
+// override detector narrows the tool rather than blinding it. CreateThing,
+// routed through the override with its declared code, stays clean in the
+// same scan.
+func TestScan_ParamCodeOverride_RegressionGuard(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, paramCodeOverrideFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{
+			"CreateThing": {"ConflictException": true},
+			"GetThing":    {"SomeOtherCode": true},
+		},
+		map[string]bool{
+			"ResourceAlreadyExistsException": true,
+			"ConflictException":              true,
+			"UnmappedFailureCode":            true,
+			"SomeOtherCode":                  true,
+		},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	codes := findingCodes(sr.Findings)
+	require.NotContains(t, codes, "CreateThing", "override-declared code must stay clean")
+	require.Equal(t, "ResourceAlreadyExistsException", codes["GetThing"],
+		"a genuinely undeclared code with no override in play must still be flagged")
+	require.Len(t, sr.Findings, 1)
+}
+
+// TestScan_ParamCodeOverride_WrongOverrideCodeStillFlagged proves an
+// override is not automatically correct: CreateThing's declared set here
+// does NOT include ConflictException (the override's own call-site code),
+// so the finding must still surface -- attributed to the OVERRIDE's code,
+// never silently to the general mapper's, since that is what this operation
+// actually renders on the wire.
+func TestScan_ParamCodeOverride_WrongOverrideCodeStillFlagged(t *testing.T) {
+	t.Parallel()
+
+	idx := parseSrc(t, paramCodeOverrideFixture)
+	smt := singleModuleTruth(newTestModuleGroundTruth(
+		map[string]map[string]bool{
+			"CreateThing": {"SomeOtherCode": true},
+			"GetThing":    {"ResourceAlreadyExistsException": true},
+		},
+		map[string]bool{
+			"ResourceAlreadyExistsException": true,
+			"ConflictException":              true,
+			"UnmappedFailureCode":            true,
+			"SomeOtherCode":                  true,
+		},
+	))
+
+	sr := scanWithIndex("fixture", []string{"fixture"}, "/repo", idx, smt)
+
+	codes := findingCodes(sr.Findings)
+	require.NotContains(t, codes, "GetThing", "declared code must not be flagged")
+	require.Equal(t, "ConflictException", codes["CreateThing"],
+		"an override's own code must still be checked against ground truth, not assumed correct")
+	require.Len(t, sr.Findings, 1)
 }
 
 func TestSentinelCodes_ErrorsIsSwitch(t *testing.T) {
