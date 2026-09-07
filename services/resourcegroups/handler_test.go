@@ -467,7 +467,12 @@ func TestBadJSONRequest(t *testing.T) {
 	}
 }
 
-// TestErrorShapes verifies consistent error structure for 404 and 400 across operation families.
+// TestErrorShapes verifies consistent error structure for 404 and 400 across
+// operation families. ListGroupingStatuses is deliberately absent: it
+// declares no NotFoundException, so a nonexistent Group succeeds rather
+// than 404s -- see its own test. CancelTagSyncTask also declares no
+// NotFoundException but is left 404ing pending a confirmed remedy -- see
+// its landmine comment in tagsync.go (gopherstack-m4k0).
 func TestErrorShapes(t *testing.T) {
 	t.Parallel()
 
@@ -498,12 +503,6 @@ func TestErrorShapes(t *testing.T) {
 		{
 			name:     "list_group_resources_404",
 			op:       "ListGroupResources",
-			body:     map[string]any{"Group": "ghost"},
-			wantCode: http.StatusNotFound,
-		},
-		{
-			name:     "list_grouping_statuses_404",
-			op:       "ListGroupingStatuses",
 			body:     map[string]any{"Group": "ghost"},
 			wantCode: http.StatusNotFound,
 		},

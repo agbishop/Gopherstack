@@ -1,8 +1,8 @@
 ---
 service: resourcegroups
 sdk_module: aws-sdk-go-v2/service/resourcegroups@v1.36.4
-last_audit_commit: a8a59e42   # HEAD when this audit started (wrapper-key sweep, 2026-08-20)
-last_audit_date: 2026-08-29
+last_audit_commit: f01b0c551   # HEAD when this audit started (errtargetaudit sweep, 2026-09-07)
+last_audit_date: 2026-09-07
 overall: A            # clean pass this sweep -- no wire bugs found; see notes
                       # 2026-08-29 (request-direction sweep): checked every List/Describe/Get op's REQUEST side (filter/sort/time-range/pagination/precondition members from the real Input struct), not just response shape -- a prior "wire: ok" here had only ever been verified response-side. FOUND AND FIXED one real dropped-filter bug: ListGroupingStatuses' Filters member (real ListGroupingStatusesFilterName values "status"/"resource-arn") had no field at all on gopherstack's listGroupingStatusesInput wire struct, so json.Unmarshal silently discarded it and every real client's Filters was a no-op. Fixed via a new ListGroupingStatusesFilter type threaded through StorageBackend.ListGroupingStatuses (interfaces.go/resources.go/handler_resources.go) and proven by Test_ListGroupingStatuses_FiltersRoundTrip (list_grouping_statuses_filters_test.go), which drives the real typed aws-sdk-go-v2/service/resourcegroups client and includes a non-matching (FAILED-status / other-ARN) record the filter must EXCLUDE. Every other List/Describe/Get op's filter/pagination members (ListGroups.Filters, ListGroupResources.Filters, ListTagSyncTasks.Filters, SearchResources's ResourceQuery.Query ResourceTypeFilters) were re-checked and confirmed already correctly read and applied -- see gaps: for the one already-disclosed, structurally-blocked exception (SearchResources' TagFilters, which needs a cross-service tag registry this backend does not have; left as previously documented, not fabricated).
 ops:
@@ -18,7 +18,7 @@ ops:
   GroupResources: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: now rejects a group with a ResourceQuery (BadRequestException) instead of silently accepting membership writes on a query-based group -- see 'Real bugs fixed this sweep'"}
   UngroupResources: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: same ResourceQuery-group rejection as GroupResources"}
   ListGroupResources: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: deprecated ResourceIdentifiers field now populated identically to Resources; QueryErrors field now present on the wire (always empty -- see gaps, CFN-stack queries not modeled)"}
-  ListGroupingStatuses: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: UpdatedAt now epoch-seconds, was RFC3339 string. FIXED 2026-08-29 (request direction): Filters (Name: status/resource-arn) had no field on the wire input struct at all -- silently dropped by json.Unmarshal, every real client's Filters was a no-op. Now a real ListGroupingStatusesFilter, threaded through StorageBackend.ListGroupingStatuses and applied by groupingStatusMatchesFilters (resources.go) before pagination."}
+  ListGroupingStatuses: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: UpdatedAt now epoch-seconds, was RFC3339 string. FIXED 2026-08-29 (request direction): Filters (Name: status/resource-arn) had no field on the wire input struct at all -- silently dropped by json.Unmarshal, every real client's Filters was a no-op. Now a real ListGroupingStatusesFilter, threaded through StorageBackend.ListGroupingStatuses and applied by groupingStatusMatchesFilters (resources.go) before pagination. FIXED 2026-09-07 (gopherstack-m4k0 errtargetaudit class A finding) -- 'errors: ok' was also overstated: a nonexistent Group returned NotFoundException, but deserializeOpErrorListGroupingStatuses declares no such exception for this op (only BadRequestException/ForbiddenException/InternalServerErrorException/MethodNotAllowedException/TooManyRequestsException/UnknownError), unlike sibling ListGroupResources, which keys on the same required Group member and does declare NotFoundException. See Notes."}
   SearchResources: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: QueryErrors field now present on the wire (always empty -- see gaps, CFN-stack queries not modeled)"}
   GetTags: {wire: ok, errors: ok, state: ok, persist: ok}
   Tag: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -26,7 +26,7 @@ ops:
   GetAccountSettings: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateAccountSettings: {wire: ok, errors: ok, state: ok, persist: ok}
   StartTagSyncTask: {wire: ok, errors: ok, state: ok, persist: ok}
-  CancelTagSyncTask: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: was setting fabricated CANCELLED status (not a valid TagSyncTaskStatus wire value); now deletes the task per AWS docs"}
+  CancelTagSyncTask: {wire: ok, errors: partial, state: ok, persist: ok, note: "fixed: was setting fabricated CANCELLED status (not a valid TagSyncTaskStatus wire value); now deletes the task per AWS docs. 2026-09-07 (gopherstack-m4k0 errtargetaudit): flagged NotFoundException on a not-found guard -- confirmed not in this op's modeled error set (BadRequestException/ForbiddenException/InternalServerErrorException/MethodNotAllowedException/TooManyRequestsException/UnauthorizedException only). Left unfixed: an initial pass removed the guard on the theory the doc's 'HTTP 200 response with an empty HTTP body' sentence meant idempotent delete, but that sentence is generic Response-shape boilerplate present verbatim on this service's own GetGroup/DeleteGroup, which DO error on not-found -- not evidence either way (same trap that got codepipeline's DeletePipeline/DeleteCustomActionType reverted under gopherstack-3djp). BadRequestException (which this op does declare) is a plausible alternative but unconfirmed by any doc or sibling behavior. Reverted. See the landmine comment in tagsync.go."}
   GetTagSyncTask: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: CreatedAt now epoch-seconds, was ISO8601 string"}
   ListTagSyncTasks: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: CreatedAt now epoch-seconds, was RFC3339 string (default time.Time marshal)"}
 families:
@@ -186,6 +186,86 @@ gopherstack's `rgRESTPathOps` exactly; no route-matcher bugs found this sweep.
     implemented, since none of the 3 types have any real behavior modeled here either --
     would need its own audit before enforcing); see gaps for the resulting exposure of
     query-based groups' membership evaluation gap.
+
+### Real bugs fixed this sweep (errtargetaudit, 2026-09-07, gopherstack-m4k0)
+
+`cmd/errtargetaudit` flagged 2 class A findings for resourcegroups (both
+`NotFoundException`/sentinel-reference, `CancelTagSyncTask` and
+`ListGroupingStatuses`). Both were real: gopherstack emitted
+`NotFoundException` for a nonexistent key parameter on an op whose real
+declared error set (`deserializers.go`) has no such exception, even though a
+structurally identical sibling op does declare it. Not the filter-as-key
+false-positive shape flagged in the audit's own leads doc -- `Group`
+(`ListGroupingStatuses`) and `TaskArn` (`CancelTagSyncTask`) are both
+`// This member is required` per the real Input structs
+(`api_op_ListGroupingStatuses.go`, `api_op_CancelTagSyncTask.go`), not
+optional filters. Only one of the two had a confirmed remedy; see below.
+
+16. **`ListGroupingStatuses` 404'd on an unknown `Group`. FIXED.** Raw
+    extraction from `deserializeOpErrorListGroupingStatuses`: `UnknownError`,
+    `BadRequestException`, `ForbiddenException`, `InternalServerErrorException`,
+    `MethodNotAllowedException`, `TooManyRequestsException` -- no
+    `NotFoundException`. Sibling `ListGroupResources` keys on the identical
+    required `Group` member and DOES declare `NotFoundException`
+    (`deserializeOpErrorListGroupResources`) -- this op appears to have been
+    cloned from that sibling without checking its own declared set, the same
+    class ecr's `DescribeRepositoryCreationTemplates` finding was. This is a
+    List op: the declared-set mismatch forces the remedy, because there is
+    nothing else to return but an empty list (same shape as rds
+    `DescribeDBClusterEndpoints`, ecr `ListImageReferrers`, firehose
+    `ListDeliveryStreams`). Fixed: `InMemoryBackend.ListGroupingStatuses`
+    (resources.go) no longer checks group existence; an unknown group now
+    falls through to the same map-lookup-on-absent-key path already used for
+    a group with zero grouping history, yielding
+    `{"Group": "...", "GroupingStatuses": []}` at 200.
+
+    Proven by neutering (the guard was manually restored, confirmed to still
+    build, and confirmed to fail `TestResourceGroupsHandler_ListGroupingStatuses`'s
+    `nonexistent_group_returns_empty` case at its
+    `wantContains: []string{"\"GroupingStatuses\":[]"}` check -- body was the
+    404 error instead) and by a corrected pre-existing test: that case
+    previously asserted `wantCode: http.StatusNotFound` under the name
+    `"not_found"` with no note disclosing it as a known shortcut; renamed and
+    reasserted at `http.StatusOK`. `TestErrorShapes` (handler_test.go) had its
+    `list_grouping_statuses_404` case deleted (no longer belongs in a
+    404-only table) with a one-line comment on the test explaining the
+    omission.
+
+15. **`CancelTagSyncTask` 404s on an unknown `TaskArn`. LEFT UNFIXED --
+    evidenced but unresolved, see the landmine comment in tagsync.go.** Raw
+    extraction from `deserializeOpErrorCancelTagSyncTask`: `UnknownError`,
+    `BadRequestException`, `ForbiddenException`, `InternalServerErrorException`,
+    `MethodNotAllowedException`, `TooManyRequestsException`,
+    `UnauthorizedException` -- no `NotFoundException`, confirmed against both
+    the live docs.aws.amazon.com/ARG/latest/APIReference/API_CancelTagSyncTask.html
+    Errors section and botocore's service-2.json documentation string (neither
+    carries idempotency language). Sibling
+    `GetTagSyncTask`/`StartTagSyncTask`/`DeleteGroup` all declare
+    `NotFoundException` for their own required-key lookups, so the absence is
+    a real per-op asymmetry, not a scan artifact -- but unlike
+    `ListGroupingStatuses`, this is a mutate op with no forced remedy. An
+    earlier pass in this sweep removed the guard and made the op
+    idempotent-success, citing the doc's "HTTP 200 response with an empty
+    HTTP body" sentence as evidence -- reverted on review: that sentence is
+    generic Response-shape boilerplate that also appears verbatim on this
+    same service's `GetGroup`/`DeleteGroup`, which DO error on not-found, so
+    it is not evidence of idempotent-delete semantics (the identical trap
+    that got codepipeline's `DeletePipeline`/`DeleteCustomActionType`
+    reverted under gopherstack-3djp). The declared `BadRequestException` is a
+    plausible alternative remedy -- an unmatched `TaskArn` could map to it --
+    but no doc or sibling behavior confirms AWS actually does this rather
+    than something else; it remains inference, not a confirmed replacement.
+    Reverted to the original guard with a landmine comment naming both
+    candidates. All test changes made against this op earlier in the sweep
+    (`TestResourceGroupsHandler_CancelTagSyncTask`'s table case,
+    `TestCancelTagSyncTask_NotFound`, `TestErrorShapes`'s
+    `cancel_task_not_found_404` case, and
+    `TestResourceGroupsRegionIsolation`'s cross-region assertion in
+    isolation_test.go) were reverted to their original form alongside it.
+
+No wire, persist, or state changes beyond the one error-path removal
+(`ListGroupingStatuses`); no persisted struct field was added, so the
+`pkgs/persistence` guard was not run.
 
 ### Wire-shape traps confirmed correct (do not re-flag)
 
