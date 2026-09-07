@@ -1138,6 +1138,10 @@ cluster, so it silently returns an empty list instead of the
 DBClusterNotFoundFault real AWS declares for that case. Left as a lead for
 the next pass.
 
+Fixed the same day as a follow-up, see "DescribeDBClusterEndpoints
+DBClusterIdentifier not-found fix" below (gopherstack-l20u) -- the mirror
+image of RC5 above, in the same function.
+
 **Shared-helper check**: grepped `services/docdb` and `services/neptune` for
 any import of `github.com/blackbirdworks/gopherstack/services/rds` --
 zero hits. Both packages have their own independent
@@ -1208,3 +1212,77 @@ Gates: `go build ./services/rds/...` (clean), `go vet ./services/rds/...`
 (clean), `go test -race -count=1 ./services/rds/...` (pass, 0 failures),
 `golangci-lint run services/rds/...` (0 issues).
 `cmd/errtargetaudit` rds class-A findings: 12 -> 1.
+
+## DescribeDBClusterEndpoints DBClusterIdentifier not-found fix (2026-09-07, gopherstack-l20u)
+
+Follow-up to RC5 above (gopherstack-33jc), same function, opposite param.
+33jc fixed the case where `DBClusterEndpointIdentifier` was wrongly treated
+as a must-exist key (it's a filter; declared set has no endpoint-specific
+not-found code). This pass fixes the mirror-image gap `errtargetaudit`
+can't see, because it's a *missing* check, not a wrong emitted code:
+`DBClusterIdentifier` is the op's one declared error,
+`DBClusterNotFoundFault` (confirmed: `awk
+"/deserializeOpErrorDescribeDBClusterEndpoints\(/,/^}/"
+aws-sdk-go-v2/service/rds@v1.124.1/deserializers.go | grep -oE
+'"[A-Za-z0-9]+"'` returns only `DescribeDBClusterEndpointsResult`,
+`UnknownError`, and `DBClusterNotFoundFault`), and a supplied-but-unknown
+cluster was silently returning an empty list instead.
+
+Both `DBClusterIdentifier` and `DBClusterEndpointIdentifier` are optional
+pointer fields on `DescribeDBClusterEndpointsInput` (confirmed against
+`api_op_DescribeDBClusterEndpoints.go`) -- so omitting `DBClusterIdentifier`
+must still list all endpoints; only a non-empty, unmatched value should
+fault. In-service control: `DescribeDBClusters`/`DescribeDBInstances`
+already follow exactly this shape -- non-empty id not found -> the op's
+not-found sentinel; empty id -> list all
+(db_clusters.go:109-121, db_instances.go:352-372).
+
+**Fix**: `InMemoryBackend.DescribeDBClusterEndpoints` (cluster_endpoints.go)
+now checks, when `clusterID != ""`, that the cluster exists before
+filtering, returning `ErrClusterNotFound` (wire: `DBClusterNotFoundFault`,
+already mapped in `handler_dispatch.go`'s `rdsErrorCode()` table -- no new
+sentinel or mapping entry needed) otherwise. The endpoint-filter loop below
+is unchanged.
+
+**Pre-existing test corrected** (was pinning the bug):
+`cluster_endpoints_test.go`'s `TestDeleteDBCluster_CascadeDeletesClusterEndpoints`
+asserted, for the deleted (now-unknown) `"leak-cluster"` identifier itself:
+```go
+after, err := b.DescribeDBClusterEndpoints("leak-cluster", "")
+require.NoError(t, err)
+assert.Empty(t, after)
+```
+changed to:
+```go
+_, err = b.DescribeDBClusterEndpoints("leak-cluster", "")
+require.ErrorIs(t, err, rds.ErrClusterNotFound)
+```
+(The two endpoint-identifier-filter assertions in the same test, `got1`/
+`got2`, are unaffected -- that's the 33jc half, still correctly empty.)
+
+**New coverage**: `TestDescribeDBClusterEndpoints_IdentifierVsFilter`
+(cluster_endpoints_test.go), driven through the HTTP handler and asserting
+the wire `<Code>`, pins both halves in one place plus the non-broad-guard
+case: unknown `DBClusterIdentifier` -> `DBClusterNotFoundFault` (400);
+unknown `DBClusterEndpointIdentifier` -> 200 empty; valid cluster + valid
+endpoint filter -> 200 with the endpoint present.
+
+**Neuter pass**: commented out the new existence check (the 5-line `if
+clusterID != ""` block in cluster_endpoints.go); confirmed `go build
+./services/rds/...` still succeeded; confirmed exactly the expected two
+failures --
+`TestDeleteDBCluster_CascadeDeletesClusterEndpoints` (cluster_endpoints_test.go:56)
+and
+`TestDescribeDBClusterEndpoints_IdentifierVsFilter/unknown_cluster_identifier_faults`
+(cluster_endpoints_test.go:108, HTTP 200 instead of 400) -- then restored
+and reran the full package, 0 failures.
+
+**No persisted struct fields added** -- `pkgs/persistence` guard not
+applicable.
+
+`cmd/errtargetaudit` rds class-A findings: unchanged at 1 (this was a
+missing-check gap, not a wrong-emitted-code finding, so the tool doesn't
+and didn't flag it either before or after).
+
+Gates: `go test -race -count=1 ./services/rds/...` (pass, 0 failures),
+`golangci-lint run services/rds/...` (0 issues).
