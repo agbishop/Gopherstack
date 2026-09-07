@@ -111,29 +111,53 @@ func TestActivityStream_Lifecycle(t *testing.T) {
 }
 
 // TestActivityStream_ClusterNotFound verifies Start/Stop/ModifyActivityStream
-// return DBClusterNotFound (not InvalidParameterValue) for a nonexistent
-// cluster ARN, matching real RDS's documented errors for these operations.
+// return the correct not-found code (not InvalidParameterValue) for a
+// nonexistent cluster ARN, matching real RDS's documented errors for these
+// operations.
+//
+// ModifyActivityStream's expected code differs from Start/Stop: its declared
+// error set (rds@v1.124.1 deserializers.go
+// awsAwsquery_deserializeOpErrorModifyActivityStream) has no
+// DBClusterNotFoundFault case at all, only DBInstanceNotFound/
+// InvalidDBInstanceState/ResourceNotFoundFault -- consistent with its doc
+// comment restricting the op to RDS for Oracle/SQL Server DB instances,
+// unlike Start/StopActivityStream which are Aurora-cluster-scoped and do
+// declare DBClusterNotFoundFault. This case previously asserted
+// DBClusterNotFound for all three, which was wrong for ModifyActivityStream
+// (gopherstack-fm1e) -- corrected here rather than weakened.
 func TestActivityStream_ClusterNotFound(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		query string
+		name        string
+		query       string
+		wantCode    string
+		wantAbsent  string
+		wantAbsent2 string
 	}{
 		{
 			name: "StartActivityStream",
 			query: "Action=StartActivityStream&Version=2014-10-31" +
 				"&ResourceArn=arn:aws:rds:us-east-1:000000000000:cluster:missing&KmsKeyId=k&Mode=sync",
+			wantCode:    "DBClusterNotFound",
+			wantAbsent:  "InvalidParameterValue",
+			wantAbsent2: "DBInstanceNotFound",
 		},
 		{
 			name: "StopActivityStream",
 			query: "Action=StopActivityStream&Version=2014-10-31" +
 				"&ResourceArn=arn:aws:rds:us-east-1:000000000000:cluster:missing",
+			wantCode:    "DBClusterNotFound",
+			wantAbsent:  "InvalidParameterValue",
+			wantAbsent2: "DBInstanceNotFound",
 		},
 		{
 			name: "ModifyActivityStream",
 			query: "Action=ModifyActivityStream&Version=2014-10-31" +
 				"&ResourceArn=arn:aws:rds:us-east-1:000000000000:cluster:missing&AuditPolicyState=locked",
+			wantCode:    "DBInstanceNotFound",
+			wantAbsent:  "InvalidParameterValue",
+			wantAbsent2: "DBClusterNotFound",
 		},
 	}
 
@@ -144,8 +168,9 @@ func TestActivityStream_ClusterNotFound(t *testing.T) {
 			h := newRDSHandler()
 			rec := postRDSForm(t, h, tt.query)
 			assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
-			assert.Contains(t, rec.Body.String(), "DBClusterNotFound")
-			assert.NotContains(t, rec.Body.String(), "InvalidParameterValue")
+			assert.Contains(t, rec.Body.String(), tt.wantCode)
+			assert.NotContains(t, rec.Body.String(), tt.wantAbsent)
+			assert.NotContains(t, rec.Body.String(), tt.wantAbsent2)
 		})
 	}
 }

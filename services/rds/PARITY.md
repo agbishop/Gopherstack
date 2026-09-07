@@ -1286,3 +1286,74 @@ and didn't flag it either before or after).
 
 Gates: `go test -race -count=1 ./services/rds/...` (pass, 0 failures),
 `golangci-lint run services/rds/...` (0 issues).
+
+## ModifyActivityStream not-found code fix (2026-09-07, gopherstack-fm1e)
+
+Follow-up to the 33jc verdict table above, which left this one confirmed
+but unfixed: `ModifyActivityStream` emitted `DBClusterNotFoundFault`, not
+in its declared set `{DBInstanceNotFound, InvalidDBInstanceState,
+ResourceNotFoundFault}` (re-confirmed via `awk
+"/deserializeOpErrorModifyActivityStream\(/,/^}/"
+aws-sdk-go-v2/service/rds@v1.124.1/deserializers.go | grep -oE
+'"[A-Za-z0-9]+"'`). Two declared codes plausibly fit by name
+(`DBInstanceNotFound`, `ResourceNotFoundFault`); the issue asked to pick
+deliberately by checking what real AWS resolves and what this backend
+looks up, not by analogy to the sibling fix (`ApplyPendingMaintenanceAction`
+-> `ResourceNotFoundFault`).
+
+**What real AWS does**: unlike `Start`/`StopActivityStream` (Aurora
+cluster-scoped, ARN doc "the DB cluster", and their own declared sets
+include `DBClusterNotFoundFault`), `ModifyActivityStream`'s own doc
+comment reads "This operation is supported for RDS for Oracle and
+Microsoft SQL Server" and its `ResourceArn` field doc reads "The Amazon
+Resource Name (ARN) of the RDS for Oracle or Microsoft SQL Server DB
+instance" (`api_op_ModifyActivityStream.go`) -- confirmed by the absence
+of `DBClusterNotFoundFault` from its declared set entirely, unlike
+`StartActivityStream`'s (which declares both `DBClusterNotFoundFault` and
+`DBInstanceNotFound`, since it's genuinely dual-scoped). So real
+`ModifyActivityStream` never receives a cluster ARN; the identifier is
+always a DB instance identifier by contract, not ambiguous the way
+`ApplyPendingMaintenanceAction`'s ARN genuinely is.
+
+**What gopherstack looks up**: `InMemoryBackend.ModifyActivityStream`
+(activity_stream.go) resolves the ARN's trailing segment
+(`arnToClusterID`, shared verbatim with Start/Stop) against `b.clusters`
+only -- it has no DB-instance-scoped activity-stream modeling at all, an
+implementation-storage detail shared with Start/Stop rather than a
+faithful model of the real op's instance-only scope. That gap is
+unfixed here (out of scope: a modeling gap, not a wrong-emitted-code
+finding) and not previously disclosed; noted for a future pass.
+
+**Fix**: the not-found branch now returns `ErrInstanceNotFound` (wire
+`DBInstanceNotFound`, already mapped in `handler_dispatch.go`'s
+`rdsErrorCode()` table -- no new sentinel needed), justified by
+`DBInstanceNotFoundFault`'s own doc comment, "DBInstanceIdentifier
+doesn't refer to an existing DB instance" (`types/errors.go`), a
+word-for-word fit for "the identifier this instance-scoped op received
+does not resolve." `ResourceNotFoundFault` (generic, "The specified
+resource ID was not found") was rejected as the wrong choice here
+specifically because the op is *not* ambiguous the way
+`ApplyPendingMaintenanceAction`'s is -- a more specific declared code
+with matching doc text is available. Single call site
+(`handler_activity_stream.go`'s `handleModifyActivityStream` is the only
+caller of `Backend.ModifyActivityStream`); Start/Stop untouched, both
+still correctly cluster-scoped.
+
+**Pre-existing test corrected** (was pinning the wrong behavior):
+`activity_stream_test.go`'s `TestActivityStream_ClusterNotFound` asserted
+`DBClusterNotFound` for all three of Start/Stop/Modify against a missing
+cluster ARN. Split into a per-case table asserting `DBClusterNotFound` for
+Start/Stop (unchanged, still correct) and `DBInstanceNotFound` (absence of
+`DBClusterNotFound`) for Modify. Pre-fix run of the Modify subtest failed:
+```
+activity_stream_test.go:171: ... does not contain "DBInstanceNotFound"
+activity_stream_test.go:173: ... should not contain "DBClusterNotFound"
+```
+confirming the emitted code was `DBClusterNotFoundFault` before the fix.
+
+**No persisted struct fields added.**
+
+`cmd/errtargetaudit` rds class-A findings: 1 -> 0.
+
+Gates: `go test -race -count=1 ./services/rds/...` (pass, 0 failures),
+`golangci-lint run ./services/rds/...` (0 issues).

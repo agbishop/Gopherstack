@@ -359,3 +359,28 @@ leaks: {status: clean, note: "no goroutines/janitors in this service; Reset/Snap
     test fail as expected, then was restored.
   - `go test -race -count=1 ./services/codedeploy/...` and `golangci-lint run
     services/codedeploy/...` (`0 issues.`) both pass after the fix.
+
+- **Re-verified independently, 2026-09-07 (gopherstack-l81f, no code change)**: re-derived
+  each of the five left-unfixed ops' declared sets individually (not by count) via
+  `awk "/deserializeOpError<Op>\(/,/^}/" deserializers.go | grep -oE '"[A-Za-z0-9]+"'`
+  against codedeploy@v1.38.4 — `DeleteApplication` {ApplicationNameRequiredException,
+  InvalidApplicationNameException, InvalidRoleException}, `DeleteDeploymentGroup`
+  {ApplicationNameRequiredException, DeploymentGroupNameRequiredException,
+  InvalidApplicationNameException, InvalidDeploymentGroupNameException,
+  InvalidRoleException}, `DeleteDeploymentConfig` {DeploymentConfigInUseException,
+  DeploymentConfigNameRequiredException, InvalidDeploymentConfigNameException,
+  InvalidOperationException}, `DeregisterOnPremisesInstance`
+  {InstanceNameRequiredException, InvalidInstanceNameException} — all confirmed to
+  contain no not-found code, matching 3pz8 exactly. Read every declared candidate's
+  doc comment in `types/errors.go`: none reads as not-found (`InvalidOperationException`
+  is "An invalid operation was detected." — no word-for-word link to a missing
+  resource). Independently fetched the live `API_<Op>.html` reference pages for all
+  four (`DeleteApplication`, `DeleteDeploymentGroup`, `DeleteDeploymentConfig`,
+  `DeregisterOnPremisesInstance`) and confirmed each still carries only the generic
+  "If the action is successful, the service sends back an HTTP 200 response with an
+  empty HTTP body" boilerplate — no idempotent-delete sentence anywhere, same
+  conclusion 3pz8 reached. `cmd/errtargetaudit -dir codedeploy` still reports exactly
+  these 5 class-A findings, byte-for-byte the same emission sites/codes as 3pz8's
+  table. Verdict unchanged: no safe remedy for any of the five; landmine comments at
+  all five call sites left as-is (already accurate and complete). No `.go` files
+  touched for this issue.
