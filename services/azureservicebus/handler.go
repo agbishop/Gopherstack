@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,16 +43,32 @@ const brokerPropertiesHeader = "Brokerproperties"
 const (
 	opCreateQueue        = "CreateQueue"
 	opDeleteQueue        = "DeleteQueue"
+	opGetQueue           = "GetQueue"
+	opListQueues         = "ListQueues"
 	opCreateTopic        = "CreateTopic"
 	opDeleteTopic        = "DeleteTopic"
+	opGetTopic           = "GetTopic"
+	opListTopics         = "ListTopics"
 	opCreateSubscription = "CreateSubscription"
 	opDeleteSubscription = "DeleteSubscription"
+	opGetSubscription    = "GetSubscription"
+	opListSubscriptions  = "ListSubscriptions"
 	opSendMessage        = "SendMessage"
 	opPeekLockMessage    = "PeekLockMessage"
 	opCompleteMessage    = "CompleteMessage"
 	opAbandonMessage     = "AbandonMessage"
 	unknownOperation     = "Unknown"
 )
+
+// MaxPeekLockWaitTimeout is the ceiling PeekLock's long-poll "?timeout="
+// query parameter is clamped to. Real Service Bus documents 30 seconds as
+// its own maximum long-poll/operation timeout, and gopherstack matches it
+// here for a second, independent reason: the dedicated listener's
+// azureServiceBusReadTimeout is 60s, and a client-requested wait anywhere
+// close to that would race the server's own read timeout tearing the
+// connection down first. 30s leaves a comfortable margin under that ceiling
+// while still matching Service Bus's documented value. See PARITY.md.
+const MaxPeekLockWaitTimeout = 30 * time.Second
 
 // Handler is the Echo HTTP handler for Azure Service Bus operations.
 type Handler struct {
@@ -124,9 +142,9 @@ func (h *Handler) Name() string { return "AzureServiceBus" }
 // operations.
 func (h *Handler) GetSupportedOperations() []string {
 	return []string{
-		opCreateQueue, opDeleteQueue,
-		opCreateTopic, opDeleteTopic,
-		opCreateSubscription, opDeleteSubscription,
+		opCreateQueue, opDeleteQueue, opGetQueue, opListQueues,
+		opCreateTopic, opDeleteTopic, opGetTopic, opListTopics,
+		opCreateSubscription, opDeleteSubscription, opGetSubscription, opListSubscriptions,
 		opSendMessage, opPeekLockMessage, opCompleteMessage, opAbandonMessage,
 	}
 }
@@ -210,10 +228,27 @@ func (h *Handler) dispatch(c *echo.Context, req parsedRequest) error {
 		return h.handlePeekLockLevel(c, req)
 	case segMessageByID:
 		return h.handleCompleteAbandonLevel(c, req)
+	case segListSubscriptions:
+		return h.handleListSubscriptionsLevel(c, req)
+	case segResourcesQueues:
+		return h.handleResourcesLevel(c, http.MethodGet, h.listQueues)
+	case segResourcesTopics:
+		return h.handleResourcesLevel(c, http.MethodGet, h.listTopics)
 	default:
 		return h.writeError(c, http.StatusBadRequest, "BadRequest",
 			"The requested URI does not represent any resource on the server.")
 	}
+}
+
+// handleResourcesLevel serves a $Resources/* listing endpoint (see
+// segResourcesQueues/segResourcesTopics), rejecting anything but GET.
+func (h *Handler) handleResourcesLevel(c *echo.Context, allowedMethod string, fn func(*echo.Context) error) error {
+	if c.Request().Method != allowedMethod {
+		return h.writeError(c, http.StatusMethodNotAllowed, "UnsupportedHttpVerb",
+			"The resource doesn't support the specified HTTP verb.")
+	}
+
+	return fn(c)
 }
 
 // setCommonHeaders sets the headers real Azure SDKs/clients expect on every
@@ -248,6 +283,17 @@ const (
 	segMessages
 	segMessagesHead
 	segMessageByID
+	// segListSubscriptions is GET /<topic>/subscriptions (list). Deliberately
+	// distinct from segSubscription (which addresses one named subscription)
+	// since it has no Subscription name segment at all.
+	segListSubscriptions
+	// segResourcesQueues/segResourcesTopics are GET /$Resources/Queues and
+	// GET /$Resources/Topics respectively -- real Service Bus's
+	// entity-listing management endpoints. Parsed and routed before any
+	// generic /<entity> handling (see parseRequestPath/dispatch) so a
+	// literal "$Resources" is never mistaken for an entity name.
+	segResourcesQueues
+	segResourcesTopics
 )
 
 // parsedRequest is the decomposed shape of a Service Bus REST path:
@@ -286,6 +332,16 @@ const (
 	messageByIDSegmentLen  = 3
 )
 
+// resourcesSegment is the reserved path prefix for Service Bus's entity-list
+// management endpoints ($Resources/Queues, $Resources/Topics). Checked
+// before any generic /<entity> parsing -- see parseRequestPath.
+const resourcesSegment = "$Resources"
+
+// subscriptionsSegment is the fixed path segment naming a topic's
+// subscriptions collection, used both for /<topic>/subscriptions/<name> and
+// (with no further segment) /<topic>/subscriptions (list).
+const subscriptionsSegment = "subscriptions"
+
 // parseRequestPath decomposes an Azure Service Bus REST request path. Unlike
 // Azure Storage's paths (services/azurequeue's splitPath), Service Bus has no
 // leading /<account> segment -- the namespace is addressed by host, not path.
@@ -295,10 +351,43 @@ func parseRequestPath(p string) (parsedRequest, error) {
 		return parsedRequest{}, ErrBadPath
 	}
 
+	// $Resources/Queues and $Resources/Topics are checked first and
+	// explicitly, before "parts[0]" is ever treated as an entity name --
+	// a queue or topic literally named "$Resources" is not a real-world
+	// concern, but this ordering keeps the precedence unambiguous and
+	// documented rather than accidental.
+	if parts[0] == resourcesSegment {
+		return parseResourcesPath(parts[1:])
+	}
+
 	req := parsedRequest{Entity: parts[0]}
-	rest := consumeSubscriptionAndDeadLetterSegments(&req, parts[1:])
+	rest := parts[1:]
+
+	if len(rest) == 1 && rest[0] == subscriptionsSegment {
+		req.Segment = segListSubscriptions
+
+		return req, nil
+	}
+
+	rest = consumeSubscriptionAndDeadLetterSegments(&req, rest)
 
 	return parseMessageSegment(req, rest)
+}
+
+// parseResourcesPath classifies the path segment(s) following "$Resources".
+func parseResourcesPath(rest []string) (parsedRequest, error) {
+	if len(rest) != 1 {
+		return parsedRequest{}, ErrBadPath
+	}
+
+	switch rest[0] {
+	case "Queues":
+		return parsedRequest{Segment: segResourcesQueues}, nil
+	case "Topics":
+		return parsedRequest{Segment: segResourcesTopics}, nil
+	default:
+		return parsedRequest{}, ErrBadPath
+	}
 }
 
 // consumeSubscriptionAndDeadLetterSegments strips a leading
@@ -307,7 +396,7 @@ func parseRequestPath(p string) (parsedRequest, error) {
 func consumeSubscriptionAndDeadLetterSegments(req *parsedRequest, rest []string) []string {
 	const subscriptionsSegmentLen = 2
 
-	if len(rest) >= subscriptionsSegmentLen && rest[0] == "subscriptions" {
+	if len(rest) >= subscriptionsSegmentLen && rest[0] == subscriptionsSegment {
 		req.Subscription = rest[1]
 		rest = rest[subscriptionsSegmentLen:]
 	}
@@ -398,25 +487,59 @@ func operationFor(method string, req parsedRequest) string {
 		case http.MethodDelete:
 			return opCompleteMessage
 		case http.MethodPut:
+			// operationFor sees only method+path, never headers -- it cannot
+			// tell an Abandon PUT from a client-initiated DeadLetter PUT
+			// (real Service Bus's BrokerProperties-based DeadLetterReason
+			// wire shape, which this MVP does not implement pending further
+			// research -- see PARITY.md's DeadLetter note) apart on this
+			// information alone, so it always reports AbandonMessage.
 			return opAbandonMessage
 		default:
 			return unknownOperation
 		}
+	case segListSubscriptions:
+		return getOnlyOperationFor(method, opListSubscriptions)
+	case segResourcesQueues:
+		return getOnlyOperationFor(method, opListQueues)
+	case segResourcesTopics:
+		return getOnlyOperationFor(method, opListTopics)
 	default:
 		return unknownOperation
 	}
 }
 
+// getOnlyOperationFor returns op if method is GET, else unknownOperation --
+// every list-style segment (segListSubscriptions/segResourcesQueues/
+// segResourcesTopics) only ever supports GET.
+func getOnlyOperationFor(method, op string) string {
+	if method == http.MethodGet {
+		return op
+	}
+
+	return unknownOperation
+}
+
+// entityOperationFor determines the Create/Delete/Get operation name for an
+// entity-level (segEntity) or subscription-level (segSubscription) request.
+// Best-effort, like segEntity's Create/Delete case above: a GET on segEntity
+// is always reported as GetQueue even when the entity is actually a topic,
+// since telling them apart would require a backend lookup this metrics-only
+// path deliberately avoids (matching the pre-existing Create/Delete
+// ambiguity this function already had).
 func entityOperationFor(method string, isSubscription bool) string {
 	switch {
 	case method == http.MethodPut && isSubscription:
 		return opCreateSubscription
 	case method == http.MethodDelete && isSubscription:
 		return opDeleteSubscription
+	case method == http.MethodGet && isSubscription:
+		return opGetSubscription
 	case method == http.MethodPut:
 		return opCreateQueue
 	case method == http.MethodDelete:
 		return opDeleteQueue
+	case method == http.MethodGet:
+		return opGetQueue
 	default:
 		return unknownOperation
 	}
@@ -425,14 +548,37 @@ func entityOperationFor(method string, isSubscription bool) string {
 // ---- entity-level (queue/topic) handlers ----
 
 // looksLikeTopicBody reports whether body appears to describe a
-// TopicDescription rather than a QueueDescription. Real Service Bus
-// disambiguates by the Atom entry's XML element name
-// (<TopicDescription>/<QueueDescription>); this MVP does a simple
-// case-insensitive substring sniff of the raw body instead of a full
-// atom+xml parse, which is sufficient to support azure-sdk-for-go's admin
-// client and hand-built test requests alike. See PARITY.md.
+// TopicDescription rather than a QueueDescription. This is the last-resort
+// fallback in resolveEntityKind's resolution order: a simple
+// case-insensitive substring sniff of the raw body, kept around because the
+// REST integration test (and any other hand-built, deliberately simplified
+// request body) may not be well-formed enough for parseAtomEntityBody's real
+// Atom+XML parse to succeed. See PARITY.md's entity_kind_detection note.
 func looksLikeTopicBody(body []byte) bool {
 	return strings.Contains(strings.ToLower(string(body)), "topicdescription")
+}
+
+// resolveEntityKind determines whether a PUT /<name> create-request
+// describes a queue or a topic, and any EntityConfig properties that came
+// with it, using -- in order -- (1) an explicit ?type=topic/queue query
+// param, (2) a successful Atom+XML parse of body, (3) looksLikeTopicBody's
+// substring sniff, and (4) defaulting to a queue. Malformed XML never fails
+// the create; it simply falls through to (3)/(4), matching this repo's
+// permissive-by-default philosophy. See PARITY.md.
+func resolveEntityKind(c *echo.Context, body []byte) (entityKind, EntityConfig) {
+	if c.QueryParam("type") == "topic" {
+		return entityKindTopic, EntityConfig{}
+	}
+
+	if parsed, ok := parseAtomEntityBody(body); ok && parsed.Kind != entityKindSubscription {
+		return parsed.Kind, parsed.Config
+	}
+
+	if looksLikeTopicBody(body) {
+		return entityKindTopic, EntityConfig{}
+	}
+
+	return entityKindQueue, EntityConfig{}
 }
 
 func (h *Handler) handleEntityLevel(c *echo.Context, req parsedRequest) error {
@@ -441,6 +587,8 @@ func (h *Handler) handleEntityLevel(c *echo.Context, req parsedRequest) error {
 		return h.createEntity(c, req.Entity)
 	case http.MethodDelete:
 		return h.deleteEntity(c, req.Entity)
+	case http.MethodGet:
+		return h.getEntity(c, req.Entity)
 	default:
 		return h.writeError(c, http.StatusMethodNotAllowed, "UnsupportedHttpVerb",
 			"The resource doesn't support the specified HTTP verb.")
@@ -453,12 +601,14 @@ func (h *Handler) createEntity(c *echo.Context, name string) error {
 		return h.writeError(c, http.StatusBadRequest, "BadRequest", "Unable to read request body.")
 	}
 
+	kind, cfg := resolveEntityKind(c, body)
+
 	var created bool
 
-	if looksLikeTopicBody(body) || c.QueryParam("type") == "topic" {
-		created, err = h.Backend.CreateTopic(name)
+	if kind == entityKindTopic {
+		created, err = h.Backend.CreateTopic(name, cfg)
 	} else {
-		created, err = h.Backend.CreateQueue(name)
+		created, err = h.Backend.CreateQueue(name, cfg)
 	}
 
 	if err != nil {
@@ -466,6 +616,53 @@ func (h *Handler) createEntity(c *echo.Context, name string) error {
 	}
 
 	return h.writeEntityCreated(c, created)
+}
+
+// getEntity serves GET /<name>: real Service Bus's management API GET for a
+// single queue or topic. Queue is tried first (matching deleteEntity's
+// queue-then-topic order); 404 if it exists as neither.
+func (h *Handler) getEntity(c *echo.Context, name string) error {
+	if info, err := h.Backend.GetQueueInfo(name); err == nil {
+		return h.writeAtomEntry(c, http.StatusOK, queueEntryXML(info))
+	}
+
+	if info, err := h.Backend.GetTopicInfo(name); err == nil {
+		return h.writeAtomEntry(c, http.StatusOK, topicEntryXML(info))
+	}
+
+	return h.writeError(c, http.StatusNotFound, "NotFound", "The messaging entity could not be found.")
+}
+
+// listQueues serves GET /$Resources/Queues.
+func (h *Handler) listQueues(c *echo.Context) error {
+	return h.writeAtomFeed(c, queueFeedXML("Queues", h.Backend.ListQueues()))
+}
+
+// listTopics serves GET /$Resources/Topics.
+func (h *Handler) listTopics(c *echo.Context) error {
+	return h.writeAtomFeed(c, topicFeedXML("Topics", h.Backend.ListTopics()))
+}
+
+// writeAtomEntry writes a single Get response in real Service Bus's
+// Atom+XML entry shape.
+func (h *Handler) writeAtomEntry(c *echo.Context, status int, entry atomEntryOut) error {
+	body, err := xml.Marshal(entry)
+	if err != nil {
+		return h.writeError(c, http.StatusInternalServerError, "InternalError", "Failed to marshal entity metadata.")
+	}
+
+	return c.Blob(status, atomEntryContentType, append([]byte(xml.Header), body...))
+}
+
+// writeAtomFeed writes a List response in real Service Bus's Atom+XML feed
+// shape.
+func (h *Handler) writeAtomFeed(c *echo.Context, feed atomFeedOut) error {
+	body, err := xml.Marshal(feed)
+	if err != nil {
+		return h.writeError(c, http.StatusInternalServerError, "InternalError", "Failed to marshal entity list.")
+	}
+
+	return c.Blob(http.StatusOK, atomFeedContentType, append([]byte(xml.Header), body...))
 }
 
 func (h *Handler) writeEntityCreated(c *echo.Context, created bool) error {
@@ -497,6 +694,8 @@ func (h *Handler) handleSubscriptionLevel(c *echo.Context, req parsedRequest) er
 		return h.createSubscription(c, req.Entity, req.Subscription)
 	case http.MethodDelete:
 		return h.deleteSubscription(c, req.Entity, req.Subscription)
+	case http.MethodGet:
+		return h.getSubscription(c, req.Entity, req.Subscription)
 	default:
 		return h.writeError(c, http.StatusMethodNotAllowed, "UnsupportedHttpVerb",
 			"The resource doesn't support the specified HTTP verb.")
@@ -505,14 +704,22 @@ func (h *Handler) handleSubscriptionLevel(c *echo.Context, req parsedRequest) er
 
 // createSubscription creates a subscription. The request body may contain a
 // SQL filter rule (real Service Bus's RuleDescription/SqlFilter shape); this
-// MVP reads and discards it -- every subscription behaves as match-all. See
-// CreateSubscription's doc comment and PARITY.md.
+// MVP reads it only far enough to extract EntityConfig's LockDuration/
+// MaxDeliveryCount properties (parseAtomEntityBody) and otherwise discards
+// it -- every subscription behaves as match-all. See CreateSubscription's
+// doc comment and PARITY.md.
 func (h *Handler) createSubscription(c *echo.Context, topic, name string) error {
-	if _, err := io.ReadAll(c.Request().Body); err != nil {
+	body, err := io.ReadAll(c.Request().Body)
+	if err != nil {
 		return h.writeError(c, http.StatusBadRequest, "BadRequest", "Unable to read request body.")
 	}
 
-	created, err := h.Backend.CreateSubscription(topic, name)
+	var cfg EntityConfig
+	if parsed, ok := parseAtomEntityBody(body); ok {
+		cfg = parsed.Config
+	}
+
+	created, err := h.Backend.CreateSubscription(topic, name, cfg)
 	if err != nil {
 		if errors.Is(err, ErrTopicNotFound) {
 			return h.writeError(c, http.StatusNotFound, "NotFound", "The topic could not be found.")
@@ -530,6 +737,31 @@ func (h *Handler) deleteSubscription(c *echo.Context, topic, name string) error 
 	}
 
 	return c.NoContent(http.StatusOK)
+}
+
+// getSubscription serves GET /<topic>/subscriptions/<name>.
+func (h *Handler) getSubscription(c *echo.Context, topic, name string) error {
+	info, err := h.Backend.GetSubscriptionInfo(topic, name)
+	if err != nil {
+		return h.writeError(c, http.StatusNotFound, "NotFound", "The messaging entity could not be found.")
+	}
+
+	return h.writeAtomEntry(c, http.StatusOK, subscriptionEntryXML(info))
+}
+
+// handleListSubscriptionsLevel serves GET /<topic>/subscriptions (list).
+func (h *Handler) handleListSubscriptionsLevel(c *echo.Context, req parsedRequest) error {
+	if c.Request().Method != http.MethodGet {
+		return h.writeError(c, http.StatusMethodNotAllowed, "UnsupportedHttpVerb",
+			"The resource doesn't support the specified HTTP verb.")
+	}
+
+	infos, err := h.Backend.ListSubscriptions(req.Entity)
+	if err != nil {
+		return h.writeError(c, http.StatusNotFound, "NotFound", "The topic could not be found.")
+	}
+
+	return h.writeAtomFeed(c, subscriptionFeedXML(req.Entity+"/subscriptions", infos))
 }
 
 // ---- message-level handlers ----
@@ -620,10 +852,12 @@ func (h *Handler) handleSendLevel(c *echo.Context, req parsedRequest) error {
 }
 
 // handlePeekLockLevel serves POST /<entity>[/subscriptions/<sub>][/$DeadLetterQueue]/messages/head
-// (peek-lock, a destructive read with a lock timeout). This MVP does not
-// implement the long-poll "timeout" query parameter real clients use to wait
-// for a message to arrive -- it returns immediately, 204 if none is
-// available (see PARITY.md).
+// (peek-lock, a destructive read with a lock timeout). A "?timeout=<seconds>"
+// query parameter makes this a long-poll: gopherstack waits up to that many
+// seconds (clamped to MaxPeekLockWaitTimeout) for a message to arrive rather
+// than immediately returning 204. The wait honors the request context, so a
+// disconnecting client releases the handler goroutine right away. See
+// PARITY.md.
 func (h *Handler) handlePeekLockLevel(c *echo.Context, req parsedRequest) error {
 	if c.Request().Method != http.MethodPost {
 		return h.writeError(c, http.StatusMethodNotAllowed, "UnsupportedHttpVerb",
@@ -634,7 +868,9 @@ func (h *Handler) handlePeekLockLevel(c *echo.Context, req parsedRequest) error 
 		return h.writeEntityLookupError(c, err)
 	}
 
-	info, err := h.Backend.PeekLock(entityRefFor(req), req.DeadLetter, DefaultLockDuration)
+	timeout := parsePeekLockTimeout(c.QueryParam("timeout"))
+
+	info, err := h.Backend.PeekLockWait(c.Request().Context(), entityRefFor(req), req.DeadLetter, 0, timeout)
 	if err != nil {
 		if errors.Is(err, ErrMessageNotFound) {
 			return c.NoContent(http.StatusNoContent)
@@ -644,6 +880,29 @@ func (h *Handler) handlePeekLockLevel(c *echo.Context, req parsedRequest) error 
 	}
 
 	return h.writeLockedMessage(c, req, info)
+}
+
+// parsePeekLockTimeout parses the "?timeout=" query parameter as a whole
+// number of seconds. A missing, negative, zero, or unparseable value yields
+// 0 (immediate return, matching this MVP's pre-long-poll behavior); a value
+// above MaxPeekLockWaitTimeout is clamped down to it rather than rejected,
+// matching this repo's permissive-by-default philosophy.
+func parsePeekLockTimeout(raw string) time.Duration {
+	if raw == "" {
+		return 0
+	}
+
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs <= 0 {
+		return 0
+	}
+
+	d := time.Duration(secs) * time.Second
+	if d > MaxPeekLockWaitTimeout {
+		return MaxPeekLockWaitTimeout
+	}
+
+	return d
 }
 
 // writeLockedMessage writes a successful peek-lock response: 201 Created,

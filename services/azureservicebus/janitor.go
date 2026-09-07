@@ -86,12 +86,12 @@ func (b *InMemoryBackend) sweepOnce(now time.Time) sweepStats {
 	var total sweepStats
 
 	for _, q := range b.queues {
-		total.add(sweepMessageQueueLocked(&q.messageQueue, now))
+		total.add(sweepMessageQueueLocked(&q.messageQueue, q.Config, now))
 	}
 
 	for _, t := range b.topics {
 		for _, sub := range t.Subscriptions {
-			total.add(sweepMessageQueueLocked(&sub.messageQueue, now))
+			total.add(sweepMessageQueueLocked(&sub.messageQueue, sub.Config, now))
 		}
 	}
 
@@ -105,8 +105,9 @@ func (b *InMemoryBackend) sweepOnce(now time.Time) sweepStats {
 // state. The dead-letter sub-queue itself is swept only for TTL expiry (a
 // dead-lettered message that also expires is simply dropped -- there is
 // nowhere further for it to go). Callers must hold b.mu for writing.
-func sweepMessageQueueLocked(mq *messageQueue, now time.Time) sweepStats {
+func sweepMessageQueueLocked(mq *messageQueue, cfg EntityConfig, now time.Time) sweepStats {
 	var stats sweepStats
+	releasedAny := false
 
 	kept := mq.Messages[:0]
 
@@ -143,18 +144,26 @@ func sweepMessageQueueLocked(mq *messageQueue, now time.Time) sweepStats {
 			msg.LockedUntil = time.Time{}
 			stats.Unlocked++
 
-			if msg.DeliveryCount >= MaxDeliveryCount {
+			if msg.DeliveryCount >= cfg.maxDeliveryCount() {
 				mq.DeadLetter = append(mq.DeadLetter, msg)
 				stats.DeadLettered++
 
 				continue
 			}
+
+			releasedAny = true
 		}
 
 		final = append(final, msg)
 	}
 
 	mq.Messages = final
+
+	// A message becoming available again (released, not dead-lettered) wakes
+	// any PeekLockWait waiter on this entity.
+	if releasedAny {
+		mq.broadcastLocked()
+	}
 
 	// Dead-lettered messages are still subject to their own TTL: drop (not
 	// re-dead-letter) any that have expired while sitting in DeadLetter.

@@ -84,6 +84,53 @@ func TestInMemoryBackend_Send(t *testing.T) {
 		_, err := b.Send(azureservicebus.EntityRef{Topic: "missing"}, azureservicebus.NewMessage{})
 		require.ErrorIs(t, err, azureservicebus.ErrTopicNotFound)
 	})
+
+	t.Run("entity TTL default is used when the message specifies none", func(t *testing.T) {
+		t.Parallel()
+
+		configuredTTL := azureservicebus.DefaultMessageTTL + time.Hour
+
+		b := azureservicebus.NewInMemoryBackend()
+		_, err := b.CreateQueue("q", azureservicebus.EntityConfig{DefaultMessageTTL: configuredTTL})
+		require.NoError(t, err)
+
+		now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		azureservicebus.SetNowFunc(b, func() time.Time { return now })
+
+		_, err = b.Send(azureservicebus.EntityRef{Queue: "q"}, azureservicebus.NewMessage{Body: []byte("m1")})
+		require.NoError(t, err)
+
+		// Advance past the package default TTL but not past the entity's
+		// longer configured TTL: the message must still be alive.
+		now = now.Add(azureservicebus.DefaultMessageTTL + time.Minute)
+
+		info, err := b.PeekLock(azureservicebus.EntityRef{Queue: "q"}, false, time.Minute)
+		require.NoError(t, err, "message should still be alive under its entity's configured TTL")
+		assert.Equal(t, []byte("m1"), info.Body)
+	})
+
+	t.Run("explicit per-message TTL is capped at the entity's configured TTL", func(t *testing.T) {
+		t.Parallel()
+
+		b := azureservicebus.NewInMemoryBackend()
+		_, err := b.CreateQueue("q", azureservicebus.EntityConfig{DefaultMessageTTL: time.Minute})
+		require.NoError(t, err)
+
+		now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		azureservicebus.SetNowFunc(b, func() time.Time { return now })
+
+		_, err = b.Send(azureservicebus.EntityRef{Queue: "q"}, azureservicebus.NewMessage{
+			Body: []byte("m1"), TimeToLive: 24 * time.Hour,
+		})
+		require.NoError(t, err)
+
+		// The requested 24h TTL should have been capped down to the entity's
+		// 1-minute configured TTL.
+		now = now.Add(2 * time.Minute)
+
+		_, err = b.PeekLock(azureservicebus.EntityRef{Queue: "q"}, false, time.Minute)
+		require.ErrorIs(t, err, azureservicebus.ErrMessageNotFound, "message should have expired under the cap")
+	})
 }
 
 func TestInMemoryBackend_PeekLock(t *testing.T) {
@@ -131,6 +178,42 @@ func TestInMemoryBackend_PeekLock(t *testing.T) {
 		b := azureservicebus.NewInMemoryBackend()
 		_, err := b.PeekLock(azureservicebus.EntityRef{Queue: "missing"}, false, time.Minute)
 		require.ErrorIs(t, err, azureservicebus.ErrQueueNotFound)
+	})
+
+	t.Run("a non-positive lockDuration falls back to the entity's configured LockDuration", func(t *testing.T) {
+		t.Parallel()
+
+		b := azureservicebus.NewInMemoryBackend()
+		_, err := b.CreateQueue("q", azureservicebus.EntityConfig{LockDuration: 5 * time.Minute})
+		require.NoError(t, err)
+
+		now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		azureservicebus.SetNowFunc(b, func() time.Time { return now })
+
+		_, err = b.Send(azureservicebus.EntityRef{Queue: "q"}, azureservicebus.NewMessage{Body: []byte("m1")})
+		require.NoError(t, err)
+
+		info, err := b.PeekLock(azureservicebus.EntityRef{Queue: "q"}, false, 0)
+		require.NoError(t, err)
+		assert.Equal(t, now.Add(5*time.Minute), info.LockedUntil)
+	})
+
+	t.Run("an explicit lockDuration overrides the entity's configured LockDuration", func(t *testing.T) {
+		t.Parallel()
+
+		b := azureservicebus.NewInMemoryBackend()
+		_, err := b.CreateQueue("q", azureservicebus.EntityConfig{LockDuration: 5 * time.Minute})
+		require.NoError(t, err)
+
+		now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+		azureservicebus.SetNowFunc(b, func() time.Time { return now })
+
+		_, err = b.Send(azureservicebus.EntityRef{Queue: "q"}, azureservicebus.NewMessage{Body: []byte("m1")})
+		require.NoError(t, err)
+
+		info, err := b.PeekLock(azureservicebus.EntityRef{Queue: "q"}, false, 90*time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, now.Add(90*time.Second), info.LockedUntil)
 	})
 }
 
@@ -253,5 +336,36 @@ func TestInMemoryBackend_Abandon(t *testing.T) {
 		b := azureservicebus.NewInMemoryBackend()
 		err := b.Abandon(azureservicebus.EntityRef{Queue: "missing"}, false, "id", "token")
 		require.ErrorIs(t, err, azureservicebus.ErrQueueNotFound)
+	})
+
+	t.Run("honors the entity's configured MaxDeliveryCount", func(t *testing.T) {
+		t.Parallel()
+
+		const configuredMaxDeliveryCount = 2
+
+		b := azureservicebus.NewInMemoryBackend()
+		_, err := b.CreateQueue("q", azureservicebus.EntityConfig{MaxDeliveryCount: configuredMaxDeliveryCount})
+		require.NoError(t, err)
+
+		_, err = b.Send(azureservicebus.EntityRef{Queue: "q"}, azureservicebus.NewMessage{Body: []byte("m1")})
+		require.NoError(t, err)
+
+		var messageID string
+
+		for i := range configuredMaxDeliveryCount {
+			info, peekErr := b.PeekLock(azureservicebus.EntityRef{Queue: "q"}, false, time.Minute)
+			require.NoError(t, peekErr, "delivery attempt %d", i+1)
+			messageID = info.MessageID
+
+			require.NoError(t, b.Abandon(azureservicebus.EntityRef{Queue: "q"}, false, info.MessageID, info.LockToken))
+		}
+
+		_, err = b.PeekLock(azureservicebus.EntityRef{Queue: "q"}, false, time.Minute)
+		require.ErrorIs(t, err, azureservicebus.ErrMessageNotFound,
+			"message should have been dead-lettered at the configured (lower) MaxDeliveryCount")
+
+		dl, err := b.PeekLock(azureservicebus.EntityRef{Queue: "q"}, true, time.Minute)
+		require.NoError(t, err)
+		assert.Equal(t, messageID, dl.MessageID)
 	})
 }

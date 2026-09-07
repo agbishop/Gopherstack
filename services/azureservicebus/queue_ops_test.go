@@ -2,6 +2,7 @@ package azureservicebus_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,4 +85,75 @@ func TestInMemoryBackend_QueueExists(t *testing.T) {
 	_, err := b.CreateQueue("q")
 	require.NoError(t, err)
 	assert.True(t, b.QueueExists("q"))
+}
+
+func TestInMemoryBackend_GetQueueInfo(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		cfg        azureservicebus.EntityConfig
+		wantConfig azureservicebus.EntityConfig
+	}{
+		{
+			name: "unconfigured queue reports package defaults",
+			cfg:  azureservicebus.EntityConfig{},
+			wantConfig: azureservicebus.EntityConfig{
+				LockDuration:      azureservicebus.DefaultLockDuration,
+				MaxDeliveryCount:  azureservicebus.MaxDeliveryCount,
+				DefaultMessageTTL: azureservicebus.DefaultMessageTTL,
+			},
+		},
+		{
+			name: "configured queue reports its own values",
+			cfg: azureservicebus.EntityConfig{
+				LockDuration: time.Minute, MaxDeliveryCount: 3, DefaultMessageTTL: time.Hour,
+			},
+			wantConfig: azureservicebus.EntityConfig{
+				LockDuration: time.Minute, MaxDeliveryCount: 3, DefaultMessageTTL: time.Hour,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := azureservicebus.NewInMemoryBackend()
+			_, err := b.CreateQueue("q", tt.cfg)
+			require.NoError(t, err)
+
+			info, err := b.GetQueueInfo("q")
+			require.NoError(t, err)
+			assert.Equal(t, "q", info.Name)
+			assert.Equal(t, tt.wantConfig.LockDuration, info.LockDuration)
+			assert.Equal(t, tt.wantConfig.MaxDeliveryCount, info.MaxDeliveryCount)
+			assert.Equal(t, tt.wantConfig.DefaultMessageTTL, info.DefaultMessageTTL)
+		})
+	}
+
+	t.Run("missing queue errors", func(t *testing.T) {
+		t.Parallel()
+
+		b := azureservicebus.NewInMemoryBackend()
+		_, err := b.GetQueueInfo("missing")
+		require.ErrorIs(t, err, azureservicebus.ErrQueueNotFound)
+	})
+}
+
+func TestInMemoryBackend_ListQueues(t *testing.T) {
+	t.Parallel()
+
+	b := azureservicebus.NewInMemoryBackend()
+	assert.Empty(t, b.ListQueues())
+
+	_, err := b.CreateQueue("b")
+	require.NoError(t, err)
+	_, err = b.CreateQueue("a")
+	require.NoError(t, err)
+
+	infos := b.ListQueues()
+	require.Len(t, infos, 2)
+	assert.Equal(t, "a", infos[0].Name, "results should be sorted by name")
+	assert.Equal(t, "b", infos[1].Name)
 }

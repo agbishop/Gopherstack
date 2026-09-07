@@ -2,6 +2,7 @@ package azureservicebus_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -100,4 +101,82 @@ func TestInMemoryBackend_DeleteTopic_RemovesSubscriptions(t *testing.T) {
 
 	require.NoError(t, b.DeleteTopic("t"))
 	assert.False(t, b.SubscriptionExists("t", "s"))
+}
+
+func TestInMemoryBackend_GetTopicInfo(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     azureservicebus.EntityConfig
+		wantTTL time.Duration
+	}{
+		{name: "unconfigured topic reports the package default TTL", wantTTL: azureservicebus.DefaultMessageTTL},
+		{
+			name: "configured topic reports its own TTL",
+			cfg:  azureservicebus.EntityConfig{DefaultMessageTTL: time.Hour}, wantTTL: time.Hour,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := azureservicebus.NewInMemoryBackend()
+			_, err := b.CreateTopic("t", tt.cfg)
+			require.NoError(t, err)
+
+			info, err := b.GetTopicInfo("t")
+			require.NoError(t, err)
+			assert.Equal(t, "t", info.Name)
+			assert.Equal(t, tt.wantTTL, info.DefaultMessageTTL)
+		})
+	}
+
+	t.Run("missing topic errors", func(t *testing.T) {
+		t.Parallel()
+
+		b := azureservicebus.NewInMemoryBackend()
+		_, err := b.GetTopicInfo("missing")
+		require.ErrorIs(t, err, azureservicebus.ErrTopicNotFound)
+	})
+}
+
+func TestInMemoryBackend_ListTopics(t *testing.T) {
+	t.Parallel()
+
+	b := azureservicebus.NewInMemoryBackend()
+	assert.Empty(t, b.ListTopics())
+
+	_, err := b.CreateTopic("b")
+	require.NoError(t, err)
+	_, err = b.CreateTopic("a")
+	require.NoError(t, err)
+
+	infos := b.ListTopics()
+	require.Len(t, infos, 2)
+	assert.Equal(t, "a", infos[0].Name, "results should be sorted by name")
+	assert.Equal(t, "b", infos[1].Name)
+}
+
+func TestInMemoryBackend_ListSubscriptions(t *testing.T) {
+	t.Parallel()
+
+	b := azureservicebus.NewInMemoryBackend()
+	_, err := b.CreateTopic("t")
+	require.NoError(t, err)
+
+	_, err = b.CreateSubscription("t", "b")
+	require.NoError(t, err)
+	_, err = b.CreateSubscription("t", "a")
+	require.NoError(t, err)
+
+	infos, err := b.ListSubscriptions("t")
+	require.NoError(t, err)
+	require.Len(t, infos, 2)
+	assert.Equal(t, "a", infos[0].Name, "results should be sorted by name")
+	assert.Equal(t, "b", infos[1].Name)
+
+	_, err = b.ListSubscriptions("missing")
+	require.ErrorIs(t, err, azureservicebus.ErrTopicNotFound)
 }
