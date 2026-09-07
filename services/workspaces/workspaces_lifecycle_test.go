@@ -332,11 +332,11 @@ func TestMigrateWorkspace(t *testing.T) { //nolint:paralleltest // existing issu
 		},
 	})
 	var wsOut struct {
-		PendingRequests []map[string]string `json:"PendingRequests"`
+		PendingRequests []map[string]any `json:"PendingRequests"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &wsOut)
 
-	srcID := wsOut.PendingRequests[0]["WorkspaceId"]
+	srcID := wsOut.PendingRequests[0]["WorkspaceId"].(string)
 
 	// Migrate
 	rec2 := doTargetRequest(t, h, "MigrateWorkspace", map[string]any{
@@ -623,11 +623,11 @@ func TestWorkspaceLevelOps(t *testing.T) { //nolint:paralleltest // existing iss
 		},
 	})
 	var wsOut struct {
-		PendingRequests []map[string]string `json:"PendingRequests"`
+		PendingRequests []map[string]any `json:"PendingRequests"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &wsOut)
 
-	wsID := wsOut.PendingRequests[0]["WorkspaceId"]
+	wsID := wsOut.PendingRequests[0]["WorkspaceId"].(string)
 
 	tests := []struct {
 		body map[string]any

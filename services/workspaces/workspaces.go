@@ -122,6 +122,19 @@ func isValidRunningMode(mode string) bool {
 	return mode == "ALWAYS_ON" || mode == "AUTO_STOP"
 }
 
+// validateRunningMode rejects an explicitly-set, unrecognized RunningMode.
+// An empty mode is left to the caller (CreateWorkspace defaults it;
+// ModifyWorkspaceProperties leaves an empty value as a no-op field).
+func validateRunningMode(mode string) error {
+	if mode != "" && !isValidRunningMode(mode) {
+		return awserr.Newf(
+			"invalid RunningMode: %q, must be ALWAYS_ON or AUTO_STOP",
+			awserr.ErrInvalidParameter, mode)
+	}
+
+	return nil
+}
+
 func (w *storedWorkspace) toWorkspace() *Workspace {
 	tags := make(map[string]string)
 	maps.Copy(tags, w.Tags)
@@ -181,12 +194,22 @@ func (w *storedWorkspace) toWorkspace() *Workspace {
 }
 
 // CreateWorkspace creates a new WorkSpace and returns it.
-// Returns InvalidParameterValuesException when spec.DirectoryID is not registered.
+// Returns InvalidParameterValuesException when spec.DirectoryID is not registered
+// or spec.Properties.RunningMode is set to an unrecognized value. A RunningMode
+// left unset defaults to ALWAYS_ON, matching CreateWorkspacesPool's precedent
+// for an omitted RunningMode (pools.go's poolsRunningModeAlwaysOn) -- the pinned
+// SDK's WorkspaceProperties.RunningMode doc comment doesn't state a default.
 func (b *InMemoryBackend) CreateWorkspace(
 	ctx context.Context,
 	spec *WorkspaceCreationSpec,
 ) (*Workspace, error) {
 	region := b.regionFor(ctx)
+
+	if spec.Properties != nil {
+		if err := validateRunningMode(spec.Properties.RunningMode); err != nil {
+			return nil, err
+		}
+	}
 
 	b.mu.Lock("CreateWorkspace")
 	defer b.mu.Unlock()
@@ -206,6 +229,12 @@ func (b *InMemoryBackend) CreateWorkspace(
 	if spec.Properties != nil {
 		p := *spec.Properties
 		props = &p
+	} else {
+		props = &WorkspaceProperties{}
+	}
+
+	if props.RunningMode == "" {
+		props.RunningMode = string(sdktypes.RunningModeAlwaysOn)
 	}
 
 	const maxDefaultSubnetHost = 250
@@ -409,10 +438,8 @@ func (b *InMemoryBackend) ModifyWorkspaceProperties(
 			"invalid ComputeTypeName: %q", awserr.ErrInvalidParameter, props.ComputeTypeName)
 	}
 
-	if props.RunningMode != "" && !isValidRunningMode(props.RunningMode) {
-		return awserr.Newf(
-			"invalid RunningMode: %q, must be ALWAYS_ON or AUTO_STOP",
-			awserr.ErrInvalidParameter, props.RunningMode)
+	if err := validateRunningMode(props.RunningMode); err != nil {
+		return err
 	}
 
 	if props.RunningModeAutoStopTimeoutInMinutes != 0 {

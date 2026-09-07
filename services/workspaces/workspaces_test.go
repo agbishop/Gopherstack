@@ -532,7 +532,10 @@ func TestModifyWorkspaceProperties_Persisted(t *testing.T) {
 	h := workspaces.NewHandler(backend)
 	wsID := createWorkspace(t, h)
 
-	assert.Nil(t, workspaces.WorkspaceProps(backend, wsID), "properties must be nil before modify")
+	preModify := workspaces.WorkspaceProps(backend, wsID)
+	require.NotNil(t, preModify, "CreateWorkspaces must default RunningMode, not leave properties nil")
+	assert.Equal(t, "ALWAYS_ON", preModify.RunningMode, "unspecified RunningMode must default to ALWAYS_ON")
+	assert.Empty(t, preModify.ComputeTypeName, "ComputeTypeName must stay unset before modify")
 
 	rec := doTargetRequest(t, h, "ModifyWorkspaceProperties", map[string]any{
 		"WorkspaceId": wsID,
@@ -587,9 +590,11 @@ func TestModifyWorkspaceProperties_VisibleInDescribe(t *testing.T) {
 	assert.Equal(t, "VALUE", props["ComputeTypeName"])
 }
 
-// TestWorkspaceProperties_AbsentBeforeModify verifies that WorkspaceProperties
-// is absent from DescribeWorkspaces before any modify.
-func TestWorkspaceProperties_AbsentBeforeModify(t *testing.T) {
+// TestWorkspaceProperties_DefaultRunningModeBeforeModify verifies that
+// DescribeWorkspaces reports WorkspaceProperties.RunningMode as ALWAYS_ON
+// (CreateWorkspace's default) before any ModifyWorkspaceProperties call,
+// not an absent WorkspaceProperties block.
+func TestWorkspaceProperties_DefaultRunningModeBeforeModify(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
@@ -606,8 +611,10 @@ func TestWorkspaceProperties_AbsentBeforeModify(t *testing.T) {
 	require.Len(t, wsList, 1)
 
 	ws := wsList[0].(map[string]any)
-	_, hasProps := ws["WorkspaceProperties"]
-	assert.False(t, hasProps, "WorkspaceProperties must be absent when never set")
+	propsRaw, hasProps := ws["WorkspaceProperties"]
+	require.True(t, hasProps, "WorkspaceProperties must be present with the defaulted RunningMode")
+	props := propsRaw.(map[string]any)
+	assert.Equal(t, "ALWAYS_ON", props["RunningMode"])
 }
 
 // ---------------------------------------------------------------------------

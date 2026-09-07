@@ -188,6 +188,153 @@ func TestCreateWorkspaces_WithProperties_Stored(t *testing.T) {
 	assert.Equal(t, "AUTO_STOP", descProps["RunningMode"])
 }
 
+// TestCreateWorkspaces_DefaultsRunningModeToAlwaysOn verifies that a
+// WorkSpace created with no RunningMode (or WorkspaceProperties omitted
+// entirely) gets ALWAYS_ON, matching CreateWorkspacesPool's precedent for
+// an omitted RunningMode (pools.go's poolsRunningModeAlwaysOn).
+func TestCreateWorkspaces_DefaultsRunningModeToAlwaysOn(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doTargetRequest(t, h, "RegisterWorkspaceDirectory", map[string]any{"DirectoryId": "d-default1"})
+
+	rec := doTargetRequest(t, h, "CreateWorkspaces", map[string]any{
+		"Workspaces": []map[string]any{
+			{
+				"UserName":    "alice",
+				"DirectoryId": "d-default1",
+				"BundleId":    "wsb-bh8rsxt14",
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var createResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
+	pending := createResp["PendingRequests"].([]any)
+	require.Len(t, pending, 1)
+	ws := pending[0].(map[string]any)
+	wsID := ws["WorkspaceId"].(string)
+
+	propsRaw, hasProps := ws["WorkspaceProperties"]
+	require.True(t, hasProps, "PendingRequests must include the defaulted WorkspaceProperties")
+	assert.Equal(t, "ALWAYS_ON", propsRaw.(map[string]any)["RunningMode"])
+
+	descRec := doTargetRequest(t, h, "DescribeWorkspaces", map[string]any{
+		"WorkspaceIds": []string{wsID},
+	})
+	require.Equal(t, http.StatusOK, descRec.Code)
+
+	var descResp map[string]any
+	require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &descResp))
+	wsList := descResp["Workspaces"].([]any)
+	require.Len(t, wsList, 1)
+
+	descPropsRaw, hasDescProps := wsList[0].(map[string]any)["WorkspaceProperties"]
+	require.True(t, hasDescProps, "DescribeWorkspaces must reflect the defaulted RunningMode")
+	assert.Equal(t, "ALWAYS_ON", descPropsRaw.(map[string]any)["RunningMode"])
+}
+
+// TestCreateWorkspaces_ExplicitRunningMode_NotOverwritten verifies that an
+// explicitly-set, valid RunningMode is stored as-is and not replaced by the
+// ALWAYS_ON default.
+func TestCreateWorkspaces_ExplicitRunningMode_NotOverwritten(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doTargetRequest(t, h, "RegisterWorkspaceDirectory", map[string]any{"DirectoryId": "d-explicit1"})
+
+	rec := doTargetRequest(t, h, "CreateWorkspaces", map[string]any{
+		"Workspaces": []map[string]any{
+			{
+				"UserName":    "alice",
+				"DirectoryId": "d-explicit1",
+				"BundleId":    "wsb-bh8rsxt14",
+				"WorkspaceProperties": map[string]any{
+					"RunningMode": "AUTO_STOP",
+				},
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var createResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
+	pending := createResp["PendingRequests"].([]any)
+	require.Len(t, pending, 1)
+	ws := pending[0].(map[string]any)
+	wsID := ws["WorkspaceId"].(string)
+
+	assert.Equal(t, "AUTO_STOP", ws["WorkspaceProperties"].(map[string]any)["RunningMode"])
+
+	descRec := doTargetRequest(t, h, "DescribeWorkspaces", map[string]any{
+		"WorkspaceIds": []string{wsID},
+	})
+	require.Equal(t, http.StatusOK, descRec.Code)
+
+	var descResp map[string]any
+	require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &descResp))
+	wsList := descResp["Workspaces"].([]any)
+	require.Len(t, wsList, 1)
+	assert.Equal(t, "AUTO_STOP", wsList[0].(map[string]any)["WorkspaceProperties"].(map[string]any)["RunningMode"],
+		"explicit RunningMode must not be overwritten by the ALWAYS_ON default")
+}
+
+// TestCreateWorkspaces_InvalidRunningMode_FailsPerItem verifies that an
+// unrecognized RunningMode surfaces as a per-item FailedCreateWorkspaceRequest
+// (CreateWorkspaces is a partial-failure batch op), not a top-level error and
+// not silent acceptance. MANUAL is included: it's WorkSpaces Core-only per
+// CreateWorkspaces's own doc comment ("The MANUAL running mode value is only
+// supported by Amazon WorkSpaces Core... allow-listed", api_op_CreateWorkspaces.go),
+// the same restriction ModifyWorkspaceProperties enforces.
+func TestCreateWorkspaces_InvalidRunningMode_FailsPerItem(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		mode string
+	}{
+		{name: "unknown_value", mode: "TURBO_MODE"},
+		{name: "manual_core_only", mode: "MANUAL"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			doTargetRequest(t, h, "RegisterWorkspaceDirectory", map[string]any{"DirectoryId": "d-invalid1"})
+
+			rec := doTargetRequest(t, h, "CreateWorkspaces", map[string]any{
+				"Workspaces": []map[string]any{
+					{
+						"UserName":    "alice",
+						"DirectoryId": "d-invalid1",
+						"BundleId":    "wsb-bh8rsxt14",
+						"WorkspaceProperties": map[string]any{
+							"RunningMode": tc.mode,
+						},
+					},
+				},
+			})
+			require.Equal(t, http.StatusOK, rec.Code, "batch op must return 200 even with a failed item")
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+			pending, _ := resp["PendingRequests"].([]any)
+			assert.Empty(t, pending, "the invalid item must not be created")
+
+			failed, ok := resp["FailedRequests"].([]any)
+			require.True(t, ok)
+			require.Len(t, failed, 1)
+
+			item := failed[0].(map[string]any)
+			assert.Equal(t, "InvalidParameterValuesException", item["ErrorCode"])
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SubnetId propagation
 // ---------------------------------------------------------------------------

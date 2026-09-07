@@ -27,11 +27,11 @@ func TestApplicationAssociations(t *testing.T) { //nolint:paralleltest // existi
 		},
 	})
 	var wsOut struct {
-		PendingRequests []map[string]string `json:"PendingRequests"`
+		PendingRequests []map[string]any `json:"PendingRequests"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &wsOut)
 
-	wsID := wsOut.PendingRequests[0]["WorkspaceId"]
+	wsID := wsOut.PendingRequests[0]["WorkspaceId"].(string)
 	appID := "app-12345"
 
 	// DescribeImageAssociations/DescribeBundleAssociations now validate that
@@ -283,11 +283,11 @@ func TestWorkspaceApplicationAssociations_Validation(t *testing.T) {
 	require.Equal(t, http.StatusOK, recCreate.Code)
 
 	var wsOut struct {
-		PendingRequests []map[string]string `json:"PendingRequests"`
+		PendingRequests []map[string]any `json:"PendingRequests"`
 	}
 	decodeJSON(t, recCreate.Body.Bytes(), &wsOut)
 	require.Len(t, wsOut.PendingRequests, 1)
-	wsID := wsOut.PendingRequests[0]["WorkspaceId"]
+	wsID := wsOut.PendingRequests[0]["WorkspaceId"].(string)
 
 	t.Run("associate rejects unknown workspace", func(t *testing.T) {
 		t.Parallel()
