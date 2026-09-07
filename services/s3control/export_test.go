@@ -108,3 +108,11 @@ func StorageLensConfigCount(b *InMemoryBackend) int {
 
 	return len(b.storageLensConfigs)
 }
+
+// MRAPRoutesCount returns the number of stored MRAP route configurations.
+func MRAPRoutesCount(b *InMemoryBackend) int {
+	b.mu.RLock("MRAPRoutesCount")
+	defer b.mu.RUnlock()
+
+	return len(b.mrapRoutes)
+}

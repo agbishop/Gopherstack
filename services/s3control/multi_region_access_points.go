@@ -204,6 +204,10 @@ func (b *InMemoryBackend) SubmitMultiRegionAccessPointRoutes(accountID, mrap, ro
 	defer b.mu.Unlock()
 
 	key := accountID + ":" + mrap
+	if !b.mraps.Has(key) {
+		return fmt.Errorf("%w: %s", errMRAPNotFound, mrap)
+	}
+
 	b.mrapRoutes[key] = routes
 
 	return nil

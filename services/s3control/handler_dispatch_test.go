@@ -223,12 +223,16 @@ func TestHandler_StubOperations(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantBody:   "ListStorageLensGroupsResult",
 		},
+		// "mymrap" is never created against this fresh handler; submitting
+		// routes for it now 404s with NoSuchMultiRegionAccessPoint instead
+		// of the pre-fix behavior (200, silently accepting routes for any
+		// name) -- see PARITY.md, gopherstack-l498.
 		{
 			name:       "submit_mrap_routes",
 			method:     http.MethodPatch,
 			path:       "/v20180820/mrap/instances/mymrap/routes",
-			wantStatus: http.StatusOK,
-			wantBody:   "",
+			wantStatus: http.StatusNotFound,
+			wantBody:   "NoSuchMultiRegionAccessPoint",
 		},
 	}
 

@@ -499,12 +499,12 @@ func TestSubmitMRAPRoutes(t *testing.T) {
 func TestSubmitMRAPRoutes_Backend(t *testing.T) {
 	t.Parallel()
 
-	t.Run("submit on missing MRAP is idempotent", func(t *testing.T) {
+	t.Run("submit on missing MRAP returns NoSuchMultiRegionAccessPoint", func(t *testing.T) {
 		t.Parallel()
 
 		b := s3control.NewInMemoryBackend()
 		err := b.SubmitMultiRegionAccessPointRoutes("acct1", "missing", "routes")
-		require.NoError(t, err)
+		require.ErrorContains(t, err, "NoSuchMultiRegionAccessPoint")
 	})
 
 	t.Run("submit and retrieve routes", func(t *testing.T) {
@@ -519,6 +519,31 @@ func TestSubmitMRAPRoutes_Backend(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "route-data", routes)
 	})
+}
+
+// TestHandler_SubmitMultiRegionAccessPointRoutes_MissingMRAP locks in
+// gopherstack-l498: SubmitMultiRegionAccessPointRoutes previously wrote
+// route data for any MRAP name, real or not, unlike its sibling
+// PutMultiRegionAccessPointPolicy which 404s. Drives the real PATCH route
+// so a handler-mapping regression (backend returns the right sentinel but
+// the handler swallows or remaps it) would also be caught.
+func TestHandler_SubmitMultiRegionAccessPointRoutes_MissingMRAP(t *testing.T) {
+	t.Parallel()
+
+	h := newTestS3ControlHandler(t)
+
+	body := `<SubmitMultiRegionAccessPointRoutesRequest>` +
+		`<RouteUpdates><Route><Bucket>b1</Bucket><TrafficDialPercentage>100</TrafficDialPercentage></Route></RouteUpdates>` +
+		`</SubmitMultiRegionAccessPointRoutesRequest>`
+
+	rec := doS3Request(t, h, http.MethodPatch, "/v20180820/mrap/instances/nonexistent/routes", body)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NoSuchMultiRegionAccessPoint")
+	assert.Equal(
+		t, 0, s3control.MRAPRoutesCount(h.Backend),
+		"the rejected submit must not have stored a routes row as a side effect",
+	)
 }
 
 func TestSubmitMRAPRoutes_Table(t *testing.T) {
@@ -551,6 +576,7 @@ func TestSubmitMRAPRoutes_Table(t *testing.T) {
 
 			b := s3control.NewInMemoryBackend()
 			h := s3control.NewHandler(b)
+			b.CreateMultiRegionAccessPoint("000000000000", tt.mrap, "")
 
 			body := `<SubmitMultiRegionAccessPointRoutesRequest>` +
 				`<RouteUpdates>` + tt.routes + `</RouteUpdates>` +
