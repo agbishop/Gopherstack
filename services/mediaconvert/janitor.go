@@ -118,16 +118,45 @@ func (b *InMemoryBackend) advanceOneJobLocked(j *Job, now float64) bool {
 	return false
 }
 
-// advanceSubmittedLocked transitions a SUBMITTED job to PROGRESSING/PROBING,
-// unless the job's queue is PAUSED. Queue.Status doc (aws-sdk-go-v2
-// mediaconvert types.go): "If you pause a queue, the service won't begin
-// processing jobs in that queue." A job assigned to a queue that is paused
-// stays SUBMITTED until the queue is reactivated.
-func (b *InMemoryBackend) advanceSubmittedLocked(j *Job, now float64) bool {
-	if j.QueueArn != "" {
-		if matches := b.queuesByArn.Get(j.QueueArn); len(matches) > 0 && matches[0].Status == statusPaused {
+// queueAdmitsLocked reports whether queueArn is willing to start another job
+// right now. Queue.Status doc (aws-sdk-go-v2 mediaconvert types.go): "If you
+// pause a queue, the service won't begin processing jobs in that queue."
+// ConcurrentJobs doc (gopherstack-7bxb; CreateQueueInput/UpdateQueueInput,
+// api_op_CreateQueue.go:38-42): "the maximum number of jobs your queue can
+// process concurrently" -- a queue already running that many PROGRESSING
+// jobs also does not admit. An empty queueArn (no queue assigned) always
+// admits. Caller must hold at least a read lock.
+func (b *InMemoryBackend) queueAdmitsLocked(queueArn string) bool {
+	if queueArn == "" {
+		return true
+	}
+
+	matches := b.queuesByArn.Get(queueArn)
+	if len(matches) == 0 {
+		return true
+	}
+
+	q := matches[0]
+	if q.Status == statusPaused {
+		return false
+	}
+
+	if q.ConcurrentJobs != nil {
+		progressing, _ := b.getQueueCounterLocked(queueArn)
+		if progressing >= *q.ConcurrentJobs {
 			return false
 		}
+	}
+
+	return true
+}
+
+// advanceSubmittedLocked transitions a SUBMITTED job to PROGRESSING/PROBING,
+// unless queueAdmitsLocked says its queue isn't ready for another job. A job
+// that doesn't advance stays SUBMITTED until a later tick.
+func (b *InMemoryBackend) advanceSubmittedLocked(j *Job, now float64) bool {
+	if !b.queueAdmitsLocked(j.QueueArn) {
+		return false
 	}
 
 	// Decrement SUBMITTED counter, increment PROGRESSING counter.

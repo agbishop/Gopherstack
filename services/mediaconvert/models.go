@@ -20,18 +20,23 @@ type Queue struct {
 	// UpdateQueueInput/Queue, aws-sdk-go-v2/service/mediaconvert@v1.97.1
 	// api_op_CreateQueue.go:47-49, deserializers.go:24653+96), so nil vs a
 	// caller-supplied 0 must stay distinguishable -- never default/guess.
-	MaximumConcurrentFeeds *int    `json:"maximumConcurrentFeeds,omitempty"`
-	Arn                    string  `json:"arn"`
-	Name                   string  `json:"name"`
-	Description            string  `json:"description,omitempty"`
-	PricingPlan            string  `json:"pricingPlan"`
-	Status                 string  `json:"status"`
-	Type                   string  `json:"type"`
-	CreatedAt              float64 `json:"createdAt"`
-	LastUpdated            float64 `json:"lastUpdated"`
-	ProgressingJobsCount   int     `json:"progressingJobsCount"`
-	SubmittedJobsCount     int     `json:"submittedJobsCount"`
-	ConcurrentJobs         int     `json:"concurrentJobs,omitempty"`
+	MaximumConcurrentFeeds *int `json:"maximumConcurrentFeeds,omitempty"`
+	// ConcurrentJobs is *int32 on the real wire too (CreateQueueInput/
+	// UpdateQueueInput/types.Queue.ConcurrentJobs, api_op_CreateQueue.go:42,
+	// api_op_UpdateQueue.go:40, types/types.go:8622; gopherstack-7bxb): a
+	// plain int here collapsed "not set" (unlimited) and "explicitly 0" into
+	// the same value.
+	ConcurrentJobs       *int    `json:"concurrentJobs,omitempty"`
+	Arn                  string  `json:"arn"`
+	Name                 string  `json:"name"`
+	Description          string  `json:"description,omitempty"`
+	PricingPlan          string  `json:"pricingPlan"`
+	Status               string  `json:"status"`
+	Type                 string  `json:"type"`
+	CreatedAt            float64 `json:"createdAt"`
+	LastUpdated          float64 `json:"lastUpdated"`
+	ProgressingJobsCount int     `json:"progressingJobsCount"`
+	SubmittedJobsCount   int     `json:"submittedJobsCount"`
 }
 
 // JobTemplate represents a MediaConvert job template.

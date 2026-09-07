@@ -476,7 +476,7 @@ func TestCreateQueue_ReservationPlan(t *testing.T) {
 		RenewalType:   "AUTO_RENEW",
 	}
 
-	q, err := b.CreateQueueFull("rp-queue", "", "", "", nil, 0, rp)
+	q, err := b.CreateQueueFull("rp-queue", "", "", "", nil, nil, rp)
 	require.NoError(t, err)
 	require.NotNil(t, q.ReservationPlan)
 	assert.Equal(t, 5, q.ReservationPlan.ReservedSlots)
@@ -532,9 +532,11 @@ func TestCreateQueue_ConcurrentJobs(t *testing.T) {
 	t.Parallel()
 
 	b := mediaconvert.NewInMemoryBackend(testAccountID, testRegion)
-	q, err := b.CreateQueueFull("cj-queue", "", "", "", nil, 8, nil)
+	limit := 8
+	q, err := b.CreateQueueFull("cj-queue", "", "", "", nil, &limit, nil)
 	require.NoError(t, err)
-	assert.Equal(t, 8, q.ConcurrentJobs)
+	require.NotNil(t, q.ConcurrentJobs)
+	assert.Equal(t, 8, *q.ConcurrentJobs)
 }
 
 // TestCreateQueue_ConcurrentJobsViaHTTP verifies JSON round-trip.
@@ -552,6 +554,41 @@ func TestCreateQueue_ConcurrentJobsViaHTTP(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&out))
 	queueData := out["queue"].(map[string]any)
 	assert.InDelta(t, float64(4), queueData["concurrentJobs"], 0)
+}
+
+// TestCreateQueue_ConcurrentJobsZeroDistinctFromUnset proves gopherstack-7bxb:
+// a client that never sends concurrentJobs and a client that explicitly sends
+// concurrentJobs:0 must not collapse to the same stored/emitted value. Real
+// CreateQueueInput.ConcurrentJobs is *int32 (api_op_CreateQueue.go:42), so
+// AWS itself distinguishes absent from an explicit zero.
+func TestCreateQueue_ConcurrentJobsZeroDistinctFromUnset(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	unset := doRequest(t, h, http.MethodPost, "/2017-08-29/queues", map[string]any{
+		"name": "cj-unset-queue",
+	})
+	require.Equal(t, http.StatusCreated, unset.Code)
+
+	var unsetOut map[string]any
+	require.NoError(t, json.NewDecoder(unset.Body).Decode(&unsetOut))
+	unsetQueue := unsetOut["queue"].(map[string]any)
+	_, hasField := unsetQueue["concurrentJobs"]
+	assert.False(t, hasField, "concurrentJobs must be omitted entirely when the client never sent it")
+
+	explicitZero := doRequest(t, h, http.MethodPost, "/2017-08-29/queues", map[string]any{
+		"name":           "cj-zero-queue",
+		"concurrentJobs": 0,
+	})
+	require.Equal(t, http.StatusCreated, explicitZero.Code)
+
+	var zeroOut map[string]any
+	require.NoError(t, json.NewDecoder(explicitZero.Body).Decode(&zeroOut))
+	zeroQueue := zeroOut["queue"].(map[string]any)
+	zeroVal, hasZeroField := zeroQueue["concurrentJobs"]
+	require.True(t, hasZeroField, "an explicit concurrentJobs:0 must round-trip as a present field, not be dropped")
+	assert.InDelta(t, float64(0), zeroVal, 0)
 }
 
 // TestCreateQueue_NilReservationPlanByDefault verifies nil is fine.

@@ -43,12 +43,12 @@ type createQueueInput struct {
 	// response field names differ).
 	ReservationPlanSettings *ReservationPlan  `json:"reservationPlanSettings,omitempty"`
 	MaximumConcurrentFeeds  *int              `json:"maximumConcurrentFeeds,omitempty"`
+	ConcurrentJobs          *int              `json:"concurrentJobs,omitempty"`
 	Tags                    map[string]string `json:"tags,omitempty"`
 	Name                    string            `json:"name"`
 	Description             string            `json:"description,omitempty"`
 	PricingPlan             string            `json:"pricingPlan,omitempty"`
 	Status                  string            `json:"status,omitempty"`
-	ConcurrentJobs          int               `json:"concurrentJobs,omitempty"`
 }
 
 type queueWrapper struct {

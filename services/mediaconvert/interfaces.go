@@ -10,7 +10,7 @@ type StorageBackend interface {
 	CreateQueueFull(
 		name, description, pricingPlan, status string,
 		tags map[string]string,
-		concurrentJobs int,
+		concurrentJobs *int,
 		reservationPlan *ReservationPlan,
 		extras ...QueueCreateExtras,
 	) (*Queue, error)

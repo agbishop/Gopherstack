@@ -117,9 +117,10 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	original := mediaconvert.NewInMemoryBackend("111122223333", "us-west-2")
 
 	rp := &mediaconvert.ReservationPlan{Status: "ACTIVE", Commitment: "ONE_YEAR", ReservedSlots: 3}
+	concurrentJobs := 5
 	queue, err := original.CreateQueueFull(
 		"queue-1", "primary queue", "RESERVED", "ACTIVE",
-		map[string]string{"team": "media"}, 5, rp,
+		map[string]string{"team": "media"}, &concurrentJobs, rp,
 	)
 	require.NoError(t, err)
 
@@ -331,8 +332,9 @@ func TestPersistence_NewFieldsRoundTrip(t *testing.T) {
 	// Create queue with new fields.
 	rp := &mediaconvert.ReservationPlan{ReservedSlots: 2, Status: "ACTIVE"}
 	maxFeeds := 6
+	concurrentJobs := 4
 	q, err := b1.CreateQueueFull(
-		"snap-q2", "", "", "", nil, 4, rp,
+		"snap-q2", "", "", "", nil, &concurrentJobs, rp,
 		mediaconvert.QueueCreateExtras{MaximumConcurrentFeeds: &maxFeeds},
 	)
 	require.NoError(t, err)
@@ -352,7 +354,8 @@ func TestPersistence_NewFieldsRoundTrip(t *testing.T) {
 	// Verify queue.
 	got, err := b2.GetQueue(q.Name)
 	require.NoError(t, err)
-	assert.Equal(t, 4, got.ConcurrentJobs)
+	require.NotNil(t, got.ConcurrentJobs)
+	assert.Equal(t, 4, *got.ConcurrentJobs)
 	require.NotNil(t, got.ReservationPlan)
 	assert.Equal(t, 2, got.ReservationPlan.ReservedSlots)
 	require.NotNil(t, got.MaximumConcurrentFeeds)

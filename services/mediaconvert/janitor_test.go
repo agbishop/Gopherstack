@@ -237,7 +237,7 @@ func TestAdvanceJobPhase_PausedQueueBlocksSubmittedJob(t *testing.T) {
 
 	b := mediaconvert.NewInMemoryBackend(testAccountID, testRegion)
 
-	_, err := b.CreateQueueFull("paused-queue", "", "", "PAUSED", nil, 0, nil)
+	_, err := b.CreateQueueFull("paused-queue", "", "", "PAUSED", nil, nil, nil)
 	require.NoError(t, err)
 
 	j, err := b.CreateJob("arn:aws:iam::123:role/role", "paused-queue", "", nil, nil, nil, "")
@@ -261,6 +261,75 @@ func TestAdvanceJobPhase_PausedQueueBlocksSubmittedJob(t *testing.T) {
 	got, err = b.GetJob(j.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "PROGRESSING", got.Status)
+}
+
+// TestAdvanceJobPhase_ConcurrentJobsLimitBlocksExcessJobs verifies a queue's
+// ConcurrentJobs limit caps how many jobs run PROGRESSING at once (gopherstack-7bxb):
+// with a limit of 1 and 2 SUBMITTED jobs, only 1 may advance -- the other stays
+// SUBMITTED until a slot frees up.
+func TestAdvanceJobPhase_ConcurrentJobsLimitBlocksExcessJobs(t *testing.T) {
+	t.Parallel()
+
+	b := mediaconvert.NewInMemoryBackend(testAccountID, testRegion)
+	limit := 1
+	q, err := b.CreateQueueFull("cj-limit-queue", "", "", "", nil, &limit, nil)
+	require.NoError(t, err)
+
+	j1, err := b.CreateJob("arn:aws:iam::123:role/role", q.Name, "", nil, nil, nil, "")
+	require.NoError(t, err)
+	j2, err := b.CreateJob("arn:aws:iam::123:role/role", q.Name, "", nil, nil, nil, "")
+	require.NoError(t, err)
+
+	advanced := b.AdvanceJobPhase()
+	assert.True(t, advanced)
+
+	statuses := map[string]int{}
+	for _, id := range []string{j1.ID, j2.ID} {
+		gotJob, jobErr := b.GetJob(id)
+		require.NoError(t, jobErr)
+		statuses[gotJob.Status]++
+	}
+	assert.Equal(t, 1, statuses["PROGRESSING"], "only ConcurrentJobs=1 job may run at once")
+	assert.Equal(t, 1, statuses["SUBMITTED"], "the excess job must wait for a free slot")
+	assert.Equal(t, 1, mediaconvert.QueueCounterProgressing(b, q.Arn))
+	assert.Equal(t, 1, mediaconvert.QueueCounterSubmitted(b, q.Arn))
+
+	// A further tick must not advance the waiting job while the slot is taken.
+	b.AdvanceJobPhase()
+	stillWaiting := 0
+	for _, id := range []string{j1.ID, j2.ID} {
+		gotJob, jobErr := b.GetJob(id)
+		require.NoError(t, jobErr)
+		if gotJob.Status == "SUBMITTED" {
+			stillWaiting++
+		}
+	}
+	assert.Equal(t, 1, stillWaiting, "the excess job must keep waiting until the running job finishes")
+}
+
+// TestAdvanceJobPhase_NilConcurrentJobsIsUnlimited verifies that a queue
+// created without an explicit ConcurrentJobs value (nil, matching AWS's
+// *int32 "not set") does not throttle admission at all.
+func TestAdvanceJobPhase_NilConcurrentJobsIsUnlimited(t *testing.T) {
+	t.Parallel()
+
+	b := mediaconvert.NewInMemoryBackend(testAccountID, testRegion)
+	q, err := b.CreateQueue("unlimited-queue", "", "", "", nil)
+	require.NoError(t, err)
+	require.Nil(t, q.ConcurrentJobs)
+
+	j1, err := b.CreateJob("arn:aws:iam::123:role/role", q.Name, "", nil, nil, nil, "")
+	require.NoError(t, err)
+	j2, err := b.CreateJob("arn:aws:iam::123:role/role", q.Name, "", nil, nil, nil, "")
+	require.NoError(t, err)
+
+	b.AdvanceJobPhase()
+
+	for _, id := range []string{j1.ID, j2.ID} {
+		gotJob, jobErr := b.GetJob(id)
+		require.NoError(t, jobErr)
+		assert.Equal(t, "PROGRESSING", gotJob.Status)
+	}
 }
 
 // TestAdvanceJobPhase_ReturnsFalseWhenNoEligibleJobs verifies the return value.

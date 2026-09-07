@@ -16,8 +16,8 @@ ops:
   TagResource: {wire: ok, errors: ok, state: ok, persist: ok, note: "was reading arn from URL path (always empty since real client sends POST /tags with arn in JSON body); fixed to read arn from body"}
   UntagResource: {wire: ok, errors: ok, state: ok, persist: ok, note: "was routed on DELETE with tagKeys from query string; real op is PUT with tagKeys in JSON body -- real SDK calls 404'd before this fix"}
   CreateJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "input field was jobEngineVersionRequested; real wire key is jobEngineVersion (response field IS jobEngineVersionRequested -- request/response names differ). This pass: statusUpdateInterval/simulateReservedQueue were parsed from the request body but silently overridden with hardcoded defaults (SECONDS_60/DISABLED) instead of the caller's value -- fixed via CreateJobFull's new JobCreateExtras parameter"}
-  CreateQueue: {wire: ok, errors: ok, state: ok, persist: ok, note: "input field was reservationPlan; real wire key is reservationPlanSettings (response field IS reservationPlan). gopherstack-gt9o: maximumConcurrentFeeds (*int32, added since v1.87.3) now stored and echoed via QueueCreateExtras -- previously silently dropped, see Notes"}
-  UpdateQueue: {wire: ok, errors: ok, state: ok, persist: ok, note: "reservationPlanSettings field name fixed; concurrentJobs and reservationPlanSettings were entirely unsupported on update (silently dropped), now applied. gopherstack-gt9o: maximumConcurrentFeeds now applied too -- previously silently dropped, see Notes"}
+  CreateQueue: {wire: ok, errors: ok, state: ok, persist: ok, note: "input field was reservationPlan; real wire key is reservationPlanSettings (response field IS reservationPlan). gopherstack-gt9o: maximumConcurrentFeeds (*int32, added since v1.87.3) now stored and echoed via QueueCreateExtras -- previously silently dropped, see Notes. gopherstack-7bxb: concurrentJobs was a plain int (json omitempty), collapsing 'not set' and 'explicit 0' into the same wire value; now *int matching the real *int32 member, and the SUBMITTED->PROGRESSING transition now honors it as a per-queue concurrency cap -- see Notes"}
+  UpdateQueue: {wire: ok, errors: ok, state: ok, persist: ok, note: "reservationPlanSettings field name fixed; concurrentJobs and reservationPlanSettings were entirely unsupported on update (silently dropped), now applied. gopherstack-gt9o: maximumConcurrentFeeds now applied too -- previously silently dropped, see Notes. gopherstack-7bxb: concurrentJobs retyped to *int (see CreateQueue note and Notes)"}
   StartJobsQuery: {wire: ok, errors: ok, state: ok, persist: ok, note: "output field was queryId; real wire key is id"}
   GetJobsQueryResults: {wire: ok, errors: ok, state: ok, persist: ok, note: "added missing status field (JobsQueryStatus); always COMPLETE since this backend resolves queries synchronously"}
   GetJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-21 (gopherstack-us9u kind-mismatch sweep) -- Job.LastShareDetails was emitted as a {shareToken, sharedAt} object; the real types.Job.LastShareDetails is a bare *string (types.go), so every real SDK client's GetJob call failed outright once a job had ever been shared via CreateResourceShare. Fixed via a MarshalJSON/UnmarshalJSON pair on Job projecting LastShareDetails to its ShareToken as a plain string at the wire boundary (SharedAt has no documented place in the real string form and is dropped rather than invented into it), keeping the richer ShareDetails struct for internal/domain use. Proven via a real aws-sdk-go-v2/service/mediaconvert client round trip (wire_last_share_details_test.go), hand-reverted/confirmed-failing (expected __string to be of type string, got map[string]interface {} instead)/restored, md5sum-verified byte-identical."}
@@ -58,6 +58,7 @@ families:
 gaps:
   - Queue.ServiceOverrides is typed map[string]any in gopherstack vs a real []types.ServiceOverride list on the wire; currently dormant (CreateQueueInput has no serviceOverrides input member in the real API, so the field can never be populated by a real client) but the type would emit the wrong JSON shape (object instead of array) if ever populated internally. Re-verified this pass against aws-sdk-go-v2/service/mediaconvert@v1.97.1 (pin corrected from the stale v1.87.3 recorded here by gopherstack-u8my): still no serviceOverrides member on CreateQueueInput or UpdateQueueInput, so this remains genuinely unreachable/harmless -- left as-is rather than reshaping a field no real client can ever populate.
   - "FIXED by gopherstack-gt9o: CreateQueueInput/UpdateQueueInput's MaximumConcurrentFeeds *int32 member (Elemental Inference feed concurrency, added since v1.87.3) now read, stored, and echoed. See Notes."
+  - "FIXED by gopherstack-7bxb: Queue.ConcurrentJobs was a plain int with json:\"concurrentJobs,omitempty\" -- a client that never sent the field and one that sent concurrentJobs:0 were indistinguishable (both stored/echoed as absent). Real CreateQueueInput/UpdateQueueInput/types.Queue.ConcurrentJobs is *int32 (api_op_CreateQueue.go:42, api_op_UpdateQueue.go:40, types/types.go:8622). Now *int, matching the MaximumConcurrentFeeds pattern above. Also: the janitor's SUBMITTED->PROGRESSING admission check (advanceSubmittedLocked, already gating on Queue.Status==PAUSED) now gates on ConcurrentJobs too -- a job stays SUBMITTED while its queue already has ConcurrentJobs jobs PROGRESSING, matching the field's own doc (\"the maximum number of jobs your queue can process concurrently\"). Not enforced: account/per-account-plus-per-queue Service Quota limits referenced in the same doc text (this backend has no account-quota-config model, matching the EFS FileSystemLimitExceeded precedent) and any minimum-value validation on ConcurrentJobs (none found in the pinned SDK's generated code, so none was invented). See Notes."
   - "FIXED 2026-08-19: Job.LastShareDetails was typed *ShareDetails{ShareToken,SharedAt} (a nested object) in gopherstack; the real wire type is *string (types.Job.LastShareDetails, aws-sdk-go-v2/service/mediaconvert@v1.97.1 types/types.go:6202; deserializers.go:19625 expects value.(string)). A real SDK client's GetJob/ListJobs/SearchJobs deserializer fails the ENTIRE call with a DeserializationError ('expected __string to be of type string, got map[string]interface {} instead') for any job that has ever been resource-shared -- not a silently-dropped field, a hard failure. Fixed by changing the field to *string (JSON-encoded share token/timestamp as the string's content, since the real field's content format is AWS-internal/undocumented) in models.go, and rebuilding it in resource_shares.go's CreateResourceShare. See Notes."
   - "Not fixed, disclosed: real Job has an ElementalInferenceConfiguration member (types.go:6157, {Features []ElementalInferenceFeature, Feeds []ElementalInferenceFeed}) that gopherstack's Job struct has no field for at all -- found incidentally while checking Job's deserializer case list for wrong keys, not by hunting missing members (Layer 3 is out of scope as a hunt per this sweep's brief). Not an input to CreateJobInput (absent from serializers.go entirely), so it is AWS-backend-computed metadata derived from analyzing the job's Settings tree -- which gopherstack treats as an opaque map[string]any passthrough (see deferred, below). Populating it correctly would require either fabricating values (bans the no-stub rule) or parsing the opaque settings tree for Elemental Inference feature/feed usage, which is out of scope here."
   - "FIXED 2026-08-23 (gopherstack batch8): ListQueues/ListJobTemplates/ListPresets used to truncate to maxResults via limitSlice with no nextToken ever returned, unlike ListJobs/SearchJobs, which already used pkgs/page.New -- see families note and Notes section for full detail. ListVersions/DescribeEndpoints remain their own separate (already-correct) pagination shapes, unaffected."
@@ -511,3 +512,106 @@ is typed `types.Format`, and `FormatMp4 Format = "mp4"`
 the wire key "format" is ambiguous with the unrelated `WaveSettings.Format`
 (`types.WavFormat`: RIFF/RF64/EXTENSIBLE). FALSE POSITIVE, not fixed: the
 emitted value is correct for the struct actually being built here.
+
+## 2026-09-06 pass (gopherstack-7bxb): ConcurrentJobs zero/unset ambiguity fixed, enforcement added
+
+Filed title-only ("CreateQueueInput.ConcurrentJobs is never enforced; the
+zero value is ambiguous between no-limit and zero-concurrency"), so both
+claims were re-derived from the SDK and this backend's own job-lifecycle
+code rather than assumed.
+
+**Claim 2 (zero-value ambiguity): confirmed, fixed.** Real
+`CreateQueueInput.ConcurrentJobs`/`UpdateQueueInput.ConcurrentJobs`/
+`types.Queue.ConcurrentJobs` are all `*int32`
+(`api_op_CreateQueue.go:42`, `api_op_UpdateQueue.go:40`,
+`types/types.go:8622`). gopherstack's `models.go` had `ConcurrentJobs int
+json:"concurrentJobs,omitempty"` -- a plain int with `omitempty` cannot
+represent "client explicitly sent 0" as distinct from "client never sent
+the field" (both marshal to `{}`; verified with a standalone repro
+comparing the old and new struct shapes -- see this issue's test evidence).
+Retyped to `*int`, mirroring the `MaximumConcurrentFeeds` fix from
+gopherstack-gt9o exactly: `CreateQueueFull`'s `concurrentJobs` parameter is
+now `*int` (all ~6 call sites updated), `UpdateQueue`'s pre-existing `*int`
+parameter now clones into the new pointer field via `cloneIntPtr` instead
+of dereferencing into a plain int, and `cloneQueue` deep-copies the pointer
+so returned `Queue` values can't alias backend state (same pattern as
+`ReservationPlan`/`MaximumConcurrentFeeds`). No `mediaconvertSnapshotVersion`
+bump made -- see the guard note below, this is a judgment call left to the
+maintainer, not made unilaterally.
+
+**Claim 1 (never enforced): confirmed, and actionable here** (unlike a
+typical "this mock doesn't model job execution" case). This backend already
+has a real job lifecycle: `Job.Status` moves SUBMITTED -> PROGRESSING ->
+COMPLETE/ERROR/CANCELED via `janitor.go`'s ticker
+(`StartJanitor`/`AdvanceJobPhase`), and already tracks a live per-queue
+PROGRESSING/SUBMITTED count (`queueJobCounter`,
+`adjustQueueCounterLocked`/`getQueueCounterLocked`) that `GetQueue`/
+`ListQueues` expose as `progressingJobsCount`/`submittedJobsCount`. The
+SUBMITTED->PROGRESSING transition (`advanceSubmittedLocked`) already gated
+admission on `Queue.Status == PAUSED` (per `Queue.Status`'s own doc: "if you
+pause a queue, jobs in that queue won't begin"). `ConcurrentJobs`'s doc
+text -- "the maximum number of jobs your queue can process concurrently" --
+describes the identical shape of constraint, so the gate was extended
+(refactored into `queueAdmitsLocked` to keep `nestif` complexity down): a
+SUBMITTED job on a queue whose current PROGRESSING count has already
+reached `*Queue.ConcurrentJobs` stays SUBMITTED until a slot frees (a job
+completing or being canceled decrements the PROGRESSING counter, already
+wired via `completeJobLocked`/`CancelJob`). `nil` ConcurrentJobs (never
+set) means unlimited, matching "not set" on the real `*int32`; an explicit
+`0` means zero concurrency (no job on that queue ever starts) -- the more
+defensible reading now that the representation can actually say so, and
+nothing in the pinned SDK documents 0 as meaning anything else.
+
+Deliberately NOT done, and why: (1) no rejection was added to `CreateJob`.
+`ServiceQuotaExceededException` is on both `CreateQueue`'s and `CreateJob`'s
+deserializer error case lists (see error-extraction evidence below), but it
+is generic -- nothing ties it specifically to a queue's ConcurrentJobs, and
+real MediaConvert's documented behavior for `Status: PAUSED` (the existing,
+proven-analogous case) is "jobs won't begin", not "CreateJob is rejected";
+the same shape of block-not-reject was applied here rather than inventing a
+new rejection path with no wire evidence for it. (2) Account-level and
+per-account "Maximum concurrent jobs" Service Quotas, which `ConcurrentJobs`'s
+own doc text references as the constraint on the value you may set, are not
+modeled or enforced -- this backend has no account-quota-configuration
+model to hang a real threshold off of, the same reasoning
+`services/efs/PARITY.md`'s `FileSystemLimitExceeded`/`AccessPointLimitExceeded`
+entry already establishes for this repo. (3) No minimum-value validation
+was added for `ConcurrentJobs` (e.g. rejecting a negative value) -- the
+pinned SDK ships no generated validator for this field, so there was no
+verified external fact to enforce.
+
+Error extraction (`deserializeOpErrorCreateQueue`/`deserializeOpErrorCreateJob`,
+`deserializers.go`, `[A-Za-z0-9]+` to keep digit-bearing codes):
+```
+CreateQueue: UnknownError, BadRequestException, ConflictException, ForbiddenException,
+             InternalServerErrorException, NotFoundException, ServiceQuotaExceededException,
+             TooManyRequestsException
+CreateJob:   UnknownError, BadRequestException, ConflictException, ForbiddenException,
+             InternalServerErrorException, NotFoundException, ServiceQuotaExceededException,
+             TooManyRequestsException
+```
+
+**Snapshot-version guard: FIRED, read-only, not resolved by this pass.**
+`go test ./pkgs/persistence/ -run TestSnapshotVersionGuard` fails against
+this change: retyping `Queue.ConcurrentJobs` from `int` to `*int` is an
+existing-field type change, not the additive case the guard otherwise
+special-cases (unlike `MaximumConcurrentFeeds`, which was a brand-new
+field). The retype is backward-compatible in practice -- `encoding/json`
+happily decodes a bare JSON number into a `*int` field, and the only
+behavioral difference on an old snapshot is that a queue whose
+`ConcurrentJobs` was implicitly 0 (the old wire format's `omitempty` never
+wrote it) now restores as `nil` instead of `0`, which is the more correct
+reading since the old format could never actually distinguish the two --
+but per this task's instructions the guard was run read-only and left for
+the maintainer to bump `mediaconvertSnapshotVersion` (currently 3) and
+re-run with `-update`, not decided here.
+
+Tests: `TestAdvanceJobPhase_ConcurrentJobsLimitBlocksExcessJobs` and
+`TestAdvanceJobPhase_NilConcurrentJobsIsUnlimited` (`janitor_test.go`, new)
+cover enforcement; `TestCreateQueue_ConcurrentJobsZeroDistinctFromUnset`
+(`queues_test.go`, new) covers the zero/unset wire distinction end-to-end
+through the handler. `TestCreateQueue_ConcurrentJobs` (`queues_test.go`) and
+`TestPersistence_NewFieldsRoundTrip` (`persistence_test.go`) were
+pre-existing tests asserting `ConcurrentJobs` as a plain value; both
+corrected in place to assert through the pointer instead of weakened or
+deleted.
