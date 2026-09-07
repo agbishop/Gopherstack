@@ -454,6 +454,55 @@ leaks: {status: clean, note: "Janitor (janitor.go) is the only background gorout
 
 ## Notes
 
+### 2026-09-07 (gopherstack-jpfk: is ValidationException-sentinel reuse a defect class?)
+
+Follow-up to gopherstack-mq6m (mgn probe: shared-helper artifact, not a defect, STOP). ssm's 71
+class A findings spread across 129 distinct source lines (no site over 2 findings) rather than
+2 funnel functions, so mgn's verdict does not automatically transfer. Sampled the full set of
+non-"is required" (enum/pattern/cross-field) checks plus a dozen "is required" checks spread
+across 9 files (activations.go, associations.go, automations.go, cloud_connector.go,
+documents.go, inventory.go, maintenance_window.go, parameters.go, patch_baselines.go,
+resource_policies.go), and checked each op's own `deserializeOpError<Op>` switch
+(ssm@v1.73.4 deserializers.go) plus the *doc comment* on each candidate declared exception type
+(types/errors.go) — not just its name.
+
+**Verdict: split, and small.** The overwhelming majority (126 of 129 sites) are genuinely
+idiomatic: every "X is required" check guards a field the SDK's own input struct marks
+`// This member is required` (a Smithy `@required` trait), and every "must be one of"/enum
+check guards a modeled enum member. Only 3 of ssm's 152 ops declare `ValidationException` at
+all — consistent with real AWS Smithy services validating `@required`/enum/range-trait
+violations at the protocol front door, uniformly, *before* dispatching to an operation's own
+business logic, which is exactly why that layer isn't in the op's own modeled exception union.
+Confirmed against several superficially-plausible-looking alternatives that turned out to be a
+false fit on closer reading of the exception's own doc comment, not just its name — `InvalidParameters`
+("values for all required parameters in the SSM **document**", i.e. CreateAssociation/
+CreateActivation's *document*-parameters concept, not general required-input) and
+`InvalidAutomationSignalException` ("the signal isn't valid **for the current execution**",
+a runtime-state check, not "not a recognized enum value") both looked like fits by name and
+were not by meaning.
+
+**3 sites in PutParameter are the exception, fixed this pass** — supersedes the 2026-08-29 note
+below, which left `validateParameterName` unfixed because it "could not establish with
+confidence" what code AWS sends for a shape-constraint violation. This pass found that
+confidence in the *doc comments* PutParameter's own three declared exceptions carry (types/errors.go):
+`ParameterPatternMismatchException` ("The parameter name isn't valid"),
+`UnsupportedParameterType` ("The parameter type isn't supported"), and
+`InvalidAllowedPatternException` ("The request doesn't meet the regular expression
+requirement") match `validateParameterName`, the `Type` enum check, and `validateAllowedPattern`
+respectively, word for word. New sentinels `ErrParameterNamePattern`, `ErrUnsupportedParameterType`,
+`ErrInvalidAllowedPattern` (errors.go), wired via a new `classifySSMParameterValidationError`
+split-out (handler.go, single call site each — verified no other op shares
+`validateParameterName`/`isValidParameterType`/`validateAllowedPattern`). PutParameter's
+`DataType` check (no declared exception fits) is left on `ValidationException` with a landmine
+comment, and `TestPutParameter_DataType_Invalid` now pins that as deliberate. Pre-existing
+`TestValidateParameterName` (handler_test.go) and `TestPutParameter_Validation` (three cases,
+parameters_handler_test.go) asserted the old generic `ErrValidationException` and were
+strengthened to the specific sentinel; `TestSSMHandler_ValidationError` (parameters_handler_test.go)
+had a stale comment/weak assertion and was tightened to check `__type` exactly.
+
+Remaining 68 findings (across the other files/ops) are not fixed and, per the above, are not a
+defect class — no code change beyond the three PutParameter sites.
+
 ### 2026-08-29 (error-path sweep: what a typed client sees on failure)
 
 Extracted all 152 `awsAwsjson11_deserializeOpError<Op>` switches from ssm@v1.73.4's
@@ -506,7 +555,11 @@ SDK's own typed exception):
   JSON-RPC service like ssm (unlike newer REST-JSON services, ssm's op models don't uniformly
   declare `ValidationException`, and I could not rule out that AWS's front-end applies it
   uniformly regardless of per-op modeling). Left rather than guessed, per this campaign's
-  restraint principle.
+  restraint principle. **Superseded 2026-09-07** (gopherstack-jpfk, see Notes above): the three
+  `validateParameterName`/`Type`/`validateAllowedPattern` checks in `PutParameter` now map to
+  `ErrParameterNamePattern`/`ErrUnsupportedParameterType`/`ErrInvalidAllowedPattern`, found by
+  reading the *doc comment* on PutParameter's own declared exception types rather than only
+  their names. The generic "field X is required" majority described above still stands.
 - `ErrCiphertextTooShort` falls through to a generic 500 (never classified) but is only
   reachable via a corrupted/forged stored ciphertext — not a condition a well-formed client
   request can trigger — so left as an internal invariant guard, not a client-facing bug.

@@ -191,13 +191,15 @@ func TestSSMHandler_ValidationError(t *testing.T) {
 
 	h, _ := newTestHandler(t)
 
-	// ssm/amazon prefix triggers ErrValidationException, which is now explicitly handled.
+	// ssm/ reserved-namespace prefix triggers ErrParameterNamePattern
+	// (ParameterPatternMismatchException, PutParameter's own declared
+	// exception for a malformed Name), which is now explicitly handled.
 	rec := doRequest(t, h, "PutParameter", `{"Name":"ssm/bad","Type":"String","Value":"v"}`)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 
 	var resp map[string]string
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.NotEmpty(t, resp["__type"])
+	assert.Equal(t, "ParameterPatternMismatchException", resp["__type"])
 }
 
 // TestSSMHandler_ErrInvalidKeyID covers the InvalidKeyId path.
@@ -447,7 +449,10 @@ func TestPutParameter_Validation(t *testing.T) {
 				AllowedPattern: `^\d+$`,
 			},
 			wantErr: true,
-			errIs:   ssm.ErrValidationException,
+			// InvalidAllowedPatternException, not the generic
+			// ValidationException: it is PutParameter's own declared
+			// exception for this (gopherstack-jpfk).
+			errIs: ssm.ErrInvalidAllowedPattern,
 		},
 		{
 			name: "bad_regex_pattern",
@@ -458,7 +463,7 @@ func TestPutParameter_Validation(t *testing.T) {
 				AllowedPattern: `[invalid`,
 			},
 			wantErr: true,
-			errIs:   ssm.ErrValidationException,
+			errIs:   ssm.ErrInvalidAllowedPattern,
 		},
 		{
 			name: "tier_too_large_standard",
@@ -521,7 +526,10 @@ func TestPutParameter_Validation(t *testing.T) {
 				Value: "v",
 			},
 			wantErr: true,
-			errIs:   ssm.ErrValidationException,
+			// ParameterPatternMismatchException, not the generic
+			// ValidationException: it is PutParameter's own declared
+			// exception for a malformed Name (gopherstack-jpfk).
+			errIs: ssm.ErrParameterNamePattern,
 		},
 	}
 

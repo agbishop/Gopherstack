@@ -597,7 +597,10 @@ func TestValidateParameterName(t *testing.T) {
 			})
 			if tc.wantErr {
 				require.Error(t, err)
-				assert.ErrorIs(t, err, ssm.ErrValidationException)
+				// ParameterPatternMismatchException, not the generic
+				// ValidationException: it is PutParameter's own declared
+				// exception for a malformed Name (gopherstack-jpfk).
+				assert.ErrorIs(t, err, ssm.ErrParameterNamePattern)
 			} else {
 				require.NoError(t, err)
 			}

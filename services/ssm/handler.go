@@ -409,31 +409,48 @@ func classifySSMResourceIdentityError(reqErr error) (string, int, bool) {
 	}
 }
 
+// classifySSMParameterValidationError handles PutParameter's own declared
+// input-validation exceptions, split out for the same cyclop-budget reason as
+// classifySSMResourceDataSyncError.
+func classifySSMParameterValidationError(reqErr error) (string, int, bool) {
+	statusCode := http.StatusBadRequest
+
+	switch {
+	case errors.Is(reqErr, ErrParameterNamePattern):
+		return "ParameterPatternMismatchException", statusCode, true
+	case errors.Is(reqErr, ErrUnsupportedParameterType):
+		return "UnsupportedParameterType", statusCode, true
+	case errors.Is(reqErr, ErrInvalidAllowedPattern):
+		return "InvalidAllowedPatternException", statusCode, true
+	default:
+		return "", 0, false
+	}
+}
+
+// ssmErrorClassifier reports (code, status, true) when reqErr matches the
+// group of sentinels it handles, or ("", 0, false) otherwise.
+type ssmErrorClassifier func(error) (string, int, bool)
+
 func classifySSMErrorExtended(reqErr error) (string, int) {
 	statusCode := http.StatusBadRequest
 
-	if code, status, ok := classifySSMResourceDataSyncError(reqErr); ok {
-		return code, status
+	// A slice walked in a loop, rather than one `if` per classifier, keeps
+	// this function's cyclomatic complexity under this repo's cyclop limit
+	// as new sentinel groups are added.
+	classifiers := []ssmErrorClassifier{
+		classifySSMResourceDataSyncError,
+		classifySSMParameterValidationError,
+		classifySSMResourcePolicyError,
+		classifySSMDocumentError,
+		classifySSMOpsError,
+		classifySSMMiscNotFoundError,
+		classifySSMResourceIdentityError,
 	}
 
-	if code, status, ok := classifySSMResourcePolicyError(reqErr); ok {
-		return code, status
-	}
-
-	if code, status, ok := classifySSMDocumentError(reqErr); ok {
-		return code, status
-	}
-
-	if code, status, ok := classifySSMOpsError(reqErr); ok {
-		return code, status
-	}
-
-	if code, status, ok := classifySSMMiscNotFoundError(reqErr); ok {
-		return code, status
-	}
-
-	if code, status, ok := classifySSMResourceIdentityError(reqErr); ok {
-		return code, status
+	for _, classify := range classifiers {
+		if code, status, ok := classify(reqErr); ok {
+			return code, status
+		}
 	}
 
 	switch {
