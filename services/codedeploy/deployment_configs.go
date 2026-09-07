@@ -192,6 +192,13 @@ func (b *InMemoryBackend) DeleteDeploymentConfig(name string) error {
 
 	cfg, ok := b.deploymentConfigs.Get(name)
 	if !ok {
+		// DeleteDeploymentConfig's deserializer models no
+		// DeploymentConfigDoesNotExistException (aws-sdk-go-v2/service/codedeploy
+		// deserializers.go) -- this code is provably wrong here. InvalidOperationException
+		// (used below for the built-in-config case) is a plausible candidate but its
+		// description is generic, not evidence this case reuses it; idempotent-success
+		// is equally plausible. Do NOT "fix" this by guessing; needs real evidence
+		// (gopherstack-3pz8).
 		return fmt.Errorf("%w: deployment config %s not found", ErrDeploymentConfigNotFound, name)
 	}
 

@@ -297,27 +297,34 @@ func TestOnPremisesInstances_ListTagFilter(t *testing.T) {
 }
 
 // TestOnPremisesInstances_NotFoundErrorMapping verifies that a not-found
-// on-premises instance lookup surfaces as a 404 InstanceDoesNotExistException,
-// not a fallback 500 ServiceException. ErrOnPremisesInstanceNotFound
-// previously had no errorMappings entry, so it fell through to the generic
-// 500 branch regardless of its sentinel code.
+// on-premises instance lookup surfaces as a 404, not a fallback 500
+// ServiceException, and that each op maps to its own SDK-declared code:
+// GetOnPremisesInstance's deserializer models InstanceNotRegisteredException,
+// not InstanceDoesNotExistException (aws-sdk-go-v2/service/codedeploy
+// deserializers.go, gopherstack-3pz8). DeregisterOnPremisesInstance's
+// deserializer models neither code -- InstanceDoesNotExistException is a
+// known-wrong landmine there (see on_premises_instances.go), kept only
+// because no confirmed remedy exists yet.
 func TestOnPremisesInstances_NotFoundErrorMapping(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		input  map[string]any
-		name   string
-		action string
+		input    map[string]any
+		name     string
+		action   string
+		wantType string
 	}{
 		{
-			name:   "GetOnPremisesInstance",
-			action: "GetOnPremisesInstance",
-			input:  map[string]any{"instanceName": "no-such-instance"},
+			name:     "GetOnPremisesInstance",
+			action:   "GetOnPremisesInstance",
+			input:    map[string]any{"instanceName": "no-such-instance"},
+			wantType: "InstanceNotRegisteredException",
 		},
 		{
-			name:   "DeregisterOnPremisesInstance",
-			action: "DeregisterOnPremisesInstance",
-			input:  map[string]any{"instanceName": "no-such-instance"},
+			name:     "DeregisterOnPremisesInstance",
+			action:   "DeregisterOnPremisesInstance",
+			input:    map[string]any{"instanceName": "no-such-instance"},
+			wantType: "InstanceDoesNotExistException",
 		},
 	}
 
@@ -331,7 +338,32 @@ func TestOnPremisesInstances_NotFoundErrorMapping(t *testing.T) {
 
 			var resp map[string]string
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-			assert.Equal(t, "InstanceDoesNotExistException", resp["__type"])
+			assert.Equal(t, tt.wantType, resp["__type"])
 		})
 	}
+}
+
+// TestGetOnPremisesInstance_NotRegisteredNotDoesNotExist locks in
+// GetOnPremisesInstance's fix: the wrong pre-gopherstack-3pz8 code must not
+// come back, and no instance is created as a side effect of a failed lookup.
+func TestGetOnPremisesInstance_NotRegisteredNotDoesNotExist(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	rec := doRequest(t, h, "GetOnPremisesInstance", map[string]any{"instanceName": "no-such-instance"})
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "InstanceNotRegisteredException", resp["__type"])
+	assert.NotEqual(t, "InstanceDoesNotExistException", resp["__type"])
+
+	listRec := doRequest(t, h, "ListOnPremisesInstances", map[string]any{})
+	require.Equal(t, http.StatusOK, listRec.Code)
+
+	var listResp struct {
+		InstanceNames []string `json:"instanceNames"`
+	}
+	require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &listResp))
+	assert.Empty(t, listResp.InstanceNames)
 }

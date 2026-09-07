@@ -15,13 +15,13 @@ ops:
   CreateApplication: {wire: ok, errors: ok, state: ok, persist: ok}
   GetApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "createTime was UnixMilli int64, fixed to awstime.Epoch float64"}
   ListApplications: {wire: ok, errors: ok, state: ok, persist: ok, note: "TRIAGED (gopherstack-a250): input was a literal struct{}; real ListApplicationsInput (api_op_ListApplications.go) has an optional NextToken member, discarded. NOT wired: this service never truncates any List* response (verified across all 8 List ops in this file, not just the struct{} ones -- ListDeployments/ListOnPremisesInstances/ListDeploymentGroups/etc. have no pagination either), so NextToken has no continuation state to represent and no caller-supplied token could ever produce a response different from the unconditional full list already returned. Inert given this backend's list model, not a fabrication candidate -- see gaps."}
-  DeleteApplication: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteApplication: {wire: ok, errors: partial, state: ok, persist: ok, note: "TRIAGED (gopherstack-3pz8): DeleteApplication's own deserializer models no ApplicationDoesNotExistException at all (only ApplicationNameRequiredException/InvalidApplicationNameException/InvalidRoleException) -- the not-found path is provably wrong, but whether the real op is a silent idempotent success or maps to a different code is unconfirmed (doc page shows only generic '200 empty body' boilerplate, not a semantic idempotent-delete sentence). Landmine comment left at the call site; unfixed pending evidence"}
   UpdateApplication: {wire: ok, errors: ok, state: ok, persist: ok}
   BatchGetApplications: {wire: ok, errors: n/a, state: ok, persist: ok, note: "same createTime fix as GetApplication"}
   CreateDeploymentGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (gopherstack-455l): Ec2TagFilters/Ec2TagSet and OnPremisesInstanceTagFilters/OnPremisesTagSet were both accepted unconditionally though both ops model 'only one of these data types can be used in a single call' (InvalidEC2TagCombinationException/InvalidOnPremisesTagCombinationException, types/errors.go:1579-1580,2122-2123); now rejected when both halves of a pair are set. Also added Ec2TagFilters[].Type validation against the real KEY_ONLY|VALUE_ONLY|KEY_AND_VALUE enum (InvalidEC2TagException, types/errors.go:1606) -- empty Type stays legal since validators.go does not require EC2TagFilter.Type. OnPremisesInstanceTagFilters[].Type is NOT validated: no matching 'invalid format' error is modeled on this op (InvalidTagFilterException belongs to ListOnPremisesInstances only)"}
   GetDeploymentGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (6flj wrapper-key sweep): real DeploymentGroupInfo has 23 keys (deserializers.go's awsAwsjson11_deserializeDocumentDeploymentGroupInfo); gopherstack had 20, missing lastAttemptedDeployment/lastSuccessfulDeployment/targetRevision. Added InMemoryBackend.LastDeploymentsForGroup deriving both from real per-group deployment history (Deployment.CreateTime/Status/Revision, already tracked); targetRevision taken from the most-recently-ATTEMPTED deployment's own revision (the plain reading of 'target' -- the SDK's own doc comment does not distinguish attempted-vs-successful, so this specific choice is an interpretation, disclosed here, not independently confirmed against a live account)"}
   ListDeploymentGroups: {wire: ok, errors: ok, state: ok, persist: ok}
-  DeleteDeploymentGroup: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteDeploymentGroup: {wire: ok, errors: partial, state: ok, persist: ok, note: "TRIAGED (gopherstack-3pz8): DeleteDeploymentGroup's own deserializer models neither ApplicationDoesNotExistException nor DeploymentGroupDoesNotExistException (only *NameRequiredException/Invalid*NameException/InvalidRoleException) -- both current not-found paths are provably wrong, remedy (silent success vs. a different code) unconfirmed. Landmine comments left at both call sites; unfixed pending evidence"}
   UpdateDeploymentGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (gopherstack-455l): same Ec2TagFilters/Ec2TagSet and OnPremisesInstanceTagFilters/OnPremisesTagSet mutual-exclusion + Ec2TagFilters[].Type validation as CreateDeploymentGroup -- see that entry"}
   BatchGetDeploymentGroups: {wire: ok, errors: ok, state: ok, persist: ok, note: "same lastAttemptedDeployment/lastSuccessfulDeployment/targetRevision fix as GetDeploymentGroup (shared deploymentGroupOutputWithHistory converter)"}
   CreateDeployment: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: fileExistsBehavior was accepted and stored unvalidated (any garbage string round-tripped); now validated against the real DISALLOW|OVERWRITE|RETAIN enum, InvalidFileExistsBehaviorException (confirmed in CreateDeployment's own error set, deserializers.go) for anything else"}
@@ -41,7 +41,7 @@ ops:
   CreateDeploymentConfig: {wire: ok, errors: ok, state: ok, persist: ok}
   GetDeploymentConfig: {wire: ok, errors: ok, state: ok, persist: ok, note: "createTime was UnixMilli int64, fixed to awstime.Epoch float64"}
   ListDeploymentConfigs: {wire: ok, errors: n/a, state: ok, persist: ok, note: "TRIAGED (gopherstack-a250): same NextToken-inert finding as ListApplications -- see that row."}
-  DeleteDeploymentConfig: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteDeploymentConfig: {wire: ok, errors: partial, state: ok, persist: ok, note: "TRIAGED (gopherstack-3pz8): DeleteDeploymentConfig's own deserializer models no DeploymentConfigDoesNotExistException (only DeploymentConfigInUseException/DeploymentConfigNameRequiredException/InvalidDeploymentConfigNameException/InvalidOperationException) -- the not-found path is provably wrong. InvalidOperationException (already used a few lines below for the built-in-config case) is a plausible candidate but its description is generic, not evidence this case reuses it; silent success is equally plausible. Landmine comment left at the call site; unfixed pending evidence"}
   RegisterApplicationRevision: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: persists to a real applicationRevisions store.Table keyed by (appName, canonical revision JSON); re-registering an already-known revision refreshes description, preserves original registerTime"}
   GetApplicationRevision: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: reads the persisted revision, populates revisionInfo (GenericRevisionInfo: description/registerTime/firstUsedTime/lastUsedTime/deploymentGroups, field names+epoch-seconds verified against deserializers.go), new RevisionDoesNotExistException (404) for an unregistered revision instead of echoing the request back"}
   ListApplicationRevisions: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: returns real registered revisions for the application with deployed/s3Bucket/s3KeyPrefix/sortBy/sortOrder filtering; previously always empty since nothing was ever persisted"}
@@ -49,8 +49,8 @@ ops:
   DeleteGitHubAccountToken: {wire: ok, errors: ok, state: ok, persist: ok}
   ListGitHubAccountTokenNames: {wire: ok, errors: n/a, state: ok, persist: ok, note: "TRIAGED (gopherstack-a250): same NextToken-inert finding as ListApplications -- see that row."}
   RegisterOnPremisesInstance: {wire: ok, errors: ok, state: ok, persist: ok}
-  DeregisterOnPremisesInstance: {wire: ok, errors: ok, state: ok, persist: ok, note: "ErrOnPremisesInstanceNotFound had the wrong error code (InstanceNameRequiredException) and no errorMappings entry at all, so it fell through to 500 ServiceException; fixed to InstanceDoesNotExistException + 404"}
-  GetOnPremisesInstance: {wire: ok, errors: ok, state: ok, persist: ok, note: "same registerTime/deregisterTime epoch fix + errorMappings fix as DeregisterOnPremisesInstance. FIXED (6flj wrapper-key sweep): real InstanceInfo has 7 keys (deserializers.go's awsAwsjson11_deserializeDocumentInstanceInfo); gopherstack had 6, missing instanceArn. Added InMemoryBackend.OnPremisesInstanceARN, reusing the same 'instance:<name>' resource format already used for the identical resource type's InstanceTarget.TargetArn (deployment_instances.go)"}
+  DeregisterOnPremisesInstance: {wire: ok, errors: partial, state: ok, persist: ok, note: "ErrOnPremisesInstanceNotFound had the wrong error code (InstanceNameRequiredException) and no errorMappings entry at all, so it fell through to 500 ServiceException; fixed to InstanceDoesNotExistException + 404. TRIAGED (gopherstack-3pz8): that fix itself is still wrong -- DeregisterOnPremisesInstance's own deserializer models neither InstanceDoesNotExistException nor any not-found code at all (only InstanceNameRequiredException/InvalidInstanceNameException). Remedy (silent success vs. a different code) unconfirmed; landmine comment left at the call site, unfixed pending evidence"}
+  GetOnPremisesInstance: {wire: ok, errors: ok, state: ok, persist: ok, note: "same registerTime/deregisterTime epoch fix + errorMappings fix as DeregisterOnPremisesInstance. FIXED (6flj wrapper-key sweep): real InstanceInfo has 7 keys (deserializers.go's awsAwsjson11_deserializeDocumentInstanceInfo); gopherstack had 6, missing instanceArn. Added InMemoryBackend.OnPremisesInstanceARN, reusing the same 'instance:<name>' resource format already used for the identical resource type's InstanceTarget.TargetArn (deployment_instances.go). FIXED (gopherstack-3pz8): not-found path used ErrOnPremisesInstanceNotFound (InstanceDoesNotExistException), but GetOnPremisesInstance's own deserializer models InstanceNotRegisteredException instead (confirmed against both deserializers.go and the API_GetOnPremisesInstance.html doc page's Errors section); new ErrOnPremisesInstanceNotRegistered sentinel wired in"}
   ListOnPremisesInstances: {wire: ok, errors: n/a, state: ok, persist: ok}
   BatchGetOnPremisesInstances: {wire: ok, errors: n/a, state: ok, persist: ok, note: "same registerTime/deregisterTime epoch fix; same instanceArn fix as GetOnPremisesInstance"}
   AddTagsToOnPremisesInstances: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -311,3 +311,51 @@ leaks: {status: clean, note: "no goroutines/janitors in this service; Reset/Snap
   an unrecognized routed `Action` string doesn't correspond to any real CodeDeploy
   operation, so there is no operation's own deserializer to consult. Left unfixed, per
   the existing comment at the call site; verdict unchanged.
+
+- **Triaged, 2026-09-07 (gopherstack-3pz8, `errtargetaudit` class A findings)**: 6
+  findings, all `domain=Handler mechanism=sentinel reference`, grouped into 4 root
+  causes by code. Verified each against `awk "/deserializeOpError<Op>\(/,/^}/" \
+  deserializers.go | grep -oE '"[A-Za-z0-9]+"'` plus the matching
+  `docs.aws.amazon.com/codedeploy/latest/APIReference/API_<Op>.html` Errors section.
+  No override-helper exists anywhere in this package (`grep -rn "errors.Is(err"
+  *.go` → only handler.go's own dispatch loop), so class-7 (handler overrides the
+  code) does not apply to any of the six.
+  - **Fixed (1, unambiguous)**: `GetOnPremisesInstance` emitted
+    `InstanceDoesNotExistException` (`ErrOnPremisesInstanceNotFound`) for a missing
+    instance, but its own deserializer models `InstanceNotRegisteredException`
+    instead — confirmed both in `deserializers.go` and the doc page's Errors list
+    ("The specified on-premises instance is not registered."). Exactly one
+    declared code fit, so this was a clean sentinel swap: new
+    `ErrOnPremisesInstanceNotRegistered` sentinel, wired into `errorMappings`,
+    call site in `on_premises_instances.go` updated. Pre-existing test
+    `TestOnPremisesInstances_NotFoundErrorMapping/GetOnPremisesInstance` had been
+    asserting the wrong code (`InstanceDoesNotExistException`) since it was
+    written to close a *different* prior gap (missing errorMappings entry
+    entirely, causing a 500) — fixed to assert `InstanceNotRegisteredException`.
+    Added `TestGetOnPremisesInstance_NotRegisteredNotDoesNotExist` asserting the
+    correct code, the wrong code's absence, and that a failed lookup creates no
+    instance.
+  - **Left unfixed (5, evidence gap)**: `DeleteApplication` /
+    `ApplicationDoesNotExistException`, `DeleteDeploymentGroup` /
+    `ApplicationDoesNotExistException`, `DeleteDeploymentGroup` /
+    `DeploymentGroupDoesNotExistException`, `DeleteDeploymentConfig` /
+    `DeploymentConfigDoesNotExistException`, and `DeregisterOnPremisesInstance` /
+    `InstanceDoesNotExistException`. Each op's own deserializer models *no*
+    not-found code at all for the missing-resource case (confirmed above) — the
+    declared-set mismatch proves the current 404 is wrong, but does not by itself
+    prove the remedy is silent success: all four ops' doc pages carry only the
+    generic "If the action is successful, the service sends back an HTTP 200
+    response with an empty HTTP body" boilerplate (the same sentence that
+    appears on `codepipeline`'s `DisableStageTransition`, which does still error
+    on a missing resource), not a semantic idempotent-delete sentence like
+    workmail's genuinely-earned "Deleting already deleted and non-existing rules
+    does not produce an error." `DeleteDeploymentConfig` additionally has an
+    ambiguous candidate (`InvalidOperationException`, already used a few lines
+    below for the built-in-config case) that is plausible but not evidenced.
+    Landmine comments left at all five call sites naming the gap and citing this
+    issue; no behavior changed for these five. Neutered the one line that was
+    changed (`GetOnPremisesInstance`'s sentinel swap, and separately the new
+    `errorMappings` entry) — each reversion compiled and made the corresponding
+    test fail as expected, then was restored.
+  - `go test -race -count=1 ./services/codedeploy/...` and `golangci-lint run
+    services/codedeploy/...` (`0 issues.`) both pass after the fix.

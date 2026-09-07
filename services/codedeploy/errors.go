@@ -13,9 +13,14 @@ var (
 	ErrDeploymentConfigNotFound      = awserr.New("DeploymentConfigDoesNotExistException", awserr.ErrNotFound)
 	ErrDeploymentConfigAlreadyExists = awserr.New("DeploymentConfigAlreadyExistsException", awserr.ErrConflict)
 	ErrOnPremisesInstanceNotFound    = awserr.New("InstanceDoesNotExistException", awserr.ErrNotFound)
-	ErrInvalidComputePlatform        = awserr.New("InvalidComputePlatformException", awserr.ErrInvalidParameter)
-	ErrIamArnRequired                = awserr.New("IamArnRequiredException", awserr.ErrInvalidParameter)
-	ErrMultipleIamArns               = awserr.New("MultipleIamArnsProvidedException", awserr.ErrInvalidParameter)
+	// ErrOnPremisesInstanceNotRegistered is GetOnPremisesInstance's own modeled
+	// not-found code: its deserializer models InstanceNotRegisteredException,
+	// not InstanceDoesNotExistException (verified against
+	// aws-sdk-go-v2/service/codedeploy deserializers.go, gopherstack-3pz8).
+	ErrOnPremisesInstanceNotRegistered = awserr.New("InstanceNotRegisteredException", awserr.ErrNotFound)
+	ErrInvalidComputePlatform          = awserr.New("InvalidComputePlatformException", awserr.ErrInvalidParameter)
+	ErrIamArnRequired                  = awserr.New("IamArnRequiredException", awserr.ErrInvalidParameter)
+	ErrMultipleIamArns                 = awserr.New("MultipleIamArnsProvidedException", awserr.ErrInvalidParameter)
 	// ErrDeploymentConfigIsDefault guards DeleteDeploymentConfig's built-in-config
 	// case (InvalidOperationException); ErrDeploymentConfigInUse below guards its
 	// other modeled case (DeploymentConfigInUseException) -- distinct codes for

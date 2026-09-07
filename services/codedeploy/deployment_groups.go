@@ -203,6 +203,12 @@ func (b *InMemoryBackend) DeleteDeploymentGroup(appName, dgName string) error {
 	defer b.mu.Unlock()
 
 	if !b.applications.Has(appName) {
+		// DeleteDeploymentGroup's deserializer models neither
+		// ApplicationDoesNotExistException nor DeploymentGroupDoesNotExistException
+		// (aws-sdk-go-v2/service/codedeploy deserializers.go) -- both this code and
+		// the one below are provably wrong here, but idempotent-success vs. a
+		// different code is unconfirmed. Do NOT "fix" this by guessing; needs real
+		// evidence (gopherstack-3pz8).
 		return fmt.Errorf("%w: application %s not found", ErrNotFound, appName)
 	}
 
