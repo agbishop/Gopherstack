@@ -146,7 +146,7 @@ func (h *Handler) handleListPullRequests(body []byte) (any, error) {
 	if in.PullRequestStatus != "" &&
 		in.PullRequestStatus != prStatusOpen &&
 		in.PullRequestStatus != prStatusClosed {
-		return nil, fmt.Errorf("%w: pullRequestStatus must be OPEN or CLOSED", ErrValidation)
+		return nil, fmt.Errorf("%w: pullRequestStatus must be OPEN or CLOSED", ErrInvalidPullRequestStatus)
 	}
 
 	ids, err := h.Backend.ListPullRequests(in.RepositoryName, in.PullRequestStatus, in.AuthorARN)
@@ -298,7 +298,7 @@ func (h *Handler) handleUpdatePullRequestStatus(body []byte) (any, error) {
 		return nil, fmt.Errorf("%w: pullRequestId is required", errInvalidRequest)
 	}
 	if req.PullRequestStatus != prStatusOpen && req.PullRequestStatus != prStatusClosed {
-		return nil, fmt.Errorf("%w: pullRequestStatus must be OPEN or CLOSED", ErrValidation)
+		return nil, fmt.Errorf("%w: pullRequestStatus must be OPEN or CLOSED", ErrInvalidPullRequestStatus)
 	}
 
 	if err := h.Backend.UpdatePullRequestStatus(req.PullRequestID, req.PullRequestStatus); err != nil {

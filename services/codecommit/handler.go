@@ -411,6 +411,17 @@ var errCodeLookup = []errCodeEntry{
 		errType:  "InvalidPullRequestEventTypeException",
 	},
 	{sentinel: ErrValidation, code: http.StatusBadRequest, errType: "InvalidParameterException"},
+	{sentinel: ErrInvalidMergeOption, code: http.StatusBadRequest, errType: "InvalidMergeOptionException"},
+	{
+		sentinel: ErrInvalidPullRequestStatus,
+		code:     http.StatusBadRequest,
+		errType:  "InvalidPullRequestStatusException",
+	},
+	{
+		sentinel: ErrInvalidContinuationToken,
+		code:     http.StatusBadRequest,
+		errType:  "InvalidContinuationTokenException",
+	},
 	{sentinel: errInvalidRequest, code: http.StatusBadRequest, errType: "ValidationException"},
 }
 

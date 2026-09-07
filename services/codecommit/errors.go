@@ -77,6 +77,21 @@ var (
 	ErrApprovalRuleNotFound = awserr.New("ApprovalRuleDoesNotExistException", awserr.ErrNotFound)
 	// ErrInvalidPullRequestEventType is returned when pullRequestEventType is not a recognized enum value.
 	ErrInvalidPullRequestEventType = awserr.New("InvalidPullRequestEventTypeException", awserr.ErrInvalidParameter)
+	// ErrInvalidMergeOption is returned when mergeOption is not one of the three enum values.
+	// Code is InvalidMergeOptionException -- BatchDescribeMergeConflicts, CreateUnreferencedMergeCommit,
+	// DescribeMergeConflicts, and GetMergeConflicts all declare it (codecommit@v1.36.4
+	// deserializers.go); none of the four declares InvalidParameterException.
+	ErrInvalidMergeOption = awserr.New("InvalidMergeOptionException", awserr.ErrInvalidParameter)
+	// ErrInvalidPullRequestStatus is returned when pullRequestStatus is not OPEN or CLOSED.
+	// Code is InvalidPullRequestStatusException -- ListPullRequests and UpdatePullRequestStatus
+	// both declare it (codecommit@v1.36.4 deserializers.go); neither declares
+	// InvalidParameterException.
+	ErrInvalidPullRequestStatus = awserr.New("InvalidPullRequestStatusException", awserr.ErrInvalidParameter)
+	// ErrInvalidContinuationToken is returned when a nextToken/NextToken fails to decode.
+	// Code is InvalidContinuationTokenException -- GetDifferences and ListFileCommitHistory
+	// both declare it (codecommit@v1.36.4 deserializers.go); neither declares
+	// InvalidParameterException.
+	ErrInvalidContinuationToken = awserr.New("InvalidContinuationTokenException", awserr.ErrInvalidParameter)
 )
 
 // repoNameRe matches valid CodeCommit repository names: alphanumeric, _, -, .

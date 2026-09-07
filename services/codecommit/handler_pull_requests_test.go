@@ -492,6 +492,12 @@ func TestHandler_UpdatePullRequestStatus_Validation(t *testing.T) {
 	}
 }
 
+// TestHandler_UpdatePullRequestStatus_TableDriven's three rejection cases used
+// to assert wantErrType "InvalidParameterException" -- wrong: UpdatePullRequestStatus's
+// own deserializer (codecommit@v1.36.4 deserializers.go,
+// awsAwsjson11_deserializeOpErrorUpdatePullRequestStatus) has no case for that
+// code, only InvalidPullRequestStatusException (gopherstack-yatn). Strengthened,
+// not weakened: the assertion now checks the code the real SDK would actually parse.
 func TestHandler_UpdatePullRequestStatus_TableDriven(t *testing.T) {
 	t.Parallel()
 
@@ -507,19 +513,19 @@ func TestHandler_UpdatePullRequestStatus_TableDriven(t *testing.T) {
 			name:        "merged_rejected",
 			status:      "MERGED",
 			wantStatus:  http.StatusBadRequest,
-			wantErrType: "InvalidParameterException",
+			wantErrType: "InvalidPullRequestStatusException",
 		},
 		{
 			name:        "empty_rejected",
 			status:      "",
 			wantStatus:  http.StatusBadRequest,
-			wantErrType: "InvalidParameterException",
+			wantErrType: "InvalidPullRequestStatusException",
 		},
 		{
 			name:        "bad_value_rejected",
 			status:      "DONE",
 			wantStatus:  http.StatusBadRequest,
-			wantErrType: "InvalidParameterException",
+			wantErrType: "InvalidPullRequestStatusException",
 		},
 	}
 

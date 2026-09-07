@@ -48,7 +48,7 @@ func (h *Handler) handleBatchDescribeMergeConflicts(body []byte) (any, error) {
 	if !isValidMergeOption(in.MergeOption) {
 		return nil, fmt.Errorf(
 			"%w: mergeOption must be FAST_FORWARD_MERGE, SQUASH_MERGE, or THREE_WAY_MERGE",
-			ErrValidation,
+			ErrInvalidMergeOption,
 		)
 	}
 
@@ -223,7 +223,7 @@ func (h *Handler) handleCreateUnreferencedMergeCommit(body []byte) (any, error) 
 	if !isValidMergeOption(req.MergeOption) {
 		return nil, fmt.Errorf(
 			"%w: mergeOption must be FAST_FORWARD_MERGE, SQUASH_MERGE, or THREE_WAY_MERGE",
-			ErrValidation,
+			ErrInvalidMergeOption,
 		)
 	}
 
@@ -303,7 +303,7 @@ func (h *Handler) handleGetMergeConflicts(body []byte) (any, error) {
 	if !isValidMergeOption(req.MergeOption) {
 		return nil, fmt.Errorf(
 			"%w: mergeOption must be FAST_FORWARD_MERGE, SQUASH_MERGE, or THREE_WAY_MERGE",
-			ErrValidation,
+			ErrInvalidMergeOption,
 		)
 	}
 
@@ -361,7 +361,7 @@ func (h *Handler) handleDescribeMergeConflicts(body []byte) (any, error) {
 	if !isValidMergeOption(req.MergeOption) {
 		return nil, fmt.Errorf(
 			"%w: mergeOption must be FAST_FORWARD_MERGE, SQUASH_MERGE, or THREE_WAY_MERGE",
-			ErrValidation,
+			ErrInvalidMergeOption,
 		)
 	}
 

@@ -738,7 +738,7 @@ func notFoundCodeCore(err error) (string, bool) {
 	case errors.Is(err, ErrCachePolicyNotFound):
 		return "NoSuchCachePolicy", true
 	case errors.Is(err, ErrAnycastIPListNotFound):
-		return "NoSuchAnycastIPList", true
+		return codeEntityNotFound, true
 	case errors.Is(err, ErrConnectionFunctionNotFound):
 		return codeEntityNotFound, true
 	case errors.Is(err, ErrConnectionGroupNotFound):

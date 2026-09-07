@@ -233,7 +233,7 @@ func (b *InMemoryBackend) GetDifferences(
 	repoName, afterCommitSpecifier, _ /* beforeCommitSpecifier */, nextToken string, maxResults int,
 ) (page.Page[FileDifference], error) {
 	if err := page.ValidateToken(nextToken); err != nil {
-		return page.Page[FileDifference]{}, fmt.Errorf("%w: invalid NextToken", ErrValidation)
+		return page.Page[FileDifference]{}, fmt.Errorf("%w: invalid NextToken", ErrInvalidContinuationToken)
 	}
 
 	b.mu.RLock("GetDifferences")
