@@ -575,6 +575,19 @@ func TestHandler_CompilationJob_ReachesCompleted_RealClient(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, smtypes.CompilationJobStatusInprogress, out.CompilationJobStatus)
 
+	// require.Eventually stays here deliberately (gopherstack-k3ae): wrapping
+	// this test in synctest.Test, including newTestSageMakerClient's real
+	// httptest.NewServer, deadlocks. The accept/read/write goroutines behind
+	// the real socket join the bubble (they're spawned from inside it) but
+	// block on real network I/O, which synctest does not count as "durably
+	// blocked" -- so the bubble never goes quiescent, the fake clock never
+	// advances, and runDelayed's timer for the InProgress->Completed
+	// transition never fires. Confirmed: 35s of zero output, goroutine dump
+	// showing accept/read/write parked in real IO wait, not "(durable)".
+	// The callback this polls already re-checks CompilationJobStatus before
+	// writing (compilation_jobs.go's scheduleCompilationJobCompletion), so
+	// this doesn't have the missed-intermediate-state shape gopherstack-7lrq
+	// hid behind Eventually.
 	require.Eventually(t, func() bool {
 		polled, pollErr := client.DescribeCompilationJob(t.Context(), &sagemakersdk.DescribeCompilationJobInput{
 			CompilationJobName: aws.String("cj-completes"),
