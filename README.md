@@ -578,7 +578,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Detective](services/detective/README.md) | A | 29 | 3 gaps; 2 deferred |
 | [GuardDuty](services/guardduty/README.md) | A | 66 | 5 gaps; 1 structural gap; 5 deferred |
 | [Inspector](services/inspector2/README.md) | A | 13 | 10 gaps; 1 deferred |
-| [KMS](services/kms/README.md) | A | 54 | 6 gaps; 2 deferred |
+| [KMS](services/kms/README.md) | A | 54 | 9 gaps; 2 deferred |
 | [Macie](services/macie2/README.md) | A | 81 | clean |
 | [Secrets Manager](services/secretsmanager/README.md) | A | 24 | 8 gaps; 2 deferred |
 | [Security Hub](services/securityhub/README.md) | A | 116 | 5 gaps |
