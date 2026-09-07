@@ -198,6 +198,22 @@ func (b *InMemoryBackend) DeleteAgent(agentID string) error {
 
 	delete(b.agentsByName, ag.AgentName)
 	delete(b.agentTags, ag.AgentArn)
+	delete(b.agentVersionCounters, agentID)
+
+	// Reset, not delete: agentVersionsStore/agentCollaboratorsStore register
+	// the table under "agentVersions:"+agentID / "agentCollaborators:"+agentID
+	// in b.registry once; deleting the map entry here would make a later
+	// call to either accessor re-Register the same name and panic. Reset
+	// clears the rows in place so GetAgentVersion/ListAgentVersions and their
+	// collaborator equivalents stop returning ghost rows for this agent.
+	if versions, versionsOK := b.agentVersions[agentID]; versionsOK {
+		versions.Reset()
+	}
+
+	if collaborators, collabOK := b.agentCollaborators[agentID]; collabOK {
+		collaborators.Reset()
+	}
+
 	b.agents.Delete(agentID)
 
 	return nil

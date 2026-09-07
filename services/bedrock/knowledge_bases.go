@@ -120,7 +120,9 @@ func (b *InMemoryBackend) UpdateKnowledgeBase(
 	return &cp, nil
 }
 
-// DeleteKnowledgeBase deletes a knowledge base.
+// DeleteKnowledgeBase deletes a knowledge base and its data sources.
+// GetDataSource/ListDataSources otherwise keep returning orphaned rows for a
+// KB ID that no longer resolves (gopherstack-wg7i).
 func (b *InMemoryBackend) DeleteKnowledgeBase(kbID string) error {
 	b.mu.Lock("DeleteKnowledgeBase")
 	defer b.mu.Unlock()
@@ -132,6 +134,14 @@ func (b *InMemoryBackend) DeleteKnowledgeBase(kbID string) error {
 
 	delete(b.kbByName, kb.Name)
 	b.knowledgeBases.Delete(kbID)
+
+	b.dataSources.Range(func(ds *DataSource) bool {
+		if ds.KnowledgeBaseID == kbID {
+			b.dataSources.Delete(ds.KnowledgeBaseID + "/" + ds.DataSourceID)
+		}
+
+		return true
+	})
 
 	return nil
 }

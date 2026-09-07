@@ -631,3 +631,145 @@ were never broken); restored, all gates re-run clean.
 
 Gates: `go build`, `go test -race -count=1 ./services/bedrock/...`,
 `golangci-lint run services/bedrock/...` -- 0 issues, all clean.
+
+## 2026-09-06 second-pass audit sweep (gopherstack-wg7i): 2 ghost-row bugs fixed, 3 filed
+
+Second pass over the four items the 2026-09-04 bedrock audit ran out of
+budget for: janitor-interval/completion-delay mismatch, goroutine/timer
+leaks, unbounded map growth, and a dedicated ghost-row sweep of
+guardrail-versions / knowledge-base-data-sources / agent-aliases.
+
+**Sweep 1 -- janitor interval vs completion delay: CLEAN.** Read
+bedrockruntime's PARITY.md first for the prior bug's shape (its `StartWorker`
+hardcoded a 1-hour tick against a 5s `defaultAsyncInvokeCompletionDelay`, so
+a real running server left jobs unadvanced for up to an hour). bedrock's
+`janitor.go` defines both `defaultJobCompletionDelay` and
+`defaultJanitorInterval` as the same literal (`5 * time.Second`) in one
+`const` block; `Handler.StartWorker` (handler.go) passes
+`defaultJanitorInterval` to `RunJanitor`, and every advancer that takes a
+delay (`AdvanceCustomizationJobStatuses`, `AdvanceCopyImportJobStatuses`,
+`AdvanceAdvancedPromptOptimizationJobStatuses`) is called from
+`runJanitorTick` with `defaultJobCompletionDelay` -- a single shared source
+of truth, not two independently hardcoded numbers. The other two advancers
+(`AdvanceProvisionedModelThroughputStatuses`, `AdvanceCustomModelDeploymentStatuses`)
+take no delay parameter at all -- they advance any resource in `Creating` on
+the very next tick, so there is no delay for an interval to outpace.
+
+**Sweep 2 -- goroutine and timer leaks: CLEAN.** Grepped
+`go func(|time.NewTicker|time.NewTimer|time.After(` across every non-test
+`.go` file in this package: exactly one hit, `handler.go`'s `StartWorker`
+goroutine, which calls `Backend.RunJanitor` and participates in this
+package's `service.BackgroundWorker`/`service.Shutdowner` convention --
+`Shutdown` cancels `janitorCancel` and blocks on `janitorDone` (or the
+passed-in ctx). `RunJanitor` builds a `pkgs/worker.Group` and calls
+`g.Ticker(...)`, which internally does `ticker := time.NewTicker(interval);
+defer ticker.Stop()` (pkgs/worker/group.go:91-92) and returns only after
+`<-ctx.Done()`; `RunJanitor` itself blocks on `<-ctx.Done()` then calls
+`g.Stop()`. No hand-rolled ticker, no unstoppable goroutine.
+
+**Sweep 3 -- unbounded map growth: 2 genuine findings, both fixed.** Walked
+`InMemoryBackend`'s per-resource maps (store.go) against every `Delete*`
+method:
+  - `agentVersions`/`agentVersionCounters` (map[string]\*store.Table /
+    map[string]int, keyed by agentID) and `agentCollaborators`
+    (map[string]\*store.Table, keyed by agentID) were never touched by
+    `DeleteAgent` -- only `agentsByName`/`agentTags` were pruned there
+    (gopherstack-cq0z, 2026-09-06, fixed the latter). **FIXED**: `DeleteAgent`
+    (agents.go) now deletes `agentVersionCounters[agentID]` outright and
+    calls `.Reset()` (not `delete()`, see the added code comment) on the
+    agent's `agentVersions`/`agentCollaborators` tables if present --
+    `Reset()` because `agentVersionsStore`/`agentCollaboratorsStore`
+    (store_setup.go) register each per-agent table under
+    `"agentVersions:"+agentID` in `b.registry` exactly once; deleting the
+    outer map entry would make a later call to either accessor (e.g. from
+    `persistence.go`'s Restore, which pre-registers every
+    (prefix, parentID) pair present in an incoming snapshot) call
+    `store.Register` on that same name again and panic (`store: table ...
+    already registered`, registry.go:46). This is also a sweep-4 ghost-row
+    fix, see below. Test: `TestDeleteAgent_ClearsVersionsAndCollaborators`
+    (ghost_row_wg7i_test.go).
+  - `agentTags` (map[string]map[string]string, keyed by an entirely
+    caller-supplied `resourceArn` string) backs the generic
+    `/tags/{resourceArn}` REST route (`dispatchTagRoutes`, handler_agents.go)
+    shared by every agent-domain resource type (agent, agent alias,
+    knowledge base, data source, flow, flow alias, prompt, ...).
+    `TagAgentResource` (agents.go) does zero existence validation against
+    `resourceArn` -- any string, including one that names no real resource,
+    creates a permanent entry. Only `DeleteAgent` prunes its own resource's
+    entry (`agentTags[ag.AgentArn]`, gopherstack-cq0z); `DeleteKnowledgeBase`,
+    `DeleteDataSource`, `DeleteFlow`, `DeleteFlowAlias`, `DeletePrompt`,
+    `DeleteAgentAlias`, `DeleteAgentActionGroup` prune none of theirs. **NOT
+    FIXED this pass** -- a correct fix needs either a resourceArn-existence
+    check at Tag-time or a prune call added to every taggable resource's
+    Delete* across ~7 files, wider than this pass's two-fix budget. Filing
+    for gopherstack to track separately.
+  - Also noticed but not independently fixed (same shape, smaller/rarer):
+    `flowVersions`/`flowVersionCounters` (keyed by flowID) and `flowAliases`
+    entries are never pruned by `DeleteFlow`; `promptVersions`/
+    `promptVersionCounters` (keyed by promptID) are never pruned by
+    `DeletePrompt`; `arpVersionCountByPolicy` (keyed by policyARN) and
+    `arpAnnotations`/`arpAnnotationSetHash`/`arpAnnotationsUpdatedAt` (keyed
+    by `policyARN+":"+buildWorkflowID`) are never pruned by
+    `DeleteAutomatedReasoningPolicy`/`deleteARPArtifacts` or
+    `DeleteAutomatedReasoningPolicyBuildWorkflow`. Filing as a follow-up
+    (same root cause as the agentTags finding: this backend's "delete the
+    parent, forget the child index" pattern recurs across flows/prompts/ARP,
+    not just agents). `ingestionJobs`/`agentKBAssociations`/`kbDocuments`
+    orphan the same way on `DeleteKnowledgeBase` -- see sweep 4.
+
+**Sweep 4 -- ghost-row ish ick on named parent-child relationships:**
+  - **Guardrail versions: CLEAN.** `DeleteGuardrail` (guardrails.go), when
+    called with no version (full delete), already ranges
+    `b.guardrailVersions` and deletes every `GuardrailID+":"+Version` entry
+    belonging to the guardrail being removed. Pre-existing, correct.
+  - **Knowledge-base data sources: BUG, FIXED.** `bedrockagent@v1.58.4
+    api_op_DeleteKnowledgeBase.go`'s doc comment: "Deletes a knowledge base.
+    Before deleting a knowledge base, you should disassociate the knowledge
+    base from any agents that it is associated with by making a
+    DisassociateAgentKnowledgeBase request." -- no cascade documented, but no
+    finding here rests on an invented cascade: `CreateDataSourceWithConfiguration`
+    (data_sources.go) already validates the parent KB exists at creation
+    time, so `GetDataSource`/`ListDataSources`/`UpdateDataSourceWithConfiguration`
+    silently *not* re-checking that the KB still exists is this backend's
+    own internal inconsistency, not a missing AWS-documented cascade. Before
+    the fix, `GetDataSource(kbID, dsID)` and `ListDataSources(kbID, ...)`
+    both kept returning a data source after its parent KB was deleted.
+    **FIXED**: `DeleteKnowledgeBase` (knowledge_bases.go) now ranges
+    `b.dataSources` and deletes every entry whose `KnowledgeBaseID` matches,
+    mirroring `DeleteGuardrail`'s existing pattern exactly. Test:
+    `TestDeleteKnowledgeBase_RemovesDataSources` (ghost_row_wg7i_test.go).
+    `ingestionJobs` and `kbDocuments` (also keyed off kbID) have the identical
+    gap and were deliberately left alone this pass -- filing separately
+    rather than widening this fix.
+  - **Agent aliases: CLEAN (by construction).** `DeleteAgent` (agents.go)
+    already refuses deletion outright (`ErrAlreadyExists`, "has active
+    aliases and cannot be deleted") whenever `b.agentAliases` has any row
+    for that agentID, so an agent can never be deleted out from under a
+    live alias -- there is no code path that orphans one. Noted in passing,
+    not fixed: gopherstack does not implement real AWS's
+    `DeleteAgentInput.SkipResourceInUseCheck` bool
+    (`bedrockagent@v1.58.4 api_op_DeleteAgent.go:36-39`) at all, so this
+    block can never be bypassed even when a real caller sets that flag --
+    a parity gap in the opposite direction (too strict, not a leak), out of
+    this audit's scope; filing separately.
+
+Files changed: `services/bedrock/knowledge_bases.go` (DeleteKnowledgeBase
+cascades to data sources), `services/bedrock/agents.go` (DeleteAgent clears
+agentVersionCounters and Resets agentVersions/agentCollaborators),
+`services/bedrock/ghost_row_wg7i_test.go` (new -- both regression tests,
+each confirmed failing against the unmodified code before the fix, per
+commit history).
+
+Filed for tracking (not fixed this pass, all same discovered-but-out-of-budget
+shape): agentTags leak for every non-Agent taggable resource type;
+flowVersions/flowVersionCounters/flowAliases never pruned by DeleteFlow;
+promptVersions/promptVersionCounters never pruned by DeletePrompt;
+arpVersionCountByPolicy/arpAnnotations/arpAnnotationSetHash/
+arpAnnotationsUpdatedAt never pruned by DeleteAutomatedReasoningPolicy or
+DeleteAutomatedReasoningPolicyBuildWorkflow; ingestionJobs/kbDocuments never
+pruned by DeleteKnowledgeBase; DeleteAgent doesn't implement
+SkipResourceInUseCheck.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
+both clean.
