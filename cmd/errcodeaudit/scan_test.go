@@ -192,6 +192,50 @@ func TestScanServiceDir_ECSTwelfthCodeAlsoFixed(t *testing.T) {
 	}
 }
 
+// TestClassify_GenericListNeverOverridesRealServiceCode is gopherstack-udkm's
+// confirmation for this tool: unlike cmd/errtargetaudit's per-operation
+// declared set, classify's gt.codes is already the service-wide union
+// (built the same way as errtargetaudit's AllCodes -- see
+// serviceGroundTruth's doc comment), and this tool only ever asks "is this
+// code real ANYWHERE in this service's own SDK" -- never "for THIS
+// operation" (that's errtargetaudit's job, gopherstack-o46l's class). So a
+// code present in gt.codes is excluded because it's real, and whether it
+// also happens to sit in genericProtocolCodes changes nothing: no source
+// change was needed here. This locks that in.
+func TestClassify_GenericListNeverOverridesRealServiceCode(t *testing.T) {
+	t.Parallel()
+
+	const code = "ValidationException"
+
+	gt := &serviceGroundTruth{codes: map[string]bool{code: true}}
+	cands := []candidate{{File: "f.go", Line: 1, Code: code, Mechanism: mechStdlibErr}}
+
+	findings := classify(cands, gt)
+
+	require.Empty(t, findings,
+		"a code real in gt.codes must never be reported, generic-list membership notwithstanding")
+}
+
+// TestClassify_GenericListOnlyExcusesWhenAbsentFromServiceCodes is the
+// module-conditional half: a genuinely generic code THIS service's own
+// resolved module never declares anywhere (gt.codes lacks it) stays
+// excused, while a fabricated code -- absent from both gt.codes and the
+// generic list -- is still flagged.
+func TestClassify_GenericListOnlyExcusesWhenAbsentFromServiceCodes(t *testing.T) {
+	t.Parallel()
+
+	gt := &serviceGroundTruth{codes: map[string]bool{}}
+	cands := []candidate{
+		{File: "f.go", Line: 1, Code: "Throttling", Mechanism: mechStdlibErr},
+		{File: "f.go", Line: 2, Code: "TotallyFabricatedException", Mechanism: mechStdlibErr},
+	}
+
+	findings := classify(cands, gt)
+
+	require.Len(t, findings, 1)
+	require.Equal(t, "TotallyFabricatedException", findings[0].Code)
+}
+
 // TestScanServiceDir_SkipsNoGroundTruth confirms ec2 -- whose OWN pinned
 // SDK module models zero error codes at all (see moduleCodes's doc
 // comment) -- never produces a CONFIDENT finding, matching commit

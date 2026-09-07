@@ -996,6 +996,36 @@ func TestClassifyEmission_WireFaultTypeDiscriminator_Excluded(t *testing.T) {
 	require.Equal(t, emissionDeclaredOrGeneric, classifyEmission("Server", declared, allCodes))
 }
 
+// TestClassifyEmission_GenericCodeConditionalOnAllCodes is gopherstack-udkm:
+// ValidationException is a real per-operation exception in 57 pinned SDK
+// modules (confirmed via grep -rl '"ValidationException"'
+// $(go env GOMODCACHE)/.../service/*/deserializers.go), so genericProtocolCodes
+// must excuse it only when this service's own AllCodes lacks it entirely --
+// an op emitting it for a service where AllCodes has it (declared by SOME
+// other operation) is a real class A finding, not a protocol-level freebie.
+func TestClassifyEmission_GenericCodeConditionalOnAllCodes(t *testing.T) {
+	t.Parallel()
+
+	declared := map[string]bool{}
+	allCodes := map[string]bool{"ValidationException": true}
+
+	require.Equal(t, emissionClassA, classifyEmission("ValidationException", declared, allCodes))
+}
+
+// TestClassifyEmission_GenericCodeStillExcusedWhenAbsentEverywhere is the
+// conditional check's non-regression half: a genuinely generic code with no
+// module modeling it anywhere in this service must stay excused, not
+// reported as an orphan finding.
+func TestClassifyEmission_GenericCodeStillExcusedWhenAbsentEverywhere(t *testing.T) {
+	t.Parallel()
+
+	declared := map[string]bool{}
+	allCodes := map[string]bool{}
+
+	require.Equal(t, emissionDeclaredOrGeneric, classifyEmission("Throttling", declared, allCodes))
+	require.Equal(t, emissionDeclaredOrGeneric, classifyEmission("ValidationException", declared, allCodes))
+}
+
 // TestScan_OrphanCode_WeakTypeLabel_Suppressed is the scan-level version of
 // TestCompositeLitEmissions_TypeLabelMarkedWeak: services/workmail's real
 // shape (DescribeEntity{Type: "GROUP"}) is ordinary API response data, not

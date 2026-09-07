@@ -1,26 +1,33 @@
 package main
 
 // genericProtocolCodes are error codes AWS's wire protocols recognize at the
-// frontend/gateway layer for every service, never modeled as a per-operation
-// typed exception -- so an operation's own deserializer legitimately
-// contains none of them, and flagging their absence there would be a false
-// positive by construction. Same list as cmd/errcodeaudit/genericcodes.go
-// (reimplemented, not imported -- see this package's doc comment for why);
-// see that file's doc comment for the sourcing and live confirmations
-// behind each entry. ONE ADDITION beyond that list, made during this tool's
-// own validation pass: "InternalServerException" (the "Exception"-suffixed
-// sibling of the "InternalServerError" that file already allowlists).
-// services/mgn's shared internalServerError() constructor is called from
-// ~90 operations for a genuine unexpected-failure fallback; every one
-// sampled was confirmed, directly against mgn@v1.48.4's own
-// deserializers.go, to legitimately declare no InternalServerException at
-// all (e.g. ArchiveApplication's real set is {ConflictException,
+// frontend/gateway layer for every service -- USUALLY never modeled as a
+// per-operation typed exception, but not always: gopherstack-udkm found
+// ValidationException alone declared per-op in 57 of the pinned SDK's 166
+// service modules (grep -rl '"ValidationException"' .../service/*/
+// deserializers.go), and InternalServerException genuinely declared (both a
+// types/errors.go type AND 3 deserializeOpError<Op> switch cases) in
+// services/mgn's OWN pinned module -- the exact service this list's
+// InternalServerException entry was added for (see below), meaning that
+// addition's sampling missed the ops that DO declare it. classifyEmission
+// (scan.go) therefore consults this map only when the code is absent from
+// allCodes (the service's own module-wide AllCodes union) too -- a code
+// present in allCodes is real for this service and reported class A
+// instead, never waved through unconditionally. Same list as
+// cmd/errcodeaudit/genericcodes.go (reimplemented, not imported -- see this
+// package's doc comment for why); see that file's doc comment for the
+// sourcing and live confirmations behind each entry. ONE ADDITION beyond
+// that list, made during this tool's own validation pass:
+// "InternalServerException" (the "Exception"-suffixed sibling of the
+// "InternalServerError" that file already allowlists). services/mgn's
+// shared internalServerError() constructor is called from ~90 operations
+// for a genuine unexpected-failure fallback; the ops sampled during that
+// pass (e.g. ArchiveApplication's real declared set is {ConflictException,
 // ResourceNotFoundException, ServiceQuotaExceededException,
-// UninitializedAccountException} -- no server-fault type whatsoever). That
-// is the exact "gateway/runtime fallback, not a per-operation contract"
-// reasoning cmd/errcodeaudit's own doc already applies to InternalError/
-// InternalServerError/ServerException/ServiceException; before this
-// addition it produced 90 false positives in one service alone.
+// UninitializedAccountException} -- no server-fault type) declare no
+// InternalServerException of their OWN, which is still correct -- they are
+// now class A findings (real in mgn's module, wrong operation), not
+// generic, since the module-conditional check above applies.
 var genericProtocolCodes = map[string]bool{ //nolint:gochecknoglobals // read-only lookup table
 	"ValidationError":             true,
 	"ValidationException":         true,

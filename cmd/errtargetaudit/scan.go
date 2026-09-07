@@ -291,13 +291,21 @@ const (
 // classifyEmission decides e's class purely from set membership: declared[]
 // is this operation's own declared set, allCodes is the service-wide union
 // used to tell a real-but-misplaced code (class A) apart from one this
-// service's SDK never declares anywhere (emissionOrphan).
+// service's SDK never declares anywhere (emissionOrphan). genericProtocolCodes
+// is consulted only when allCodes lacks the code too (gopherstack-udkm): a
+// module assigned to this service that DOES declare the code somewhere
+// (e.g. ValidationException, real per-op in 57 pinned SDK modules) means an
+// op emitting it without declaring it is class A, not a protocol freebie.
 func classifyEmission(code string, declared, allCodes map[string]bool) emissionClass {
-	if declared[code] || genericProtocolCodes[code] || wireFaultTypeDiscriminators[code] {
+	if declared[code] || wireFaultTypeDiscriminators[code] {
 		return emissionDeclaredOrGeneric
 	}
 
 	if !allCodes[code] {
+		if genericProtocolCodes[code] {
+			return emissionDeclaredOrGeneric
+		}
+
 		return emissionOrphan
 	}
 

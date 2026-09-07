@@ -1,11 +1,17 @@
 package main
 
 // genericProtocolCodes are error codes AWS's wire protocols (JSON-RPC,
-// Query, REST) recognize at the frontend/gateway layer for every service,
-// never modeled as a per-service typed exception -- so a service's own
-// types/errors.go and deserializers.go legitimately contain none of them,
-// and flagging their absence there would be a false positive by
-// construction. Sources: the six named directly in this tool's brief
+// Query, REST) recognize at the frontend/gateway layer for every service --
+// USUALLY never modeled as a per-service typed exception, but not always:
+// gopherstack-udkm found ValidationException alone declared per-op in 57 of
+// the pinned SDK's 166 service modules. That is not a bug here, though:
+// scan.go's classify already checks gt.codes (this service's OWN resolved
+// module's code union) before falling back to this map, so a service whose
+// own module DOES declare the code (gt.codes[c.Code]) is never routed
+// through this allowlist at all -- consulting it only matters, and is only
+// correct, for a service whose own SDK module has no record of the code
+// anywhere. Sources for the entries below: the six named directly in this
+// tool's brief
 // (ValidationError, InvalidAction, MissingParameter, Throttling,
 // InternalFailure, AccessDenied) plus their common Query/JSON-RPC siblings
 // confirmed by the same "gateway rejects the request before any
