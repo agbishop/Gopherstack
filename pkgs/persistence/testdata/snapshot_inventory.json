@@ -16506,7 +16506,7 @@
       "Preset.Tags map[string]string `json:\"tags,omitempty\"`",
       "Preset.Type string `json:\"type\"`",
       "Queue.Arn string `json:\"arn\"`",
-      "Queue.ConcurrentJobs int `json:\"concurrentJobs,omitempty\"`",
+      "Queue.ConcurrentJobs *int `json:\"concurrentJobs,omitempty\"`",
       "Queue.CreatedAt float64 `json:\"createdAt\"`",
       "Queue.Description string `json:\"description,omitempty\"`",
       "Queue.LastUpdated float64 `json:\"lastUpdated\"`",
