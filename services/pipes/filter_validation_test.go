@@ -69,18 +69,54 @@ func filterPatternCases() []struct {
 			expectError: true,
 		},
 		{
-			name:        "invalid_unknown_matcher_equals_ignore_case",
+			// gopherstack-5eok: real AWS Pipes supports standalone
+			// equals-ignore-case (eb-create-pattern-operators.html's
+			// "Equals (ignore case)" row is "Pipe support: Yes").
+			name:        "valid_equals_ignore_case_standalone",
 			pattern:     `{"type":[{"equals-ignore-case":"order"}]}`,
-			expectError: true,
+			expectError: false,
 		},
 		{
-			name:        "invalid_or_combinator",
+			// gopherstack-5eok: "Or (multiple fields)" is "Pipe support: Yes".
+			name:        "valid_or_combinator",
 			pattern:     `{"$or":[{"type":["order"]},{"type":["payment"]}]}`,
+			expectError: false,
+		},
+		{
+			// gopherstack-5eok: "Begins with (ignore case)" is "Pipe support: Yes".
+			name:        "valid_nested_prefix_ignore_case",
+			pattern:     `{"type":[{"prefix":{"equals-ignore-case":"ord"}}]}`,
+			expectError: false,
+		},
+		{
+			// gopherstack-5eok: "Ends with (ignore case)" is "Pipe support: Yes".
+			name:        "valid_nested_suffix_ignore_case",
+			pattern:     `{"type":[{"suffix":{"equals-ignore-case":"der"}}]}`,
+			expectError: false,
+		},
+		{
+			name:        "invalid_equals_ignore_case_non_string",
+			pattern:     `{"type":[{"equals-ignore-case":5}]}`,
 			expectError: true,
 		},
 		{
-			name:        "invalid_nested_prefix_ignore_case",
-			pattern:     `{"type":[{"prefix":{"equals-ignore-case":"ord"}}]}`,
+			name:        "invalid_or_not_array",
+			pattern:     `{"$or":{"type":["order"]}}`,
+			expectError: true,
+		},
+		{
+			name:        "invalid_or_element_not_object",
+			pattern:     `{"$or":["order"]}`,
+			expectError: true,
+		},
+		{
+			name:        "invalid_nested_prefix_ignore_case_non_string",
+			pattern:     `{"type":[{"prefix":{"equals-ignore-case":5}}]}`,
+			expectError: true,
+		},
+		{
+			name:        "invalid_nested_prefix_extra_key",
+			pattern:     `{"type":[{"prefix":{"equals-ignore-case":"ord","extra":"x"}}]}`,
 			expectError: true,
 		},
 		{

@@ -206,6 +206,66 @@ func TestFilter_PatternOperators(t *testing.T) {
 			msgBody:   `{"type":"order"}`,
 			wantMatch: false,
 		},
+		{
+			// gopherstack-5eok: standalone equals-ignore-case.
+			name:      "equals_ignore_case_matches_different_casing",
+			pattern:   `{"type":[{"equals-ignore-case":"ORDER"}]}`,
+			msgBody:   `{"type":"order"}`,
+			wantMatch: true,
+		},
+		{
+			name:      "equals_ignore_case_no_match_different_value",
+			pattern:   `{"type":[{"equals-ignore-case":"payment"}]}`,
+			msgBody:   `{"type":"order"}`,
+			wantMatch: false,
+		},
+		{
+			// gopherstack-5eok: nested equals-ignore-case inside prefix.
+			name:      "prefix_equals_ignore_case_matches",
+			pattern:   `{"type":[{"prefix":{"equals-ignore-case":"ORD"}}]}`,
+			msgBody:   `{"type":"order"}`,
+			wantMatch: true,
+		},
+		{
+			name:      "prefix_equals_ignore_case_no_match",
+			pattern:   `{"type":[{"prefix":{"equals-ignore-case":"INV"}}]}`,
+			msgBody:   `{"type":"order"}`,
+			wantMatch: false,
+		},
+		{
+			// gopherstack-5eok: nested equals-ignore-case inside suffix.
+			name:      "suffix_equals_ignore_case_matches",
+			pattern:   `{"type":[{"suffix":{"equals-ignore-case":"DER"}}]}`,
+			msgBody:   `{"type":"order"}`,
+			wantMatch: true,
+		},
+		{
+			name:      "suffix_equals_ignore_case_no_match",
+			pattern:   `{"type":[{"suffix":{"equals-ignore-case":"XYZ"}}]}`,
+			msgBody:   `{"type":"order"}`,
+			wantMatch: false,
+		},
+		{
+			// gopherstack-5eok: top-level $or, second alternative matches.
+			name:      "or_combinator_matches_second_alternative",
+			pattern:   `{"$or":[{"type":["payment"]},{"type":["order"]}]}`,
+			msgBody:   `{"type":"order"}`,
+			wantMatch: true,
+		},
+		{
+			name:      "or_combinator_no_match_when_neither_alternative_matches",
+			pattern:   `{"$or":[{"type":["payment"]},{"type":["refund"]}]}`,
+			msgBody:   `{"type":"order"}`,
+			wantMatch: false,
+		},
+		{
+			// gopherstack-5eok: $or nested inside a field, per AWS's own
+			// documented example (eb-filtering-complex-example-or).
+			name:      "or_combinator_nested_inside_field_matches",
+			pattern:   `{"detail":{"$or":[{"amount":[{"numeric":[">",100]}]},{"status":["urgent"]}]}}`,
+			msgBody:   `{"detail":{"amount":50,"status":"urgent"}}`,
+			wantMatch: true,
+		},
 	}
 
 	for _, tt := range tests {

@@ -52,10 +52,15 @@ func matchesSingleFilter(body string, f Filter) bool {
 // one level are ANDed, multiple array entries for one field are ORed.
 //
 // Supported content filters (array elements shaped as an object): exists,
-// prefix, suffix, numeric, anything-but, cidr. Unsupported operators
-// (wildcard, equals-ignore-case, the nested {"prefix":{"equals-ignore-case":
-// ...}} form, $or) and any other unrecognized matcher object never match --
-// see matchesRuleObject -- rather than silently matching everything.
+// prefix, suffix, numeric, anything-but, cidr, equals-ignore-case (standalone
+// and nested inside prefix/suffix), and the "$or" combinator (top-level and
+// nested). Unsupported operators (wildcard, and anything-but's object-form
+// negation, e.g. {"anything-but":{"prefix":"x"}}) and any other unrecognized
+// matcher object never match -- see matchesRuleObject -- rather than
+// silently matching everything (gopherstack-5eok: real AWS Pipes' own
+// operator-support table, eb-create-pattern-operators.html, marks $or and
+// equals-ignore-case "Pipe support: Yes" but wildcard and anything-but's
+// object forms "Pipe support: No").
 //
 // Pattern shape:  {"field": ["value1", "value2", ...], "nested": {"field2": [...]}}
 // A field's pattern value must be either an array (of exact-match values
@@ -82,9 +87,18 @@ func matchesJSONPattern(msgBody, pattern string) bool {
 }
 
 // matchesPatternObject reports whether every field in patternMap is
-// satisfied by msgMap (fields at one level are ANDed).
+// satisfied by msgMap (fields at one level are ANDed). "$or" is a
+// combinator, not a message field, so it is dispatched separately.
 func matchesPatternObject(patternMap, msgMap map[string]json.RawMessage) bool {
 	for field, ruleRaw := range patternMap {
+		if field == "$or" {
+			if !matchesOrCombinator(ruleRaw, msgMap) {
+				return false
+			}
+
+			continue
+		}
+
 		msgVal, exists := msgMap[field]
 		if !fieldMatchesRule(msgVal, exists, ruleRaw) {
 			return false
@@ -92,6 +106,29 @@ func matchesPatternObject(patternMap, msgMap map[string]json.RawMessage) bool {
 	}
 
 	return true
+}
+
+// matchesOrCombinator evaluates a "$or" combinator
+// (eb-filtering-complex-example-or): ruleRaw must decode to an array of
+// pattern objects, and msgMap matches if any one of them fully matches.
+func matchesOrCombinator(ruleRaw json.RawMessage, msgMap map[string]json.RawMessage) bool {
+	var alternatives []json.RawMessage
+	if err := json.Unmarshal(ruleRaw, &alternatives); err != nil {
+		return false
+	}
+
+	for _, alt := range alternatives {
+		altPattern, ok := decodeJSONObject(alt)
+		if !ok {
+			continue
+		}
+
+		if matchesPatternObject(altPattern, msgMap) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // isJSONObject reports whether raw is a JSON object ('{...}'), checked by
@@ -170,6 +207,9 @@ func matchesNestedRule(msgVal json.RawMessage, exists bool, ruleRaw json.RawMess
 //   - {"anything-but": ["a","b"]} — negation (list)
 //   - {"cidr": "10.0.0.0/24"}     — CIDR IP range match
 //   - {"exists": true/false}      — field presence
+//   - {"equals-ignore-case": "a"} — case-insensitive string equality
+//   - {"prefix": {"equals-ignore-case": "a"}} — case-insensitive prefix
+//   - {"suffix": {"equals-ignore-case": "a"}} — case-insensitive suffix
 //
 // Any other matcher object key is unrecognized and never matches -- fails
 // closed rather than risking a false positive for an unsupported operator.
@@ -221,7 +261,8 @@ func matchesExactRule(msgVal, rule json.RawMessage) bool {
 }
 
 // matchesRuleObject dispatches a single-key content-filter object to its
-// matcher. Supported: prefix, suffix, numeric, cidr, anything-but.
+// matcher. Supported: prefix, suffix, numeric, cidr, anything-but,
+// equals-ignore-case.
 func matchesRuleObject(msgVal json.RawMessage, ruleObj map[string]json.RawMessage) bool {
 	if prefixRaw, ok := ruleObj["prefix"]; ok {
 		return matchesPrefixRule(msgVal, prefixRaw)
@@ -241,6 +282,10 @@ func matchesRuleObject(msgVal json.RawMessage, ruleObj map[string]json.RawMessag
 
 	if anythingButRaw, ok := ruleObj["anything-but"]; ok {
 		return !matchesAnythingBut(anythingButRaw, msgVal)
+	}
+
+	if eqIgnoreCaseRaw, ok := ruleObj["equals-ignore-case"]; ok {
+		return matchesEqualsIgnoreCaseRule(msgVal, eqIgnoreCaseRaw)
 	}
 
 	return false
@@ -264,32 +309,83 @@ func decodeFloat(raw json.RawMessage) (float64, bool) {
 	return f, true
 }
 
+// matchesPrefixRule matches a prefix rule value against msgVal. AWS supports
+// both a plain string prefix and a case-insensitive nested form
+// (eb-filtering-prefix-matching-ignore-case): {"prefix": {"equals-ignore-case": "foo"}}.
 func matchesPrefixRule(msgVal, prefixRaw json.RawMessage) bool {
 	msgStr, ok := decodeString(msgVal)
 	if !ok {
 		return false
 	}
 
-	prefix, ok := decodeString(prefixRaw)
+	if prefix, isString := decodeString(prefixRaw); isString {
+		return strings.HasPrefix(msgStr, prefix)
+	}
+
+	nested, ok := decodeJSONObject(prefixRaw)
 	if !ok {
 		return false
 	}
 
-	return strings.HasPrefix(msgStr, prefix)
+	ci, ok := nestedEqualsIgnoreCase(nested)
+	if !ok {
+		return false
+	}
+
+	return len(msgStr) >= len(ci) && strings.EqualFold(msgStr[:len(ci)], ci)
 }
 
+// matchesSuffixRule matches a suffix rule value against msgVal. AWS supports
+// both a plain string suffix and a case-insensitive nested form
+// (eb-filtering-suffix-matching-ignore-case): {"suffix": {"equals-ignore-case": "foo"}}.
 func matchesSuffixRule(msgVal, suffixRaw json.RawMessage) bool {
 	msgStr, ok := decodeString(msgVal)
 	if !ok {
 		return false
 	}
 
-	suffix, ok := decodeString(suffixRaw)
+	if suffix, isString := decodeString(suffixRaw); isString {
+		return strings.HasSuffix(msgStr, suffix)
+	}
+
+	nested, ok := decodeJSONObject(suffixRaw)
 	if !ok {
 		return false
 	}
 
-	return strings.HasSuffix(msgStr, suffix)
+	ci, ok := nestedEqualsIgnoreCase(nested)
+	if !ok {
+		return false
+	}
+
+	return len(msgStr) >= len(ci) && strings.EqualFold(msgStr[len(msgStr)-len(ci):], ci)
+}
+
+// nestedEqualsIgnoreCase extracts the string value of a nested
+// {"equals-ignore-case": "..."} object, as used inside prefix/suffix rules.
+func nestedEqualsIgnoreCase(nested map[string]json.RawMessage) (string, bool) {
+	ciRaw, ok := nested["equals-ignore-case"]
+	if !ok {
+		return "", false
+	}
+
+	return decodeString(ciRaw)
+}
+
+// matchesEqualsIgnoreCaseRule matches a standalone
+// {"equals-ignore-case": "..."} rule (eb-filtering-equals-ignore-case-matching).
+func matchesEqualsIgnoreCaseRule(msgVal, valRaw json.RawMessage) bool {
+	msgStr, ok := decodeString(msgVal)
+	if !ok {
+		return false
+	}
+
+	want, ok := decodeString(valRaw)
+	if !ok {
+		return false
+	}
+
+	return strings.EqualFold(msgStr, want)
 }
 
 // matchesNumericRule applies numeric comparison rules like [">", 5, "<", 10]
