@@ -48,6 +48,11 @@ var (
 	// ErrIncorrectKey is returned when the KMS key identified by a caller-supplied KeyId
 	// (Decrypt) or SourceKeyId (ReEncrypt) is not the key that encrypted the ciphertext.
 	ErrIncorrectKey = errors.New("IncorrectKeyException")
+	// ErrIncorrectKeyMaterial is returned by ImportKeyMaterial when the supplied key
+	// material does not meet expectations (e.g. wrong length for the target key spec).
+	// IncorrectKeyMaterialException's doc (kms@v1.55.4 types/errors.go): "the key
+	// material in the request is, expired, invalid, or does not meet expectations".
+	ErrIncorrectKeyMaterial = errors.New("IncorrectKeyMaterialException")
 	// ErrGrantNotFound is returned when the specified grant does not exist.
 	ErrGrantNotFound = errors.New("NotFoundException: grant not found")
 	// ErrCiphertextTooShort is returned when the ciphertext is too short.

@@ -180,6 +180,11 @@ func (b *InMemoryBackend) CreateKey(
 	keySpec := input.KeySpec
 
 	// Validate that KeySpec and KeyUsage are compatible when both are specified.
+	// gopherstack-h88p: CreateKey's declared error set (kms@v1.55.4
+	// deserializeOpErrorCreateKey) has no key-usage-shaped code, and unlike most
+	// ErrValidation sites this check is a real cross-field business rule a client
+	// can trigger with well-formed fields, not a client-side-rejected required-field
+	// case -- so no swap, left as a known gap.
 	if err := validateKeySpecUsage(keySpec, keyUsage); err != nil {
 		return nil, err
 	}
@@ -187,6 +192,7 @@ func (b *InMemoryBackend) CreateKey(
 	keySpec, keyUsage = deriveKeySpecUsage(keySpec, keyUsage)
 
 	// HMAC keys do not support MultiRegion.
+	// gopherstack-h88p: same declared-set gap as validateKeySpecUsage above.
 	if input.MultiRegion {
 		switch keySpec {
 		case keySpecHMAC256, keySpecHMAC384, keySpecHMAC512:

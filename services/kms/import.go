@@ -153,7 +153,10 @@ func (b *InMemoryBackend) resolveKeyMaterial(keyID string, material []byte) ([]b
 
 	raw, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, material, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: RSA-OAEP decrypt of key material failed: %w", ErrInvalidKeyUsage, err)
+		// InvalidCiphertextException's doc (kms@v1.55.4 types/errors.go) covers this
+		// exactly for ImportKeyMaterial: "KMS could not decrypt the encrypted (wrapped)
+		// key material."
+		return nil, fmt.Errorf("%w: RSA-OAEP decrypt of key material failed: %w", ErrInvalidCiphertext, err)
 	}
 
 	b.importWrappingKeys.Delete(keyID)
@@ -193,15 +196,20 @@ func (b *InMemoryBackend) ImportKeyMaterial(
 	}
 
 	// Only symmetric (AES-256) key material is supported for external import.
+	// UnsupportedOperationException's doc covers this: "a specified ... resource is
+	// not valid for this operation" -- the key's own KeySpec, not a request parameter.
 	if key.KeySpec != keySpecSymmetric {
 		return fmt.Errorf(
 			"%w: ImportKeyMaterial only supports SYMMETRIC_DEFAULT keys; got %s",
-			ErrInvalidKeyUsage, key.KeySpec,
+			ErrUnsupportedParameter, key.KeySpec,
 		)
 	}
 
+	// IncorrectKeyMaterialException's own doc disjunction -- "is, expired, invalid, or
+	// does not meet expectations" -- covers empty material under "invalid", same
+	// declared code as the wrong-length check below under "does not meet expectations".
 	if len(input.KeyMaterial) == 0 {
-		return fmt.Errorf("%w: KeyMaterial must not be empty", ErrInvalidKeyUsage)
+		return fmt.Errorf("%w: KeyMaterial must not be empty", ErrIncorrectKeyMaterial)
 	}
 
 	rawMaterial, err := b.resolveKeyMaterial(key.KeyID, input.KeyMaterial)
@@ -212,7 +220,7 @@ func (b *InMemoryBackend) ImportKeyMaterial(
 	if len(rawMaterial) != aes256Bytes {
 		return fmt.Errorf(
 			"%w: symmetric key material must be exactly %d bytes, got %d",
-			ErrInvalidKeyUsage, aes256Bytes, len(rawMaterial),
+			ErrIncorrectKeyMaterial, aes256Bytes, len(rawMaterial),
 		)
 	}
 
