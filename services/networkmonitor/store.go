@@ -142,7 +142,6 @@ type InMemoryBackend struct {
 	registry         *store.Registry
 	monitors         *store.Table[Monitor]
 	monitorsByRegion *store.Index[Monitor]
-	arnIndex         map[string]map[string]string
 	mu               *lockmetrics.RWMutex
 	accountID        string
 	defaultRegion    string
@@ -155,7 +154,6 @@ var _ StorageBackend = (*InMemoryBackend)(nil)
 func NewInMemoryBackend(region, accountID string) *InMemoryBackend {
 	b := &InMemoryBackend{
 		registry:      store.NewRegistry(),
-		arnIndex:      make(map[string]map[string]string),
 		accountID:     accountID,
 		defaultRegion: region,
 		mu:            lockmetrics.New("networkmonitor"),
@@ -172,7 +170,6 @@ func (b *InMemoryBackend) Reset() {
 	defer b.mu.Unlock()
 
 	b.registry.ResetAll()
-	b.arnIndex = make(map[string]map[string]string)
 	b.nextProbeSeq = 0
 }
 
@@ -180,14 +177,6 @@ func (b *InMemoryBackend) Reset() {
 // for monitors, which were previously nested by region
 // (map[string]map[string]*Monitor).
 func regionKey(region, id string) string { return region + "|" + id }
-
-func (b *InMemoryBackend) regionARNIndex(region string) map[string]string {
-	if _, ok := b.arnIndex[region]; !ok {
-		b.arnIndex[region] = make(map[string]string)
-	}
-
-	return b.arnIndex[region]
-}
 
 func (b *InMemoryBackend) buildMonitorARN(region, monitorName string) string {
 	return arn.Build(networkmonitorService, region, b.accountID, "monitor/"+monitorName)

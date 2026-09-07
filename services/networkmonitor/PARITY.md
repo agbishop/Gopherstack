@@ -145,3 +145,45 @@ directly (not just the Go field names) for `CreateMonitor`/`GetMonitor` to
 confirm the flat, unwrapped response shape and exact epoch-seconds
 timestamp encoding. No code changes; see
 `services/_REQUIRED_OUTPUT_CANDIDATES.md`'s settled-services table.
+
+### 2026-09-07: gopherstack-xtn8 -- dead arnIndex removed, findResourceByARN kept
+
+`arnIndex` (`map[string]map[string]string`, region -> ARN -> name) was
+maintained on `CreateMonitor`/`DeleteMonitor`/`Restore` but never read:
+`findResourceByARN` (`tags.go`) has always parsed the ARN string directly
+and looked the resource up in `b.monitors`/`m.Probes` instead. Confirmed
+zero read sites anywhere in the package before removing it.
+
+Checked whether ARN parsing is sound (the reason not to just trust it):
+`findResourceByARN` splits `resource := parts[5]` on `/` and treats
+everything after `monitor/` as the monitor name, or after `probe/` as
+`{monitorName}/{probeId}`. This is only safe if a monitor name can never
+itself contain `/` or `:` -- confirmed via `monitorNameRE` in `store.go`
+(`^[a-zA-Z0-9_-]{1,200}$`), enforced in `CreateMonitor` before any ARN is
+built. Probe IDs are internally generated (`probe-%08d`, `nextProbeID` in
+`store.go`), never user input. Checked both resource types this service
+has -- monitor and probe, the only two `arn.Build` call sites
+(`buildMonitorARN`/`buildProbeARN` in `store.go`) -- and both round-trip
+correctly for every value either can hold. No divergence case exists
+between the two approaches because the index was never live to diverge
+from.
+
+`arnIndex` was never part of `backendSnapshot` (see the removed comment in
+the old `persistence.go`) -- Restore has always rebuilt it fresh from
+`monitors`, so it was never persisted. `TestSnapshotVersionGuard` (read-only,
+no `-update`) passes unchanged since `backendSnapshot`'s field set didn't
+change. No version bump.
+
+Removed the field, its two write sites (`CreateMonitor`, `DeleteMonitor`),
+its `Restore`/`Reset` rebuild, and the now-stale comments in
+`store_setup.go`/`persistence.go`/`persistence_test.go` referencing it.
+Added `TestFindResourceByARN_HTTP` (`handler_create_tags_test.go`), driven
+through the real SDK client over the HTTP router, covering: a single
+monitor's ARN resolves to itself; the correct one of two monitors with
+distinct tags (not the other's, not a merge); the correct one of two probes
+on the same monitor; and a well-formed but nonexistent ARN failing with a
+real `ResourceNotFoundException`, not a panic or a wrong hit. Verified by
+temporarily breaking `findResourceByARN` to return whatever it finds first
+in the region: the two-monitors, two-probes, and unknown-arn cases all
+failed as expected, while the single-monitor case passed trivially (hollow
+by itself, as expected -- it's the other three that pin the lookup).

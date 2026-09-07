@@ -117,3 +117,131 @@ func TestCreateOpsWithTags_RoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestFindResourceByARN_HTTP drives findResourceByARN's monitor/probe lookup
+// (used by ListTagsForResource/TagResource/UntagResource) through the real
+// SDK client over the HTTP router, covering the case a single-resource test
+// would pass trivially against a lookup that just returns the first thing it
+// finds: two same-typed resources present, and the ARN identifies the right
+// one -- plus a clean not-found for an ARN naming no resource at all.
+func TestFindResourceByARN_HTTP(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		setup    func(t *testing.T, client *networkmonitorsdk.Client) string
+		wantTags map[string]string
+		name     string
+		wantErr  bool
+	}{
+		{
+			name: "monitor",
+			setup: func(t *testing.T, client *networkmonitorsdk.Client) string {
+				t.Helper()
+				out, err := client.CreateMonitor(t.Context(), &networkmonitorsdk.CreateMonitorInput{
+					MonitorName: aws.String("solo-monitor"),
+					Tags:        map[string]string{"who": "solo"},
+				})
+				require.NoError(t, err)
+
+				return aws.ToString(out.MonitorArn)
+			},
+			wantTags: map[string]string{"who": "solo"},
+		},
+		{
+			name: "two monitors",
+			setup: func(t *testing.T, client *networkmonitorsdk.Client) string {
+				t.Helper()
+				_, err := client.CreateMonitor(t.Context(), &networkmonitorsdk.CreateMonitorInput{
+					MonitorName: aws.String("mon-a"),
+					Tags:        map[string]string{"who": "a"},
+				})
+				require.NoError(t, err)
+
+				out, err := client.CreateMonitor(t.Context(), &networkmonitorsdk.CreateMonitorInput{
+					MonitorName: aws.String("mon-b"),
+					Tags:        map[string]string{"who": "b"},
+				})
+				require.NoError(t, err)
+
+				return aws.ToString(out.MonitorArn)
+			},
+			wantTags: map[string]string{"who": "b"},
+		},
+		{
+			name: "two probes",
+			setup: func(t *testing.T, client *networkmonitorsdk.Client) string {
+				t.Helper()
+				_, err := client.CreateMonitor(t.Context(), &networkmonitorsdk.CreateMonitorInput{
+					MonitorName: aws.String("multi-probe-monitor"),
+				})
+				require.NoError(t, err)
+
+				_, err = client.CreateProbe(t.Context(), &networkmonitorsdk.CreateProbeInput{
+					MonitorName: aws.String("multi-probe-monitor"),
+					Probe: &types.ProbeInput{
+						Destination: aws.String("10.0.0.1"),
+						Protocol:    types.ProtocolIcmp,
+						SourceArn:   aws.String("arn:aws:ec2:us-east-1:000000000000:subnet/subnet-a"),
+					},
+					Tags: map[string]string{"who": "probe-a"},
+				})
+				require.NoError(t, err)
+
+				out, err := client.CreateProbe(t.Context(), &networkmonitorsdk.CreateProbeInput{
+					MonitorName: aws.String("multi-probe-monitor"),
+					Probe: &types.ProbeInput{
+						Destination: aws.String("10.0.0.2"),
+						Protocol:    types.ProtocolIcmp,
+						SourceArn:   aws.String("arn:aws:ec2:us-east-1:000000000000:subnet/subnet-b"),
+					},
+					Tags: map[string]string{"who": "probe-b"},
+				})
+				require.NoError(t, err)
+
+				return aws.ToString(out.ProbeArn)
+			},
+			wantTags: map[string]string{"who": "probe-b"},
+		},
+		{
+			name: "unknown arn",
+			setup: func(t *testing.T, client *networkmonitorsdk.Client) string {
+				t.Helper()
+				_, err := client.CreateMonitor(t.Context(), &networkmonitorsdk.CreateMonitorInput{
+					MonitorName: aws.String("real-monitor"),
+				})
+				require.NoError(t, err)
+
+				return "arn:aws:networkmonitor:us-east-1:000000000000:monitor/does-not-exist"
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := networkmonitor.NewInMemoryBackend(networkmonitorTagsRTRegion, "000000000000")
+			client := newTestNetworkMonitorClient(t, networkmonitor.NewHandler(backend))
+
+			arn := tc.setup(t, client)
+			require.NotEmpty(t, arn)
+
+			got, err := client.ListTagsForResource(t.Context(), &networkmonitorsdk.ListTagsForResourceInput{
+				ResourceArn: aws.String(arn),
+			})
+
+			if tc.wantErr {
+				require.Error(t, err)
+
+				var nf *types.ResourceNotFoundException
+				require.ErrorAs(t, err, &nf, "expected a real ResourceNotFoundException from the SDK deserializer")
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantTags, got.Tags)
+		})
+	}
+}
