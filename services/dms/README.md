@@ -9,9 +9,13 @@
 | --- | --- |
 | PARITY entries audited | 97 (96 ok, 1 partial) |
 | Feature families | 4 (4 ok) |
-| Known gaps | none |
+| Known gaps | 1 |
 | Deferred items | 0 |
 | Resource leaks | clean |
+
+### Known gaps
+
+- CHECKED 2026-09-07 (gopherstack-z1sd triage), found FALSE: the claim 'migration project has no status' misdescribes the real API, not this backend. The real MigrationProject type (databasemigrationservice@v1.66.4 types/types.go:2044-2088) has no Status/MigrationProjectStatus field at all -- confirmed by full field listing (Description, InstanceProfileArn, InstanceProfileName, MigrationProjectArn, MigrationProjectCreationTime, MigrationProjectName, SchemaConversionApplicationAttributes, Source/TargetDataProviderDescriptors, TransformationRules) and by grep across the whole SDK module for MigrationProjectStatus (zero hits). CreateMigrationProject/ModifyMigrationProject/DeleteMigrationProject/DescribeMigrationProjects (ops rows above) already match this shape exactly, including the 2026-08-11 fix that removed a fabricated MigrationProjectIdentifier response field. There is no gap here.
 
 ## More
 

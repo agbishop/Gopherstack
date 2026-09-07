@@ -498,7 +498,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | Service | Parity | PARITY Entries | Notes |
 |---|---|---|---|
 | [DAX](services/dax/README.md) | A | 21 | 1 deferred |
-| [DocumentDB](services/docdb/README.md) | A | 55 | 8 gaps; 1 deferred |
+| [DocumentDB](services/docdb/README.md) | A | 55 | 9 gaps; 1 deferred |
 | [DynamoDB](services/dynamodb/README.md) | A | — | 12 families; 6 gaps; 2 deferred |
 | [DynamoDB Streams](services/dynamodbstreams/README.md) | A | 4 | clean |
 | [ElastiCache](services/elasticache/README.md) | A | 75 | 1 gap; 2 deferred |
@@ -506,7 +506,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Neptune](services/neptune/README.md) | A | — | 13 families; 6 gaps; 2 deferred |
 | [QLDB](services/qldb/README.md) | Removed | — | removed service |
 | [QLDB Session](services/qldbsession/README.md) | Removed | — | removed service |
-| [RDS](services/rds/README.md) | A | 52 | 4 gaps |
+| [RDS](services/rds/README.md) | A | 52 | 5 gaps |
 | [RDS Data](services/rdsdata/README.md) | A | 6 | 3 gaps |
 | [Redshift](services/redshift/README.md) | A | 9 | clean |
 | [Redshift Data](services/redshiftdata/README.md) | A | 12 | 8 gaps; 1 deferred |
@@ -578,7 +578,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Detective](services/detective/README.md) | A | 29 | 3 gaps; 2 deferred |
 | [GuardDuty](services/guardduty/README.md) | A | 66 | 5 gaps; 1 structural gap; 5 deferred |
 | [Inspector](services/inspector2/README.md) | A | 13 | 10 gaps; 1 deferred |
-| [KMS](services/kms/README.md) | A | 54 | 5 gaps; 2 deferred |
+| [KMS](services/kms/README.md) | A | 54 | 6 gaps; 2 deferred |
 | [Macie](services/macie2/README.md) | A | 81 | clean |
 | [Secrets Manager](services/secretsmanager/README.md) | A | 24 | 8 gaps; 2 deferred |
 | [Security Hub](services/securityhub/README.md) | A | 116 | 5 gaps |
@@ -651,7 +651,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Personalize](services/personalize/README.md) | A | 73 | clean |
 | [Polly](services/polly/README.md) | A | 10 | clean |
 | [Rekognition](services/rekognition/README.md) | A | 50 | 3 gaps; 4 deferred |
-| [SageMaker](services/sagemaker/README.md) | A | 69 | 22 gaps; 5 deferred |
+| [SageMaker](services/sagemaker/README.md) | A | 69 | 23 gaps; 5 deferred |
 | [SageMaker Runtime](services/sagemakerruntime/README.md) | A | 3 | clean |
 | [Textract](services/textract/README.md) | A | 25 | 2 gaps; 1 structural gap; 1 deferred |
 | [Transcribe](services/transcribe/README.md) | A | 43 | 2 gaps |
@@ -682,7 +682,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | Service | Parity | PARITY Entries | Notes |
 |---|---|---|---|
 | [DataSync](services/datasync/README.md) | A | 53 | 4 gaps; 1 deferred |
-| [Database Migration Service](services/dms/README.md) | A | 97 | clean |
+| [Database Migration Service](services/dms/README.md) | A | 97 | 1 gap |
 | [Transfer Family](services/transfer/README.md) | A | — | 20 families |
 
 ### Other
