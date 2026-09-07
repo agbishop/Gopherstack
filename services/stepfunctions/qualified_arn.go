@@ -89,6 +89,12 @@ func (b *InMemoryBackend) stateMachineForVersionLocked(v *StateMachineVersion) (
 // 100 and there are 1-2 entries, so this never needs to handle more).
 func pickRoutedVersion(routing []AliasRoutingConfig) (string, error) {
 	if len(routing) == 0 {
+		// Unreachable today (gopherstack-t8iz): CreateStateMachineAlias
+		// validates routing, UpdateStateMachineAlias only assigns when
+		// len(routing) > 0, and Restore never persists aliases at all. If it
+		// ever fires via StartSyncExecution, that op declares nothing fitting
+		// -- ValidationException included -- so this needs a remedy, not a
+		// code swap.
 		return "", fmt.Errorf("%w: alias has no routing configuration", ErrInvalidRoutingConfiguration)
 	}
 
