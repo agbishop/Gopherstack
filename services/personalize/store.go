@@ -8,14 +8,29 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/store"
 )
 
+// statusCreatePending/statusCreateProgress/statusDeletePending/
+// statusCreateFailed/statusStopPending are real Personalize wire values
+// (confirmed against every Status-bearing type's doc comment in
+// aws-sdk-go-v2/service/personalize@v1.50.4/types/types.go) that this
+// backend never assigns: every op here is synchronous, so there is no async
+// provisioning/deletion phase for a resource to be PENDING or IN_PROGRESS
+// in, and no partial-failure window for CREATE FAILED to represent honestly
+// (gopherstack-h3th). This is the same deliberate skip-to-terminal-state
+// pattern StopSolutionVersionCreation and StopRecommender/StartRecommender
+// already use (jump straight to CREATE STOPPED / INACTIVE / ACTIVE, never
+// through *_PENDING or *_IN_PROGRESS) -- see PARITY.md for the full
+// per-constant reachability table. statusStopPending is Recommender-only
+// ("STOP PENDING > STOP IN_PROGRESS > INACTIVE > START PENDING > START
+// IN_PROGRESS > ACTIVE" per types.Recommender's doc comment);
+// StopRecommender/StartRecommender (recommenders.go) already jump directly
+// between ACTIVE and INACTIVE. Kept declared (not fabricated into use) for
+// any op that gains a genuine async-equivalent failure path later.
 const (
 	statusActive         = "ACTIVE"
 	statusCreatePending  = "CREATE PENDING"
 	statusCreateProgress = "CREATE IN_PROGRESS"
 	statusDeletePending  = "DELETE PENDING"
 	statusCreateFailed   = "CREATE FAILED"
-	statusUpdatePending  = "UPDATE PENDING"
-	statusUpdateProgress = "UPDATE IN_PROGRESS"
 	// statusSolutionVersionStopped is the terminal status for a solution
 	// version whose training was stopped via StopSolutionVersionCreation.
 	// The SolutionVersion.Status wire enum only has "CREATE STOPPED" (no
