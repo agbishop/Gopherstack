@@ -1263,8 +1263,17 @@ func TestListDeliveryStreams_TypeFilter(t *testing.T) {
 	assert.Contains(t, out2.DeliveryStreamNames, "kinesis-src-stream-lf")
 	assert.NotContains(t, out2.DeliveryStreamNames, "direct-put-stream")
 
-	// An invalid filter value is rejected with InvalidArgumentException.
+	// An unrecognized filter value is not rejected -- ListDeliveryStreams declares no
+	// exception beyond UnknownError (deserializers.go: deserializeOpErrorListDeliveryStreams),
+	// so it just matches no stream, same as any other value with no match (gopherstack-t2wb).
 	recInvalid := doFirehoseRequest(t, h, "ListDeliveryStreams",
 		map[string]any{"DeliveryStreamType": "Bogus"})
-	assert.Equal(t, http.StatusBadRequest, recInvalid.Code)
+	require.Equal(t, http.StatusOK, recInvalid.Code)
+
+	var outInvalid struct {
+		DeliveryStreamNames []string `json:"DeliveryStreamNames"`
+	}
+	require.NoError(t, json.Unmarshal(recInvalid.Body.Bytes(), &outInvalid))
+	assert.NotContains(t, outInvalid.DeliveryStreamNames, "direct-put-stream")
+	assert.NotContains(t, outInvalid.DeliveryStreamNames, "kinesis-src-stream-lf")
 }

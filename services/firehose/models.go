@@ -20,12 +20,6 @@ const (
 	// deliveryStreamTypeDirectPut is the default stream type for direct-put streams.
 	deliveryStreamTypeDirectPut     = "DirectPut"
 	deliveryStreamTypeKinesisSource = "KinesisStreamAsSource"
-	// deliveryStreamTypeMSKSource and deliveryStreamTypeDatabaseSource are real
-	// DeliveryStreamType enum values (aws-sdk-go-v2/service/firehose/types/
-	// enums.go@v1.46.4) accepted as a ListDeliveryStreams filter even though this
-	// backend does not poll MSK/database sources.
-	deliveryStreamTypeMSKSource      = "MSKAsSource"
-	deliveryStreamTypeDatabaseSource = "DatabaseAsSource"
 )
 
 // BufferingHints controls when buffered records are delivered to S3.
