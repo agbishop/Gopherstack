@@ -197,6 +197,63 @@ func TestPromoteReadReplicaDBCluster(t *testing.T) {
 	}
 }
 
+// TestPromoteReadReplicaDBCluster_ClearsLinkage mirrors
+// TestPromoteReadReplicaClearsSourceList (db_instances_fields_test.go) at the
+// cluster level. Uses two replicas so the source-side assertion is positive
+// (the survivor's identifier must still be present) rather than an absence
+// check, which would pass even against unmodified code since
+// ReadReplicaIdentifiers is omitempty.
+func TestPromoteReadReplicaDBCluster_ClearsLinkage(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+	_, err := b.CreateDBCluster("src-promote", "aurora-postgresql", "admin", "", "", 0, nil, rds.DBClusterOptions{})
+	require.NoError(t, err)
+	_, err = b.CreateDBCluster(
+		"replica-promote-a", "aurora-postgresql", "admin", "", "", 0, nil,
+		rds.DBClusterOptions{ReplicationSourceIdentifier: "src-promote"},
+	)
+	require.NoError(t, err)
+	_, err = b.CreateDBCluster(
+		"replica-promote-b", "aurora-postgresql", "admin", "", "", 0, nil,
+		rds.DBClusterOptions{ReplicationSourceIdentifier: "src-promote"},
+	)
+	require.NoError(t, err)
+
+	got, err := b.PromoteReadReplicaDBCluster("replica-promote-a")
+	require.NoError(t, err)
+	assert.Empty(t, got.ReplicationSourceIdentifier)
+
+	clusters, err := b.DescribeDBClusters("src-promote")
+	require.NoError(t, err)
+	require.Len(t, clusters, 1)
+	assert.Equal(t, []string{"replica-promote-b"}, clusters[0].ReadReplicaIdentifiers)
+}
+
+// TestPromoteReadReplicaDBCluster_OrphanedSource covers the case uao2
+// established: deleting a source orphans its replicas rather than refusing
+// or cascading, so a replica's ReplicationSourceIdentifier can point at a
+// cluster that no longer exists by the time it is promoted. Promote must
+// still succeed and clear the stale linkage.
+func TestPromoteReadReplicaDBCluster_OrphanedSource(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+	_, err := b.CreateDBCluster("src-gone", "aurora-postgresql", "admin", "", "", 0, nil, rds.DBClusterOptions{})
+	require.NoError(t, err)
+	_, err = b.CreateDBCluster(
+		"replica-orphaned", "aurora-postgresql", "admin", "", "", 0, nil,
+		rds.DBClusterOptions{ReplicationSourceIdentifier: "src-gone"},
+	)
+	require.NoError(t, err)
+	_, err = b.DeleteDBCluster("src-gone")
+	require.NoError(t, err)
+
+	got, err := b.PromoteReadReplicaDBCluster("replica-orphaned")
+	require.NoError(t, err)
+	assert.Empty(t, got.ReplicationSourceIdentifier)
+}
+
 func TestDescribeDBClusterBacktracks(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

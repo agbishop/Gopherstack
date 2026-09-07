@@ -781,6 +781,16 @@ func (b *InMemoryBackend) PromoteReadReplicaDBCluster(clusterID string) (*DBClus
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrClusterNotFound, clusterID)
 	}
+
+	if cluster.ReplicationSourceIdentifier != "" {
+		if src, srcExists := b.clusters.Get(normalizeID(cluster.ReplicationSourceIdentifier)); srcExists {
+			src.ReadReplicaIdentifiers = slices.DeleteFunc(src.ReadReplicaIdentifiers, func(s string) bool {
+				return idEqual(s, cluster.DBClusterIdentifier)
+			})
+		}
+	}
+
+	cluster.ReplicationSourceIdentifier = ""
 	cluster.Status = instanceStatusAvailable
 	cp := *cluster
 
