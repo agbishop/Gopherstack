@@ -119,10 +119,10 @@ func iamGlob(pattern, value string) bool {
 	return ok
 }
 
-// actionAllowed returns true if the statement's Action set covers the given action.
-func actionAllowed(stmt iamStatement, action string) bool {
-	for _, a := range stmt.Action {
-		if iamGlob(a, action) {
+// matchesAny returns true if value matches any glob pattern in patterns.
+func matchesAny(patterns []string, value string) bool {
+	for _, p := range patterns {
+		if iamGlob(p, value) {
 			return true
 		}
 	}
@@ -130,16 +130,31 @@ func actionAllowed(stmt iamStatement, action string) bool {
 	return false
 }
 
-// resourceAllowed returns true if the statement's Resource set covers the given resource.
-func resourceAllowed(stmt iamStatement, resource string) bool {
-	if len(stmt.Resource) == 0 {
-		return false
+// actionAllowed returns true if the statement's Action/NotAction set covers the given
+// action. NotAction means "every action except these", so a match there is a non-match
+// against the listed patterns (gopherstack-xyu4: previously NotAction was ignored
+// entirely, so a NotAction-only statement was silently treated as granting nothing).
+func actionAllowed(stmt iamStatement, action string) bool {
+	if len(stmt.Action) > 0 {
+		return matchesAny(stmt.Action, action)
 	}
 
-	for _, r := range stmt.Resource {
-		if iamGlob(r, resource) {
-			return true
-		}
+	if len(stmt.NotAction) > 0 {
+		return !matchesAny(stmt.NotAction, action)
+	}
+
+	return false
+}
+
+// resourceAllowed returns true if the statement's Resource/NotResource set covers the
+// given resource. Same NotResource fix as actionAllowed above.
+func resourceAllowed(stmt iamStatement, resource string) bool {
+	if len(stmt.Resource) > 0 {
+		return matchesAny(stmt.Resource, resource)
+	}
+
+	if len(stmt.NotResource) > 0 {
+		return !matchesAny(stmt.NotResource, resource)
 	}
 
 	return false
