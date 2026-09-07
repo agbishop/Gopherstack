@@ -129,13 +129,16 @@ func TestDeleteLoadBalancer(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
-			name: "delete_not_found",
+			// gopherstack-5gfl: AWS's own doc comment says DeleteLoadBalancer
+			// "still succeeds" for a name that doesn't exist -- idempotent, not
+			// an error.
+			name: "delete_not_found_is_idempotent_success",
 			vals: url.Values{
 				"Action":           {"DeleteLoadBalancer"},
 				"Version":          {"2012-06-01"},
 				"LoadBalancerName": {"no-such-lb"},
 			},
-			wantStatus: http.StatusBadRequest,
+			wantStatus: http.StatusOK,
 		},
 		{
 			name: "missing_name",
@@ -320,7 +323,11 @@ func TestDeleteLoadBalancerAlsoDeletesTags(t *testing.T) {
 	assert.Equal(t, 0, b.LoadBalancerCount())
 }
 
-func TestDeleteLoadBalancerNotFoundReturns404(t *testing.T) {
+// TestDeleteLoadBalancerNotFoundIsIdempotent verifies that deleting a
+// nonexistent load balancer succeeds rather than erroring: DeleteLoadBalancer
+// has no typed not-found exception in the real SDK, and its doc comment
+// states this explicitly (gopherstack-5gfl).
+func TestDeleteLoadBalancerNotFoundIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler()
@@ -329,7 +336,7 @@ func TestDeleteLoadBalancerNotFoundReturns404(t *testing.T) {
 		"Version":          {"2012-06-01"},
 		"LoadBalancerName": {"no-such-lb"},
 	})
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestCreateLoadBalancerDuplicateName(t *testing.T) {

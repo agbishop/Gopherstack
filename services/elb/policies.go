@@ -307,6 +307,14 @@ func (b *InMemoryBackend) DeleteLoadBalancerPolicy(ctx context.Context, name, po
 
 	k := policyTableKey(region, name, policyName)
 	if !b.policies.Has(k) {
+		// PolicyNotFound is not in DeleteLoadBalancerPolicy's real typed-error
+		// switch (only InvalidConfigurationRequest/LoadBalancerNotFound --
+		// deserializers.go's awsAwsquery_deserializeOpErrorDeleteLoadBalancerPolicy,
+		// confirmed against the AWS API reference too); a real client would get
+		// an untyped GenericAPIError instead of *types.PolicyNotFoundException.
+		// gopherstack-5gfl: known mismatch, no confirmed correct remedy -- AWS
+		// doesn't document whether this op is idempotent for a missing policy
+		// the way DeleteLoadBalancer is, so this is left as-is rather than guessed.
 		return fmt.Errorf("%w: %q", ErrPolicyNotFound, policyName)
 	}
 

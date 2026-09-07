@@ -1155,6 +1155,14 @@ func TestSetLoadBalancerPoliciesOfListener(t *testing.T) {
 }
 
 // TestPolicyNotFoundReturns400 verifies ErrPolicyNotFound maps to HTTP 400.
+//
+// gopherstack-5gfl: pins existing (possibly wrong) behavior, not endorsed --
+// DeleteLoadBalancerPolicy's real typed-error switch doesn't declare
+// PolicyNotFound at all (only InvalidConfigurationRequest/LoadBalancerNotFound),
+// so a real client would get an untyped error here, not
+// *types.PolicyNotFoundException. Left as-is: no AWS documentation confirms
+// what the correct behavior actually is (unlike DeleteLoadBalancer, which is
+// documented idempotent for a missing target).
 func TestPolicyNotFoundReturns400(t *testing.T) {
 	t.Parallel()
 

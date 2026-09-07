@@ -474,3 +474,79 @@ restored the production diff afterward). Gates: `go test -race ./services/elb/..
 `golangci-lint run services/elb/...` 0 issues; `go test ./pkgs/persistence/ -run
 TestSnapshotVersionGuard` pass (read-only, unrelated to this change -- no field was
 added to any persisted struct).
+
+### 2026-09-07 (gopherstack-5gfl -- errtargetaudit class A findings, first triage of this block)
+
+This service had no prior error-envelope/errtargetaudit entry; genuinely untriaged.
+`GOTOOLCHAIN=go1.26.6 go run ./cmd/errtargetaudit`: `operations with SDK ground truth:
+29, resolved: 29, with an emission found: 24` (full coverage, no warning) -- `class A
+findings (3)`, grouped as `2 finding(s): code=LoadBalancerNotFound ... ops=[CreateLoadBalancer
+DeleteLoadBalancer]` and `1 finding(s): code=PolicyNotFound ... ops=[DeleteLoadBalancerPolicy]`.
+
+Verified every finding against `deserializers.go`'s per-op typed-error switch
+(`awk "/deserializeOpError<Op>\(/,/^}/" deserializers.go | grep -oE '"[A-Za-z0-9]+"'`,
+pinned `elasticloadbalancing@v1.36.4`) rather than trusting the tool's classification.
+Protocol confirmed query/xml as in prior passes; the extraction pattern needed no
+adjustment -- `services/elb/handler.go`'s `writeError`/`elbErrorResponse` emits a real
+`<ErrorResponse><Error><Code>...` envelope, which is exactly what
+`awsxml.GetErrorResponseComponents` (called from every `deserializeOpError<Op>`) reads
+into `errorComponents.Code` before the switch runs, so the raw extraction is
+ground truth, not a false negative risk.
+
+- **`CreateLoadBalancer` / `LoadBalancerNotFound` (`services/elb/tags.go:57`) --
+  false positive, class 4 (guard cannot fire: resource created moments earlier in the
+  same request).** `CreateLoadBalancer`'s own declared set (`CertificateNotFound`,
+  `DuplicateLoadBalancerName`, `DuplicateTagKeys`, `InvalidConfigurationRequest`,
+  `InvalidScheme`, `InvalidSecurityGroup`, `InvalidSubnet`, `OperationNotPermitted`,
+  `SubnetNotFound`, `TooManyLoadBalancers`, `TooManyTags`, `UnsupportedProtocol`) does
+  not include `LoadBalancerNotFound` -- the sentinel reference the tool found is
+  `AddTags`'s own (legitimate) not-found guard, reached one hop away via
+  `handler_load_balancers.go:96`'s `h.Backend.AddTags(ctx, []string{name}, initialTags)`,
+  which `handleCreateLoadBalancer` calls immediately after `h.Backend.CreateLoadBalancer`
+  returns successfully to apply AWS's documented inline-`Tags` convenience. The backend
+  uses one coarse `*lockmetrics.RWMutex` per call (`store.go`), so there is a lock-free
+  window between the two calls, but the load balancer just-created under that same name
+  cannot itself have vanished except via a concurrent `DeleteLoadBalancer` racing that
+  exact window -- not a code path any real single client request can hit, and not a
+  scenario real AWS's own atomic create+tag semantics can produce either (which is
+  exactly why the real op's error switch has no such code at all). No fix applied.
+- **`DeleteLoadBalancer` / `LoadBalancerNotFound` (`services/elb/load_balancers.go:341`)
+  -- real bug, FIXED.** Declared set is `UnknownError` only -- no not-found code
+  whatsoever. The pinned SDK's `api_op_DeleteLoadBalancer.go` doc comment settles the
+  correct remedy directly: "If the load balancer does not exist or has already been
+  deleted, the call to DeleteLoadBalancer still succeeds." `DeleteLoadBalancer` now
+  returns `nil` for an unknown name instead of `ErrLoadBalancerNotFound`, matching this
+  documented idempotent-delete behavior. Regression tests corrected (both previously
+  pinned the wrong 400 with no disclaiming note, exactly the trap flagged for this
+  campaign): `TestDeleteLoadBalancer`'s `delete_not_found` subtest (renamed
+  `delete_not_found_is_idempotent_success`) and `TestDeleteLoadBalancerNotFoundReturns404`
+  (renamed `TestDeleteLoadBalancerNotFoundIsIdempotent`), both now asserting
+  `http.StatusOK`. Neutered (reverted the one-line production fix, kept the tests,
+  confirmed both fail with `expected: 200, actual: 400`; restored the fix afterward).
+- **`DeleteLoadBalancerPolicy` / `PolicyNotFound` (`services/elb/policies.go:308-318`) --
+  real mismatch, no safe remedy, landmine comment added.** Declared set is
+  `InvalidConfigurationRequest`/`LoadBalancerNotFound` only (confirmed against both
+  `deserializers.go` and the live AWS API reference page for this op, which lists only
+  those two under Errors) -- `PolicyNotFound` is a real exception in this SDK
+  (`types.PolicyNotFoundException`), just not one this specific op's model declares, so
+  a real client would get an untyped `smithy.GenericAPIError` instead. Unlike
+  `DeleteLoadBalancer`, no AWS documentation states this op is idempotent for a missing
+  policy, so -- per this campaign's rule that a declared-set mismatch proves the code
+  wrong but not that any particular remedy is right -- no behavior change was made.
+  Added a landmine comment at the call site instead of guessing. The pre-existing
+  `TestPolicyNotFoundReturns400` pinned this without any such note; added one rather than
+  leaving it to survive a future pass as apparently-intentional.
+
+**elbv2 shared-helper check**: `services/elbv2` has its own independent
+`AddTags`/`DeleteLoadBalancer`/`DeleteLoadBalancerPolicy` (different signatures,
+different error model -- ALB/NLB, not Classic ELB). `grep` for cross-package references
+in both directions found only two comments in `services/elb/persistence.go` and
+`store_setup.go` citing `elbv2` as a prior *pattern* precedent -- no shared code, no
+shared helpers. Nothing in `services/elbv2/` was touched.
+
+Gates: `go build ./services/elb/...` clean; `go test -race -count=1 ./services/elb/...`
+ok (1.6s); `golangci-lint run services/elb/...` 0 issues; no field added to any
+persisted struct, so the `pkgs/persistence` guard was not run. Re-ran the tool after the
+fix: `resolved: 29, with an emission found: 23`, `class A findings (2)` -- the two
+dismissed findings above (`CreateLoadBalancer`/`LoadBalancerNotFound`,
+`DeleteLoadBalancerPolicy`/`PolicyNotFound`); `DeleteLoadBalancer`'s finding is gone.

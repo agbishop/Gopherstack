@@ -329,7 +329,13 @@ func (b *InMemoryBackend) CreateLoadBalancer(
 }
 
 // DeleteLoadBalancer removes a load balancer by name and all of its policies
-// within the caller's region.
+// within the caller's region. Deleting a name that doesn't exist (or was
+// already deleted) is a no-op success, not an error: DeleteLoadBalancer has
+// no typed exception for it (deserializers.go's
+// awsAwsquery_deserializeOpErrorDeleteLoadBalancer switch is empty besides
+// UnknownError), and the SDK's own doc comment says so explicitly ("If the
+// load balancer does not exist or has already been deleted, the call to
+// DeleteLoadBalancer still succeeds").
 func (b *InMemoryBackend) DeleteLoadBalancer(ctx context.Context, name string) error {
 	b.mu.Lock("DeleteLoadBalancer")
 	defer b.mu.Unlock()
@@ -338,7 +344,7 @@ func (b *InMemoryBackend) DeleteLoadBalancer(ctx context.Context, name string) e
 
 	lb, ok := b.lbs.Get(lbTableKey(region, name))
 	if !ok {
-		return fmt.Errorf("%w: %q", ErrLoadBalancerNotFound, name)
+		return nil
 	}
 
 	lb.Tags.Close()
