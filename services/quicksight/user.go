@@ -69,7 +69,10 @@ func (b *InMemoryBackend) DescribeUser(accountID, namespace, userName string) (*
 		return nil, ErrUserNotFound
 	}
 
-	return u.toUser(), nil
+	out := u.toUser()
+	out.CustomPermissionsName = b.userCustomPermissions[userCustomPermissionKey(accountID, namespace, userName)]
+
+	return out, nil
 }
 
 func (b *InMemoryBackend) UpdateUser(accountID, namespace, userName, email, role string) (*User, error) {
@@ -102,6 +105,7 @@ func (b *InMemoryBackend) DeleteUser(accountID, namespace, userName string) erro
 	}
 
 	b.removeUserFromAllGroups(accountID, namespace, userName)
+	delete(b.userCustomPermissions, userCustomPermissionKey(accountID, namespace, userName))
 
 	return nil
 }
@@ -114,6 +118,7 @@ func (b *InMemoryBackend) DeleteUserByPrincipalID(accountID, namespace, principa
 		if u.Namespace == namespace && u.PrincipalID == principalID {
 			b.users.Delete(userKey(accountID, namespace, u.UserName))
 			b.removeUserFromAllGroups(accountID, namespace, u.UserName)
+			delete(b.userCustomPermissions, userCustomPermissionKey(accountID, namespace, u.UserName))
 
 			return nil
 		}
@@ -136,9 +141,8 @@ func (b *InMemoryBackend) removeUserFromAllGroups(accountID, namespace, userName
 	}
 }
 
-//nolint:dupl // list functions share structure but operate on different stored types
 func (b *InMemoryBackend) ListUsers(
-	_, namespace string,
+	accountID, namespace string,
 	maxResults int32,
 	nextToken string,
 ) ([]*User, string, error) {
@@ -179,7 +183,9 @@ func (b *InMemoryBackend) ListUsers(
 
 	result := make([]*User, 0, end-start)
 	for _, u := range all[start:end] {
-		result = append(result, u.toUser())
+		out := u.toUser()
+		out.CustomPermissionsName = b.userCustomPermissions[userCustomPermissionKey(accountID, namespace, u.UserName)]
+		result = append(result, out)
 	}
 
 	return result, next, nil

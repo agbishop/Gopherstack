@@ -28,15 +28,16 @@ type GroupMember struct {
 
 // User represents a QuickSight user.
 type User struct {
-	UserName     string
-	Arn          string
-	Email        string
-	Role         string
-	IdentityType string
-	Namespace    string
-	PrincipalID  string
-	SessionName  string
-	Active       bool
+	UserName              string
+	Arn                   string
+	Email                 string
+	Role                  string
+	IdentityType          string
+	Namespace             string
+	PrincipalID           string
+	SessionName           string
+	CustomPermissionsName string
+	Active                bool
 }
 
 // DataSource represents a QuickSight data source.

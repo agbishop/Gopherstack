@@ -385,7 +385,6 @@ func isTerminalIngestionStatus(status string) bool {
 	}
 }
 
-//nolint:dupl // list functions share structure but operate on different stored types
 func (b *InMemoryBackend) ListIngestions(
 	_, dataSetID string,
 	maxResults int32,

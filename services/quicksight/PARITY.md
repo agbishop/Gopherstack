@@ -1474,3 +1474,74 @@ diffed against HEAD.
 `cmd/reqfieldscan`: byte-identical across all 5 old runs and HEAD.
 `cmd/reqfielddiff`: 794 findings in every one of the 5 old runs and at
 HEAD, op.field key sets identical. ZERO DAMAGE.
+
+## User.CustomPermissionsName write-only fix (2026-09-06, gopherstack-rt14)
+
+Filed title-only ("UpdateUserCustomPermission writes to userCustomPermissions
+which DescribeUser and ListUsers never read"), no description. Re-derived
+and confirmed real: `UpdateUserCustomPermission` (`custompermissions.go:315`)
+writes `b.userCustomPermissions[userCustomPermissionKey(...)]`, but
+`DescribeUser` (`user.go:63`) and `ListUsers` (`user.go:147`) built their
+response from `storedUser.toUser()` alone, which never consulted that map --
+a client could set a user's custom permissions profile and never observe it
+back.
+
+Deciding SDK quote: `types/types.go:23202` (aws-sdk-go-v2/service/quicksight
+v1.123.1) -- `types.User` carries `CustomPermissionsName *string // The
+custom permissions profile associated with this user.` Both
+`DescribeUserOutput.User` and `ListUsersOutput.UserList` (`api_op_DescribeUser.go:59`,
+`api_op_ListUsers.go:65`) are `types.User`, so the SDK models this field on
+exactly the two read paths the issue named. `serializers.go:1360-1362` omits
+the JSON key entirely when the pointer is nil (no empty-string emission).
+No dedicated `DescribeUserCustomPermission` op exists in the SDK's op list
+(unlike `DescribeAccountCustomPermission`/`DescribeRoleCustomPermission`,
+which do) -- `DescribeUser`/`ListUsers` are the only read path for this
+value, so the write was genuinely unobservable before this fix.
+
+Verdict: real bug, write path correct, read path wrong. Fix: added
+`CustomPermissionsName string` to the domain `User` struct (`types.go`),
+populated it in `DescribeUser` and `ListUsers` from `b.userCustomPermissions`,
+and emitted it from `userToMap` (`handler_user.go`) only when non-empty,
+matching the SDK's omit-when-unset semantics (existing precedent:
+`handler_agents.go`'s `agentToMap`).
+
+Adjacent fix in the same map: `DeleteUser`/`DeleteUserByPrincipalID`
+(`user.go`) previously cleaned up group memberships on delete
+(`removeUserFromAllGroups`) but not `userCustomPermissions`, so a deleted
+and re-registered user with the same name would have silently inherited a
+stale custom-permissions assignment -- invisible before this fix since
+nothing read the map, but a live bug once `DescribeUser`/`ListUsers` do.
+Added the matching `delete(b.userCustomPermissions, ...)` call to both.
+
+Not changed: `RegisterUser` and `UpdateUser` also return `*User` via the
+same `toUser()` path but were left alone -- the issue named only
+`DescribeUser`/`ListUsers`, and a freshly-registered user has no
+custom-permissions entry yet by construction. `UpdateUser` returning a
+stale/absent value when a custom permission was set earlier via a separate
+call is a real, smaller version of the same gap; flagging it here rather
+than fixing it to keep this change scoped to the named issue.
+
+Regression test: `TestQuickSight_UserCustomPermission_ReflectedInReads`
+(`handler_custompermissions_test.go`) -- registers a user, asserts
+`CustomPermissionsName` absent from `DescribeUser`, calls
+`UpdateUserCustomPermission`, asserts it now appears in both `DescribeUser`
+and `ListUsers`, deletes it, asserts absent again. Proved against
+unmodified code by reverting only the `DescribeUser`/`ListUsers` population
+lines (keeping the struct field so it still compiles): the two
+"surfaces it" subtests failed with `expected: string("cp1") / actual:
+<nil>(<nil>)`; restored and reconfirmed green.
+
+Also fixed as a side effect: `ListUsers`'s `//nolint:dupl` and
+`ListIngestions`'s (`dataset.go:388`) `//nolint:dupl` both went from
+matched-and-suppressed to genuinely non-duplicate once `ListUsers`'s body
+changed shape (dupl's clustering had paired these two `List*` functions;
+the new lines in `ListUsers` broke that pairing, same mechanism as the
+2026-08-31 `ListThemes`/`UpdateTheme` note above). `nolintlint` flagged both
+as unused; removed both now-dead directives.
+
+Gates (`services/quicksight/` only): `go build`, `go vet`,
+`go test -race ./services/quicksight/...` all clean.
+`golangci-lint run services/quicksight/...` -- `0 issues.`
+`go test ./pkgs/persistence/ -run TestSnapshotVersionGuard` -- PASS
+(read-only; no persisted struct field was added -- `CustomPermissionsName`
+lives on the domain `User` type, not `storedUser` or the snapshot).
