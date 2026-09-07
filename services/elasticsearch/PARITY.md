@@ -595,7 +595,10 @@ error-mapper ever runs.
   let alone mapped to a wire code. This is a real, separate bug (tagging a
   nonexistent domain silently "succeeds") but it is outside this sweep's
   class (wrong-code-for-declared-operation) since no code is ever emitted
-  at all -- left unfixed, flagged here for a future pass.
+  at all -- left unfixed, flagged here for a future pass. FIXED by the
+  2026-09-04 pass below (`gopherstack-to9j`); see also the 2026-09-07 entry
+  (`gopherstack-8h57`), filed against this same deferral note without
+  noticing the fix already shipped.
 - `ListDomainNames` (`handler_domains.go` `handleListDomainNames`): calls
   `Backend.DescribeDomain` per name and does `if err != nil { continue }` --
   the error is consumed inside the loop and never reaches any response
@@ -714,3 +717,64 @@ there), and a full re-read of `UpdateElasticsearchDomainConfig`'s
 merge-vs-replace semantics (prior passes already audited this in depth;
 no local drift found via `git diff <last_audit_commit>..HEAD -- \
 services/elasticsearch/domain_config.go`).
+
+## 2026-09-07 pass: gopherstack-8h57 re-verified as already fixed
+
+`gopherstack-8h57` re-filed the AddTags/RemoveTags discarded-error bug from
+the 2026-08-31 sweep's deferral note above, without noticing the note's own
+next section (2026-09-04 pass, `gopherstack-to9j`) had already fixed it.
+`handler_tags.go` at HEAD does not discard either error:
+
+```go
+if addErr := h.Backend.AddTags(ctx, req.ARN, tagMap); addErr != nil {
+	h.writeError(r, w, http.StatusBadRequest, "ValidationException", addErr.Error())
+	return
+}
+```
+
+and the equivalent `removeErr` check in `handleRemoveTags`. `git log` on the
+file confirms this: commit `cff501069` (2026-09-04) is already an ancestor
+of the current branch tip.
+
+Re-ran the declared-error-set extraction (`awsRestjson1_deserializeOpError<Op>`
+EqualFold cascade, per this service's older SDK shape; the pattern returns a
+list here, not an empty match, confirming it still applies):
+
+```
+AddTags:    "UnknownError" "BaseException" "InternalException" "LimitExceededException" "ValidationException"
+RemoveTags: "UnknownError" "BaseException" "InternalException" "ValidationException"
+```
+
+Neither declares `ResourceNotFoundException` -- confirms `ValidationException`
+(400) remains the right mapping, unchanged from the 2026-09-04 fix.
+
+Re-verified by neutering each guard independently (reverting to
+`_ = h.Backend.AddTags(...)` / `_ = h.Backend.RemoveTags(...)`, one at a
+time): both compile and both make
+`TestElasticsearchHandler_AddRemoveTags_UnknownARN`'s corresponding subtest
+fail with `expected: 400, actual: 200`, then restored to HEAD (`diff` against
+`git show HEAD:services/elasticsearch/handler_tags.go` confirmed a clean
+restore). Existing coverage already meets the full standard: unknown-ARN
+gets 400/ValidationException for both ops
+(`TestElasticsearchHandler_AddRemoveTags_UnknownARN`), and an existing
+domain's AddTags/RemoveTags still succeeds with the tags readable back via a
+subsequent ListTags (`TestElasticsearchHandler_Tags`,
+`add_and_list_tags`/`remove_tag` subtests). No pre-existing test asserted
+200 for the unknown-domain case -- nothing was pinning the old bug.
+
+`handleListDomainNames`'s `if err != nil { continue }` (per-name
+`DescribeDomain` inside `ListDomainNames`) is unchanged and is a distinct
+case, decided separately: a name can only reach that loop by first coming
+back from `Backend.ListDomainNames`, so the only way `DescribeDomain`
+subsequently 404s is a delete racing between the two calls in the same
+request -- not a caller naming a domain that never existed. Skipping it
+(omitting the vanished entry) is defensible AWS-shaped behavior for a
+list-then-describe race, not the same bug as AddTags/RemoveTags discarding
+an error for an ARN that never resolved. No change made.
+
+No code changed this pass -- `gopherstack-8h57` is a duplicate of the
+already-shipped `gopherstack-to9j` fix.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/elasticsearch/...`,
+`GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/elasticsearch/...` --
+both clean (see command output in the issue's closing report).
