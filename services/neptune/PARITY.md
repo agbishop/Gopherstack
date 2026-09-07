@@ -528,3 +528,52 @@ Gates: `go build ./services/neptune/...`, `go vet ./...` (repo-wide,
 clean), `go test -race -count=1 ./services/neptune/...` (pass, no new
 tests -- no bug found to write a regression test for), `golangci-lint run
 ./services/neptune/...` (0 issues). No source changes this pass.
+
+## 2026-09-07 -- gopherstack-ucus: CreateDBInstance dropped DBSubnetGroupName
+
+`handleCreateDBInstance` never read `DBSubnetGroupName` off the wire, so a
+caller-supplied value was silently discarded and every instance reported
+its cluster's subnet group instead, even when the request explicitly asked
+for a different one.
+
+`api_op_CreateDBInstance.go`'s doc comment for the field ("A DB subnet
+group to associate with this DB instance. If there is no DB subnet group,
+then it is a non-VPC DB instance.") does not itself document
+inherit-from-cluster as the default for an omitted value -- so the
+cluster-inheritance behavior already in this backend is this backend's own
+reasonable interpretation (every Neptune instance belongs to a cluster),
+not something asserted by the SDK doc. The real, doc-confirmed defect was
+narrower: an *explicit* value being ignored outright. Verdict: bug is
+"ignoring an explicit value", not "inheriting when omitted" -- the
+omitted-value behavior is unchanged by this fix.
+
+Fix: `DBInstanceCreateOptions` gained a `DBSubnetGroupName` field, the
+handler now parses it off the form (`vals.Get("DBSubnetGroupName")`), and
+`CreateDBInstance` validates it against the existing subnet-group store
+(`ErrSubnetGroupNotFound`, wire code `DBSubnetGroupNotFoundFault`,
+confirmed present in `deserializeOpErrorCreateDBInstance`) before letting
+an explicit non-empty value win over the cluster's; an omitted value still
+falls back to the cluster's, as before. The cluster-inherit branch was
+extracted into `instanceClusterInherited` to keep `CreateDBInstance` under
+the gocognit threshold.
+
+Not touched: `xmlDBInstance.DBSubnetGroupName` still serializes as a bare
+`<DBSubnetGroup>name</DBSubnetGroup>` string, while real
+`types.DBInstance.DBSubnetGroup` is a full `*DBSubnetGroup` struct (name,
+description, VPC ID, subnets). Resolving the stored name into that full
+shape on `DescribeDBInstances`/`CreateDBInstance` responses is a separate,
+larger gap this pass did not take on -- flagging for a follow-up issue.
+
+Regression tests (`handler_db_instances_test.go`,
+`TestHandler_CreateDBInstance_DBSubnetGroupName`, HTTP-handler level):
+`explicit_name_overrides_cluster`, `omitted_defaults_to_cluster`,
+`nonexistent_name_rejected`. Reverting the fix while keeping the tests
+failed 2 of 3 (`explicit_name_overrides_cluster`,
+`nonexistent_name_rejected`; `omitted_defaults_to_cluster` passed both
+before and after, since that path was never broken).
+
+Gates: `go test -race -count=1 ./services/neptune/...` (pass);
+`golangci-lint run ./services/neptune/...` (0 issues). `go test -count=1
+./pkgs/persistence/...` run read-only, unaffected -- no field was added to
+a persisted struct (`DBInstanceCreateOptions` is a transient parameter
+struct, never part of the persistence DTO registry).

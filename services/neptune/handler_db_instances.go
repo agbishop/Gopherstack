@@ -42,6 +42,7 @@ func (h *Handler) handleCreateDBInstance(ctx context.Context, vals url.Values) (
 	}
 	opts := DBInstanceCreateOptions{
 		DBParameterGroupName:            vals.Get("DBParameterGroupName"),
+		DBSubnetGroupName:               vals.Get("DBSubnetGroupName"),
 		PreferredMaintenanceWindow:      vals.Get("PreferredMaintenanceWindow"),
 		PreferredBackupWindow:           vals.Get("PreferredBackupWindow"),
 		AvailabilityZone:                vals.Get("AvailabilityZone"),

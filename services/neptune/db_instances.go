@@ -32,6 +32,30 @@ func (b *InMemoryBackend) instanceARN(region, id string) string {
 	return arn.Build("neptune", region, b.accountID, "db:"+id)
 }
 
+// instanceClusterInherited resolves EngineVersion, DBSubnetGroupName, and
+// NetworkType for a new instance. An explicit DBSubnetGroupName wins;
+// omitted defaults to the cluster's (api_op_CreateDBInstance.go's
+// DBSubnetGroupName doc does not spell this default out, but every Neptune
+// instance belongs to a cluster, so this mirrors the pre-existing inherit
+// behavior for the omitted case).
+func (b *InMemoryBackend) instanceClusterInherited(
+	region, clusterID, explicitSubnetGroup string,
+) (string, string, string) {
+	dbSubnetGroupName := explicitSubnetGroup
+	if clusterID == "" {
+		return defaultEngineVersion, dbSubnetGroupName, ""
+	}
+	cl, ok := b.clusterGet(region, clusterID)
+	if !ok {
+		return defaultEngineVersion, dbSubnetGroupName, ""
+	}
+	if dbSubnetGroupName == "" {
+		dbSubnetGroupName = cl.DBSubnetGroupName
+	}
+
+	return cl.EngineVersion, dbSubnetGroupName, cl.NetworkType
+}
+
 // CreateDBInstance creates a new Neptune DB instance.
 func (b *InMemoryBackend) CreateDBInstance(
 	ctx context.Context,
@@ -58,6 +82,12 @@ func (b *InMemoryBackend) CreateDBInstance(
 			return nil, fmt.Errorf("%w: cluster %s not found", ErrClusterNotFound, clusterID)
 		}
 	}
+	if opts.DBSubnetGroupName != "" && !b.subnetGroupHas(region, opts.DBSubnetGroupName) {
+		return nil, fmt.Errorf(
+			"%w: subnet group %s not found",
+			ErrSubnetGroupNotFound, opts.DBSubnetGroupName,
+		)
+	}
 	if instanceClass == "" {
 		instanceClass = defaultInstanceClass
 	}
@@ -66,16 +96,9 @@ func (b *InMemoryBackend) CreateDBInstance(
 		maintenanceWindow = opts.PreferredMaintenanceWindow
 	}
 	endpoint := fmt.Sprintf("%s.neptune.%s.amazonaws.com", id, region)
-	engineVersion := defaultEngineVersion
-	dbSubnetGroupName := ""
-	networkType := ""
-	if clusterID != "" {
-		if cl, ok := b.clusterGet(region, clusterID); ok {
-			engineVersion = cl.EngineVersion
-			dbSubnetGroupName = cl.DBSubnetGroupName
-			networkType = cl.NetworkType
-		}
-	}
+	engineVersion, dbSubnetGroupName, networkType := b.instanceClusterInherited(
+		region, clusterID, opts.DBSubnetGroupName,
+	)
 	inst := &DBInstance{
 		region:                          region,
 		DBInstanceIdentifier:            id,

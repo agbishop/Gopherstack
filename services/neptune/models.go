@@ -151,6 +151,7 @@ type DBInstance struct {
 // DBInstanceCreateOptions holds optional fields for CreateDBInstance.
 type DBInstanceCreateOptions struct {
 	DBParameterGroupName            string
+	DBSubnetGroupName               string
 	PreferredMaintenanceWindow      string
 	PreferredBackupWindow           string
 	AvailabilityZone                string

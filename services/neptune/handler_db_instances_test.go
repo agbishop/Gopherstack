@@ -1447,3 +1447,91 @@ func TestErrorCodes_DBInstanceFaultSuffix(t *testing.T) {
 		})
 	}
 }
+
+// TestHandler_CreateDBInstance_DBSubnetGroupName covers gopherstack-ucus: an
+// explicit DBSubnetGroupName on CreateDBInstance must be honored rather than
+// silently overwritten by the cluster's subnet group, and an omitted one
+// must still default to the cluster's (api_op_CreateDBInstance.go's
+// DBSubnetGroupName doc comment does not spell out a default; the cluster
+// inheritance below is this backend's pre-existing interpretation, since
+// every Neptune instance belongs to a cluster).
+func TestHandler_CreateDBInstance_DBSubnetGroupName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("explicit_name_overrides_cluster", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		doRequest(t, h, url.Values{
+			"Action":            {"CreateDBSubnetGroup"},
+			"Version":           {"2014-10-31"},
+			"DBSubnetGroupName": {"cluster-sg"},
+		})
+		doRequest(t, h, url.Values{
+			"Action":            {"CreateDBSubnetGroup"},
+			"Version":           {"2014-10-31"},
+			"DBSubnetGroupName": {"instance-sg"},
+		})
+		doRequest(t, h, url.Values{
+			"Action":              {"CreateDBCluster"},
+			"Version":             {"2014-10-31"},
+			"DBClusterIdentifier": {"explicit-sg-cluster"},
+			"DBSubnetGroupName":   {"cluster-sg"},
+		})
+		rr := doRequest(t, h, url.Values{
+			"Action":               {"CreateDBInstance"},
+			"Version":              {"2014-10-31"},
+			"DBInstanceIdentifier": {"explicit-sg-inst"},
+			"DBClusterIdentifier":  {"explicit-sg-cluster"},
+			"DBInstanceClass":      {"db.r5.large"},
+			"DBSubnetGroupName":    {"instance-sg"},
+		})
+		require.Equal(t, http.StatusOK, rr.Code)
+		body := rr.Body.String()
+		assert.Contains(t, body, "<DBSubnetGroup>instance-sg</DBSubnetGroup>")
+		assert.NotContains(t, body, "<DBSubnetGroup>cluster-sg</DBSubnetGroup>")
+	})
+
+	t.Run("omitted_defaults_to_cluster", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		doRequest(t, h, url.Values{
+			"Action":            {"CreateDBSubnetGroup"},
+			"Version":           {"2014-10-31"},
+			"DBSubnetGroupName": {"default-sg"},
+		})
+		doRequest(t, h, url.Values{
+			"Action":              {"CreateDBCluster"},
+			"Version":             {"2014-10-31"},
+			"DBClusterIdentifier": {"default-sg-cluster"},
+			"DBSubnetGroupName":   {"default-sg"},
+		})
+		rr := doRequest(t, h, url.Values{
+			"Action":               {"CreateDBInstance"},
+			"Version":              {"2014-10-31"},
+			"DBInstanceIdentifier": {"default-sg-inst"},
+			"DBClusterIdentifier":  {"default-sg-cluster"},
+			"DBInstanceClass":      {"db.r5.large"},
+		})
+		require.Equal(t, http.StatusOK, rr.Code)
+		assert.Contains(t, rr.Body.String(), "<DBSubnetGroup>default-sg</DBSubnetGroup>")
+	})
+
+	t.Run("nonexistent_name_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		createCluster(t, h, "sg-nf-cluster")
+		rr := doRequest(t, h, url.Values{
+			"Action":               {"CreateDBInstance"},
+			"Version":              {"2014-10-31"},
+			"DBInstanceIdentifier": {"sg-nf-inst"},
+			"DBClusterIdentifier":  {"sg-nf-cluster"},
+			"DBInstanceClass":      {"db.r5.large"},
+			"DBSubnetGroupName":    {"does-not-exist-sg"},
+		})
+		require.Equal(t, http.StatusBadRequest, rr.Code)
+		assert.Contains(t, rr.Body.String(), "DBSubnetGroupNotFoundFault")
+	})
+}
