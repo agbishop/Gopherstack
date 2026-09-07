@@ -479,7 +479,14 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            test/e2e/crosssdk/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
 
       - name: Build UI
         working-directory: ui
@@ -493,11 +500,17 @@ jobs:
         run: |
           go run github.com/mxschmitt/playwright-go/cmd/playwright@v0.6100.0 install --with-deps chromium
 
+      - name: Install Azure cross-SDK smoke test dependencies
+        working-directory: test/e2e/crosssdk
+        run: |
+          npm ci
+          pip install -r requirements.txt
+
       - name: Run E2E Tests
         run: |
           COVERPKGS=$(go list ./... | grep -v -E '(test/|/demo$|/modules/|/teststack$)' | tr '\n' ',' | sed 's/,$//')
           go tool gotestsum --format pkgname -- \
-            -race -shuffle on -timeout 10m -tags=e2e \
+            -race -shuffle on -timeout 20m -tags=e2e \
             -coverpkg="$COVERPKGS" -coverprofile=e2e-coverage.out -covermode=atomic \
             ./test/e2e/...
 

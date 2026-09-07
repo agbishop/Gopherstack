@@ -26,6 +26,7 @@ test/terraform/bin/
 coverage.html
 **/*.txt
 *.txt
+!test/e2e/crosssdk/requirements.txt
 **/*.log
 *.log
 *.pdf
@@ -63,6 +64,7 @@ e2e.test
 *.db
 .beads-credential-key
 *.py
+!test/e2e/crosssdk/*.py
 node_modules/
 .terraform
 *.tfstate

@@ -282,6 +282,53 @@ func TestGetBlob_RangeHeaderPartialRead(t *testing.T) {
 	}
 }
 
+// TestGetBlob_XMsRangeHeader proves x-ms-range is accepted as an alias for
+// the standard Range header (with x-ms-range taking precedence when both are
+// present, matching real Azure Blob's documented behavior) -- the Python
+// (azure-storage-blob) and JS (@azure/storage-blob) Get Blob clients send
+// x-ms-range exclusively, never Range, so accepting only "Range" made this
+// backend's GetBlob unreachable from those SDKs' default download path. See AZURE.md
+// section 7's M4 cross-SDK smoke test, which caught this.
+func TestGetBlob_XMsRangeHeader(t *testing.T) {
+	t.Parallel()
+
+	const body = "0123456789"
+
+	tests := []struct {
+		name             string
+		headers          map[string]string
+		wantBody         string
+		wantContentRange string
+	}{
+		{
+			name: "x_ms_range_only", headers: map[string]string{"X-Ms-Range": "bytes=2-5"},
+			wantBody: "2345", wantContentRange: "bytes 2-5/10",
+		},
+		{
+			name:     "x_ms_range_takes_precedence_over_range",
+			headers:  map[string]string{"X-Ms-Range": "bytes=2-5", "Range": "bytes=7-9"},
+			wantBody: "2345", wantContentRange: "bytes 2-5/10",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			createContainer(t, h, "mycontainer")
+			doRequest(t, h, http.MethodPut, "/"+testAccount+"/mycontainer/data.bin",
+				[]byte(body), map[string]string{"X-Ms-Blob-Type": "BlockBlob"})
+
+			rec := doRequest(t, h, http.MethodGet, "/"+testAccount+"/mycontainer/data.bin", nil, tt.headers)
+
+			require.Equal(t, http.StatusPartialContent, rec.Code, tt.name)
+			assert.Equal(t, tt.wantBody, rec.Body.String(), tt.name)
+			assert.Equal(t, tt.wantContentRange, rec.Header().Get("Content-Range"), tt.name)
+		})
+	}
+}
+
 func TestListBlobs_MissingContainerReturns404(t *testing.T) {
 	t.Parallel()
 

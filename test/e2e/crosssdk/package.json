@@ -1,0 +1,16 @@
+{
+  "name": "gopherstack-azure-crosssdk-smoke",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Node.js cross-SDK smoke test proving @azure/storage-blob, @azure/storage-queue, @azure/data-tables, and @azure/cosmos work unmodified against gopherstack -- see test/e2e/azure_crosssdk_test.go.",
+  "type": "module",
+  "scripts": {
+    "smoke": "node azure_smoke.mjs"
+  },
+  "dependencies": {
+    "@azure/cosmos": "4.10.0",
+    "@azure/data-tables": "13.3.2",
+    "@azure/storage-blob": "12.33.0",
+    "@azure/storage-queue": "12.31.0"
+  }
+}

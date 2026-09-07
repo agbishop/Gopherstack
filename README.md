@@ -486,7 +486,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 |---|---|---|---|
 | [Backup](services/backup/README.md) | A | 58 | clean |
 | [Data Lifecycle Manager](services/dlm/README.md) | A | 8 | clean |
-| [EFS](services/efs/README.md) | A | 31 | 3 gaps; 2 deferred |
+| [EFS](services/efs/README.md) | A | 31 | 4 gaps; 2 deferred |
 | [FSx](services/fsx/README.md) | A | — | 13 families; 10 gaps |
 | [S3](services/s3/README.md) | A | 20 | 10 gaps |
 | [S3 Control](services/s3control/README.md) | A | 44 | 7 gaps; 3 deferred |
@@ -578,7 +578,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Detective](services/detective/README.md) | A | 29 | 3 gaps; 2 deferred |
 | [GuardDuty](services/guardduty/README.md) | A | 66 | 5 gaps; 1 structural gap; 5 deferred |
 | [Inspector](services/inspector2/README.md) | A | 13 | 10 gaps; 1 deferred |
-| [KMS](services/kms/README.md) | A | 54 | 10 gaps; 2 deferred |
+| [KMS](services/kms/README.md) | A | 54 | 17 gaps; 2 deferred |
 | [Macie](services/macie2/README.md) | A | 81 | clean |
 | [Secrets Manager](services/secretsmanager/README.md) | A | 24 | 8 gaps; 2 deferred |
 | [Security Hub](services/securityhub/README.md) | A | 116 | 5 gaps |
@@ -614,7 +614,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [CloudTrail](services/cloudtrail/README.md) | A | 60 | 13 gaps |
 | [CloudWatch](services/cloudwatch/README.md) | A | 50 | 5 deferred |
 | [CloudWatch Logs](services/cloudwatchlogs/README.md) | A | 84 | 30 gaps; 3 deferred |
-| [Config](services/awsconfig/README.md) | A | 102 | 5 gaps; 1 deferred |
+| [Config](services/awsconfig/README.md) | A | 102 | 6 gaps; 1 deferred |
 | [Cost Explorer](services/ce/README.md) | A | 37 | 3 gaps; 2 deferred |
 | [Fault Injection Simulator](services/fis/README.md) | A | 26 | 3 gaps; 1 deferred |
 | [OpsWorks](services/opsworks/README.md) | B | 32 | 5 gaps; 1 deferred |
@@ -634,7 +634,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [CodeCommit](services/codecommit/README.md) | A | 79 | 5 gaps |
 | [CodeConnections](services/codeconnections/README.md) | A | 27 | clean |
 | [CodeDeploy](services/codedeploy/README.md) | A | 47 | 4 gaps; 2 deferred |
-| [CodePipeline](services/codepipeline/README.md) | A | 22 | 10 gaps; 4 deferred |
+| [CodePipeline](services/codepipeline/README.md) | A | 22 | 13 gaps; 4 deferred |
 | [CodeStar Connections](services/codestarconnections/README.md) | A | 27 | 2 gaps; 2 structural gaps |
 | [Serverless Application Repository](services/serverlessrepo/README.md) | A | 14 | clean |
 | [X-Ray](services/xray/README.md) | A | 38 | 9 gaps; 1 deferred |
@@ -685,16 +685,22 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Database Migration Service](services/dms/README.md) | A | 97 | 1 gap |
 | [Transfer Family](services/transfer/README.md) | A | — | 20 families |
 
+### Azure
+
+| Service | Parity | PARITY Entries | Notes |
+|---|---|---|---|
+| [Azure Blob Storage](services/azureblob/README.md) | C | 8 | 8 gaps; 3 deferred |
+| [Azure Cosmos DB](services/cosmosdb/README.md) | C | 15 | 9 gaps; 5 deferred |
+| [Azure Queue Storage](services/azurequeue/README.md) | C | 9 | 7 gaps; 1 deferred |
+| [Azure Service Bus](services/azureservicebus/README.md) | B | 17 | 4 gaps; 2 deferred |
+| [Azure Table Storage](services/azuretable/README.md) | C | 10 | 6 gaps; 3 deferred |
+
 ### Other
 
 | Service | Parity | PARITY Entries | Notes |
 |---|---|---|---|
 | [AppStream 2.0](services/appstream/README.md) | A | 44 | clean |
-| [Azureblob](services/azureblob/README.md) | C | 8 | 8 gaps; 3 deferred |
-| [Azurequeue](services/azurequeue/README.md) | C | 9 | 7 gaps; 1 deferred |
-| [Azuretable](services/azuretable/README.md) | C | 10 | 6 gaps; 3 deferred |
 | [Cloudfrontkeyvaluestore](services/cloudfrontkeyvaluestore/README.md) | B | 6 | 3 gaps; 1 structural gap |
-| [Cosmosdb](services/cosmosdb/README.md) | C | 15 | 9 gaps; 5 deferred |
 | [Directconnect](services/directconnect/README.md) | A | 64 | 4 gaps; 8 structural gaps; 1 deferred |
 | [Grafana](services/grafana/README.md) | A | 25 | 2 gaps; 1 structural gap |
 | [HealthOmics](services/omics/README.md) | A | — | 25 families; 3 gaps; 1 deferred |

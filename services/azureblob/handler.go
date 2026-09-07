@@ -476,7 +476,18 @@ func (h *Handler) getBlob(c *echo.Context, container, blob string) error {
 
 	h.setBlobHeaders(c, info)
 
-	rangeHeader := r.Header.Get("Range")
+	// x-ms-range takes precedence over the standard Range header when both
+	// are present, matching real Azure Blob's documented behavior -- the
+	// azure-storage-blob (Python) and @azure/storage-blob (JS) SDKs' generated
+	// Get Blob operation sends x-ms-range exclusively (never Range), so
+	// accepting only "Range" made GetBlob's single-range support unreachable
+	// from those SDKs' default download path even though the Go SDK (which
+	// does send "Range") passed.
+	rangeHeader := r.Header.Get("X-Ms-Range")
+	if rangeHeader == "" {
+		rangeHeader = r.Header.Get("Range")
+	}
+
 	if rangeHeader == "" {
 		return c.Blob(http.StatusOK, contentTypeOrDefault(info.ContentType), data)
 	}

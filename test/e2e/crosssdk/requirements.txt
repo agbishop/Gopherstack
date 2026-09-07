@@ -1,0 +1,7 @@
+# Python cross-SDK smoke test dependencies -- see azure_smoke.py and
+# test/e2e/azure_crosssdk_test.go. Pinned to the latest release of each SDK
+# as of this milestone.
+azure-storage-blob==12.30.1
+azure-storage-queue==12.17.0
+azure-data-tables==12.7.0
+azure-cosmos==4.16.4

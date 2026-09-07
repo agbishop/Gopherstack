@@ -1,0 +1,276 @@
+package integration_test
+
+// This file deliberately does NOT use azure-sdk-for-go's
+// sdk/messaging/azservicebus client. That package is built entirely on top
+// of github.com/Azure/go-amqp -- it speaks AMQP 1.0 over TLS (or AMQP frames
+// over WebSockets) and has no HTTP/REST transport option at all. gopherstack's
+// services/azureservicebus deliberately targets Service Bus's Brokered
+// Messaging REST API instead (see AZURE.md section 9's M5 rationale: a full
+// binary AMQP 1.0 stack is a materially larger and different-shaped effort
+// than any other Azure service in this repo implements), so there is no SDK
+// client that can be pointed at it unmodified. This is a genuine
+// SDK-compatibility gap, documented in services/azureservicebus/PARITY.md's
+// families.sdk_compat entry -- not an oversight. The tests below therefore
+// exercise the REST surface directly via net/http, mirroring what a
+// hand-rolled REST client (or curl) would do against a real Service Bus
+// namespace's Brokered Messaging API.
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// sbBrokerProperties mirrors services/azureservicebus/handler.go's
+// brokerProperties wire shape (a private type in that package, so the
+// integration test -- which only talks HTTP -- redeclares the subset of
+// fields it needs).
+type sbBrokerProperties struct {
+	MessageID string `json:"MessageId,omitempty"`
+	LockToken string `json:"LockToken,omitempty"`
+}
+
+// sbRequest performs one Service Bus REST call against azureServiceBusEndpoint
+// and returns the response, skipping the test if the endpoint isn't
+// available (mirroring createAzureQueueClient's t.Skip pattern).
+func sbRequest(t *testing.T, method, path string, body []byte, headers map[string]string) *http.Response {
+	t.Helper()
+
+	if azureServiceBusEndpoint == "" {
+		t.Skip("Azure Service Bus endpoint not available (mapped port could not be determined)")
+	}
+
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = strings.NewReader(string(body))
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), method, azureServiceBusEndpoint+path, bodyReader)
+	require.NoError(t, err)
+
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	return resp
+}
+
+func TestIntegration_AzureServiceBus_QueueSendPeekLockComplete(t *testing.T) {
+	t.Parallel()
+	dumpContainerLogsOnFailure(t)
+
+	queue := "test-queue-" + uuid.NewString()
+
+	// CreateQueue.
+	resp := sbRequest(t, http.MethodPut, "/"+queue, nil, nil)
+	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	// Send.
+	const messageBody = "hello from gopherstack azureservicebus"
+
+	resp = sbRequest(t, http.MethodPost, "/"+queue+"/messages", []byte(messageBody), map[string]string{
+		"Content-Type": "text/plain",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	// PeekLock.
+	resp = sbRequest(t, http.MethodPost, "/"+queue+"/messages/head", nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	gotBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, messageBody, string(gotBody))
+
+	var bp sbBrokerProperties
+
+	require.NoError(t, json.Unmarshal([]byte(resp.Header.Get("Brokerproperties")), &bp))
+	require.NotEmpty(t, bp.MessageID)
+	require.NotEmpty(t, bp.LockToken)
+
+	location := resp.Header.Get("Location")
+	require.NotEmpty(t, location)
+
+	// Complete via the Location header returned by PeekLock.
+	resp = sbRequest(t, http.MethodDelete, location, nil, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	// Queue should now be empty.
+	resp = sbRequest(t, http.MethodPost, "/"+queue+"/messages/head", nil, nil)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	// DeleteQueue.
+	resp = sbRequest(t, http.MethodDelete, "/"+queue, nil, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestIntegration_AzureServiceBus_TopicSubscriptionFanOut(t *testing.T) {
+	t.Parallel()
+	dumpContainerLogsOnFailure(t)
+
+	topic := "test-topic-" + uuid.NewString()
+
+	// CreateTopic (via the ?type=topic escape hatch -- see
+	// services/azureservicebus/PARITY.md's entity_kind_detection note for why
+	// a hand-built REST request needs it instead of a proper Atom+XML body).
+	resp := sbRequest(t, http.MethodPut, "/"+topic+"?type=topic", nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	// Create two subscriptions.
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		subResp := sbRequest(t, http.MethodPut, "/"+topic+"/subscriptions/"+sub, nil, nil)
+		require.Equal(t, http.StatusCreated, subResp.StatusCode)
+	}
+
+	// Send once to the topic.
+	const messageBody = "fan-out message"
+
+	resp = sbRequest(t, http.MethodPost, "/"+topic+"/messages", []byte(messageBody), nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	// Both subscriptions independently receive their own copy.
+	for _, sub := range []string{"sub-a", "sub-b"} {
+		subResp := sbRequest(t, http.MethodPost, "/"+topic+"/subscriptions/"+sub+"/messages/head", nil, nil)
+		require.Equal(t, http.StatusCreated, subResp.StatusCode, "subscription %s should have received a copy", sub)
+
+		gotBody, err := io.ReadAll(subResp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, messageBody, string(gotBody))
+
+		location := subResp.Header.Get("Location")
+		require.NotEmpty(t, location)
+
+		completeResp := sbRequest(t, http.MethodDelete, location, nil, nil)
+		assert.Equal(t, http.StatusOK, completeResp.StatusCode)
+	}
+
+	// DeleteTopic (cascades to its subscriptions).
+	resp = sbRequest(t, http.MethodDelete, "/"+topic, nil, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestIntegration_AzureServiceBus_PerEntityConfigAndGetList covers gaps #1
+// and #5 together: creating a queue with a non-default LockDuration/
+// MaxDeliveryCount/DefaultMessageTimeToLive via a real Atom+XML request body
+// (rather than the ?type=topic escape hatch the other tests here use, since
+// this is exactly the case that needs a real body), then reading those
+// values back via GET, and exercising the $Resources/Queues and
+// $Resources/Topics list endpoints.
+func TestIntegration_AzureServiceBus_PerEntityConfigAndGetList(t *testing.T) {
+	t.Parallel()
+	dumpContainerLogsOnFailure(t)
+
+	queue := "test-queue-cfg-" + uuid.NewString()
+
+	const queueBody = `<entry xmlns="http://www.w3.org/2005/Atom"><content type="application/xml">` +
+		`<QueueDescription xmlns="http://schemas.microsoft.com/netservices/2010/10/servicebus/connect">` +
+		`<LockDuration>PT2M</LockDuration>` +
+		`<MaxDeliveryCount>5</MaxDeliveryCount>` +
+		`<DefaultMessageTimeToLive>P1D</DefaultMessageTimeToLive>` +
+		`</QueueDescription></content></entry>`
+
+	resp := sbRequest(t, http.MethodPut, "/"+queue, []byte(queueBody), map[string]string{
+		"Content-Type": "application/atom+xml",
+	})
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	resp = sbRequest(t, http.MethodGet, "/"+queue, nil, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/atom+xml;type=entry;charset=utf-8", resp.Header.Get("Content-Type"))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "<LockDuration>PT2M</LockDuration>")
+	assert.Contains(t, string(body), "<MaxDeliveryCount>5</MaxDeliveryCount>")
+	assert.Contains(t, string(body), "<DefaultMessageTimeToLive>P1D</DefaultMessageTimeToLive>")
+
+	// $Resources/Queues should list it.
+	resp = sbRequest(t, http.MethodGet, "/$Resources/Queues", nil, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "application/atom+xml;type=feed;charset=utf-8", resp.Header.Get("Content-Type"))
+
+	body, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "<title>"+queue+"</title>")
+
+	// A topic and $Resources/Topics.
+	topic := "test-topic-cfg-" + uuid.NewString()
+	resp = sbRequest(t, http.MethodPut, "/"+topic+"?type=topic", nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	resp = sbRequest(t, http.MethodGet, "/$Resources/Topics", nil, nil)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err = io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "<title>"+topic+"</title>")
+
+	// A missing entity 404s.
+	resp = sbRequest(t, http.MethodGet, "/no-such-entity-"+uuid.NewString(), nil, nil)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+	// Cleanup.
+	resp = sbRequest(t, http.MethodDelete, "/"+queue, nil, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	resp = sbRequest(t, http.MethodDelete, "/"+topic, nil, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestIntegration_AzureServiceBus_PeekLockLongPoll covers gap #2: a
+// PeekLock long-poll waiting for a message that arrives shortly after the
+// request starts, rather than getting an immediate 204.
+func TestIntegration_AzureServiceBus_PeekLockLongPoll(t *testing.T) {
+	t.Parallel()
+	dumpContainerLogsOnFailure(t)
+
+	queue := "test-queue-longpoll-" + uuid.NewString()
+
+	resp := sbRequest(t, http.MethodPut, "/"+queue, nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	const messageBody = "delayed message"
+
+	// sbRequest uses require/t.Helper(), which must only ever run on the
+	// test's own goroutine -- so the delayed Send below is a plain
+	// net/http.Post rather than a reused sbRequest call. The request itself
+	// is still scoped to t.Context() (safe to read from any goroutine, unlike
+	// calling a *testing.T assertion method) so it -- and this goroutine --
+	// cannot outlive the test.
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+
+		req, err := http.NewRequestWithContext(
+			t.Context(), http.MethodPost, azureServiceBusEndpoint+"/"+queue+"/messages",
+			strings.NewReader(messageBody),
+		)
+		if err != nil {
+			return
+		}
+
+		sendResp, doErr := http.DefaultClient.Do(req)
+		if doErr == nil {
+			_ = sendResp.Body.Close()
+		}
+	}()
+
+	resp = sbRequest(t, http.MethodPost, "/"+queue+"/messages/head?timeout=10", nil, nil)
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "long-poll should have waited for the delayed Send")
+
+	gotBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, messageBody, string(gotBody))
+
+	resp = sbRequest(t, http.MethodDelete, "/"+queue, nil, nil)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}

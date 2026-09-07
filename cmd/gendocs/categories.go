@@ -13,8 +13,20 @@ type categoryGroup struct {
 	Slugs []string
 }
 
+// The five Azure service slugs, as constants rather than repeated string
+// literals -- each one is referenced from categoryGroups, the display-name
+// overrides, and categories_test.go, which would otherwise trip goconst's
+// repeated-literal check.
+const (
+	slugAzureBlob       = "azureblob"
+	slugAzureQueue      = "azurequeue"
+	slugAzureTable      = "azuretable"
+	slugAzureServiceBus = "azureservicebus"
+	slugCosmosDB        = "cosmosdb"
+)
+
 // categoryGroups is the curated slug -> category assignment for every
-// service under services/ (154 entries, including qldb/qldbsession which are
+// service under services/ (158 entries, including qldb/qldbsession which are
 // rendered as "Removed" rows). Every slug must appear in exactly one group;
 // see the cross-check in the gendocs README/report for how this was derived.
 //
@@ -87,6 +99,9 @@ func categoryGroups() []categoryGroup {
 		{"Migration & Transfer", []string{
 			"datasync", "dms", "transfer",
 		}},
+		{"Azure", []string{
+			slugAzureBlob, slugAzureQueue, slugAzureTable, slugAzureServiceBus, slugCosmosDB,
+		}},
 		{"Other", []string{
 			"appstream", "managedblockchain", "omics", "support", "workspaces",
 		}},
@@ -153,6 +168,10 @@ func displayNamesA() map[string]string {
 		"athena":                  "Athena",
 		"autoscaling":             "Auto Scaling",
 		"awsconfig":               "Config",
+		slugAzureBlob:             "Azure Blob Storage",
+		slugAzureQueue:            "Azure Queue Storage",
+		slugAzureTable:            "Azure Table Storage",
+		slugAzureServiceBus:       "Azure Service Bus",
 		"backup":                  "Backup",
 		"batch":                   "Batch",
 		"bedrock":                 "Bedrock",
@@ -181,6 +200,7 @@ func displayNamesB() map[string]string {
 	return map[string]string{
 		"cognitoidp":       "Cognito Identity Provider",
 		"comprehend":       "Comprehend",
+		slugCosmosDB:       "Azure Cosmos DB",
 		"databrew":         "Glue DataBrew",
 		"datasync":         "DataSync",
 		"dax":              "DAX",

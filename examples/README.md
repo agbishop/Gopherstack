@@ -16,6 +16,7 @@ To run these examples locally, you need:
 | Example | Purpose | Tools Required |
 |---------|---------|----------------|
 | **`apigw-websocket-chat`** | Real-time chat app using API Gateway WebSockets and Node.js Lambda backend. | OpenTofu, Node.js (`wscat`) |
+| **`azure-services`** | Exercises Azure Blob/Queue/Table Storage and Azure Cosmos DB side-by-side in one gopherstack instance. | Bash (`curl`, `grep`, `head`, `sed`) |
 | **`cognito-api-auth`** | Secures API Gateway endpoints using Cognito User Pool Authorizer and JWTs. | OpenTofu, Bash |
 | **`ddb-lambda-chain`** | A 3-table event stream pipeline where DynamoDB Streams trigger a Go Lambda function. | Go, Bash |
 | **`ec2-docker`** | Demonstrates provisioning EC2 instances and running SSH commands on them locally. | Bash (`ssh`, `dig`) |

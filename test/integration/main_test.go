@@ -163,6 +163,19 @@ var azureTableEndpoint string
 //nolint:gochecknoglobals // Set in TestMain for integration tests.
 var cosmosDBEndpoint string
 
+// azureServiceBusEndpoint is the Azure Service Bus Brokered Messaging
+// REST-compatible endpoint for the running Gopherstack container (its own
+// dedicated port -- see services/azureservicebus/provider.go and AZURE.md
+// section 9's M5 entry for why this service cannot share the main AWS
+// endpoint/port, or any of AzureBlob's/AzureQueue's/AzureTable's own
+// dedicated ports). Left empty (and Azure Service Bus tests skipped) if the
+// mapped port cannot be determined, mirroring cosmosDBEndpoint's non-fatal
+// behavior above. This is initialized by TestMain before running
+// integration tests.
+//
+//nolint:gochecknoglobals // Set in TestMain for integration tests.
+var azureServiceBusEndpoint string
+
 // sharedContainer holds a reference to the container for cleanup and log dumping on test failures.
 // This is initialized by TestMain before running integration tests.
 //
@@ -311,7 +324,9 @@ func TestMain(m *testing.M) {
 				options.PullParent = false
 			},
 		},
-		ExposedPorts: []string{"8000/tcp", "1883/tcp", "10000/tcp", "10001/tcp", "10002/tcp", "8081/tcp"},
+		ExposedPorts: []string{
+			"8000/tcp", "1883/tcp", "10000/tcp", "10001/tcp", "10002/tcp", "10003/tcp", "8081/tcp",
+		},
 		WaitingFor: wait.ForAll(
 			wait.ForHTTP("/").
 				WithPort("8000/tcp").
@@ -324,6 +339,8 @@ func TestMain(m *testing.M) {
 			wait.ForListeningPort("10001/tcp").
 				WithStartupTimeout(60*time.Second),
 			wait.ForListeningPort("10002/tcp").
+				WithStartupTimeout(60*time.Second),
+			wait.ForListeningPort("10003/tcp").
 				WithStartupTimeout(60*time.Second),
 			wait.ForListeningPort("8081/tcp").
 				WithStartupTimeout(60*time.Second),
@@ -369,6 +386,9 @@ func TestMain(m *testing.M) {
 		ctx, container, logger, "10002", "http", "Azure Table Storage-compatible endpoint", "Azure Table")
 	cosmosDBEndpoint = resolveMappedEndpoint(
 		ctx, container, logger, "8081", "http", "Cosmos DB (Core/SQL API)-compatible endpoint", "Cosmos DB")
+	azureServiceBusEndpoint = resolveMappedEndpoint(
+		ctx, container, logger, "10003", "http",
+		"Azure Service Bus Brokered Messaging REST-compatible endpoint", "Azure Service Bus")
 
 	code := m.Run()
 
