@@ -39,15 +39,16 @@ type RotationRecord struct {
 
 // Key represents a KMS customer-managed key.
 type Key struct {
-	Origin          string `json:"Origin,omitempty"`
-	PrimaryRegion   string `json:"PrimaryRegion,omitempty"`
-	Description     string `json:"Description,omitempty"`
-	KeyState        string `json:"KeyState"`
-	KeyUsage        string `json:"KeyUsage"`
-	KeySpec         string `json:"KeySpec,omitempty"`
-	KeyID           string `json:"KeyId"`
-	Arn             string `json:"Arn"`
-	ExpirationModel string `json:"ExpirationModel,omitempty"`
+	Origin           string `json:"Origin,omitempty"`
+	PrimaryRegion    string `json:"PrimaryRegion,omitempty"`
+	Description      string `json:"Description,omitempty"`
+	KeyState         string `json:"KeyState"`
+	KeyUsage         string `json:"KeyUsage"`
+	KeySpec          string `json:"KeySpec,omitempty"`
+	KeyID            string `json:"KeyId"`
+	Arn              string `json:"Arn"`
+	ExpirationModel  string `json:"ExpirationModel,omitempty"`
+	CustomKeyStoreID string `json:"CustomKeyStoreId,omitempty"`
 	// Rotations stores all rotation events with their types. The separate
 	// RotationDates and OnDemandRotationDates slices are kept for JSON
 	// backwards-compatibility with existing snapshots.
@@ -97,6 +98,7 @@ type KeyMetadata struct {
 	KeySpec                     string                    `json:"KeySpec,omitempty"`
 	KeyID                       string                    `json:"KeyId"`
 	AWSAccountID                string                    `json:"AWSAccountId,omitempty"`
+	CustomKeyStoreID            string                    `json:"CustomKeyStoreId,omitempty"`
 	CustomerMasterKeySpec       string                    `json:"CustomerMasterKeySpec,omitempty"`
 	MultiRegionKeyType          string                    `json:"MultiRegionKeyType,omitempty"`
 	ExpirationModel             string                    `json:"ExpirationModel,omitempty"`
@@ -142,6 +144,7 @@ type CreateKeyInput struct {
 	Origin                         string `json:"Origin,omitempty"`
 	Policy                         string `json:"Policy,omitempty"`
 	Region                         string `json:"-"`
+	CustomKeyStoreID               string `json:"CustomKeyStoreId,omitempty"`
 	Tags                           []Tag  `json:"Tags,omitempty"`
 	MultiRegion                    bool   `json:"MultiRegion,omitempty"`
 	BypassPolicyLockoutSafetyCheck bool   `json:"BypassPolicyLockoutSafetyCheck,omitempty"`

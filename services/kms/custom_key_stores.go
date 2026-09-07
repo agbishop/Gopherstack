@@ -85,6 +85,17 @@ func (b *InMemoryBackend) DeleteCustomKeyStore(
 		)
 	}
 
+	// "The custom key store that you delete cannot contain any KMS keys" (real SDK:
+	// api_op_DeleteCustomKeyStore.go doc comment; CustomKeyStoreHasCMKsException).
+	for _, k := range b.keysStore(region).All() {
+		if k.CustomKeyStoreID == input.CustomKeyStoreID {
+			return fmt.Errorf(
+				"%w: custom key store %q still contains KMS keys",
+				ErrCustomKeyStoreHasKeys, input.CustomKeyStoreID,
+			)
+		}
+	}
+
 	b.customKeyStoresStore(region).Delete(input.CustomKeyStoreID)
 
 	return nil

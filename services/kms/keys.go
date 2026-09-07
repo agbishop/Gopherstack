@@ -60,6 +60,47 @@ func validateKeySpecUsage(keySpec, keyUsage string) error {
 	return nil
 }
 
+// validateCustomKeyStoreLink checks a CreateKeyInput.CustomKeyStoreId reference against its
+// doc comment (aws-sdk-go-v2/service/kms@v1.55.4 api_op_CreateKey.go:207): the store must
+// exist and be CONNECTED, and it is valid only for single-Region symmetric encryption KMS
+// keys. External key stores need XksKeyId, which gopherstack does not implement (see
+// PARITY.md).
+func (b *InMemoryBackend) validateCustomKeyStoreLink(
+	region, storeID, keySpec, keyUsage string, multiRegion bool,
+) error {
+	if storeID == "" {
+		return nil
+	}
+
+	ks, ok := b.customKeyStoresStore(region).Get(storeID)
+	if !ok {
+		return fmt.Errorf("%w: custom key store %q not found", ErrCustomKeyStoreNotFound, storeID)
+	}
+
+	if ks.ConnectionState != ConnectionStateConnected {
+		return fmt.Errorf(
+			"%w: custom key store %q is not connected (state: %s)",
+			ErrCustomKeyStoreInvalidState, storeID, ks.ConnectionState,
+		)
+	}
+
+	if ks.CustomKeyStoreType == "EXTERNAL_KEY_STORE" {
+		return fmt.Errorf(
+			"%w: creating a KMS key in an external key store requires XksKeyId, which gopherstack does not implement",
+			ErrUnsupportedParameter,
+		)
+	}
+
+	if keySpec != keySpecSymmetric || keyUsage != KeyUsageEncryptDecrypt || multiRegion {
+		return fmt.Errorf(
+			"%w: custom key stores support only single-Region symmetric encryption KMS keys",
+			ErrUnsupportedParameter,
+		)
+	}
+
+	return nil
+}
+
 // deriveKeySpecUsage fills in missing KeySpec and KeyUsage defaults, returning the resolved pair.
 // If keyUsage is empty, it is inferred from keySpec; if keySpec is empty it is inferred from keyUsage.
 func deriveKeySpecUsage(keySpec, keyUsage string) (string, string) {
@@ -93,23 +134,32 @@ func deriveKeySpecUsage(keySpec, keyUsage string) (string, string) {
 	return keySpec, keyUsage
 }
 
-// CreateKey creates a new KMS key and stores it in the backend.
-func (b *InMemoryBackend) CreateKey(
-	ctx context.Context,
-	input *CreateKeyInput,
-) (*CreateKeyOutput, error) {
+// validateCreateKeyLimits checks CreateKeyInput's Description and Tags length limits.
+func validateCreateKeyLimits(input *CreateKeyInput) error {
 	if len(input.Description) > maxDescriptionLength {
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"%w: Description exceeds maximum length of %d characters",
 			ErrValidation, maxDescriptionLength,
 		)
 	}
 
 	if len(input.Tags) > maxTagsPerKey {
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"%w: number of tags (%d) exceeds the maximum of %d",
 			ErrLimitExceeded, len(input.Tags), maxTagsPerKey,
 		)
+	}
+
+	return nil
+}
+
+// CreateKey creates a new KMS key and stores it in the backend.
+func (b *InMemoryBackend) CreateKey(
+	ctx context.Context,
+	input *CreateKeyInput,
+) (*CreateKeyOutput, error) {
+	if err := validateCreateKeyLimits(input); err != nil {
+		return nil, err
 	}
 
 	b.mu.Lock("CreateKey")
@@ -147,6 +197,12 @@ func (b *InMemoryBackend) CreateKey(
 		}
 	}
 
+	if err := b.validateCustomKeyStoreLink(
+		region, input.CustomKeyStoreID, keySpec, keyUsage, input.MultiRegion,
+	); err != nil {
+		return nil, err
+	}
+
 	// Resolve origin: EXTERNAL keys require the caller to import key material later.
 	origin := input.Origin
 	if origin == "" {
@@ -162,17 +218,18 @@ func (b *InMemoryBackend) CreateKey(
 	}
 
 	key := &Key{
-		KeyID:         keyID,
-		Arn:           keyARN,
-		Description:   input.Description,
-		KeyState:      keyState,
-		KeyUsage:      keyUsage,
-		KeySpec:       keySpec,
-		Origin:        origin,
-		PrimaryRegion: region,
-		CreationDate:  UnixTimeFloat(time.Now()),
-		Enabled:       keyState == KeyStateEnabled,
-		MultiRegion:   input.MultiRegion,
+		KeyID:            keyID,
+		Arn:              keyARN,
+		Description:      input.Description,
+		KeyState:         keyState,
+		KeyUsage:         keyUsage,
+		KeySpec:          keySpec,
+		Origin:           origin,
+		PrimaryRegion:    region,
+		CustomKeyStoreID: input.CustomKeyStoreID,
+		CreationDate:     UnixTimeFloat(time.Now()),
+		Enabled:          keyState == KeyStateEnabled,
+		MultiRegion:      input.MultiRegion,
 	}
 
 	if origin != KeyOriginExternal {
@@ -462,6 +519,7 @@ func (b *InMemoryBackend) keyToMetadata(k *Key) KeyMetadata {
 		Origin:                origin,
 		MultiRegion:           k.MultiRegion,
 		PrimaryRegion:         k.PrimaryRegion,
+		CustomKeyStoreID:      k.CustomKeyStoreID,
 		Enabled:               k.Enabled,
 	}
 

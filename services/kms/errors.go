@@ -23,6 +23,17 @@ var (
 	ErrCustomKeyStoreAlreadyExists = errors.New("CustomKeyStoreNameInUseException")
 	// ErrCustomKeyStoreNotFound is returned when a custom key store ID does not exist.
 	ErrCustomKeyStoreNotFound = errors.New("CustomKeyStoreNotFoundException")
+	// ErrCustomKeyStoreInvalidState is returned by CreateKey when the target custom
+	// key store's ConnectionState is not CONNECTED, and by Disconnect/UpdateCustomKeyStore/
+	// DeleteCustomKeyStore for their own state preconditions. CreateKey's own
+	// deserializeOpError (kms@v1.55.4 deserializers.go) recognizes
+	// CustomKeyStoreInvalidStateException for exactly this.
+	ErrCustomKeyStoreInvalidState = errors.New("CustomKeyStoreInvalidStateException")
+	// ErrCustomKeyStoreHasKeys is returned by DeleteCustomKeyStore when the store
+	// still contains KMS keys. DeleteCustomKeyStore's own deserializeOpError
+	// recognizes CustomKeyStoreHasCMKsException for exactly this ("The custom key
+	// store that you delete cannot contain any KMS keys").
+	ErrCustomKeyStoreHasKeys = errors.New("CustomKeyStoreHasCMKsException")
 	// ErrKeyDisabled is returned when an operation is attempted on a disabled key.
 	ErrKeyDisabled = errors.New("DisabledException")
 	// ErrKeyInvalidState is returned when a key is in a state that does not allow the requested
