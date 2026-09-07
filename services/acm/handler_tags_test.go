@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -305,6 +306,43 @@ func TestACMHandler_NewStyleTagValidation_UsesValidationAndServiceQuota(t *testi
 
 			h := newACMHandler()
 			tt.run(t, h)
+		})
+	}
+}
+
+// TestACMHandler_LegacyTagOps_KeyOrValueTooLong_InvalidTagException guards a bug where setTags'
+// tag-key/value length checks (handler_tags.go) hardcoded ErrInvalidParameter instead of using the
+// caller-supplied invalidTagErr -- unlike the sibling empty-key/reserved-prefix checks just above
+// them, which already did. For the legacy certificate-tag ops (RequestCertificate here), that
+// meant a too-long key or value returned ValidationException, a code RequestCertificate's real
+// deserializer does not declare, instead of InvalidTagException, which it does. gopherstack-bzyl.
+func TestACMHandler_LegacyTagOps_KeyOrValueTooLong_InvalidTagException(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		tags []map[string]string
+	}{
+		{name: "key_too_long", tags: []map[string]string{{"Key": strings.Repeat("k", 129), "Value": "v"}}},
+		{name: "value_too_long", tags: []map[string]string{{"Key": "k", "Value": strings.Repeat("v", 257)}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newACMHandler()
+
+			body, err := json.Marshal(map[string]any{
+				"DomainName": "toolong.example.com",
+				"Tags":       tt.tags,
+			})
+			require.NoError(t, err)
+
+			rec := postACMJSON(t, h, "RequestCertificate", string(body))
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Contains(t, rec.Body.String(), "InvalidTagException")
+			assert.NotContains(t, rec.Body.String(), "ValidationException")
 		})
 	}
 }

@@ -45,7 +45,7 @@ func validateManagedBy(managedBy string) error {
 		return nil
 	}
 
-	return fmt.Errorf("%w: ManagedBy must be %s", ErrInvalidParameter, certManagedByCloudfront)
+	return fmt.Errorf("%w: ManagedBy must be %s", ErrRequestCertInvalidParameter, certManagedByCloudfront)
 }
 
 // isSameOrSuperdomain reports whether validationDomain is the same as, or a
@@ -107,9 +107,13 @@ func validateDomainValidationOptions(
 // validateDomainName checks that the given domain name satisfies AWS ACM constraints.
 // AWS rejects domain names longer than 253 characters, empty labels, labels exceeding 63
 // characters, and labels that are purely numeric (which would be IP addresses).
-func validateDomainName(name string) error {
+// invalidErr lets each caller supply the code its own op actually declares:
+// RequestCertificate's real deserializer has no ValidationException, only
+// InvalidParameterException (ErrRequestCertInvalidParameter), while
+// CreateAcmeDomainValidation's does (ErrInvalidParameter) -- gopherstack-bzyl.
+func validateDomainName(name string, invalidErr error) error {
 	if len(name) > maxDomainLength {
-		return fmt.Errorf("%w: domain %q exceeds maximum length of %d", ErrInvalidParameter, name, maxDomainLength)
+		return fmt.Errorf("%w: domain %q exceeds maximum length of %d", invalidErr, name, maxDomainLength)
 	}
 
 	// Strip leading wildcard component (*.example.com → example.com for label checks)
@@ -117,12 +121,12 @@ func validateDomainName(name string) error {
 
 	for label := range strings.SplitSeq(checkName, ".") {
 		if label == "" {
-			return fmt.Errorf("%w: domain %q contains an empty label", ErrInvalidParameter, name)
+			return fmt.Errorf("%w: domain %q contains an empty label", invalidErr, name)
 		}
 
 		if len(label) > maxDomainLabelLength {
 			return fmt.Errorf("%w: domain label %q in %q exceeds %d characters",
-				ErrInvalidParameter, label, name, maxDomainLabelLength)
+				invalidErr, label, name, maxDomainLabelLength)
 		}
 	}
 

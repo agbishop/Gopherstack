@@ -51,9 +51,13 @@ func TestACMBackend_RequestCertificate(t *testing.T) {
 			wantPendingFirst: true,
 		},
 		{
+			// STRENGTHENED (gopherstack-bzyl): previously pinned ErrInvalidParameter
+			// (ValidationException), a code RequestCertificate's real deserializer
+			// never declares (deserializers.go, acm@v1.43.4) -- only
+			// InvalidParameterException. The old assertion was pinning the bug.
 			name:    "empty_domain",
 			domain:  "",
-			wantErr: acm.ErrInvalidParameter,
+			wantErr: acm.ErrRequestCertInvalidParameter,
 		},
 	}
 

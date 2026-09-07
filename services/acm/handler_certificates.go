@@ -257,7 +257,7 @@ type updateCertificateOptionsOutput struct{}
 func (h *Handler) jsonRequestCertificate(ctx context.Context, body []byte) (any, error) {
 	var input requestCertificateInput
 	if err := json.Unmarshal(body, &input); err != nil {
-		return nil, ErrInvalidParameter
+		return nil, ErrRequestCertInvalidParameter
 	}
 	certType := ""
 	if input.CertificateAuthorityArn != "" {

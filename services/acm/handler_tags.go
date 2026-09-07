@@ -74,10 +74,10 @@ func (h *Handler) setTags(resourceID string, kv map[string]string, invalidTagErr
 			return fmt.Errorf("%w: tag keys/values must not begin with %q", invalidTagErr, reservedTagPrefix)
 		}
 		if len(k) > maxTagKeyLength {
-			return fmt.Errorf("%w: tag key exceeds 128 characters", ErrInvalidParameter)
+			return fmt.Errorf("%w: tag key exceeds 128 characters", invalidTagErr)
 		}
 		if len(v) > maxTagValueLength {
-			return fmt.Errorf("%w: tag value exceeds 256 characters", ErrInvalidParameter)
+			return fmt.Errorf("%w: tag value exceeds 256 characters", invalidTagErr)
 		}
 	}
 

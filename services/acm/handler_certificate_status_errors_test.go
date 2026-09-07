@@ -325,7 +325,12 @@ func TestACMHandler_GetCertificate_NonIssuedStates_Returns_RequestInProgressExce
 	}
 }
 
-func TestACMHandler_RevokeCertificate_PendingValidation_Returns_InvalidStateException(t *testing.T) {
+// STRENGTHENED (gopherstack-bzyl): previously asserted InvalidStateException, which
+// RevokeCertificate's real deserializer never declares (deserializers.go, acm@v1.43.4).
+// ConflictException is declared and its doc text ("wait for the previous operation to
+// finish and try again") matches a cert still mid-validation; see
+// TestACMHandler_RevokeCertificate_PendingValidationRejected for the fuller rationale.
+func TestACMHandler_RevokeCertificate_PendingValidation_Returns_ConflictException(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -387,9 +392,10 @@ func TestACMHandler_RevokeCertificate_PendingValidation_Returns_InvalidStateExce
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
 			assert.Equal(
 				t,
-				"InvalidStateException",
+				"ConflictException",
 				errResp.Type,
-				"RevokeCertificate on PENDING_VALIDATION cert must return InvalidStateException, not ValidationException",
+				"RevokeCertificate on PENDING_VALIDATION cert must return ConflictException, a code it "+
+					"actually declares, not InvalidStateException or ValidationException",
 			)
 		})
 	}

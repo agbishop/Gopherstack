@@ -264,7 +264,7 @@ func (b *InMemoryBackend) checkIdempotency(
 		!slices.Equal(c.SubjectAlternativeNames, buildSANList(domainName, sans)) {
 		return nil, false, fmt.Errorf(
 			"%w: idempotency token already used with different parameters",
-			ErrInvalidParameter,
+			ErrRequestCertInvalidParameter,
 		)
 	}
 
@@ -276,7 +276,7 @@ func (b *InMemoryBackend) checkIdempotency(
 // validateRequestCertInput validates the DomainName and all SANs for a RequestCertificate call.
 func validateRequestCertInput(domainName string, sans []string) error {
 	if domainName == "" {
-		return fmt.Errorf("%w: DomainName is required", ErrInvalidParameter)
+		return fmt.Errorf("%w: DomainName is required", ErrRequestCertInvalidParameter)
 	}
 
 	// AWS's default account quota for domain names per certificate (1
@@ -290,13 +290,13 @@ func validateRequestCertInput(domainName string, sans []string) error {
 		)
 	}
 
-	if err := validateDomainName(domainName); err != nil {
+	if err := validateDomainName(domainName, ErrRequestCertInvalidParameter); err != nil {
 		return err
 	}
 
 	for _, san := range sans {
-		if err := validateDomainName(san); err != nil {
-			return fmt.Errorf("%w: invalid SAN %q: %w", ErrInvalidParameter, san, err)
+		if err := validateDomainName(san, ErrRequestCertInvalidParameter); err != nil {
+			return fmt.Errorf("%w: invalid SAN %q: %w", ErrRequestCertInvalidParameter, san, err)
 		}
 	}
 

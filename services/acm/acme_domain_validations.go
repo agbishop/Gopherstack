@@ -143,7 +143,7 @@ func validateCreateAcmeDomainValidationParams(p CreateAcmeDomainValidationParams
 		return fmt.Errorf("%w: DomainName is required", ErrInvalidParameter)
 	}
 
-	if err := validateDomainName(p.DomainName); err != nil {
+	if err := validateDomainName(p.DomainName, ErrInvalidParameter); err != nil {
 		return err
 	}
 

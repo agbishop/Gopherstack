@@ -52,6 +52,15 @@ var (
 	// aws-sdk-go-v2/service/acm@v1.43.4) -- unlike every other op in this
 	// package, which uses ValidationException/InvalidParameterException alone.
 	ErrInvalidArgs = errors.New("InvalidArgsException")
+	// ErrRequestCertInvalidParameter is RequestCertificate's own bad-input
+	// code. RequestCertificate's deserializer (deserializers.go:3346-3400+,
+	// aws-sdk-go-v2/service/acm@v1.43.4) does not recognize ValidationException
+	// at all -- only InvalidParameterException ("An input parameter was
+	// invalid.", types/errors.go). Kept distinct from ErrInvalidParameter
+	// because that sentinel is shared with ops (RenewCertificate,
+	// CreateAcmeDomainValidation) whose real error sets DO include
+	// ValidationException -- gopherstack-bzyl.
+	ErrRequestCertInvalidParameter = errors.New("InvalidParameterException")
 )
 
 var errWeakKey = errors.New("RSA_1024 is not supported due to weak security")
