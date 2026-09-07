@@ -356,3 +356,79 @@ Proven with a real `aws-sdk-go-v2/service/shield` client's
   caps (1000/1000/10000) are gopherstack-internal choices, not contradicted by any
   documented maximum (the SDK doc comments state only the default, no ceiling) --
   left unchanged.
+
+## gopherstack-g2l5 (2026-09-07): per-op declared-error-catalog mismatches, 3 confirmed bugs
+
+`cmd/errtargetaudit` flagged 4 class A findings: gopherstack emitting a wire `__type` that the
+real op's own error catalog (`deserializers.go`'s `deserializeOpError<Op>` case list, confirmed
+per-op below) never declares. Root cause in all 4: `classifyShieldError`'s `shieldErrorRules()`
+is one global sentinel -> code table shared by every op, but several sentinels are raised by
+handlers whose real declared catalog differs from the code the shared rule assigns.
+
+- `CreateProtectionGroup` (`protection_groups.go`, subscription-required check) and `TagResource`
+  (`tags.go`, subscription-required check) both raised `ErrSubscriptionRequired`, which
+  `shieldErrorRules()` maps to `InvalidOperationException` -- correct for the other 7 ops that
+  raise it (`CreateProtection`, `AssociateDRTLogBucket`, `AssociateDRTRole`,
+  `AssociateProactiveEngagementDetails`, `EnableProactiveEngagement`,
+  `DisableProactiveEngagement`, `EnableApplicationLayerAutomaticResponse`, all confirmed to
+  declare `InvalidOperationException`), but `CreateProtectionGroup`/`TagResource`'s own catalogs
+  declare no `InvalidOperationException` at all. Both catalogs do declare
+  `ResourceNotFoundException`, which is also the real Shield code for "no subscription" per
+  `DescribeSubscription`'s own catalog and gopherstack's existing `ErrSubscriptionNotFound`
+  sentinel (`subscription.go`) -- switched both sites to raise `ErrSubscriptionNotFound` instead.
+- `UpdateProtectionGroup`'s ARBITRARY-pattern member-cap check (`protection_groups.go`) raised
+  `ErrLimitExceeded` (-> `LimitsExceededException`), correct for the identical check in
+  `CreateProtectionGroup` (whose catalog does declare it) but not for `UpdateProtectionGroup`,
+  whose catalog has no `LimitsExceededException` entry. Switched to `ErrValidation` (->
+  `InvalidParameterException`, which the catalog does declare); the wire response carries only a
+  message string (no structured `Type`/`Limit` fields), so no response-shape change was needed.
+- `ListAttacks`'s `NextToken` decode error (`handler_attacks.go`) chained `decodeOffsetToken`'s
+  shared `errInvalidPaginationToken` sentinel (-> `InvalidPaginationTokenException`), correct for
+  the pagination helper's other 3 callers (`ListProtections`/`ListProtectionGroups`/
+  `ListResourcesInProtectionGroup`, all confirmed to declare it) but `ListAttacks`'s own catalog
+  has no `InvalidPaginationTokenException` entry (only `InvalidOperationException`/
+  `InvalidParameterException`). Re-classified via `errInvalidRequest` (->
+  `InvalidParameterException`) instead of forwarding the original sentinel.
+
+All 4 sites verified against the pinned `shield@v1.37.4` `deserializers.go`
+(`awk '/deserializeOpError<Op>\(/,/^}/'` extraction, raw output below) rather than guessed:
+
+```
+CreateProtectionGroup: UnknownError InternalErrorException InvalidParameterException
+  LimitsExceededException OptimisticLockException ResourceAlreadyExistsException
+  ResourceNotFoundException
+TagResource: UnknownError InternalErrorException InvalidParameterException
+  InvalidResourceException ResourceNotFoundException
+UpdateProtectionGroup: UnknownError InternalErrorException InvalidParameterException
+  OptimisticLockException ResourceNotFoundException
+ListAttacks: UnknownError InternalErrorException InvalidOperationException
+  InvalidParameterException
+```
+
+Regression tests (`errors_test.go`): `TestHandler_ErrorWireType_CreateProtectionGroupSubscriptionRequired`,
+`TestHandler_ErrorWireType_TagResourceSubscriptionRequired`,
+`TestHandler_ErrorWireType_UpdateProtectionGroupMembersLimit`,
+`TestHandler_ErrorWireType_ListAttacksInvalidPaginationToken` -- each drives the real HTTP handler,
+asserts the correct `__type`, asserts the previously-wrong `__type` is absent, and (for the two
+mutating ops) asserts the target resource was not created/mutated by the rejected request.
+`quotas_test.go`'s pre-existing `TestInMemoryBackend_UpdateProtectionGroupArbitraryMembersQuota`
+previously asserted `errors.Is(err, shield.ErrLimitExceeded)` with no note that this pinned the
+now-fixed wrong code -- updated to assert `ErrValidation`/absence of `ErrLimitExceeded` and that
+the group's members are left unmutated. All 4 fixed lines hand-reverted one at a time, confirmed
+each still compiles and its own regression test fails pre-fix, then restored.
+
+**Re-running `cmd/errtargetaudit` after the fix**: 3 of the 4 findings are gone. The
+`ListAttacks` finding still appears verbatim (`handler.go:450`/`455`, `declared correctly by:
+[ListProtectionGroups ListProtections ListResourcesInProtectionGroup]`) -- this is the tool's
+documented one-hop-callee-trace limitation, not a live bug: it still sees `ListAttacks` calling
+`decodeOffsetToken`, which contains the `errInvalidPaginationToken` literal, and cannot tell that
+the fixed call site checks `err != nil` but no longer forwards that specific sentinel into the
+returned error (it wraps `errInvalidRequest` instead). Confirmed by
+`TestHandler_ErrorWireType_ListAttacksInvalidPaginationToken`, which passes against the real HTTP
+handler and asserts the wire type is `InvalidParameterException`, not
+`InvalidPaginationTokenException`. Coverage after the fix: 36 ops resolved, 11/36 (31%) with an
+emission found (down from 13/36 pre-fix, since 3 of the fixed sites now emit via the same
+generic already-attributed codes as other ops rather than a distinct sentinel reference).
+
+Gates: `go test -race -count=1 ./services/shield/...` ok (1.5s); `golangci-lint run
+services/shield/...` 0 issues.

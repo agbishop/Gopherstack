@@ -118,7 +118,10 @@ func (b *InMemoryBackend) CreateProtectionGroup(
 	}
 
 	if b.subscription == nil {
-		return nil, fmt.Errorf("%w: Shield Advanced subscription is required", ErrSubscriptionRequired)
+		// CreateProtectionGroup's declared error catalog has no InvalidOperationException
+		// (deserializers.go's deserializeOpErrorCreateProtectionGroup); use ErrSubscriptionNotFound
+		// (-> ResourceNotFoundException) instead, same as DescribeSubscription's own no-subscription case.
+		return nil, fmt.Errorf("%w: Shield Advanced subscription is required", ErrSubscriptionNotFound)
 	}
 
 	if _, valid := validAggregations()[aggregation]; !valid {
@@ -238,8 +241,13 @@ func (b *InMemoryBackend) UpdateProtectionGroup(
 	}
 
 	if pattern == PatternArbitrary && len(members) > subscriptionMaxMembersPerGroup {
+		// Unlike CreateProtectionGroup, UpdateProtectionGroup's declared error catalog
+		// (deserializers.go's deserializeOpErrorUpdateProtectionGroup) has no
+		// LimitsExceededException -- use ErrValidation (-> InvalidParameterException, which it
+		// does declare) instead.
 		return fmt.Errorf(
-			"%w: Type=ArbitraryPatternMembers, Limit=%d", ErrLimitExceeded, subscriptionMaxMembersPerGroup,
+			"%w: Members exceeds the %d-member limit for Pattern=ARBITRARY",
+			ErrValidation, subscriptionMaxMembersPerGroup,
 		)
 	}
 

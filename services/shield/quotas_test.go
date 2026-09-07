@@ -100,7 +100,12 @@ func TestInMemoryBackend_CreateProtectionGroupArbitraryMembersQuota(t *testing.T
 }
 
 // TestInMemoryBackend_UpdateProtectionGroupArbitraryMembersQuota verifies UpdateProtectionGroup
-// enforces the same ARBITRARY-pattern member cap as CreateProtectionGroup.
+// enforces the same ARBITRARY-pattern member cap as CreateProtectionGroup, but -- unlike
+// CreateProtectionGroup -- reports ErrValidation, not ErrLimitExceeded: UpdateProtectionGroup's
+// real error catalog has no LimitsExceededException (gopherstack-g2l5, deserializers.go's
+// deserializeOpErrorUpdateProtectionGroup declares only InternalErrorException/
+// InvalidParameterException/OptimisticLockException/ResourceNotFoundException/UnknownError).
+// Also verifies the group's members are left unmutated by the rejected update.
 func TestInMemoryBackend_UpdateProtectionGroupArbitraryMembersQuota(t *testing.T) {
 	t.Parallel()
 
@@ -109,10 +114,9 @@ func TestInMemoryBackend_UpdateProtectionGroupArbitraryMembersQuota(t *testing.T
 	b := shield.NewInMemoryBackend(testAccountID, testRegion)
 	require.NoError(t, b.CreateSubscription())
 
-	_, err := b.CreateProtectionGroup(
-		"grp-1", shield.AggregationSum, shield.PatternArbitrary, "",
-		[]string{"arn:aws:ec2:us-east-1:000000000000:eip-allocation/eipalloc-1"},
-	)
+	original := []string{"arn:aws:ec2:us-east-1:000000000000:eip-allocation/eipalloc-1"}
+
+	_, err := b.CreateProtectionGroup("grp-1", shield.AggregationSum, shield.PatternArbitrary, "", original)
 	require.NoError(t, err)
 
 	members := make([]string, maxMembers+1)
@@ -121,5 +125,10 @@ func TestInMemoryBackend_UpdateProtectionGroupArbitraryMembersQuota(t *testing.T
 	}
 
 	err = b.UpdateProtectionGroup("grp-1", shield.AggregationSum, shield.PatternArbitrary, "", members)
-	require.ErrorIs(t, err, shield.ErrLimitExceeded)
+	require.ErrorIs(t, err, shield.ErrValidation)
+	require.NotErrorIs(t, err, shield.ErrLimitExceeded)
+
+	pg, err := b.DescribeProtectionGroup("grp-1")
+	require.NoError(t, err)
+	assert.Equal(t, original, pg.Members)
 }

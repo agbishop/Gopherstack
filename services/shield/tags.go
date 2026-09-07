@@ -21,7 +21,10 @@ func (b *InMemoryBackend) TagResource(resourceARN string, tags map[string]string
 	defer b.mu.Unlock()
 
 	if b.subscription == nil {
-		return fmt.Errorf("%w: Shield Advanced subscription is required", ErrSubscriptionRequired)
+		// TagResource's declared error catalog has no InvalidOperationException
+		// (deserializers.go's deserializeOpErrorTagResource); use ErrSubscriptionNotFound
+		// (-> ResourceNotFoundException) instead, same as DescribeSubscription's own no-subscription case.
+		return fmt.Errorf("%w: Shield Advanced subscription is required", ErrSubscriptionNotFound)
 	}
 
 	for k, v := range tags {

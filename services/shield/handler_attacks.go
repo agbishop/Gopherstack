@@ -44,7 +44,12 @@ func (h *Handler) handleListAttacks(body []byte) ([]byte, error) {
 
 	start, err := decodeOffsetToken(req.NextToken)
 	if err != nil {
-		return nil, fmt.Errorf("invalid NextToken: %w", err)
+		// ListAttacks's declared error catalog has no InvalidPaginationTokenException
+		// (deserializers.go's deserializeOpErrorListAttacks), unlike ListProtections/
+		// ListProtectionGroups/ListResourcesInProtectionGroup which do declare it -- classify via
+		// errInvalidRequest (-> InvalidParameterException, which it does declare) instead of
+		// chaining decodeOffsetToken's own errInvalidPaginationToken sentinel.
+		return nil, fmt.Errorf("%w: invalid NextToken", errInvalidRequest)
 	}
 
 	var nextToken string
