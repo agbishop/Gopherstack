@@ -9,6 +9,7 @@ package azureservicebus
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -67,6 +68,30 @@ func firstConfig(cfg []EntityConfig) EntityConfig {
 	}
 
 	return EntityConfig{}
+}
+
+// validateEntityConfig checks the narrow subset of EntityConfig properties
+// real Service Bus itself validates at CreateQueue/CreateSubscription time:
+// LockDuration must not exceed MaxLockDuration (5 minutes -- see its doc
+// comment), and MaxDeliveryCount must not be negative. Deliberately narrow
+// on purpose -- no other property is bounded here, and this does not clamp,
+// it rejects. Zero is not treated as invalid for either field even though a
+// literal "0" would technically violate "at least 1": this MVP's string-based
+// XML parsing (entityDescriptionIn) cannot distinguish an explicit
+// "<MaxDeliveryCount>0</MaxDeliveryCount>" from the element being absent
+// entirely, and an absent value must not fail the create -- it already falls
+// back to the package default via EntityConfig's own accessor methods.
+func validateEntityConfig(cfg EntityConfig) error {
+	if cfg.LockDuration > MaxLockDuration {
+		return fmt.Errorf("%w: LockDuration %s exceeds the maximum of %s",
+			ErrInvalidEntityConfig, cfg.LockDuration, MaxLockDuration)
+	}
+
+	if cfg.MaxDeliveryCount < 0 {
+		return fmt.Errorf("%w: MaxDeliveryCount must be at least 1", ErrInvalidEntityConfig)
+	}
+
+	return nil
 }
 
 // QueueInfo is the read-only metadata snapshot returned by GetQueueInfo/

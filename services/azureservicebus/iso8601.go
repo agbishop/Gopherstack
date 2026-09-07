@@ -68,7 +68,15 @@ func parseISO8601Duration(s string) (time.Duration, error) {
 	}
 
 	nanos := totalSeconds * float64(time.Second)
-	if nanos > float64(math.MaxInt64) {
+	// float64(math.MaxInt64) rounds UP to exactly 2^63 (one more than the
+	// actual int64 maximum, 2^63-1, which has no exact float64
+	// representation) -- so this comparison must be >=, not >. With a plain
+	// >, nanos == 2^63 would fail the clamp check and fall through to
+	// time.Duration(nanos), converting an out-of-range float64 to int64:
+	// implementation-defined behavior that yields a negative duration on
+	// amd64/arm64, silently corrupting LockDuration/DefaultMessageTimeToLive
+	// into something negative instead of clamping to the documented maximum.
+	if nanos >= float64(math.MaxInt64) {
 		return time.Duration(math.MaxInt64), nil
 	}
 

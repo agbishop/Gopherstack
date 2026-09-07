@@ -62,12 +62,15 @@ const (
 
 // MaxPeekLockWaitTimeout is the ceiling PeekLock's long-poll "?timeout="
 // query parameter is clamped to. Real Service Bus documents 30 seconds as
-// its own maximum long-poll/operation timeout, and gopherstack matches it
-// here for a second, independent reason: the dedicated listener's
-// azureServiceBusReadTimeout is 60s, and a client-requested wait anywhere
-// close to that would race the server's own read timeout tearing the
-// connection down first. 30s leaves a comfortable margin under that ceiling
-// while still matching Service Bus's documented value. See PARITY.md.
+// its own maximum long-poll/operation timeout, and gopherstack matches that
+// value here as a deliberate cap on server-side resource use per in-flight
+// long-poll request (one goroutine and one open connection held for up to
+// this long). The wait is bounded by this cap plus request-context
+// cancellation on client disconnect -- NOT by any http.Server timeout:
+// azureServiceBusReadTimeout only bounds reading the request itself
+// (headers/body), not handler execution time, and this server sets no
+// WriteTimeout or handler deadline, so a long-poll handler blocking well
+// past 60s would not be torn down by the server. See PARITY.md.
 const MaxPeekLockWaitTimeout = 30 * time.Second
 
 // Handler is the Echo HTTP handler for Azure Service Bus operations.
@@ -337,6 +340,13 @@ const (
 // before any generic /<entity> parsing -- see parseRequestPath.
 const resourcesSegment = "$Resources"
 
+// resourcesQueuesSegment/resourcesTopicsSegment are the two collection names
+// recognized under resourcesSegment -- see parseResourcesPath.
+const (
+	resourcesQueuesSegment = "Queues"
+	resourcesTopicsSegment = "Topics"
+)
+
 // subscriptionsSegment is the fixed path segment naming a topic's
 // subscriptions collection, used both for /<topic>/subscriptions/<name> and
 // (with no further segment) /<topic>/subscriptions (list).
@@ -381,9 +391,9 @@ func parseResourcesPath(rest []string) (parsedRequest, error) {
 	}
 
 	switch rest[0] {
-	case "Queues":
+	case resourcesQueuesSegment:
 		return parsedRequest{Segment: segResourcesQueues}, nil
-	case "Topics":
+	case resourcesTopicsSegment:
 		return parsedRequest{Segment: segResourcesTopics}, nil
 	default:
 		return parsedRequest{}, ErrBadPath
@@ -558,16 +568,30 @@ func looksLikeTopicBody(body []byte) bool {
 	return strings.Contains(strings.ToLower(string(body)), "topicdescription")
 }
 
+// typeQueryParam is the ?type= escape hatch's query-parameter name, and
+// typeQueryValueTopic/typeQueryValueQueue its two recognized values -- see
+// resolveEntityKind.
+const (
+	typeQueryParam      = "type"
+	typeQueryValueTopic = "topic"
+	typeQueryValueQueue = "queue"
+)
+
 // resolveEntityKind determines whether a PUT /<name> create-request
 // describes a queue or a topic, and any EntityConfig properties that came
-// with it, using -- in order -- (1) an explicit ?type=topic/queue query
-// param, (2) a successful Atom+XML parse of body, (3) looksLikeTopicBody's
-// substring sniff, and (4) defaulting to a queue. Malformed XML never fails
-// the create; it simply falls through to (3)/(4), matching this repo's
-// permissive-by-default philosophy. See PARITY.md.
+// with it, using -- in order -- (1) an explicit ?type=topic/?type=queue
+// query param (either value wins outright, matching this function's own doc
+// contract rather than only ever recognizing "topic"), (2) a successful
+// Atom+XML parse of body, (3) looksLikeTopicBody's substring sniff, and (4)
+// defaulting to a queue. Malformed XML never fails the create; it simply
+// falls through to (3)/(4), matching this repo's permissive-by-default
+// philosophy. See PARITY.md.
 func resolveEntityKind(c *echo.Context, body []byte) (entityKind, EntityConfig) {
-	if c.QueryParam("type") == "topic" {
+	switch c.QueryParam(typeQueryParam) {
+	case typeQueryValueTopic:
 		return entityKindTopic, EntityConfig{}
+	case typeQueryValueQueue:
+		return entityKindQueue, EntityConfig{}
 	}
 
 	if parsed, ok := parseAtomEntityBody(body); ok && parsed.Kind != entityKindSubscription {
@@ -603,6 +627,17 @@ func (h *Handler) createEntity(c *echo.Context, name string) error {
 
 	kind, cfg := resolveEntityKind(c, body)
 
+	// LockDuration/MaxDeliveryCount are queue-only properties (a
+	// TopicDescription never carries them -- see entityDescriptionIn's
+	// shared-struct doc comment), so validation only applies on the queue
+	// path; a topic create with a spuriously-parsed value would have nothing
+	// to validate against in the first place.
+	if kind == entityKindQueue {
+		if validateErr := validateEntityConfig(cfg); validateErr != nil {
+			return h.writeError(c, http.StatusBadRequest, "BadRequest", validateErr.Error())
+		}
+	}
+
 	var created bool
 
 	if kind == entityKindTopic {
@@ -635,12 +670,12 @@ func (h *Handler) getEntity(c *echo.Context, name string) error {
 
 // listQueues serves GET /$Resources/Queues.
 func (h *Handler) listQueues(c *echo.Context) error {
-	return h.writeAtomFeed(c, queueFeedXML("Queues", h.Backend.ListQueues()))
+	return h.writeAtomFeed(c, queueFeedXML(resourcesQueuesSegment, h.Backend.ListQueues()))
 }
 
 // listTopics serves GET /$Resources/Topics.
 func (h *Handler) listTopics(c *echo.Context) error {
-	return h.writeAtomFeed(c, topicFeedXML("Topics", h.Backend.ListTopics()))
+	return h.writeAtomFeed(c, topicFeedXML(resourcesTopicsSegment, h.Backend.ListTopics()))
 }
 
 // writeAtomEntry writes a single Get response in real Service Bus's
@@ -717,6 +752,10 @@ func (h *Handler) createSubscription(c *echo.Context, topic, name string) error 
 	var cfg EntityConfig
 	if parsed, ok := parseAtomEntityBody(body); ok {
 		cfg = parsed.Config
+	}
+
+	if validateErr := validateEntityConfig(cfg); validateErr != nil {
+		return h.writeError(c, http.StatusBadRequest, "BadRequest", validateErr.Error())
 	}
 
 	created, err := h.Backend.CreateSubscription(topic, name, cfg)

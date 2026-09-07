@@ -324,6 +324,16 @@ func TestHandler_CreateEntity_AtomXMLKindDetection(t *testing.T) {
 		assert.True(t, h.Backend.TopicExists("q4"))
 	})
 
+	t.Run("?type=queue also wins over an atom body that says otherwise", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		rec := doRequest(t, h, http.MethodPut, "/q4b?type=queue", []byte(topicBody), nil)
+		require.Equal(t, http.StatusCreated, rec.Code)
+		assert.True(t, h.Backend.QueueExists("q4b"), "?type=queue must be honored, not just ?type=topic")
+		assert.False(t, h.Backend.TopicExists("q4b"))
+	})
+
 	t.Run("atom body config is stored on the queue", func(t *testing.T) {
 		t.Parallel()
 
@@ -336,6 +346,75 @@ func TestHandler_CreateEntity_AtomXMLKindDetection(t *testing.T) {
 		assert.Equal(t, 2*time.Minute, info.LockDuration)
 		assert.Equal(t, 4, info.MaxDeliveryCount)
 	})
+}
+
+// atomQueueBodyWithLockDuration and atomSubscriptionBodyWithLockDuration
+// build minimal Atom+XML create bodies carrying only a LockDuration, for
+// TestHandler_CreateQueueAndSubscription_LockDurationValidation's
+// boundary cases.
+func atomQueueBodyWithLockDuration(lockDuration string) []byte {
+	return []byte(`<entry xmlns="http://www.w3.org/2005/Atom"><content type="application/xml">` +
+		`<QueueDescription xmlns="http://schemas.microsoft.com/netservices/2010/10/servicebus/connect">` +
+		`<LockDuration>` + lockDuration + `</LockDuration>` +
+		`</QueueDescription></content></entry>`)
+}
+
+func atomSubscriptionBodyWithLockDuration(lockDuration string) []byte {
+	return []byte(`<entry xmlns="http://www.w3.org/2005/Atom"><content type="application/xml">` +
+		`<SubscriptionDescription xmlns="http://schemas.microsoft.com/netservices/2010/10/servicebus/connect">` +
+		`<LockDuration>` + lockDuration + `</LockDuration>` +
+		`</SubscriptionDescription></content></entry>`)
+}
+
+// TestHandler_CreateQueueAndSubscription_LockDurationValidation covers real
+// Service Bus's documented 5-minute LockDuration maximum (see PARITY.md and
+// MaxLockDuration's doc comment): a create request specifying more is
+// rejected 400 Bad Request rather than silently persisted.
+func TestHandler_CreateQueueAndSubscription_LockDurationValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		lockDuration string
+		wantStatus   int
+	}{
+		{name: "exactly at the 5-minute maximum is accepted", lockDuration: "PT5M", wantStatus: http.StatusCreated},
+		{
+			name: "one second over the maximum is rejected", lockDuration: "PT5M1S",
+			wantStatus: http.StatusBadRequest,
+		},
+		{name: "6 minutes is rejected", lockDuration: "PT6M", wantStatus: http.StatusBadRequest},
+		{name: "well under the maximum is accepted", lockDuration: "PT1M", wantStatus: http.StatusCreated},
+	}
+
+	for _, tt := range tests {
+		t.Run("queue: "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			rec := doRequest(
+				t,
+				h,
+				http.MethodPut,
+				"/q-"+tt.lockDuration,
+				atomQueueBodyWithLockDuration(tt.lockDuration),
+				nil,
+			)
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+
+		t.Run("subscription: "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			topicRec := doRequest(t, h, http.MethodPut, "/t-"+tt.lockDuration+"?type=topic", nil, nil)
+			require.Equal(t, http.StatusCreated, topicRec.Code)
+
+			rec := doRequest(t, h, http.MethodPut, "/t-"+tt.lockDuration+"/subscriptions/s",
+				atomSubscriptionBodyWithLockDuration(tt.lockDuration), nil)
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
 }
 
 func TestHandler_GetAndListEntities(t *testing.T) {

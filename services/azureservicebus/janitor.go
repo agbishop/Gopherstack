@@ -107,7 +107,15 @@ func (b *InMemoryBackend) sweepOnce(now time.Time) sweepStats {
 // nowhere further for it to go). Callers must hold b.mu for writing.
 func sweepMessageQueueLocked(mq *messageQueue, cfg EntityConfig, now time.Time) sweepStats {
 	var stats sweepStats
-	releasedAny := false
+	// notifyNeeded tracks whether this sweep made a message newly visible
+	// anywhere on mq -- released back to the live list, or moved into the
+	// dead-letter sub-queue (a PeekLockWait long-poll on $DeadLetterQueue
+	// must wake immediately when the Janitor dead-letters something, not
+	// wait out the 1s recheck backstop). Both lists share one notify
+	// channel, so a single broadcast at the end covers either case; a
+	// waiter on the list that didn't change simply re-checks and goes back
+	// to sleep.
+	notifyNeeded := false
 
 	kept := mq.Messages[:0]
 
@@ -125,6 +133,7 @@ func sweepMessageQueueLocked(mq *messageQueue, cfg EntityConfig, now time.Time) 
 			mq.DeadLetter = append(mq.DeadLetter, msg)
 
 			stats.Expired++
+			notifyNeeded = true
 		case msg.isLocked(now):
 			kept = append(kept, msg)
 		default:
@@ -143,6 +152,7 @@ func sweepMessageQueueLocked(mq *messageQueue, cfg EntityConfig, now time.Time) 
 			msg.LockToken = ""
 			msg.LockedUntil = time.Time{}
 			stats.Unlocked++
+			notifyNeeded = true
 
 			if msg.DeliveryCount >= cfg.maxDeliveryCount() {
 				mq.DeadLetter = append(mq.DeadLetter, msg)
@@ -150,8 +160,6 @@ func sweepMessageQueueLocked(mq *messageQueue, cfg EntityConfig, now time.Time) 
 
 				continue
 			}
-
-			releasedAny = true
 		}
 
 		final = append(final, msg)
@@ -159,9 +167,7 @@ func sweepMessageQueueLocked(mq *messageQueue, cfg EntityConfig, now time.Time) 
 
 	mq.Messages = final
 
-	// A message becoming available again (released, not dead-lettered) wakes
-	// any PeekLockWait waiter on this entity.
-	if releasedAny {
+	if notifyNeeded {
 		mq.broadcastLocked()
 	}
 

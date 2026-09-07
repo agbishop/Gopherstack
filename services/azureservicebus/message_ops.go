@@ -159,7 +159,12 @@ func (b *InMemoryBackend) PeekLockWait(
 
 	const recheckInterval = time.Second
 
-	timer := time.NewTimer(recheckInterval)
+	// The first timer must not always wait a full recheckInterval -- a
+	// timeout shorter than that (not reachable via the HTTP "?timeout="
+	// query param today, which only parses whole seconds and is clamped to
+	// MaxPeekLockWaitTimeout, but PeekLockWait is a backend API callers can
+	// invoke directly, and the unit tests do) would otherwise return late.
+	timer := time.NewTimer(min(timeout, recheckInterval))
 	defer timer.Stop()
 
 	for {
@@ -171,6 +176,14 @@ func (b *InMemoryBackend) PeekLockWait(
 				<-timer.C
 			}
 		case <-timer.C:
+		}
+
+		// Check the deadline before attempting another peekLockOnce: a
+		// notifyCh wakeup that arrives at (or after) the deadline -- e.g. a
+		// Send racing the timeout's expiry -- must not resurrect an
+		// already-expired wait into a successful result.
+		if !time.Now().Before(deadline) {
+			return MessageInfo{}, ErrMessageNotFound
 		}
 
 		info, notifyCh, err = b.peekLockOnce(ref, deadLetter, lockDuration)
@@ -258,8 +271,13 @@ func (b *InMemoryBackend) Complete(ref EntityRef, deadLetter bool, messageID, lo
 // again), after verifying lockToken matches. If DeliveryCount has reached
 // ref's configured MaxDeliveryCount, the message is moved to the entity's
 // dead-letter sub-queue instead of being made available, matching real
-// Service Bus's automatic dead-lettering on delivery-count exhaustion. A
-// release back to availability wakes any PeekLockWait waiter on ref.
+// Service Bus's automatic dead-lettering on delivery-count exhaustion.
+// Either outcome -- released back to the live list, or moved to the
+// dead-letter sub-queue -- makes a message newly visible somewhere on ref, so
+// both wake any PeekLockWait waiter on ref (the same notify channel is
+// shared by the live and dead-letter lists; a waiter on the list that didn't
+// change simply re-checks and goes back to sleep, a harmless spurious
+// wakeup).
 func (b *InMemoryBackend) Abandon(ref EntityRef, deadLetter bool, messageID, lockToken string) error {
 	b.mu.Lock("Abandon")
 	defer b.mu.Unlock()
@@ -286,8 +304,6 @@ func (b *InMemoryBackend) Abandon(ref EntityRef, deadLetter bool, messageID, loc
 	if !deadLetter && msg.DeliveryCount >= cfg.maxDeliveryCount() {
 		mq.removeAt(false, idx)
 		mq.DeadLetter = append(mq.DeadLetter, msg)
-
-		return nil
 	}
 
 	mq.broadcastLocked()

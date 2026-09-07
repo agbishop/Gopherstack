@@ -21,6 +21,14 @@ const (
 	// entity's dead-letter sub-queue, matching real Service Bus's own
 	// default MaxDeliveryCount.
 	MaxDeliveryCount = 10
+	// MaxLockDuration is real Service Bus's documented maximum LockDuration
+	// for a queue or subscription (its default is 1 minute; 5 minutes is the
+	// upper bound a CreateQueue/CreateSubscription request may configure --
+	// see https://learn.microsoft.com/en-us/azure/service-bus-messaging/message-transfers-locks-settlement#peeklock,
+	// which documents "the maximum value is 5 minutes"). handler.go's
+	// validateEntityConfig rejects a create request specifying more than
+	// this with 400 Bad Request, matching real Service Bus's own behavior.
+	MaxLockDuration = 5 * time.Minute
 )
 
 // storedMessage is the backend's internal representation of one message

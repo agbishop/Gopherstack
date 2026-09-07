@@ -16,7 +16,6 @@ package integration_test
 // namespace's Brokered Messaging API.
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -244,12 +243,15 @@ func TestIntegration_AzureServiceBus_PeekLockLongPoll(t *testing.T) {
 
 	// sbRequest uses require/t.Helper(), which must only ever run on the
 	// test's own goroutine -- so the delayed Send below is a plain
-	// net/http.Post rather than a reused sbRequest call.
+	// net/http.Post rather than a reused sbRequest call. The request itself
+	// is still scoped to t.Context() (safe to read from any goroutine, unlike
+	// calling a *testing.T assertion method) so it -- and this goroutine --
+	// cannot outlive the test.
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 
 		req, err := http.NewRequestWithContext(
-			context.Background(), http.MethodPost, azureServiceBusEndpoint+"/"+queue+"/messages",
+			t.Context(), http.MethodPost, azureServiceBusEndpoint+"/"+queue+"/messages",
 			strings.NewReader(messageBody),
 		)
 		if err != nil {

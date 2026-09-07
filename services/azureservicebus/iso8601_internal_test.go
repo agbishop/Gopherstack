@@ -47,6 +47,22 @@ func TestParseISO8601Duration(t *testing.T) {
 			in:   "P99999999DT0H0M0S",
 			want: math.MaxInt64,
 		},
+		{
+			// Regression test for an off-by-one clamp-boundary bug:
+			// float64(math.MaxInt64) rounds UP to exactly 2^63 (one more
+			// than the true int64 maximum, which has no exact float64
+			// representation). A nanos value of exactly 2^63 -- which this
+			// input produces -- must still clamp to math.MaxInt64, not fall
+			// through a "> " check and get converted to a negative int64.
+			name: "exactly 2^63 nanoseconds clamps rather than going negative",
+			in:   "PT9223372036.854775808S",
+			want: math.MaxInt64,
+		},
+		{
+			name: "just below the clamp boundary parses exactly, no clamp needed",
+			in:   "PT9223372036.854775807S",
+			want: math.MaxInt64,
+		},
 	}
 
 	for _, tt := range tests {
@@ -63,6 +79,7 @@ func TestParseISO8601Duration(t *testing.T) {
 			}
 
 			require.NoError(t, err)
+			assert.GreaterOrEqual(t, got, time.Duration(0), "parsed duration must never be negative")
 			assert.Equal(t, tt.want, got)
 		})
 	}
