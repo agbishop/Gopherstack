@@ -528,3 +528,128 @@ was broken at the time of this pass by a concurrent, out-of-scope edit to
 via `git status`/`git diff --stat`, unrelated to this pass), `go test -race
 -count=1 ./services/workmail/...` (pass, no new tests -- nothing to prove),
 `golangci-lint run ./services/workmail/...` (0 issues).
+
+## 2026-09-07 errtargetaudit re-sweep (gopherstack-hp83): 2 of 12 flip from refusal to fix on new evidence
+
+Re-verified all 12 class-A findings the tool reports for workmail (same 12
+as the 2026-08-31 pass: 11 `EntityNotFoundException` + 1
+`MailDomainStateException`, all on `Delete*`/`DeregisterMailDomain`), again
+against `workmail@v1.39.4/deserializers.go`'s per-op
+`awsAwsjson11_deserializeOpError<Op>` switches. Confirms every prior
+per-op wire-model claim unchanged: none of the 11 flagged ops declare
+`EntityNotFoundException`/`ResourceNotFoundException`/
+`MailDomainNotFoundException`, and `DeregisterMailDomain` declares no
+`MailDomainStateException` either.
+
+New this pass: also read each flagged op's doc comment in the pinned SDK's
+own `api_op_<Op>.go` (not just its error-set switch, which only says what
+code *isn't* used, not what the op actually does on a missing entity).
+`api_op_DeleteAccessControlRule.go` and
+`api_op_DeleteMobileDeviceAccessRule.go` state outright: "Deleting already
+deleted and non-existing rules does not produce an error. In those cases,
+the service sends back an HTTP 200 response with an empty HTTP body."
+(`grep -l "does not produce an error" api_op_*.go` across all 92 workmail
+ops matches exactly these two plus `DeleteMobileDeviceAccessOverride`,
+which is out of scope -- its own model does declare
+`EntityNotFoundException` and it isn't one of the 12 findings.) That is
+direct, authoritative textual proof of intended behavior, not an inference
+from an error-set omission, and it flips these 2 findings from "no correct
+code, leave" to "the current code is wrong on both the code AND on
+whether to error at all."
+
+**Fixed** (`services/workmail/access_control.go` `DeleteAccessControlRule`,
+`services/workmail/mobile_device_access.go`
+`DeleteMobileDeviceAccessRule`): both now delete-if-present and return nil
+unconditionally once the organization is confirmed to exist, matching the
+documented idempotent-delete semantics, instead of returning
+`EntityNotFoundException` (a code their own wire model never declares) when
+the target rule is missing. Regression tests added:
+`TestDeleteAccessControlRule_NonExistent`
+(`handler_access_control_test.go`) and
+`TestDeleteMobileDeviceAccessRule_NonExistent`
+(`handler_mobile_device_access_test.go`), each asserting HTTP 200 with an
+empty body (no `__type`) for a delete of a name/ID that was never created.
+No pre-existing test exercised deleting a non-existent
+rule for either op (the existing `delete_rule`/lifecycle tests only cover
+deleting a rule that exists), so no pre-existing test needed correcting or
+was pinning the old behavior for these two ops.
+
+Neuter check (temporarily reverted each fix to the prior
+`if !...Delete(...) { return fmt.Errorf(...ErrNotFound...) }` shape,
+confirmed `go build ./services/workmail/...` still compiled, confirmed the
+corresponding new test failed with `400`/`EntityNotFoundException` instead
+of the expected `200`, then restored the fix): both lines behaved exactly
+as required.
+
+**Left unchanged** (10 findings: `DeleteAvailabilityConfiguration`,
+`DeleteGroup`, `DeleteIdentityCenterApplication`, `DeleteImpersonationRole`,
+`DeletePersonalAccessToken`, `DeleteResource`, `DeleteRetentionPolicy`,
+`DeleteUser`, and `DeregisterMailDomain`'s both findings) -- none of these
+ops' `api_op_<Op>.go` doc comments carry the "does not produce an error"
+text or any other statement of missing-entity behavior (checked directly,
+not assumed by analogy to the two fixed ops), so applying the same
+idempotent-no-op fix to them would be guessing, which the 2026-08-31 pass
+already correctly declined to do. The existing per-site comments citing
+gopherstack-6flj/uox6 remain accurate and are left in place. Filed for the
+issue author to decide whether to chase down non-SDK-doc evidence (e.g. AWS
+admin-guide text) before guessing further.
+
+Re-ran `errtargetaudit`: workmail class-A findings dropped from 12 to 10,
+exactly the 2 fixed ops falling out; the remaining 10 are the pre-existing
+documented refusals, unchanged.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go build ./services/workmail/...` (clean),
+`GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/workmail/...`
+(pass), `GOTOOLCHAIN=go1.26.6 golangci-lint run services/workmail/...` (0
+issues).
+
+### Addendum, same day: a third op shares the doc sentence but not the bug
+
+`grep -l "does not produce an error" api_op_*.go` (used above to find the 2
+fixed ops) actually matches three files, not two:
+`DeleteAccessControlRule`, `DeleteMobileDeviceAccessRule`, and
+`DeleteMobileDeviceAccessOverride`. The third was initially dismissed
+without checking its own error set -- wrong. Checked directly:
+
+```
+awk "/deserializeOpErrorDeleteMobileDeviceAccessOverride\(/,/^}/" deserializers.go | grep -oE '"[A-Za-z0-9]+"'
+"UnknownError"
+"EntityNotFoundException"
+"InvalidParameterException"
+"OrganizationNotFoundException"
+"OrganizationStateException"
+```
+
+Unlike the other two, `DeleteMobileDeviceAccessOverride` DOES declare
+`EntityNotFoundException` in its own model -- even though its doc comment
+carries the identical "Deleting already deleted and non-existing overrides
+does not produce an error... HTTP 200... empty HTTP body" sentence. AWS's
+own model and doc comment disagree with each other for this one op. Since
+the modeled `errors` list is what a real client can even deserialize as a
+typed exception (and is the same signal `errtargetaudit` and every
+gopherstack error-envelope fix in this file has treated as authoritative
+over free text), gopherstack's existing behavior -- returning
+`EntityNotFoundException` when the override doesn't exist -- is correct as
+written. **Not changed.** Added an in-place comment at
+`mobile_device_access.go`'s `DeleteMobileDeviceAccessOverride` recording
+the conflict so it isn't rediscovered as a false lead later.
+
+This also answers why `errtargetaudit` flagged 2 of the 3 doc-sentence ops
+and not the third: the tool's finding criterion is "emitted code absent
+from the op's own declared error set," and `EntityNotFoundException` *is*
+declared for `DeleteMobileDeviceAccessOverride` -- so by the tool's own
+(wire-model-grounded) methodology this one is correctly a non-finding, not
+a miss. Confirmed no pre-existing test pins a bug here either:
+`TestMobileDeviceAccessOverrideErrors`'s "delete nonexistent override" case
+(`handler_mobile_device_access_test.go`) already asserts
+`EntityNotFoundException`/400, which matches the declared model -- it was
+asserting correct behavior all along, not pinning a defect. No fix, no new
+test needed; existing coverage already proves the modeled path.
+
+Files changed this addendum: `services/workmail/mobile_device_access.go`
+(comment only, no behavior change).
+
+Gates re-run: `GOTOOLCHAIN=go1.26.6 go build ./services/workmail/...`
+(clean), `GOTOOLCHAIN=go1.26.6 go test -race -count=1
+./services/workmail/...` (pass, unchanged), `GOTOOLCHAIN=go1.26.6
+golangci-lint run services/workmail/...` (0 issues).

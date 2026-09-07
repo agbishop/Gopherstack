@@ -58,12 +58,12 @@ func (b *InMemoryBackend) DeleteAccessControlRule(orgID, name string) error {
 	if _, ok := b.organizations.Get(orgID); !ok {
 		return fmt.Errorf("%w: organization %q not found", ErrOrganizationNotFound, orgID)
 	}
-	if !b.accessRules.Delete(orgKey(orgID, name)) {
-		// DeleteAccessControlRule's own error model declares no not-found
-		// type for the rule itself (only Organization*); no correct code
-		// exists to send here (gopherstack-6flj/uox6 error-envelope sweep).
-		return fmt.Errorf("%w: access control rule %q not found", ErrNotFound, name)
-	}
+	// Real DeleteAccessControlRule doc (aws-sdk-go-v2 api_op_DeleteAccessControlRule.go):
+	// "Deleting already deleted and non-existing rules does not produce an
+	// error. In those cases, the service sends back an HTTP 200 response
+	// with an empty HTTP body." -- deleting a missing rule is a no-op, not
+	// EntityNotFoundException (which this op's model doesn't even declare).
+	b.accessRules.Delete(orgKey(orgID, name))
 
 	return nil
 }
