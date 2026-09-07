@@ -122,7 +122,7 @@ func (b *InMemoryBackend) PutMultiRegionAccessPointPolicy(accountID, name, polic
 	key := accountID + ":" + name
 	mrap, ok := b.mraps.Get(key)
 	if !ok {
-		return ErrNotFound
+		return fmt.Errorf("%w: %s", errMRAPNotFound, name)
 	}
 
 	mrap.Policy = policy
