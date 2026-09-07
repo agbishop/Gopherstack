@@ -32,10 +32,11 @@ func TestRDSErrorCodes_FaultSuffix(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		setup    func(t *testing.T, h *rds.Handler)
-		query    string
-		wantCode string
+		name           string
+		setup          func(t *testing.T, h *rds.Handler)
+		query          string
+		wantCode       string
+		wantCodeAbsent string
 	}{
 		{
 			name:     "DeleteDBCluster not found",
@@ -202,6 +203,116 @@ func TestRDSErrorCodes_FaultSuffix(t *testing.T) {
 			var resp errResp
 			require.NoError(t, xml.Unmarshal(rec.Body.Bytes(), &resp))
 			assert.Equal(t, tt.wantCode, resp.Error.Code)
+			if tt.wantCodeAbsent != "" {
+				assert.NotEqual(t, tt.wantCodeAbsent, resp.Error.Code)
+			}
+		})
+	}
+}
+
+// TestRDSErrorCodes_ClassASweep is a regression suite for gopherstack-33jc:
+// six root causes where a handler emitted a code that
+// aws-sdk-go-v2/service/rds@v1.124.1/deserializers.go's declared error set
+// for the op does not contain, found by cmd/errtargetaudit. Each case pins
+// the correct declared code and, via wantCodeAbsent, proves the previously
+// emitted (wrong) code no longer appears.
+func TestRDSErrorCodes_ClassASweep(t *testing.T) {
+	t.Parallel()
+
+	type errResp struct {
+		XMLName xml.Name `xml:"ErrorResponse"`
+		Error   struct {
+			Code string `xml:"Code"`
+		} `xml:"Error"`
+	}
+
+	tests := []struct {
+		name           string
+		setup          func(t *testing.T, h *rds.Handler)
+		query          string
+		wantCode       string
+		wantCodeAbsent string
+	}{
+		{
+			name: "ApplyPendingMaintenanceAction resource not found",
+			query: "Action=ApplyPendingMaintenanceAction&Version=2014-10-31" +
+				"&ResourceIdentifier=arn:aws:rds:us-east-1:000000000000:db:missing" +
+				"&ApplyAction=system-update&OptInType=immediate",
+			wantCode:       "ResourceNotFoundFault",
+			wantCodeAbsent: "DBInstanceNotFound",
+		},
+		{
+			name: "EnableHttpEndpoint resource not found",
+			query: "Action=EnableHttpEndpoint&Version=2014-10-31" +
+				"&ResourceArn=arn:aws:rds:us-east-1:000000000000:cluster:missing",
+			wantCode:       "ResourceNotFoundFault",
+			wantCodeAbsent: "DBClusterNotFoundFault",
+		},
+		{
+			name: "DisableHttpEndpoint resource not found",
+			query: "Action=DisableHttpEndpoint&Version=2014-10-31" +
+				"&ResourceArn=arn:aws:rds:us-east-1:000000000000:cluster:missing",
+			wantCode:       "ResourceNotFoundFault",
+			wantCodeAbsent: "DBClusterNotFoundFault",
+		},
+		{
+			name: "CreateCustomDBEngineVersion already exists",
+			setup: func(t *testing.T, h *rds.Handler) {
+				t.Helper()
+				postRDSForm(t, h, "Action=CreateCustomDBEngineVersion&Version=2014-10-31"+
+					"&Engine=custom-oracle-ee&EngineVersion=19.0.0")
+			},
+			query: "Action=CreateCustomDBEngineVersion&Version=2014-10-31" +
+				"&Engine=custom-oracle-ee&EngineVersion=19.0.0",
+			wantCode:       "CustomDBEngineVersionAlreadyExistsFault",
+			wantCodeAbsent: "DBInstanceAlreadyExists",
+		},
+		{
+			name: "DeleteCustomDBEngineVersion not found",
+			query: "Action=DeleteCustomDBEngineVersion&Version=2014-10-31" +
+				"&Engine=custom-oracle-ee&EngineVersion=missing",
+			wantCode:       "CustomDBEngineVersionNotFoundFault",
+			wantCodeAbsent: "DBInstanceNotFound",
+		},
+		{
+			name: "ModifyCustomDBEngineVersion not found",
+			query: "Action=ModifyCustomDBEngineVersion&Version=2014-10-31" +
+				"&Engine=custom-oracle-ee&EngineVersion=missing&Status=inactive",
+			wantCode:       "CustomDBEngineVersionNotFoundFault",
+			wantCodeAbsent: "DBInstanceNotFound",
+		},
+		{
+			name: "DescribeDBClusterSnapshotAttributes not found",
+			query: "Action=DescribeDBClusterSnapshotAttributes&Version=2014-10-31" +
+				"&DBClusterSnapshotIdentifier=missing",
+			wantCode:       "DBClusterSnapshotNotFoundFault",
+			wantCodeAbsent: "DBSnapshotNotFound",
+		},
+		{
+			name: "ModifyDBClusterSnapshotAttribute not found",
+			query: "Action=ModifyDBClusterSnapshotAttribute&Version=2014-10-31" +
+				"&DBClusterSnapshotIdentifier=missing&AttributeName=restore",
+			wantCode:       "DBClusterSnapshotNotFoundFault",
+			wantCodeAbsent: "DBSnapshotNotFound",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newRDSHandler()
+			if tt.setup != nil {
+				tt.setup(t, h)
+			}
+
+			rec := postRDSForm(t, h, tt.query)
+			require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+
+			var resp errResp
+			require.NoError(t, xml.Unmarshal(rec.Body.Bytes(), &resp))
+			assert.Equal(t, tt.wantCode, resp.Error.Code)
+			assert.NotEqual(t, tt.wantCodeAbsent, resp.Error.Code)
 		})
 	}
 }

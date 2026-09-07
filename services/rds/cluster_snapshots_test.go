@@ -389,7 +389,7 @@ func TestDescribeDBClusterSnapshotAttributes(t *testing.T) {
 		wantErr    bool
 	}{
 		{name: "success returns empty attrs", snapshotID: "cluster-snap-1"},
-		{name: "not found", snapshotID: "missing", wantErr: true, wantErrIs: rds.ErrSnapshotNotFound},
+		{name: "not found", snapshotID: "missing", wantErr: true, wantErrIs: rds.ErrClusterSnapshotNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -447,7 +447,7 @@ func TestModifyDBClusterSnapshotAttribute(t *testing.T) {
 			snapshotID:    "missing",
 			attributeName: "restore",
 			wantErr:       true,
-			wantErrIs:     rds.ErrSnapshotNotFound,
+			wantErrIs:     rds.ErrClusterSnapshotNotFound,
 		},
 	}
 	for _, tt := range tests {

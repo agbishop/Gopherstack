@@ -1053,3 +1053,158 @@ Gates: `go build ./services/rds/...`, `go vet ./...` (repo-wide, clean),
 `go test -race -count=1 ./services/rds/...` (pass), `golangci-lint run
 ./services/rds/...` (0 issues). No `nolint` directives in either file
 touched this pass (handler_reference_data.go, wire_field_fixes_test.go).
+
+## errtargetaudit class A sweep (2026-09-07, gopherstack-33jc)
+
+`cmd/errtargetaudit` flagged 12 class-A findings (an emitted error code not
+in the op's SDK-declared set), all "sentinel reference" mechanism -- a
+handler/backend line returning a shared error sentinel whose mapped wire
+code isn't in that op's declared set. Verified each against
+`aws-sdk-go-v2/service/rds@v1.124.1/deserializers.go`'s
+`awsAwsquery_deserializeOpError<Op>` functions (`awk
+"/deserializeOpError<Op>\(/,/^}/" deserializers.go | grep -oE
+'"[A-Za-z0-9]+"'`; the digit in the class matters, though no rds op's
+declared set happened to contain a digit). No adjustment to the extraction
+pattern was needed for this query/XML-protocol service -- the same
+per-op-function-name/quoted-literal shape used for other protocols held
+here too.
+
+**Error-response shape** (confirmed in `handler_dispatch.go`'s
+`writeError`/`rdsErrorResponse`, matching `TestRDSErrorCodes_FaultSuffix`'s
+comment and `awsxml.GetErrorResponseComponents(errorBody, false)` in the SDK):
+every RDS error is HTTP 400 with body
+`<ErrorResponse><Error><Code>...</Code><Message>...</Message><Type>Sender</Type></Error></ErrorResponse>`.
+A separate translation layer, `rdsErrorCode()` in handler_dispatch.go, maps
+each Go sentinel error to its wire `<Code>` string (independent of the
+sentinel's own `awserr.New` msg argument) -- the actual bug surface, since a
+call site can reference the *wrong* sentinel while that sentinel's own
+mapping entry is itself correct for the ops that do use it correctly.
+
+**Verdict table** (12 findings -> 5 root causes):
+
+| Op | Emitted code | Verdict | Root cause | Fix |
+|---|---|---|---|---|
+| ApplyPendingMaintenanceAction | DBInstanceNotFound | CONFIRMED | RC1 | ErrInstanceNotFound -> new ErrResourceNotFound |
+| EnableHttpEndpoint (Handler) | DBClusterNotFoundFault | CONFIRMED | RC2 | ErrClusterNotFound -> ErrResourceNotFound |
+| EnableHttpEndpoint (InMemoryBackend) | DBClusterNotFoundFault | CONFIRMED | RC2 | same line as above |
+| DisableHttpEndpoint (Handler) | DBClusterNotFoundFault | CONFIRMED | RC2 | ErrClusterNotFound -> ErrResourceNotFound |
+| DisableHttpEndpoint (InMemoryBackend) | DBClusterNotFoundFault | CONFIRMED | RC2 | same line as above |
+| ModifyActivityStream | DBClusterNotFoundFault | CONFIRMED, NOT FIXED | RC2-adjacent | declared set is {DBInstanceNotFound, InvalidDBInstanceState, ResourceNotFoundFault} -- two plausible replacements, ambiguous, left for filing |
+| DeleteCustomDBEngineVersion | DBInstanceNotFound | CONFIRMED | RC3 | ErrInstanceNotFound -> new ErrCustomDBEngineVersionNotFound |
+| ModifyCustomDBEngineVersion | DBInstanceNotFound | CONFIRMED | RC3 | ErrInstanceNotFound -> new ErrCustomDBEngineVersionNotFound |
+| CreateCustomDBEngineVersion | DBInstanceAlreadyExists | CONFIRMED | RC3 | ErrInstanceAlreadyExists -> new ErrCustomDBEngineVersionAlreadyExists |
+| DescribeDBClusterSnapshotAttributes | DBSnapshotNotFound | CONFIRMED | RC4 | ErrSnapshotNotFound -> ErrClusterSnapshotNotFound |
+| ModifyDBClusterSnapshotAttribute | DBSnapshotNotFound | CONFIRMED | RC4 | ErrSnapshotNotFound -> ErrClusterSnapshotNotFound |
+| DescribeDBClusterEndpoints | DBClusterEndpointNotFoundFault | CONFIRMED | RC5 | declared set is {DBClusterNotFoundFault} only -- DBClusterEndpointIdentifier is a filter param per the real SDK input doc, not an existence check; removed the not-found branch entirely, made it filter like DBClusterIdentifier |
+
+11 of 12 fixed; 1 (ModifyActivityStream) confirmed but left, described
+above and in-line, for filing as its own issue -- two declared codes both
+plausibly fit and disambiguating needs a real-AWS behavioral test this
+session didn't have access to run.
+
+**Root causes**:
+- RC1: ApplyPendingMaintenanceAction's ARN can name an instance or a
+  cluster; its declared set has no resource-type-specific code, only the
+  generic ResourceNotFoundFault (new sentinel, `errors.go`).
+- RC2: EnableHttpEndpoint/DisableHttpEndpoint's ResourceArn is likewise
+  generic; declared set is {InvalidResourceStateFault, ResourceNotFoundFault}
+  -- no DBClusterNotFoundFault at all, despite the sibling
+  StartActivityStream/StopActivityStream ops legitimately declaring it.
+  Reused the same new ErrResourceNotFound sentinel as RC1.
+- RC3: CreateCustomDBEngineVersion's not-found and already-exists sentinels
+  were copy-pasted from the DB-instance sentinels (ErrInstanceNotFound/
+  ErrInstanceAlreadyExists) instead of engine-version-specific ones; no
+  CustomDBEngineVersion*Fault sentinels previously existed. Added both.
+- RC4: DescribeDBClusterSnapshotAttributes/ModifyDBClusterSnapshotAttribute
+  used ErrSnapshotNotFound (DBSnapshotNotFound, correct for the sibling
+  *instance*-snapshot ops DescribeDBSnapshotAttributes/
+  ModifyDBSnapshotAttribute) instead of the already-existing
+  ErrClusterSnapshotNotFound (DBClusterSnapshotNotFoundFault) -- an
+  instance/cluster sentinel mixup, same shape as RC3.
+- RC5: DescribeDBClusterEndpoints treated its optional
+  DBClusterEndpointIdentifier as a must-exist lookup key instead of a
+  filter; real AWS's declared error set for the op has no endpoint-specific
+  not-found code at all (confirmed against
+  `api_op_DescribeDBClusterEndpoints.go`'s doc comment: "The identifier of
+  the endpoint to describe," no not-found language, unlike
+  DeleteDBClusterEndpoint/ModifyDBClusterEndpoint, which correctly declare
+  and correctly emit DBClusterEndpointNotFoundFault for their own mandatory
+  identifiers).
+
+**Gap noted, not fixed** (out of this audit's scope -- a missing declared
+code, not a class-A wrong-emitted-code finding): DescribeDBClusterEndpoints
+never validates that a non-empty DBClusterIdentifier filter names a real
+cluster, so it silently returns an empty list instead of the
+DBClusterNotFoundFault real AWS declares for that case. Left as a lead for
+the next pass.
+
+**Shared-helper check**: grepped `services/docdb` and `services/neptune` for
+any import of `github.com/blackbirdworks/gopherstack/services/rds` --
+zero hits. Both packages have their own independent
+ApplyPendingMaintenanceAction/pending-maintenance implementations (own
+files, own InMemoryBackend); neither imports or calls into rds's package.
+No shared-helper risk for any of the 5 fixed sites.
+
+**Files changed**: `errors.go` (3 new sentinels: ErrResourceNotFound,
+ErrCustomDBEngineVersionNotFound, ErrCustomDBEngineVersionAlreadyExists),
+`handler_dispatch.go` (3 new `rdsErrorCode()` mapping entries),
+`maintenance.go`, `engine_versions.go`, `cluster_snapshots.go`,
+`data_api.go`, `cluster_endpoints.go` (behavioral fix, not just a sentinel
+swap -- see RC5).
+
+**Pre-existing tests corrected** (each was pinning the wrong code -- passed
+against the unfixed handler, so each is hollow proof until now):
+- `maintenance_test.go` `TestRDSBackend_ApplyPendingMaintenanceAction/resource_not_found`:
+  `wantErrIs: rds.ErrInstanceNotFound` -> `rds.ErrResourceNotFound`.
+- `data_api_test.go` `TestEnableDisableHttpEndpoint/not_found_enable`:
+  `wantErrIs: rds.ErrClusterNotFound` -> `rds.ErrResourceNotFound`.
+- `cluster_snapshots_test.go` `TestDescribeDBClusterSnapshotAttributes/not_found`
+  and `TestModifyDBClusterSnapshotAttribute/not_found`: both
+  `wantErrIs: rds.ErrSnapshotNotFound` -> `rds.ErrClusterSnapshotNotFound`.
+- `form_actions_cluster_test.go` "DescribeDBClusterEndpoints_NotFound":
+  renamed `..._NoMatch`, `wantCode` 400+"DBClusterEndpointNotFound" ->
+  200 OK + `wantNotContains: "DBClusterEndpointNotFound"` (RC5's behavior
+  change, not just a code swap).
+- `cluster_endpoints_test.go` `TestDeleteDBCluster_CascadeDeletesClusterEndpoints`:
+  post-delete assertions on the two leaked endpoints changed from
+  `require.ErrorIs(t, err, rds.ErrClusterEndpointNotFound)` to
+  `require.NoError` + `assert.Empty`, matching RC5.
+- `dispatch_test.go` `TestRDSHandler_NewOperations2/ApplyPendingMaintenanceAction_not_found`:
+  `wantContains: "DBInstanceNotFound"` -> `"ResourceNotFoundFault"`.
+
+6 pre-existing tests corrected across 5 files. New coverage:
+`error_codes_test.go`'s new `TestRDSErrorCodes_ClassASweep` (8 subtests, one
+per fixed call site except the merged Enable/Disable-by-domain pair, each
+asserting the correct wire `<Code>` present AND the old wrong code absent).
+Legitimate uses of the sentinels these fixes stopped misusing are already
+covered by pre-existing, unmodified tests and were re-verified to still
+pass: `DBInstanceNotFound` by `DownloadDBLogFilePortion_NotFound` and
+`DescribeValidDBInstanceModifications_NotFound`
+(form_actions_cluster_test.go); `DBClusterNotFoundFault` by "DeleteDBCluster
+not found" (error_codes_test.go); `DBInstanceAlreadyExists` by
+`CreateDBInstance_Duplicate` (form_actions_test.go); `DBSnapshotNotFound` by
+`TestDescribeDBSnapshotAttributes/not_found` (db_snapshots_test.go);
+`DBClusterEndpointNotFoundFault` by `DeleteDBClusterEndpoint_NotFound`
+(form_actions_cluster_test.go).
+
+**Neuter pass**: each of the 8 changed lines/blocks (RC1 x1, RC2 x2, RC3
+x3, RC4 x2, RC5 x1 behavioral) was individually reverted, confirmed to
+still `go build`, confirmed to fail exactly the expected test(s)
+(`TestRDSErrorCodes_ClassASweep` subtests plus
+`TestRDSBackend_ApplyPendingMaintenanceAction`,
+`TestEnableDisableHttpEndpoint`,
+`TestDeleteDBCluster_CascadeDeletesClusterEndpoints`,
+`TestRDSHandler_FormActions_Clusters/DescribeDBClusterEndpoints_NoMatch`,
+`TestRDSHandler_NewOperations2/ApplyPendingMaintenanceAction_not_found`),
+then restored. Final `git diff --stat` on the 7 non-test source files
+matched the intended fix exactly, confirming no stray change survived the
+revert/restore cycles.
+
+**No persisted struct fields were added** -- all changes are to error
+sentinels and one filter-vs-lookup behavior change, so the
+`pkgs/persistence` guard does not apply this pass.
+
+Gates: `go build ./services/rds/...` (clean), `go vet ./services/rds/...`
+(clean), `go test -race -count=1 ./services/rds/...` (pass, 0 failures),
+`golangci-lint run services/rds/...` (0 issues).
+`cmd/errtargetaudit` rds class-A findings: 12 -> 1.

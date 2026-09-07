@@ -416,10 +416,16 @@ func TestRDSHandler_FormActions_Clusters(t *testing.T) {
 			wantContains: []string{"DescribeDBClusterEndpointsResponse", "list-ep"},
 		},
 		{
-			name:         "DescribeDBClusterEndpoints_NotFound",
-			body:         "Action=DescribeDBClusterEndpoints&Version=2014-10-31&DBClusterEndpointIdentifier=nonexistent",
-			wantCode:     http.StatusBadRequest,
-			wantContains: []string{"DBClusterEndpointNotFound"},
+			// DBClusterEndpointIdentifier is a filter, not an existence check --
+			// aws-sdk-go-v2/service/rds@v1.124.1's deserializers.go declares no
+			// not-found error for it (only DBClusterNotFoundFault, for an
+			// invalid DBClusterIdentifier), so a non-matching value returns an
+			// empty list rather than an error.
+			name:            "DescribeDBClusterEndpoints_NoMatch",
+			body:            "Action=DescribeDBClusterEndpoints&Version=2014-10-31&DBClusterEndpointIdentifier=nonexistent",
+			wantCode:        http.StatusOK,
+			wantContains:    []string{"DescribeDBClusterEndpointsResponse"},
+			wantNotContains: []string{"DBClusterEndpointNotFound"},
 		},
 		// DeleteDBClusterEndpoint tests
 		{

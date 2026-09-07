@@ -23,7 +23,7 @@ func (b *InMemoryBackend) CreateCustomDBEngineVersion(
 	if _, exists := b.customEngineVersions.Get(key); exists {
 		return nil, fmt.Errorf(
 			"%w: custom engine version %s/%s already exists",
-			ErrInstanceAlreadyExists,
+			ErrCustomDBEngineVersionAlreadyExists,
 			engine,
 			engineVersion,
 		)
@@ -50,7 +50,12 @@ func (b *InMemoryBackend) DeleteCustomDBEngineVersion(engine, engineVersion stri
 
 	cev, exists := b.customEngineVersions.Get(key)
 	if !exists {
-		return nil, fmt.Errorf("%w: custom engine version %s/%s not found", ErrInstanceNotFound, engine, engineVersion)
+		return nil, fmt.Errorf(
+			"%w: custom engine version %s/%s not found",
+			ErrCustomDBEngineVersionNotFound,
+			engine,
+			engineVersion,
+		)
 	}
 
 	cp := *cev
@@ -70,7 +75,12 @@ func (b *InMemoryBackend) ModifyCustomDBEngineVersion(
 
 	cev, exists := b.customEngineVersions.Get(key)
 	if !exists {
-		return nil, fmt.Errorf("%w: custom engine version %s/%s not found", ErrInstanceNotFound, engine, engineVersion)
+		return nil, fmt.Errorf(
+			"%w: custom engine version %s/%s not found",
+			ErrCustomDBEngineVersionNotFound,
+			engine,
+			engineVersion,
+		)
 	}
 
 	if description != "" {

@@ -15,7 +15,7 @@ func (b *InMemoryBackend) EnableHTTPEndpoint(resourceARN string) error {
 		}
 	}
 
-	return fmt.Errorf("%w: %s", ErrClusterNotFound, resourceARN)
+	return fmt.Errorf("%w: %s", ErrResourceNotFound, resourceARN)
 }
 
 // DisableHTTPEndpoint disables the HTTP endpoint for an Aurora Serverless cluster.
@@ -31,5 +31,5 @@ func (b *InMemoryBackend) DisableHTTPEndpoint(resourceARN string) error {
 		}
 	}
 
-	return fmt.Errorf("%w: %s", ErrClusterNotFound, resourceARN)
+	return fmt.Errorf("%w: %s", ErrResourceNotFound, resourceARN)
 }

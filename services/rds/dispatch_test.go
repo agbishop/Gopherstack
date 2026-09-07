@@ -370,7 +370,7 @@ func TestRDSHandler_NewOperations2(t *testing.T) {
 			body: "Action=ApplyPendingMaintenanceAction&Version=2014-10-31" +
 				"&ResourceIdentifier=no-such-resource&ApplyAction=system-update&OptInType=immediate",
 			wantCode:     http.StatusBadRequest,
-			wantContains: []string{"DBInstanceNotFound"},
+			wantContains: []string{"ResourceNotFoundFault"},
 		},
 		{
 			name:         "ApplyPendingMaintenanceAction_empty_resource_id",
