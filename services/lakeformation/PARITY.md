@@ -565,3 +565,39 @@ Gates: `go build ./services/lakeformation/...`, `go vet ./services/lakeformation
 `go test -race -count=1 ./services/lakeformation/...`, `golangci-lint run
 ./services/lakeformation/...` (0 issues). No production or test code changed this pass --
 audit-only, no bug to write a regression test for.
+
+**2026-09-07 (gopherstack-4lvy, errtargetaudit triage):** `cmd/errtargetaudit` reported 2
+class A findings, both `code=InternalServiceException mechanism=code-named var`, at
+`permissions.go:217` (`BatchGrantPermissions`) and `permissions.go:248`
+(`BatchRevokePermissions`). No coverage warning (61/61 ops resolved, 31/61 with an emission
+found).
+
+Both are false positives, batch-per-entry class: `errCode := "InternalServiceException"` sets
+`BatchFailureEntry.Error.ErrorCode`, a field of `batchGrantPermissionsOutput`/
+`batchRevokePermissionsOutput` returned via `c.JSON(http.StatusOK, result)`
+(`handler_permissions.go`) -- document data inside a 200 response, never the op's own
+HTTP-level error (that path is `handleError`/`writeError`, `handler.go:330-347`, which emits
+the real `errorResponse{__type, message}` envelope and is not used by either batch handler at
+all). The real SDK's `types.ErrorDetail.ErrorCode` (`types/types.go:372-381`,
+`lakeformation@v1.50.4`) is a bare `*string` with no enum constraint, so there is no declared
+set for a per-entry code to be "wrong" against; `api_op_BatchGrantPermissions.go:46-47`
+documents `Failures` as ordinary 200-response output, not an error path. Confirmed against
+`deserializeOpErrorBatchGrantPermissions`/`deserializeOpErrorBatchRevokePermissions`
+(`deserializers.go`) op-level declared sets -- `UnknownError`/`InvalidInputException`/
+`OperationTimeoutException`, no `InternalServiceException` -- which is irrelevant here since
+the finding is a document field, not that deserializer's target. Same established pattern
+already in this file for `AddLFTagsToResource`/`RemoveLFTagsFromResource` (`lf_tags.go`,
+`LFTagError.Error *errorDetail`, same struct). Not the filter-as-key shape (these are mutate
+ops, not Describe/List).
+
+Not a global-sentinel-map instance (gopherstack-hdvu): `errCode` is a local `:=` string
+literal per call site, not a shared package-level sentinel value reused across ops. Traced
+both callees (`grantPermissionsLocked`/`revokePermissionsLocked`, `permissions.go:34-141`):
+every real error path wraps `ErrValidation`, so the `"InternalServiceException"` branch is
+currently unreached defensive code, not a live bug -- left as-is (harmless fallback, no
+declared-set contradiction to fix since the field takes an arbitrary string).
+
+No code or test changes. Gates: `go test -race -count=1 ./services/lakeformation/...` (ok),
+`golangci-lint run services/lakeformation/...` (0 issues). Re-ran
+`cmd/errtargetaudit`: lakeformation count unchanged at 2 class A findings -- both dismissed
+above as false positives, not remaining work.
