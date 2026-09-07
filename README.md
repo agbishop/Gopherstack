@@ -690,12 +690,12 @@ Every service links to its own page with a coverage breakdown — audited operat
 | Service | Parity | PARITY Entries | Notes |
 |---|---|---|---|
 | [AppStream 2.0](services/appstream/README.md) | A | 44 | clean |
-| [Azureblob](services/azureblob/README.md) | C | 8 | 8 gaps; 2 deferred |
+| [Azureblob](services/azureblob/README.md) | C | 8 | 8 gaps; 3 deferred |
 | [Azurequeue](services/azurequeue/README.md) | C | 9 | 7 gaps; 1 deferred |
 | [Azuretable](services/azuretable/README.md) | C | 10 | 6 gaps; 3 deferred |
 | [Cloudfrontkeyvaluestore](services/cloudfrontkeyvaluestore/README.md) | B | 6 | 3 gaps; 1 structural gap |
 | [Cosmosdb](services/cosmosdb/README.md) | C | 15 | 9 gaps; 5 deferred |
-| [Directconnect](services/directconnect/README.md) | A | 64 | 3 gaps; 8 structural gaps; 1 deferred |
+| [Directconnect](services/directconnect/README.md) | A | 64 | 4 gaps; 8 structural gaps; 1 deferred |
 | [Grafana](services/grafana/README.md) | A | 25 | 2 gaps; 1 structural gap |
 | [HealthOmics](services/omics/README.md) | A | — | 25 families; 3 gaps; 1 deferred |
 | [Lightsail](services/lightsail/README.md) | A | — | 28 families; 11 gaps; 2 deferred |

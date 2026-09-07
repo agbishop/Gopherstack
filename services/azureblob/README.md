@@ -10,7 +10,7 @@
 | PARITY entries audited | 8 (7 ok, 1 partial) |
 | Feature families | 4 (3 ok, 1 partial) |
 | Known gaps | 8 |
-| Deferred items | 2 |
+| Deferred items | 3 |
 | Resource leaks | clean |
 
 ### Known gaps
@@ -28,6 +28,7 @@
 
 - Initial implementation pass (2026-09-02): seeded this service from scratch per AZURE.md M0. No prior audit history to reconcile.
 - M0 review pass (2026-09-03): pkgs/azureauth, cli.go registration, and test/integration/azureblob_test.go all landed in the same PR as this service (see AZURE.md's M0 entry) -- the file was previously drafted assuming a multi-PR sequence that did not happen. sdk_module bumped to the azblob v1.8.0 actually pinned in go.mod (used by the integration test).
+- Dead-code sweep (2026-09-06, gopherstack-rxdr): removed errors.go's ErrInvalidBlobType/ErrInvalidRange sentinels -- unlike every other sentinel in this file (ErrContainerNotFound/ErrContainerAlreadyExists/ErrBlobNotFound, all returned by store.go and consumed via errors.Is at the handler.go boundary, matching the repo-wide convention seen in services/s3, services/sqs, services/dynamodb), these two were never returned by anything: putBlob's x-ms-blob-type check and getBlob's parseRange check are pure handler-local HTTP validation that never crosses into the backend layer. grep confirmed zero references anywhere in the repo outside their own declaration. TestPutBlob_RequiresBlockBlobType and TestGetBlob_RangeHeaderPartialRead/unsatisfiable assert on HTTP status/body strings, not the sentinels, and pass unchanged.
 
 ## More
 
