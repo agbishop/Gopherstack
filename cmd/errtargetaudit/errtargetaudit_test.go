@@ -860,13 +860,23 @@ func deserializeOpErrorPutThing() error {
 	require.Equal(t, []string{"ConflictException"}, found)
 }
 
+// TestGenericProtocolCodes_InternalServerException replaces an assertion that
+// required the opposite. That one justified the entry by "the 90-false-positive
+// mgn case", a premise gopherstack-udkm disproved: mgn@v1.48.4 declares
+// InternalServerException in types/errors.go and in 3 deserializeOpError
+// switches, so those emissions are class A findings, and the mgn concern was
+// really fixed by making the allowlist module-conditional. gopherstack-oshm
+// then found the entry fails the q9bs sourcing standard outright -- 51 modules
+// model it per-op, and no docs-2.json describes returning it where api-2.json
+// declares no such shape.
 func TestGenericProtocolCodes_InternalServerException(t *testing.T) {
 	t.Parallel()
 
-	require.True(
+	require.False(
 		t,
 		genericProtocolCodes["InternalServerException"],
-		"must be allowlisted -- see genericcodes.go's doc for the 90-false-positive mgn case this fixes",
+		"must NOT be allowlisted: suppressing it hides real findings in services "+
+			"whose own module declares no server-fault type (forecast, personalize)",
 	)
 }
 
