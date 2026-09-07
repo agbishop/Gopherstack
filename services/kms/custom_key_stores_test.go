@@ -2,6 +2,8 @@ package kms_test
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -62,6 +64,7 @@ func TestConnectCustomKeyStore_AlreadyConnected_Rejected(t *testing.T) {
 		CustomKeyStoreID: storeID,
 	})
 	require.Error(t, err)
+	assert.ErrorIs(t, err, kms.ErrCustomKeyStoreInvalidState)
 }
 
 func TestDisconnectCustomKeyStore_AlreadyDisconnected_Rejected(t *testing.T) {
@@ -78,6 +81,7 @@ func TestDisconnectCustomKeyStore_AlreadyDisconnected_Rejected(t *testing.T) {
 		CustomKeyStoreID: storeID,
 	})
 	require.Error(t, err)
+	assert.ErrorIs(t, err, kms.ErrCustomKeyStoreInvalidState)
 }
 
 func TestConnectCustomKeyStore_NotFound_Rejected(t *testing.T) {
@@ -118,6 +122,7 @@ func TestDeleteCustomKeyStore_WhileConnected_Rejected(t *testing.T) {
 		CustomKeyStoreID: storeID,
 	})
 	require.Error(t, err)
+	assert.ErrorIs(t, err, kms.ErrCustomKeyStoreInvalidState)
 }
 
 func TestUpdateCustomKeyStore_RenameSucceeds(t *testing.T) {
@@ -498,4 +503,77 @@ func TestCustomKeyStorePersistence(t *testing.T) {
 	require.Len(t, desc.CustomKeyStores, 1)
 	assert.Equal(t, kms.ConnectionStateConnected, desc.CustomKeyStores[0].ConnectionState)
 	assert.Equal(t, "persist-store", desc.CustomKeyStores[0].CustomKeyStoreName)
+}
+
+// TestCustomKeyStore_StateGuards_WireErrorType drives the full HTTP handler path for
+// gopherstack-akm2: ConnectCustomKeyStore/DisconnectCustomKeyStore/DeleteCustomKeyStore's
+// own state-transition guards must surface as the real AWS CustomKeyStoreInvalidStateException
+// (extraction-confirmed in each op's deserializeOpError, kms@v1.55.4 deserializers.go), not
+// KMSInvalidStateException -- neither op declares that type.
+func TestCustomKeyStore_StateGuards_WireErrorType(t *testing.T) {
+	t.Parallel()
+
+	t.Run("connect_already_connected", func(t *testing.T) {
+		t.Parallel()
+
+		h := ab2NewHandler(t)
+
+		createRec := doKMSRequest(t, h, "CreateCustomKeyStore", `{"CustomKeyStoreName":"wire-connect"}`)
+		require.Equal(t, http.StatusOK, createRec.Code)
+
+		var createOut kms.CreateCustomKeyStoreOutput
+		require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createOut))
+
+		connectBody := `{"CustomKeyStoreId":"` + createOut.CustomKeyStoreID + `"}`
+		require.Equal(t, http.StatusOK, doKMSRequest(t, h, "ConnectCustomKeyStore", connectBody).Code)
+
+		rec := doKMSRequest(t, h, "ConnectCustomKeyStore", connectBody)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+		var errResp kms.ErrorResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+		assert.Equal(t, "CustomKeyStoreInvalidStateException", errResp.Type)
+	})
+
+	t.Run("disconnect_already_disconnected", func(t *testing.T) {
+		t.Parallel()
+
+		h := ab2NewHandler(t)
+
+		createRec := doKMSRequest(t, h, "CreateCustomKeyStore", `{"CustomKeyStoreName":"wire-disconnect"}`)
+		require.Equal(t, http.StatusOK, createRec.Code)
+
+		var createOut kms.CreateCustomKeyStoreOutput
+		require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createOut))
+
+		disconnectBody := `{"CustomKeyStoreId":"` + createOut.CustomKeyStoreID + `"}`
+		rec := doKMSRequest(t, h, "DisconnectCustomKeyStore", disconnectBody)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+		var errResp kms.ErrorResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+		assert.Equal(t, "CustomKeyStoreInvalidStateException", errResp.Type)
+	})
+
+	t.Run("delete_while_connected", func(t *testing.T) {
+		t.Parallel()
+
+		h := ab2NewHandler(t)
+
+		createRec := doKMSRequest(t, h, "CreateCustomKeyStore", `{"CustomKeyStoreName":"wire-delete"}`)
+		require.Equal(t, http.StatusOK, createRec.Code)
+
+		var createOut kms.CreateCustomKeyStoreOutput
+		require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createOut))
+
+		idBody := `{"CustomKeyStoreId":"` + createOut.CustomKeyStoreID + `"}`
+		require.Equal(t, http.StatusOK, doKMSRequest(t, h, "ConnectCustomKeyStore", idBody).Code)
+
+		rec := doKMSRequest(t, h, "DeleteCustomKeyStore", idBody)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+		var errResp kms.ErrorResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+		assert.Equal(t, "CustomKeyStoreInvalidStateException", errResp.Type)
+	})
 }

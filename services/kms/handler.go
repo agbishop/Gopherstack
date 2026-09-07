@@ -324,6 +324,7 @@ func kmsErrorTable() []kmsErrorEntry {
 		{sentinel: ErrAliasNotFound, awsType: awsErrNotFound},
 		{sentinel: ErrGrantNotFound, awsType: awsErrNotFound},
 		{sentinel: ErrCustomKeyStoreNotFound, awsType: "CustomKeyStoreNotFoundException"},
+		{sentinel: ErrCustomKeyStoreInvalidState, awsType: "CustomKeyStoreInvalidStateException"},
 		{sentinel: ErrKeyDisabled, awsType: "DisabledException"},
 		{sentinel: ErrKeyInvalidState, awsType: "KMSInvalidStateException"},
 		{sentinel: ErrInvalidKeyUsage, awsType: "InvalidKeyUsageException"},

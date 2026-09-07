@@ -24,9 +24,10 @@ var (
 	// ErrCustomKeyStoreNotFound is returned when a custom key store ID does not exist.
 	ErrCustomKeyStoreNotFound = errors.New("CustomKeyStoreNotFoundException")
 	// ErrCustomKeyStoreInvalidState is returned by CreateKey when the target custom
-	// key store's ConnectionState is not CONNECTED, and by Disconnect/UpdateCustomKeyStore/
-	// DeleteCustomKeyStore for their own state preconditions. CreateKey's own
-	// deserializeOpError (kms@v1.55.4 deserializers.go) recognizes
+	// key store's ConnectionState is not CONNECTED, and by Connect/Disconnect/
+	// DeleteCustomKeyStore for their own state preconditions (UpdateCustomKeyStore
+	// has no ConnectionState guard in this backend; see PARITY.md gopherstack-akm2).
+	// CreateKey's own deserializeOpError (kms@v1.55.4 deserializers.go) recognizes
 	// CustomKeyStoreInvalidStateException for exactly this.
 	ErrCustomKeyStoreInvalidState = errors.New("CustomKeyStoreInvalidStateException")
 	// ErrCustomKeyStoreHasKeys is returned by DeleteCustomKeyStore when the store

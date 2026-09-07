@@ -81,7 +81,7 @@ func (b *InMemoryBackend) DeleteCustomKeyStore(
 	if ks.ConnectionState != ConnectionStateDisconnected {
 		return fmt.Errorf(
 			"%w: custom key store must be DISCONNECTED before deletion; current state: %s",
-			ErrKeyInvalidState, ks.ConnectionState,
+			ErrCustomKeyStoreInvalidState, ks.ConnectionState,
 		)
 	}
 
@@ -177,7 +177,7 @@ func (b *InMemoryBackend) ConnectCustomKeyStore(
 	if ks.ConnectionState == ConnectionStateConnected {
 		return fmt.Errorf(
 			"%w: custom key store %q is already connected",
-			ErrKeyInvalidState, input.CustomKeyStoreID,
+			ErrCustomKeyStoreInvalidState, input.CustomKeyStoreID,
 		)
 	}
 
@@ -208,7 +208,7 @@ func (b *InMemoryBackend) DisconnectCustomKeyStore(
 	if ks.ConnectionState == ConnectionStateDisconnected {
 		return fmt.Errorf(
 			"%w: custom key store %q is already disconnected",
-			ErrKeyInvalidState, input.CustomKeyStoreID,
+			ErrCustomKeyStoreInvalidState, input.CustomKeyStoreID,
 		)
 	}
 
