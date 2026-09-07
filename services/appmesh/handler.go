@@ -271,6 +271,18 @@ func methodNotAllowed(c *echo.Context) error {
 	return c.JSON(http.StatusMethodNotAllowed, errResp("MethodNotAllowedException", "method not allowed"))
 }
 
+// checkMeshOwner rejects a request whose meshOwner query parameter names an
+// account other than this backend's single account. Omitted, or equal to the
+// caller's own account, is the documented default and passes through.
+func (h *Handler) checkMeshOwner(c *echo.Context) error {
+	owner := c.QueryParam(keyMeshOwner)
+	if owner == "" || owner == h.Backend.AccountID() {
+		return nil
+	}
+
+	return ErrMeshOwnerMismatch
+}
+
 // mapErr maps backend errors to the correct HTTP status codes.
 func (h *Handler) mapErr(c *echo.Context, err error) error {
 	switch {
@@ -286,6 +298,9 @@ func (h *Handler) mapErr(c *echo.Context, err error) error {
 	case errors.Is(err, ErrTooManyTags):
 
 		return c.JSON(http.StatusBadRequest, errResp("TooManyTagsException", err.Error()))
+	case errors.Is(err, ErrMeshOwnerMismatch):
+
+		return c.JSON(http.StatusForbidden, errResp("ForbiddenException", err.Error()))
 	case errors.Is(err, awserr.ErrInvalidParameter):
 
 		return c.JSON(http.StatusBadRequest, errResp("BadRequestException", err.Error()))

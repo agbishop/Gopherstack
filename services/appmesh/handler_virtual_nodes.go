@@ -10,6 +10,9 @@ import (
 // ─── VirtualNode dispatch ───
 
 func (h *Handler) handleVirtualNodes(c *echo.Context, segs []string, meshName string) error {
+	if err := h.checkMeshOwner(c); err != nil {
+		return h.mapErr(c, err)
+	}
 	// /meshes/{meshName}/virtualNodes
 	if len(segs) == segsSubCollection {
 		switch c.Request().Method {

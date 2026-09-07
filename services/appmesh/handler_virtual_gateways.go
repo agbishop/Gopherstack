@@ -10,6 +10,9 @@ import (
 // ─── VirtualGateway dispatch ───
 
 func (h *Handler) handleVirtualGateways(c *echo.Context, segs []string, meshName string) error {
+	if err := h.checkMeshOwner(c); err != nil {
+		return h.mapErr(c, err)
+	}
 	// /meshes/{meshName}/virtualGateways
 	if len(segs) == segsSubCollection {
 		switch c.Request().Method {
@@ -136,6 +139,9 @@ func vgSummaryToWire(vg *VirtualGatewaySummary) map[string]any {
 // ─── GatewayRoute dispatch (singular virtualGateway in path) ───
 
 func (h *Handler) handleGatewayRoutes(c *echo.Context, segs []string, meshName string) error {
+	if err := h.checkMeshOwner(c); err != nil {
+		return h.mapErr(c, err)
+	}
 	// /meshes/{meshName}/virtualGateway/{vgName}/gatewayRoutes[/{routeName}]
 	if len(segs) < segsSubSingle {
 		return c.JSON(http.StatusNotFound, errResp("NotFoundException", "not found"))

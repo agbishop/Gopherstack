@@ -10,6 +10,9 @@ import (
 // ─── VirtualRouter dispatch ───
 
 func (h *Handler) handleVirtualRouters(c *echo.Context, segs []string, meshName string) error {
+	if err := h.checkMeshOwner(c); err != nil {
+		return h.mapErr(c, err)
+	}
 	// /meshes/{meshName}/virtualRouters
 	if len(segs) == segsSubCollection {
 		switch c.Request().Method {
@@ -136,6 +139,9 @@ func vrSummaryToWire(vr *VirtualRouterSummary) map[string]any {
 // ─── Route dispatch (singular virtualRouter in path) ───
 
 func (h *Handler) handleRoutes(c *echo.Context, segs []string, meshName string) error {
+	if err := h.checkMeshOwner(c); err != nil {
+		return h.mapErr(c, err)
+	}
 	// /meshes/{meshName}/virtualRouter/{vrName}/routes
 	if len(segs) < segsSubSingle {
 		return c.JSON(http.StatusNotFound, errResp("NotFoundException", "not found"))
