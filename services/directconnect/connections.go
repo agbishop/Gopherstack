@@ -336,11 +336,11 @@ func (b *InMemoryBackend) UpdateConnection(req *updateConnectionRequest) (*Conne
 	return c.clone(), nil
 }
 
-// AssociateConnectionWithLag moves an existing standalone connection into
-// lagID, enforcing the LAG's own bandwidth-derived capacity (see
-// lagMaxConnections) -- the one op in this service where
-// LimitExceededException is reachable without any Tags input (PARITY.md
-// wire-trap #8).
+// AssociateConnectionWithLag moves connectionID into lagID, enforcing the
+// target LAG's own bandwidth-derived capacity (see lagMaxConnections) -- the
+// one op in this service where LimitExceededException is reachable without
+// any Tags input (PARITY.md wire-trap #8) -- and, on re-association away
+// from a different LAG, that LAG's minimum-links floor (gopherstack-55so).
 func (b *InMemoryBackend) AssociateConnectionWithLag(connectionID, lagID string) (*Connection, error) {
 	b.mu.Lock("AssociateConnectionWithLag")
 	defer b.mu.Unlock()
@@ -368,11 +368,42 @@ func (b *InMemoryBackend) AssociateConnectionWithLag(connectionID, lagID string)
 		if len(b.connectionsByLagLocked(lagID)) >= maxConns {
 			return nil, limitExceededError("LAG " + lagID + " already has the maximum number of connections")
 		}
+
+		if err := b.reassociationMinimumLinksErrorLocked(connectionID, c.LagID); err != nil {
+			return nil, err
+		}
 	}
 
 	c.LagID = lagID
 
 	return c.clone(), nil
+}
+
+// reassociationMinimumLinksErrorLocked rejects moving connectionID out of
+// oldLagID if that would drop oldLagID below its minimum links.
+// "if removing the connection would cause the original LAG to fall below its
+// setting for minimum number of operational connections, the request fails"
+// (api_op_AssociateConnectionWithLag.go:17-20) -- unlike
+// DisassociateConnectionFromLag, this carries no last-member exception
+// (gopherstack-55so). Callers must hold b.mu.
+func (b *InMemoryBackend) reassociationMinimumLinksErrorLocked(connectionID, oldLagID string) error {
+	if oldLagID == "" {
+		return nil
+	}
+
+	origLag, ok := b.lags.Get(oldLagID)
+	if !ok {
+		return nil
+	}
+
+	remaining := len(b.connectionsByLagLocked(oldLagID)) - 1
+	if remaining < int(origLag.MinimumLinks) {
+		return clientError(
+			"re-associating " + connectionID + " would drop LAG " + oldLagID + " below its minimum links",
+		)
+	}
+
+	return nil
 }
 
 // DisassociateConnectionFromLag removes connectionID from lagID.

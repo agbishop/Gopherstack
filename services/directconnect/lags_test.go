@@ -178,6 +178,74 @@ func TestDisassociateConnectionFromLag_MinimumLinks(t *testing.T) {
 	require.NoError(t, err, "the last member of a LAG may always be disassociated, even below MinimumLinks")
 }
 
+// TestAssociateConnectionWithLag_ReassociationMinimumLinks verifies
+// api_op_AssociateConnectionWithLag.go:17-20: re-associating a connection
+// away from its current LAG into a different one fails if that would drop
+// the original LAG below its MinimumLinks -- with NO last-member exception,
+// unlike DisassociateConnectionFromLag (gopherstack-55so).
+func TestAssociateConnectionWithLag_ReassociationMinimumLinks(t *testing.T) {
+	t.Parallel()
+
+	_, client := newTestHandlerAndClient(t)
+	ctx := t.Context()
+
+	origLag, err := client.CreateLag(ctx, &directconnectsdk.CreateLagInput{
+		ConnectionsBandwidth: aws.String("1Gbps"),
+		LagName:              aws.String("orig-lag"),
+		Location:             aws.String("EqDC2"),
+		NumberOfConnections:  2,
+	})
+	require.NoError(t, err)
+	require.Len(t, origLag.Connections, 2)
+
+	_, err = client.UpdateLag(ctx, &directconnectsdk.UpdateLagInput{
+		LagId:        origLag.LagId,
+		MinimumLinks: 2,
+	})
+	require.NoError(t, err)
+
+	destLag, err := client.CreateLag(ctx, &directconnectsdk.CreateLagInput{
+		ConnectionsBandwidth: aws.String("1Gbps"),
+		LagName:              aws.String("dest-lag"),
+		Location:             aws.String("EqDC2"),
+		NumberOfConnections:  1,
+	})
+	require.NoError(t, err)
+
+	toMove := origLag.Connections[0].ConnectionId
+
+	_, err = client.AssociateConnectionWithLag(ctx, &directconnectsdk.AssociateConnectionWithLagInput{
+		ConnectionId: toMove,
+		LagId:        destLag.LagId,
+	})
+	require.Error(t, err, "moving a connection out of orig-lag would drop it to 1 connection with MinimumLinks=2")
+
+	var clientErr *types.DirectConnectClientException
+	require.ErrorAs(t, err, &clientErr)
+
+	_, err = client.UpdateLag(ctx, &directconnectsdk.UpdateLagInput{
+		LagId:        origLag.LagId,
+		MinimumLinks: 1,
+	})
+	require.NoError(t, err)
+
+	_, err = client.AssociateConnectionWithLag(ctx, &directconnectsdk.AssociateConnectionWithLagInput{
+		ConnectionId: toMove,
+		LagId:        destLag.LagId,
+	})
+	require.NoError(t, err, "dropping orig-lag to exactly MinimumLinks=1 must succeed")
+
+	lastMember := origLag.Connections[1].ConnectionId
+
+	_, err = client.AssociateConnectionWithLag(ctx, &directconnectsdk.AssociateConnectionWithLagInput{
+		ConnectionId: lastMember,
+		LagId:        destLag.LagId,
+	})
+	require.Error(t, err, "unlike DisassociateConnectionFromLag, re-association carries no last-member exception")
+
+	require.ErrorAs(t, err, &clientErr)
+}
+
 // TestAssociateConnectionWithLag_BandwidthMismatch verifies
 // api_op_AssociateConnectionWithLag.go:15-16: "its bandwidth must match the
 // bandwidth for the LAG".
