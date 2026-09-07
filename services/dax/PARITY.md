@@ -6,14 +6,15 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: dax
 sdk_module: aws-sdk-go-v2/service/dax@v1.32.4   # awsjson1.1 protocol, target prefix AmazonDAXV3.
-last_audit_commit: 9609c13a3   # refreshed 2026-09-04 -- current HEAD at write time
-last_audit_date: 2026-09-04
+last_audit_commit: fa462f07c   # refreshed 2026-09-07 -- current HEAD at write time
+last_audit_date: 2026-09-07
 overall: A            # 2026-07-24: follow-up pass: closed all 3 previously-known gaps, killed both banned nolints
                       # 2026-07-31: pkgs/sdkcheck reverse check found ResetParameterGroup wrongly advertised/documented as a real SDK op (it isn't -- see its ops-block note); corrected, route left wired as internal test scaffolding. Grade held at A: unreachable by real traffic either way, since DAX dispatches purely by X-Amz-Target and no real client can send this target.
                       # 2026-08-10: control-plane sweep (gopherstack-mmqd). Fixed state-mutated-before-validation in UpdateCluster and UpdateParameterGroup, a wrong error fault code on 6 required-field checks, a fabricated Tags field on the Cluster wire response, 3 unvalidated @required fields (TagResource.Tags, UntagResource.TagKeys, UpdateParameterGroup.ParameterNameValues), and a missing per-subnet SupportedNetworkTypes field. See Notes.
                       # 2026-08-20: wrapper-key / nested-shape sweep. Fixed one fabricated SourceType enum value ("NODE") emitted for node-level Events; the real types.SourceType enum has exactly CLUSTER/PARAMETER_GROUP/SUBNET_GROUP. All other wrapper keys, nesting levels, and per-member shapes across all 20 ops verified clean against the pinned SDK. See Notes.
                       # 2026-08-29: write-only-state sweep (gopherstack-6flj/21my), forward+reverse, over clusters/parameter_groups/subnet_groups/tags/events control-plane files plus their handlers. No new bug found -- confirms the 2026-08-20 sweep's coverage still holds; no dax-specific commits landed between the two passes. See Notes.
                       # 2026-09-04: parity-sweep-2026-09-03 campaign. CreateCluster silently accepted an AvailabilityZones list whose length didn't match ReplicationFactor instead of rejecting it. See Notes.
+                      # 2026-09-07: errtargetaudit sweep (gopherstack-dkr8). CreateSubnetGroup and UpdateSubnetGroup both typed InvalidParameterValueException for a bad/missing SubnetGroupName -- a code neither op's real deserializeOpError switch declares. Fixed: CreateSubnetGroup no longer format-validates the name at all (SubnetGroupName carries no such constraint in the real API, unlike ClusterName/ParameterGroupName); UpdateSubnetGroup's empty-name check now types SubnetGroupNotFoundFault, matching DeleteSubnetGroup's existing treatment of the identical condition. See Notes.
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
 ops:
@@ -47,9 +48,9 @@ ops:
   # GetSupportedOperations() entry. Same resolution as EMR's
   # ListTagsForResource and CloudFront's
   # GetFunctionAssociations/SetFunctionAssociations.
-  CreateSubnetGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "each Subnet in the response now carries its own SupportedNetworkTypes field (types.Subnet has one distinct from SubnetGroup's) -- fixed 2026-08-10, see Notes"}
+  CreateSubnetGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "each Subnet in the response now carries its own SupportedNetworkTypes field (types.Subnet has one distinct from SubnetGroup's) -- fixed 2026-08-10; no longer rejects a bad/missing SubnetGroupName with InvalidParameterValueException, a code the real op's error set doesn't declare and SubnetGroupName has no documented format constraint for -- fixed 2026-09-07, see Notes"}
   DescribeSubnetGroups: {wire: ok, errors: ok, state: ok, persist: ok}
-  UpdateSubnetGroup: {wire: ok, errors: ok, state: ok, persist: ok}
+  UpdateSubnetGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "empty-name check now types SubnetGroupNotFoundFault, not InvalidParameterValueException (a code the real op's error set doesn't declare), matching DeleteSubnetGroup -- fixed 2026-09-07, see Notes"}
   DeleteSubnetGroup: {wire: ok, errors: ok, state: ok, persist: ok}
   DescribeEvents: {wire: ok, errors: ok, state: ok, persist: ok, note: "node-level events (RebootNode) now report SourceType CLUSTER, not the fabricated NODE value -- fixed 2026-08-20, see Notes"}
 # Families audited as a group (when per-op is impractical):
@@ -612,3 +613,110 @@ gopherstack service uses for this precondition and run only on already-infrequen
 
 Gates: `go build ./services/dax/...`, `go test -race -count=1 ./services/dax/...` (pass,
 including `./services/dax/dataplane/...`), `golangci-lint run ./services/dax/...` (0 issues).
+
+## 2026-09-07 errtargetaudit sweep (gopherstack-dkr8)
+
+`cmd/errtargetaudit` flagged dax with 2 class A findings, both `code=InvalidParameterValueException`
+on `services/dax/subnet_groups.go` (`CreateSubnetGroup:20` via the `validateResourceName`
+constructor classifier, `UpdateSubnetGroup:72` via a direct sentinel reference). The tool's own
+coverage line reads `21/77 (27%) resolved` with a coverage warning; that's not a dax gap -- the
+tool attributes dax to two SDK modules (`dax`, `dynamodb`), and 77 is `dax`'s own 21 real ops plus
+`dynamodb@v1.63.1`'s 58 (`services/dax/dataplane_server.go` imports gopherstack's own
+`services/dynamodb` package for its `InMemoryDB` backend, to back the binary DAX-client data-plane
+protocol -- a type/backend borrow, not an HTTP-JSON-dispatched dax op). All 21 real dax ops
+resolved; coverage for the actual X-Amz-Target-dispatched surface is 21/21.
+
+**Both findings confirmed real** against `aws-sdk-go-v2/service/dax@v1.32.4/deserializers.go`:
+
+```
+$ awk '/deserializeOpErrorCreateSubnetGroup\(/,/^}/' deserializers.go | grep -oE '"[A-Za-z0-9]+"'
+"UnknownError" "InvalidSubnet" "ServiceLinkedRoleNotFoundFault" "SubnetGroupAlreadyExistsFault"
+"SubnetGroupQuotaExceededFault" "SubnetNotAllowedFault" "SubnetQuotaExceededFault"
+
+$ awk '/deserializeOpErrorUpdateSubnetGroup\(/,/^}/' deserializers.go | grep -oE '"[A-Za-z0-9]+"'
+"UnknownError" "InvalidSubnet" "ServiceLinkedRoleNotFoundFault" "SubnetGroupNotFoundFault"
+"SubnetInUse" "SubnetNotAllowedFault" "SubnetQuotaExceededFault"
+```
+
+Neither declares `InvalidParameterValueException` (not in `genericProtocolCodes` -- it's a real
+per-op-declared exception type, `types.InvalidParameterValueException`, not a gateway-level
+fallback). Protocol: `awsjson1.1`, `X-Amz-Target: AmazonDAXV3.<Op>`; this repo's handler shapes
+every DAX fault as HTTP 400 with body `{"__type": "<code>", "message": "<msg>"}`
+(`handler.go`'s `mapError`/`daxError`).
+
+**Root cause: a global sentinel map (gopherstack-hdvu), used correctly everywhere except these two
+call sites.** `daxErrCodeMappings` in `handler.go` maps the single sentinel `ErrInvalidParameterValue`
+to `"InvalidParameterValueException"` for every op that returns it. `validateResourceName`
+(`store.go`) -- a name-format validator shared by `CreateParameterGroup` and `CreateSubnetGroup` --
+returns that sentinel unconditionally. It's correct for `CreateParameterGroup` (declares the code)
+and for every `ClusterName`/`ParameterGroupName` required-field check elsewhere in the package
+(`clusters.go`, `parameter_groups.go`, `handler_tags.go` -- all on ops that do declare it), but
+wrong for `SubnetGroupName`: three independent, converging signals show the real API has no
+format constraint on this field at all (unlike `ClusterName`'s documented "1-20 alphanumeric or
+hyphens, first char a letter, no trailing/consecutive hyphens"):
+1. `CreateSubnetGroupInput.SubnetGroupName`'s doc says only *"stored as a lowercase string"* --
+   no format rule, vs. `ClusterName`'s explicit rule.
+2. The SDK's own client-side validator (`validateOpCreateSubnetGroupInput`,
+   `validateOpUpdateSubnetGroupInput` in `validators.go`) checks only presence (`v.SubnetGroupName
+   == nil`), never shape -- same as `ClusterName`'s validator, so this alone doesn't distinguish
+   them, but combined with (1) and (3) it does.
+3. Neither op's declared error set has any code that could plausibly carry a "bad name" rejection.
+
+This is a per-call-site fix, per the global-sentinel-map rule: `validateResourceName` itself is
+untouched (still correct for `CreateParameterGroup`, its only other caller); only the
+`CreateSubnetGroup` call site changes.
+
+**Not the filter-as-key shape.** Both ops are mutates (Create/Update), not Describe/List, so the
+"optional filter as must-exist key" pattern and its forced empty-list remedy don't apply; a
+mutate-op remedy needs its own evidence (per resourcegroups `CancelTagSyncTask`'s reverted fix).
+The evidence here is the three-way convergence above, plus an in-package precedent for the
+empty-name sub-case specifically (see below) -- not an inherited List-op remedy.
+
+**Fixed:**
+
+1. **`CreateSubnetGroup`** (`subnet_groups.go:20`): removed the `validateResourceName` call
+   entirely -- no code in the op's declared set fits a bad-or-missing name, and the name carries
+   no documented/enforced format constraint to reject on. `SubnetIds` validation (`InvalidSubnet`,
+   correctly declared) is untouched.
+2. **`UpdateSubnetGroup`** (`subnet_groups.go:72`): the empty-`SubnetGroupName` check now types
+   `ErrSubnetGroupNotFound` ("SubnetGroupNotFoundFault") instead of `ErrInvalidParameterValue`.
+   This exactly mirrors `DeleteSubnetGroup`'s existing, already-correct handling of the identical
+   condition four lines below in the same file (`subnet_groups.go:106-108`, untouched) --
+   `SubnetGroupNotFoundFault` is confirmed declared for `UpdateSubnetGroup` above.
+
+`validateResourceName`'s only other caller, `CreateParameterGroup` (`parameter_groups.go:12`), is
+unchanged and still correct (`InvalidParameterValueException` is declared for that op). No dynamodb
+identifier is touched or shared by this fix (`validateResourceName`/`ErrSubnetGroupNotFound` are
+unexported to `services/dax`; `services/dynamodb` was read-only-checked and has no reference to
+either).
+
+**Pre-existing tests corrected (2, pinned the old wrong behaviour with no note):**
+
+- `TestCreateSubnetGroup`'s "empty name" case (`subnet_groups_test.go`) asserted `wantErr: true`
+  for `CreateSubnetGroup("", ...)`. Renamed to "empty name accepted" and now asserts the empty name
+  round-trips, with a comment on the real-API evidence.
+- `TestCreateSubnetGroupNameValidation` (`subnet_groups_test.go`) asserted `ErrInvalidParameterValue`
+  for `"1sg"`/`"sg-"`/`"my--sg"`. Renamed to `TestCreateSubnetGroupNameNotFormatValidated`; all four
+  cases (including the previously-valid one) now assert success, with a comment citing the
+  deserializer/validator evidence.
+
+**New regression tests:** `TestUpdateSubnetGroup/empty_name` (asserts `ErrSubnetGroupNotFound`),
+`TestHandlerErrorMapping/SubnetGroupNotFoundFault_on_UpdateSubnetGroup_with_empty_name` (HTTP-level,
+asserts `__type`), `TestHandlerCreateSubnetGroupNameNotFormatValidated` (HTTP-level, asserts 200 +
+the malformed name round-trips).
+
+**Per-line neuter, both confirmed:**
+- Re-adding `validateResourceName(name, "SubnetGroupName")` to `CreateSubnetGroup` (reverting fix
+  1): builds; fails exactly `TestHandlerCreateSubnetGroupNameNotFormatValidated`,
+  `TestCreateSubnetGroup/empty_name_accepted`, and 3 of 4 `TestCreateSubnetGroupNameNotFormatValidated`
+  subtests, all with `InvalidParameterValueException` errors -- as expected.
+- Reverting `UpdateSubnetGroup`'s empty-name check to `ErrInvalidParameterValue` (reverting fix 2):
+  builds; fails exactly `TestUpdateSubnetGroup/empty_name` and
+  `TestHandlerErrorMapping/SubnetGroupNotFoundFault_on_UpdateSubnetGroup_with_empty_name`, both
+  expecting `SubnetGroupNotFoundFault` but getting `InvalidParameterValueException` -- as expected.
+
+Re-ran `cmd/errtargetaudit` after the fix: dax now reports **no class A findings** (down from 2);
+the coverage line is unchanged (21/77, 21/21 of dax's own ops -- see explanation above).
+
+Gates: `go test -race -count=1 ./services/dax/...` (pass, including
+`./services/dax/dataplane/...`), `golangci-lint run services/dax/...` (0 issues).

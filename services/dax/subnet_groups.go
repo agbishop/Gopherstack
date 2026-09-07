@@ -17,10 +17,12 @@ func (b *InMemoryBackend) CreateSubnetGroup(
 	name, description string,
 	subnetIDs []string,
 ) (*SubnetGroup, error) {
-	if err := validateResourceName(name, "SubnetGroupName"); err != nil {
-		return nil, err
-	}
-
+	// Unlike ClusterName/ParameterGroupName, SubnetGroupName carries no
+	// format constraint in the real API (validateOpCreateSubnetGroupInput
+	// only checks presence) and CreateSubnetGroup's own
+	// deserializeOpErrorCreateSubnetGroup switch has no
+	// InvalidParameterValueException case -- so it cannot legitimately
+	// reject a name on format grounds.
 	if err := validateSubnetIDs(subnetIDs); err != nil {
 		return nil, err
 	}
@@ -68,8 +70,11 @@ func (b *InMemoryBackend) DescribeSubnetGroups(
 
 // UpdateSubnetGroup updates a subnet group's description and/or subnet list.
 func (b *InMemoryBackend) UpdateSubnetGroup(input UpdateSubnetGroupInput) (*SubnetGroup, error) {
+	// UpdateSubnetGroup's own deserializeOpErrorUpdateSubnetGroup switch has no
+	// InvalidParameterValueException case; SubnetGroupNotFoundFault is the code it
+	// actually types, matching DeleteSubnetGroup's treatment of the same condition.
 	if input.SubnetGroupName == "" {
-		return nil, fmt.Errorf("%w: SubnetGroupName is required", ErrInvalidParameterValue)
+		return nil, fmt.Errorf("%w: SubnetGroupName is required", ErrSubnetGroupNotFound)
 	}
 
 	if len(input.SubnetIDs) > 0 {

@@ -141,6 +141,16 @@ func TestHandlerErrorMapping(t *testing.T) {
 			body:      map[string]any{},
 			wantCode:  "InvalidAction",
 		},
+		{
+			// UpdateSubnetGroup's declared error set has no
+			// InvalidParameterValueException case; SubnetGroupNotFoundFault is the
+			// code it actually types for a missing/empty SubnetGroupName.
+			name:      "SubnetGroupNotFoundFault on UpdateSubnetGroup with empty name",
+			operation: "UpdateSubnetGroup",
+			setup:     func(_ *testing.T, _ *dax.Handler) {},
+			body:      map[string]any{"SubnetGroupName": ""},
+			wantCode:  "SubnetGroupNotFoundFault",
+		},
 	}
 
 	for _, tt := range tests {
@@ -157,6 +167,25 @@ func TestHandlerErrorMapping(t *testing.T) {
 			assert.Equal(t, tt.wantCode, errResp["__type"])
 		})
 	}
+}
+
+// ---- CreateSubnetGroup: SubnetGroupName has no format constraint ----
+
+func TestHandlerCreateSubnetGroupNameNotFormatValidated(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+	rec := daxRequest(t, h, "CreateSubnetGroup", map[string]any{
+		"SubnetGroupName": "1sg--bad",
+		"SubnetIds":       []string{"subnet-11111111"},
+	})
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	sg := resp["SubnetGroup"].(map[string]any)
+	assert.Equal(t, "1sg--bad", sg["SubnetGroupName"])
 }
 
 // ---- Reset / GetSupportedOperations ----
