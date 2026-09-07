@@ -405,10 +405,10 @@ func (h *Handler) handleGetResourceRequestStatus(
 	_ context.Context,
 	in *getResourceRequestStatusInput,
 ) (*getResourceRequestStatusOutput, error) {
-	if in.RequestToken == "" {
-		return nil, fmt.Errorf("%w: RequestToken is required", ErrValidation)
-	}
-
+	// No InvalidRequestException guard here: GetResourceRequestStatus declares only
+	// RequestTokenNotFoundException (confirmed: deserializeOpErrorGetResourceRequestStatus
+	// in the pinned SDK's deserializers.go). An empty RequestToken never matches a
+	// tracked request, so it naturally falls through to that same error below.
 	event, err := h.Backend.GetResourceRequestStatus(in.RequestToken)
 	if err != nil {
 		return nil, err
@@ -431,10 +431,11 @@ func (h *Handler) handleCancelResourceRequest(
 	_ context.Context,
 	in *cancelResourceRequestInput,
 ) (*cancelResourceRequestOutput, error) {
-	if in.RequestToken == "" {
-		return nil, fmt.Errorf("%w: RequestToken is required", ErrValidation)
-	}
-
+	// No InvalidRequestException guard here: CancelResourceRequest declares only
+	// RequestTokenNotFoundException/ConcurrentModificationException (confirmed:
+	// deserializeOpErrorCancelResourceRequest in the pinned SDK's deserializers.go).
+	// An empty RequestToken never matches a tracked request, so it naturally falls
+	// through to that same not-found error below.
 	event, err := h.Backend.CancelResourceRequest(in.RequestToken)
 	if err != nil {
 		return nil, err

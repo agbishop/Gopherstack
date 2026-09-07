@@ -17,9 +17,9 @@ ops:
   UpdateResource: {wire: ok, errors: ok, state: ok, persist: ok, note: "PatchDocument now enforced as required (was silently no-op'd by applyPatch on an empty/missing patch, matching UpdateResourceInput.PatchDocument 'This member is required'); ClientToken idempotency added (real UpdateResourceInput.ClientToken field was previously dropped entirely -- accepted on the wire but never passed to the backend); ProgressEvent.ResourceModel reflects post-patch Properties; applyPatch now resolves each Path as a real RFC 6901 JSON Pointer (nested objects + array elements/indices), fixing a bug where a multi-segment Path (e.g. /Tags/0/Value) was treated as a literal top-level map key instead of navigating -- see Notes below (2026-09-04 pass); all six RFC 6902 op types now implemented -- move/copy/test were previously accepted on the wire and silently skipped, now applied with real cross-path/value semantics and a failed test/move/copy aborts the WHOLE patch (InvalidRequestException), matching RFC 6902's atomic-patch contract -- see Notes below (2026-09-06 pass, gopherstack-j6lv)"}
   DeleteResource: {wire: ok, errors: ok, state: ok, persist: ok, note: "ClientToken idempotency added (real DeleteResourceInput.ClientToken field was previously dropped entirely)"}
   ListResources: {wire: ok, errors: ok, state: ok, persist: ok, note: "pagination via pkgs/page; InvalidRequestException on malformed TypeName; now returns defensive copies (see leaks note) instead of live backend pointers; ResourceModel (real 'resource model to use to select the resources to return' field) is now applied as a real filter -- see gopherstack-c9yf fix below"}
-  GetResourceRequestStatus: {wire: ok, errors: ok, state: ok, persist: ok, note: "unknown token -> RequestTokenNotFoundException (the only error this op declares); output now includes HooksProgressEvent (real field on GetResourceRequestStatusOutput, always empty/omitted -- this backend has no Hooks concept)"}
-  CancelResourceRequest: {wire: ok, errors: ok, state: ok, persist: ok, note: "unknown token -> RequestTokenNotFoundException; non-IN_PROGRESS status -> ConcurrentModificationException/HTTP 500 -- confirmed against live API reference"}
-  ListResourceRequests: {wire: ok, errors: ok, state: ok, persist: ok, note: "INVENTED-FIELD FIX: ResourceRequestStatusFilter.TypeName was NOT a real field (confirmed against both aws-sdk-go-v2/service/cloudcontrol/types and botocore's service-2.json -- the real filter shape has exactly Operations + OperationStatuses, no TypeName) and was silently narrowing results below what real AWS would return for the same filter body; deleted the field and the filtering logic that used it. Operations/OperationStatuses enum validation confirmed correct -- both are closed Smithy string enums in the real model."}
+  GetResourceRequestStatus: {wire: ok, errors: ok, state: ok, persist: ok, note: "unknown token -> RequestTokenNotFoundException (the only error this op declares); output now includes HooksProgressEvent (real field on GetResourceRequestStatusOutput, always empty/omitted -- this backend has no Hooks concept). ERROR-CODE FIX (2026-09-07, gopherstack-v5eb): empty RequestToken previously returned InvalidRequestException, not declared by this op (confirmed: deserializeOpErrorGetResourceRequestStatus's only named case is RequestTokenNotFoundException) -- see Notes below."}
+  CancelResourceRequest: {wire: ok, errors: ok, state: ok, persist: ok, note: "unknown token -> RequestTokenNotFoundException; non-IN_PROGRESS status -> ConcurrentModificationException/HTTP 500 -- confirmed against live API reference. ERROR-CODE FIX (2026-09-07, gopherstack-v5eb): empty RequestToken previously returned InvalidRequestException, not declared by this op either (only RequestTokenNotFoundException/ConcurrentModificationException) -- see Notes below."}
+  ListResourceRequests: {wire: ok, errors: ok, state: ok, persist: ok, note: "INVENTED-FIELD FIX: ResourceRequestStatusFilter.TypeName was NOT a real field (confirmed against both aws-sdk-go-v2/service/cloudcontrol/types and botocore's service-2.json -- the real filter shape has exactly Operations + OperationStatuses, no TypeName) and was silently narrowing results below what real AWS would return for the same filter body; deleted the field and the filtering logic that used it. ERROR-CODE FIX (2026-09-07, gopherstack-v5eb): the prior 'enum validation confirmed correct' framing here was wrong -- an unrecognized Operations/OperationStatuses value returned InvalidRequestException, but this op declares ZERO errors in the real model (confirmed: botocore's service-2.json has an empty errors list for ListResourceRequests, unique among this service's 8 ops). Fixed to never error; an unrecognized value now simply matches no tracked request -- see Notes below."}
 families:
   progress_event_lifecycle: {status: ok, note: "every mutating op completes synchronously to a terminal SUCCESS (or CANCEL_COMPLETE) in the same call -- no PENDING/IN_PROGRESS hang risk since GetResourceRequestStatus/ListResourceRequests read the same requests table that was just written"}
   persistence: {status: ok, note: "Handler/InMemoryBackend both implement Snapshot/Restore (persistence.go), versioned, wired via store.Registry (store_setup.go); confirmed round-trips resources+requests+clientTokens in persistence_test.go. cloudcontrolSnapshotVersion bumped 1->2 this pass: ClientTokens' value type changed from a bare requestToken string to clientTokenEntry{RequestToken,Fingerprint} to support ClientTokenConflictException detection (see client_token_idempotency below) -- a real shape change, so old snapshots are discarded cleanly rather than risking a partial/wrong decode."}
@@ -34,6 +34,96 @@ leaks: {status: clean, note: "no goroutines/timers/janitors; InMemoryBackend is 
 ---
 
 ## Notes
+
+**Fixed this pass (2026-09-07, bd issue gopherstack-v5eb)**:
+
+`cmd/errtargetaudit` flagged 3 class A findings (8/8 ops resolved, 8/8 emissions
+found, no coverage warning) -- all three were `domain=Handler`, all top-level
+exceptions (none embedded in a `ProgressEvent.ErrorCode`/`FailureReason`, so the
+sqs-batch-style false-positive class does not apply here), and all three were
+confirmed real, not tool artifacts:
+
+- `GetResourceRequestStatus` (`handler.go:409`, since renumbered) and
+  `CancelResourceRequest` (`handler.go:435`) both rejected an empty/missing
+  `RequestToken` with `InvalidRequestException` via the same copy-pasted
+  `ErrValidation` guard used by every other required-field check in this file.
+  Verified against the pinned SDK
+  (`aws-sdk-go-v2/service/cloudcontrol@v1.32.4/deserializers.go`,
+  `awk "/deserializeOpError<Op>\(/,/^}/" | grep -oE '"[A-Za-z0-9]+"'`):
+  `GetResourceRequestStatus` declares only `UnknownError, RequestTokenNotFoundException`;
+  `CancelResourceRequest` declares only
+  `UnknownError, ConcurrentModificationException, RequestTokenNotFoundException`.
+  Neither declares `InvalidRequestException`. `RequestToken` is `required` on both
+  input shapes (`GetResourceRequestStatusInput`/`CancelResourceRequestInput`,
+  botocore's `service-2.json`), so a conformant SDK client can never even send an
+  empty value -- the Go SDK's own `validators.go` rejects it client-side
+  (`smithy.InvalidParamsError`, never touches the wire) -- but this backend is
+  also driven directly over the wire (tests, raw HTTP, `errtargetaudit` itself),
+  so the server-side guard was still reachable and still wrong. Fixed by deleting
+  both guards outright: an empty `RequestToken` never matches a tracked request,
+  so it now falls through naturally to the same `RequestTokenNotFoundException`
+  path an unrecognized token already takes -- no new code, no special-casing.
+- `ListResourceRequests`' `validateFilter` (`resource_requests.go:138`, since
+  deleted) rejected an unrecognized `Operations`/`OperationStatuses` value with
+  `InvalidRequestException`. Verified this op declares **zero** errors in the
+  real model: `deserializeOpErrorListResourceRequests` has no named-error `case`
+  at all (falls straight to the generic/`UnknownError` default), confirmed
+  independently against botocore's `service-2.json`
+  (`operations.ListResourceRequests.errors == []`) -- the only one of this
+  service's 8 ops with an empty declared-error list. The prior PARITY.md note
+  claiming "enum validation confirmed correct" for this filter was itself wrong;
+  validating and rejecting was the bug, not a feature. Fixed by deleting
+  `validateFilter` (and the now-unused `validOperations`/`validOperationStatuses`
+  lookup sets) entirely: `eventMatchesFilter`'s existing `slices.Contains` checks
+  already fail an unrecognized value closed on their own -- no real
+  `ProgressEvent.Operation`/`OperationStatus` will ever equal e.g. `"BOGUS"`, so
+  the op now returns 200 with that criterion matching nothing, never a 400.
+- None of the three findings interact with this service's synchronous-completion
+  design (`families.progress_event_lifecycle` above): all three are input-shape
+  validation on the request itself, not a provisioning outcome, so there is no
+  FAILED-state/ProgressEvent angle here -- confirmed by reading each call site,
+  not assumed.
+- Root cause: a single copy-pasted "required field -> `ErrValidation`" pattern
+  (correct for `CreateResource`/`UpdateResource`/`DeleteResource`/`GetResource`/
+  `ListResources`, which all genuinely declare `InvalidRequestException`) was
+  applied uniformly to `GetResourceRequestStatus`/`CancelResourceRequest`/
+  `ListResourceRequests` without checking each op's own declared set -- not a
+  global sentinel-map issue (gopherstack-hdvu): each op still has its own
+  `errors.go` sentinel and its own `handleError` case, just misapplied per call
+  site, exactly the "fix per call site" shape that issue already prescribes.
+  No class-8 (consumed downstream) or class-9 (helper-sentinel-survives-fix)
+  shape present: all three sentinels are returned directly to `handleError` with
+  nothing intervening.
+- Pre-existing tests corrected (2, both previously pinned the wrong code with no
+  note): `TestHandler_ListResourceRequests_EnumValidation` asserted 400 for an
+  unrecognized enum value in the filter (now asserts 200 with zero matching
+  summaries); the table-driven `TestHandler_GetResourceRequestStatus`/
+  `TestHandler_CancelResourceRequest` "missing RequestToken returns 400" cases
+  were left as-is (400 is still correct, they never asserted the specific wire
+  code) but are now supplemented by dedicated tests below that do.
+- Regression tests added: `TestHandler_GetResourceRequestStatus_EmptyRequestToken_IsRequestTokenNotFound`,
+  `TestHandler_CancelResourceRequest_EmptyRequestToken_IsRequestTokenNotFound` (each
+  asserts `RequestTokenNotFoundException` and explicitly asserts NOT
+  `InvalidRequestException`); `TestHandler_ListResourceRequests_EnumValidation`
+  rewritten to assert 200 + empty-match for an unrecognized `Operations`/
+  `OperationStatuses` value, and 200 + a real match for valid values.
+- Per-line neuter results (each reverted immediately after): reinstating the old
+  `InvalidRequestException` guard in `handleGetResourceRequestStatus` failed
+  `TestHandler_GetResourceRequestStatus_EmptyRequestToken_IsRequestTokenNotFound`
+  at its `RequestTokenNotFoundException`/`InvalidRequestException` assertions;
+  same guard in `handleCancelResourceRequest` failed the equivalent Cancel test
+  the same way; reinstating an `Operations`-only enum check in
+  `ListResourceRequests` failed
+  `TestHandler_ListResourceRequests_EnumValidation/unrecognized_operation_value_matches_nothing,_no_error`
+  at its `200` HTTP-status assertion. All three neuters compiled; all three
+  failed the test named for them, nothing else.
+- Re-ran `cmd/errtargetaudit` after the fix: cloudcontrol no longer appears in
+  the report at all (the tool omits a service entirely once it has zero class A
+  findings and no coverage warning). Confirmed directly with
+  `go run ./cmd/errtargetaudit -dir cloudcontrol -json <path>`:
+  `opsGroundTruth: 8, opsResolved: 8, opsWithEmission: 7` (down from 8; expected --
+  `ListResourceRequests` now has no error path left to emit from at all, which is
+  correct given it declares none), `0 class A findings, 0 coverage warnings`.
 
 **Fixed this pass (2026-09-06, bd issue gopherstack-j6lv)**:
 

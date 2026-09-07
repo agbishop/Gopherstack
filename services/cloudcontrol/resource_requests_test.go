@@ -84,6 +84,24 @@ func TestHandler_GetResourceRequestStatus_UnknownToken_IsRequestTokenNotFound(t 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Equal(t, "RequestTokenNotFoundException", errType(t, rec.Body.Bytes()))
 }
+
+// TestHandler_GetResourceRequestStatus_EmptyRequestToken_IsRequestTokenNotFound verifies that
+// an empty RequestToken is NOT InvalidRequestException -- GetResourceRequestStatus declares
+// only RequestTokenNotFoundException (confirmed against deserializeOpErrorGetResourceRequestStatus
+// in the pinned SDK; a real client can never even send an empty RequestToken since it is a
+// required member enforced by the SDK's own client-side validators.go, but this backend must
+// still answer correctly for a direct wire request that bypasses that client-side check).
+func TestHandler_GetResourceRequestStatus_EmptyRequestToken_IsRequestTokenNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	rec := doRequest(t, h, "GetResourceRequestStatus", map[string]any{"RequestToken": ""})
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	gotErrType := errType(t, rec.Body.Bytes())
+	assert.Equal(t, "RequestTokenNotFoundException", gotErrType)
+	assert.NotEqual(t, "InvalidRequestException", gotErrType)
+}
 func TestBackend_GetResourceRequestStatus_EventsNotRemovedOnRead(t *testing.T) {
 	t.Parallel()
 
@@ -265,6 +283,25 @@ func TestHandler_CancelResourceRequest_UnknownToken_IsRequestTokenNotFound(t *te
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Equal(t, "RequestTokenNotFoundException", errType(t, rec.Body.Bytes()))
+}
+
+// TestHandler_CancelResourceRequest_EmptyRequestToken_IsRequestTokenNotFound verifies that an
+// empty RequestToken is NOT InvalidRequestException -- CancelResourceRequest declares only
+// RequestTokenNotFoundException/ConcurrentModificationException (confirmed against
+// deserializeOpErrorCancelResourceRequest in the pinned SDK; a real client can never even
+// send an empty RequestToken since it is a required member enforced by the SDK's own
+// client-side validators.go, but this backend must still answer correctly for a direct wire
+// request that bypasses that client-side check).
+func TestHandler_CancelResourceRequest_EmptyRequestToken_IsRequestTokenNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	rec := doRequest(t, h, "CancelResourceRequest", map[string]any{"RequestToken": ""})
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	gotErrType := errType(t, rec.Body.Bytes())
+	assert.Equal(t, "RequestTokenNotFoundException", gotErrType)
+	assert.NotEqual(t, "InvalidRequestException", gotErrType)
 }
 
 // TestHandler_CancelResourceRequest_TerminalStatus_IsConcurrentModification verifies the exact
@@ -560,41 +597,49 @@ func TestHandler_ListResourceRequests_ContainsExpectedFields(t *testing.T) {
 	_, isNumber := summary["EventTime"].(float64)
 	assert.True(t, isNumber, "EventTime must be a JSON number (Unix epoch)")
 }
+
+// TestHandler_ListResourceRequests_EnumValidation verifies that an unrecognized
+// Operations/OperationStatuses value in the filter is NOT InvalidRequestException.
+// ListResourceRequests declares ZERO errors in the real model (confirmed: botocore's
+// service-2.json has an empty "errors" list for this operation, and the pinned SDK's
+// deserializeOpErrorListResourceRequests has no named-error case at all, unlike every
+// other CloudControl op) -- so an unrecognized value must return 200 with that
+// criterion simply never matching any tracked request, not a 400.
 func TestHandler_ListResourceRequests_EnumValidation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		body       map[string]any
-		name       string
-		wantStatus int
+		body        map[string]any
+		name        string
+		wantMatches bool
 	}{
 		{
-			name: "invalid operation value returns 400",
+			name: "unrecognized operation value matches nothing, no error",
 			body: map[string]any{
 				"ResourceRequestStatusFilter": map[string]any{
 					"Operations": []string{"INVALID_OP"},
 				},
 			},
-			wantStatus: http.StatusBadRequest,
+			wantMatches: false,
 		},
 		{
-			name: "invalid status value returns 400",
+			name: "unrecognized status value matches nothing, no error",
 			body: map[string]any{
 				"ResourceRequestStatusFilter": map[string]any{
 					"OperationStatuses": []string{"BOGUS_STATUS"},
 				},
 			},
-			wantStatus: http.StatusBadRequest,
+			wantMatches: false,
 		},
 		{
-			name: "valid operations and statuses return 200",
+			name: "valid operations and statuses match",
 			body: map[string]any{
 				"ResourceRequestStatusFilter": map[string]any{
 					"Operations":        []string{"CREATE", "DELETE", "UPDATE"},
 					"OperationStatuses": []string{"SUCCESS", "FAILED"},
 				},
 			},
-			wantStatus: http.StatusOK,
+			wantMatches: true,
 		},
 	}
 
@@ -603,8 +648,22 @@ func TestHandler_ListResourceRequests_EnumValidation(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
+			_, err := h.Backend.CreateResource("AWS::Logs::LogGroup", `{"LogGroupName":"enum-test"}`, "")
+			require.NoError(t, err)
+
 			rec := doRequest(t, h, "ListResourceRequests", tt.body)
-			assert.Equal(t, tt.wantStatus, rec.Code)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var out map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+			summaries, ok := out["ResourceRequestStatusSummaries"].([]any)
+
+			if tt.wantMatches {
+				require.True(t, ok)
+				assert.Len(t, summaries, 1)
+			} else {
+				assert.Empty(t, summaries)
+			}
 		})
 	}
 }
