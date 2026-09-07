@@ -50,6 +50,9 @@ func (b *InMemoryBackend) EnableKeyRotation(
 
 	if input.RotationPeriodInDays != nil && *input.RotationPeriodInDays > 0 {
 		period := *input.RotationPeriodInDays
+		// gopherstack-i4q8: EnableKeyRotation declares UnsupportedOperationException
+		// (used above for the KeySpec/Origin checks), but its doc covers an
+		// unsupported parameter VALUE, not this numeric range; rejected. Landmine.
 		if period < minRotationPeriodDays || period > maxRotationPeriodDays {
 			return fmt.Errorf(
 				"%w: RotationPeriodInDays must be between %d and %d, got %d",

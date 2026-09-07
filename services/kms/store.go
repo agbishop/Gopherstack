@@ -422,6 +422,11 @@ func (b *InMemoryBackend) resolveKeyID(
 	if cached, ok := b.keyIDResolutionCache.Load(keyID); ok {
 		resolved, resolvedOK := cached.(cachedResolution)
 		if !resolvedOK {
+			// gopherstack-i4q8: resolveKeyID is reached by nearly every
+			// KeyId-resolving op, each with its own declared set (see the
+			// qxaj comment above) -- but this branch is cache corruption, not
+			// a real client-triggerable condition, so there's no per-op fit
+			// question to resolve either way. Landmine.
 			return "", "", fmt.Errorf("%w: invalid key resolution cache entry", ErrValidation)
 		}
 

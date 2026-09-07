@@ -40,6 +40,9 @@ func (b *InMemoryBackend) Encrypt(
 	ctx context.Context,
 	input *EncryptInput,
 ) (*EncryptOutput, error) {
+	// gopherstack-i4q8: Encrypt does not declare LimitExceededException (unlike
+	// CreateKey/CreateGrant, which do and use it for this same "exceeds a
+	// length" shape); nothing in Encrypt's declared set fits. Landmine.
 	if len(input.Plaintext) > maxPlaintextBytes {
 		return nil, fmt.Errorf(
 			"%w: plaintext must not exceed %d bytes, got %d",

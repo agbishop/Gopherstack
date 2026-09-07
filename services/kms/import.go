@@ -105,6 +105,11 @@ func (b *InMemoryBackend) GetParametersForImport(
 
 // resolveExpirationModel normalises the (expirationModel, validTo) pair from an
 // ImportKeyMaterial request and returns the validated expiration model and ValidTo.
+// gopherstack-i4q8: ImportKeyMaterial declares UnsupportedOperationException,
+// but its doc ("a specified parameter is not supported") covers an unsupported
+// VALUE for a parameter (as used for KeySpec elsewhere), not this
+// ExpirationModel/ValidTo cross-field consistency rule -- rejected as a
+// name-similarity trap, not a fit. Nothing else fits either. Landmine.
 func resolveExpirationModel(expModel string, validTo float64) (string, float64, error) {
 	if expModel == "" {
 		if validTo > 0 {
@@ -148,6 +153,10 @@ func (b *InMemoryBackend) resolveKeyMaterial(keyID string, material []byte) ([]b
 
 	privKey, ok := privKeyAny.(*rsa.PrivateKey)
 	if !ok {
+		// gopherstack-i4q8: defensive only -- importWrappingKeys only ever
+		// stores *rsa.PrivateKey (see GetParametersForImport), so no request
+		// can hit this. Not a real per-op validation, so there's no op-declared
+		// code to pick between; landmine.
 		return nil, fmt.Errorf("%w: internal: wrapping key type assertion failed", ErrValidation)
 	}
 

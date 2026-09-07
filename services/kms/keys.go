@@ -136,10 +136,13 @@ func deriveKeySpecUsage(keySpec, keyUsage string) (string, string) {
 
 // validateCreateKeyLimits checks CreateKeyInput's Description and Tags length limits.
 func validateCreateKeyLimits(input *CreateKeyInput) error {
+	// LimitExceededException's doc (kms@v1.55.4 types/errors.go): "a length
+	// constraint or quota was exceeded" -- CreateKey declares it, and this is a
+	// length constraint (gopherstack-i4q8).
 	if len(input.Description) > maxDescriptionLength {
 		return fmt.Errorf(
 			"%w: Description exceeds maximum length of %d characters",
-			ErrValidation, maxDescriptionLength,
+			ErrLimitExceeded, maxDescriptionLength,
 		)
 	}
 
@@ -316,6 +319,9 @@ func (b *InMemoryBackend) ListKeys(
 	limit := int32(defaultListLimit)
 
 	if input.Limit != nil {
+		// gopherstack-i4q8: ListKeys declares InvalidMarkerException, but its own
+		// doc ("...the marker...is not valid") covers Marker, not Limit; nothing
+		// fits an out-of-range Limit, landmine.
 		if *input.Limit < 1 || *input.Limit > 1000 {
 			return nil, fmt.Errorf("%w: Limit must be between 1 and 1000", ErrValidation)
 		}
@@ -418,6 +424,8 @@ func (b *InMemoryBackend) ScheduleKeyDeletion(
 		days = defaultPendingWindowDays
 	}
 
+	// gopherstack-i4q8: ScheduleKeyDeletion declares nothing for a
+	// PendingWindowInDays range check; landmine.
 	if days < minPendingWindowDays || days > maxPendingWindowDays {
 		return nil, fmt.Errorf(
 			"%w: PendingWindowInDays must be between %d and %d, got %d",
@@ -747,6 +755,9 @@ func (b *InMemoryBackend) UpdateKeyDescription(
 	ctx context.Context,
 	input *UpdateKeyDescriptionInput,
 ) error {
+	// gopherstack-i4q8: unlike CreateKey (which declares LimitExceededException
+	// for this same check, see validateCreateKeyLimits), UpdateKeyDescription's
+	// declared set has no length/quota code at all -- nothing fits, landmine.
 	if len(input.Description) > maxDescriptionLength {
 		return fmt.Errorf(
 			"%w: Description exceeds maximum length of %d characters",

@@ -38,6 +38,11 @@ func TestKeyPolicy_ListKeyPolicies(t *testing.T) {
 	assert.Contains(t, list.PolicyNames, "default")
 }
 
+// TestKeyPolicy_InvalidPolicyName is a regression test for gopherstack-i4q8:
+// PutKeyPolicy's own PolicyName check (defense in depth; the handler already
+// rejects this before reaching the backend, see
+// TestHandler_PutKeyPolicy_InvalidPolicyName_ViaHTTP) must return
+// UnsupportedOperationException, not the fabricated ValidationException.
 func TestKeyPolicy_InvalidPolicyName(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)
@@ -48,7 +53,8 @@ func TestKeyPolicy_InvalidPolicyName(t *testing.T) {
 		PolicyName: "custom",
 		Policy:     `{}`,
 	})
-	require.Error(t, err)
+	require.ErrorIs(t, err, kms.ErrUnsupportedParameter)
+	assert.NotErrorIs(t, err, kms.ErrValidation)
 }
 
 func TestPutKeyPolicy_AndGetKeyPolicy_Roundtrip(t *testing.T) {

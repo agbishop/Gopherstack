@@ -15,6 +15,10 @@ import (
 func (b *InMemoryBackend) CreateCustomKeyStore(
 	ctx context.Context, input *CreateCustomKeyStoreInput,
 ) (*CreateCustomKeyStoreOutput, error) {
+	// gopherstack-i4q8: CreateCustomKeyStore's declared set (CloudHsmCluster*,
+	// XksProxy*, CustomKeyStoreNameInUseException, IncorrectTrustAnchorException,
+	// LimitExceededException) has nothing for a missing name -- an empty string
+	// isn't a length/quota "exceeded" condition either. Landmine.
 	if strings.TrimSpace(input.CustomKeyStoreName) == "" {
 		return nil, fmt.Errorf("%w: CustomKeyStoreName must not be empty", ErrValidation)
 	}
@@ -24,6 +28,9 @@ func (b *InMemoryBackend) CreateCustomKeyStore(
 		storeType = "AWS_CLOUDHSM"
 	}
 
+	// gopherstack-i4q8: same declared-set gap as above -- no enum-value code
+	// (CreateCustomKeyStore does not declare UnsupportedOperationException).
+	// Landmine.
 	if storeType != "AWS_CLOUDHSM" && storeType != "EXTERNAL_KEY_STORE" {
 		return nil, fmt.Errorf(
 			"%w: CustomKeyStoreType must be AWS_CLOUDHSM or EXTERNAL_KEY_STORE",

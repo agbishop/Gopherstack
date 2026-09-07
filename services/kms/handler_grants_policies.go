@@ -55,11 +55,16 @@ func (h *Handler) buildGrantPolicyActions() map[string]kmsActionFn {
 				return nil, err
 			}
 
-			// AWS KMS only supports the "default" policy name.
+			// AWS KMS only supports the "default" policy name (api_op_PutKeyPolicy.go:
+			// "The only valid value is default."). UnsupportedOperationException's
+			// doc -- "a specified parameter is not supported" -- covers exactly this,
+			// PutKeyPolicy declares it, and it's the same reuse pattern as the
+			// KeySpec/KeyPairSpec enum checks ErrUnsupportedParameter already covers
+			// (gopherstack-i4q8).
 			if input.PolicyName != "" && input.PolicyName != defaultKeyPolicyName {
 				return nil, fmt.Errorf(
 					"%w: PolicyName must be %q; got %q",
-					ErrValidation, defaultKeyPolicyName, input.PolicyName,
+					ErrUnsupportedParameter, defaultKeyPolicyName, input.PolicyName,
 				)
 			}
 

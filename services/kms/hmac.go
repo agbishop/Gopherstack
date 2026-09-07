@@ -10,6 +10,10 @@ func (b *InMemoryBackend) GenerateMac(
 	ctx context.Context,
 	input *GenerateMacInput,
 ) (*GenerateMacOutput, error) {
+	// gopherstack-i4q8: GenerateMac declares nothing for an empty MacAlgorithm.
+	// InvalidKeyUsageException's own doc is about the key's KeyUsage/KeySpec
+	// being incompatible with the operation, not a missing algorithm parameter
+	// (see the KeyUsage check below, which correctly uses it). Landmine.
 	if input.MacAlgorithm == "" {
 		return nil, fmt.Errorf("%w: MacAlgorithm must not be empty", ErrValidation)
 	}
@@ -68,6 +72,8 @@ func (b *InMemoryBackend) VerifyMac(
 	ctx context.Context,
 	input *VerifyMacInput,
 ) (*VerifyMacOutput, error) {
+	// gopherstack-i4q8: same declared-set gap as GenerateMac above -- VerifyMac
+	// declares nothing for an empty MacAlgorithm. Landmine.
 	if input.MacAlgorithm == "" {
 		return nil, fmt.Errorf("%w: MacAlgorithm must not be empty", ErrValidation)
 	}

@@ -17,10 +17,15 @@ func (b *InMemoryBackend) PutKeyPolicy(ctx context.Context, input *PutKeyPolicyI
 		policyName = defaultKeyPolicyName
 	}
 
+	// Same fit as the handler-level check in buildGrantPolicyActions
+	// (gopherstack-i4q8): UnsupportedOperationException, per its doc "a
+	// specified parameter is not supported". Unreachable in production today --
+	// the handler already normalizes/rejects PolicyName before calling this
+	// method -- but kept correct as defense in depth.
 	if policyName != defaultKeyPolicyName {
 		return fmt.Errorf(
 			"%w: PolicyName must be %q; got %q",
-			ErrValidation, defaultKeyPolicyName, policyName,
+			ErrUnsupportedParameter, defaultKeyPolicyName, policyName,
 		)
 	}
 

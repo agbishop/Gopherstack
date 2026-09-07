@@ -77,16 +77,28 @@ var (
 	// per-op fit (see ErrInvalidAliasName, ErrInvalidTag, ErrUnsupportedParameter,
 	// ErrInvalidImportToken, and the CustomKeyStoreNotFoundException /
 	// LimitExceededException / NotFoundException reuses) have been remapped.
-	// Remaining ErrValidation call sites were checked individually against their
-	// reaching operation's deserializeOpError and have no fitting recognized code
-	// (gopherstack-e3yu) -- most are smithy-required-field or range-trait checks a
-	// real AWS SDK client already rejects before the request reaches the wire.
+	// gopherstack-i4q8 re-derived and re-checked every remaining call site
+	// (36 as of 2026-09-07, up from the ~35 e3yu left) individually against its
+	// reaching operation's own deserializeOpError, quoting each candidate's own
+	// doc comment rather than trusting e3yu's blanket claim -- see the per-site
+	// landmine comments this added. Two more had a real fit and were remapped
+	// (CreateKey's and CreateGrant's own length checks, both to
+	// ErrLimitExceeded; PutKeyPolicy's PolicyName check, to
+	// ErrUnsupportedParameter). The rest have no fitting recognized code --
+	// mostly smithy-required-field, range-trait or cross-field checks a real
+	// AWS SDK client already rejects before the request reaches the wire, plus
+	// two shared helpers reached by ops with differing declared sets
+	// (validateEncryptionContextSize in crypto.go, resolveKeyID in store.go)
+	// and two unreachable defensive checks (import.go, store.go).
 	ErrValidation = errors.New("ValidationException")
 	// ErrExpiredKeyMaterial is returned when a key's imported material has passed its ValidTo date.
 	ErrExpiredKeyMaterial = errors.New("ExpiredImportTokenException")
 	// ErrInvalidGrantToken is returned when a grant token is expired or malformed.
 	ErrInvalidGrantToken = errors.New("InvalidGrantTokenException")
-	// ErrLimitExceeded is returned when a service limit is exceeded (e.g. grants per key).
+	// ErrLimitExceeded is returned when a service limit is exceeded (e.g. grants per key)
+	// or, per LimitExceededException's own doc ("a length constraint or quota was
+	// exceeded"), a length constraint -- CreateKey's Description and CreateGrant's
+	// Name length checks reuse it for exactly that (gopherstack-i4q8).
 	ErrLimitExceeded = errors.New("LimitExceededException")
 	// ErrInvalidAlgorithm is returned when an algorithm is not valid for the key spec.
 	ErrInvalidAlgorithm = errors.New("InvalidAlgorithmException")
@@ -98,10 +110,11 @@ var (
 	// ReplicateKey's deserializeOpError all recognize TagException for this.
 	ErrInvalidTag = errors.New("TagException")
 	// ErrUnsupportedParameter is returned when a KeySpec/KeyPairSpec/WrappingAlgorithm/
-	// WrappingKeySpec value is not one this operation supports. CreateKey,
-	// GenerateDataKeyPair(WithoutPlaintext), GetParametersForImport and the rotation
-	// ops all recognize UnsupportedOperationException for an unsupported parameter
-	// value, per its doc ("a specified parameter is not supported").
+	// WrappingKeySpec/PolicyName value is not one this operation supports. CreateKey,
+	// GenerateDataKeyPair(WithoutPlaintext), GetParametersForImport, the rotation
+	// ops and PutKeyPolicy all recognize UnsupportedOperationException for an
+	// unsupported parameter value, per its doc ("a specified parameter is not
+	// supported") -- gopherstack-i4q8 added the PutKeyPolicy reuse.
 	ErrUnsupportedParameter = errors.New("UnsupportedOperationException")
 	// ErrInvalidImportToken is returned when ImportKeyMaterial's wrapped key material
 	// cannot be unwrapped because no GetParametersForImport wrapping key is on record
