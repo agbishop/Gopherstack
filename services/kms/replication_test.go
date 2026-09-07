@@ -642,13 +642,16 @@ func TestCreateKeyValidations(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "hmac_multiregion",
+			// gopherstack-5rjn: HMAC KMS keys DO support MultiRegion (kms@v1.55.4's
+			// own CreateKey doc lists HMAC among "all supported KMS key types" for
+			// multi-Region keys); this case previously asserted the opposite.
+			name: "hmac_multiregion_allowed",
 			input: kms.CreateKeyInput{
 				KeySpec:     "HMAC_256",
 				KeyUsage:    "GENERATE_VERIFY_MAC",
 				MultiRegion: true,
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name:    "too_many_tags",

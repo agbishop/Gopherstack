@@ -422,7 +422,9 @@ func (b *InMemoryBackend) resolveKeyID(
 	if cached, ok := b.keyIDResolutionCache.Load(keyID); ok {
 		resolved, resolvedOK := cached.(cachedResolution)
 		if !resolvedOK {
-			// Cache corruption, not a real client-triggerable condition.
+			// Unreachable defense, not a per-caller error-code question (gopherstack-4ra7):
+			// every Store into this cache (below) writes a cachedResolution, and Restore
+			// clears the cache rather than repopulating it, so no code path can trigger this.
 			return "", "", fmt.Errorf("%w: invalid key resolution cache entry", ErrValidation)
 		}
 

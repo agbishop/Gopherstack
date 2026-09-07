@@ -19,13 +19,21 @@ import (
 // RSA specs (RSA_*) are valid for SIGN_VERIFY or ENCRYPT_DECRYPT (RSA-OAEP);
 // ECC specs (ECC_*) are valid for SIGN_VERIFY or KEY_AGREEMENT;
 // HMAC specs (HMAC_*) are only valid for GENERATE_VERIFY_MAC.
+//
+// CreateKey declares no key-usage-shaped error (kms@v1.55.4 deserializeOpErrorCreateKey),
+// so this raises ErrUnsupportedParameter rather than ErrInvalidKeyUsage: real AWS uses
+// UnsupportedOperationException for a KeySpec-related CreateKey rejection (developerguide
+// hmac-create-key.html -- an HMAC KeySpec unsupported in a Region), while
+// InvalidKeyUsageException's own doc (docs-2.json) is about an existing key's KeyUsage
+// being wrong for the API operation invoked, not this creation-time pairing
+// (gopherstack-5rjn).
 func validateKeySpecUsage(keySpec, keyUsage string) error {
 	switch keySpec {
 	case keySpecSymmetric:
 		if keyUsage != "" && keyUsage != KeyUsageEncryptDecrypt {
 			return fmt.Errorf(
 				"%w: key spec %q is not compatible with key usage %q; symmetric keys require ENCRYPT_DECRYPT",
-				ErrInvalidKeyUsage,
+				ErrUnsupportedParameter,
 				keySpec,
 				keyUsage,
 			)
@@ -34,14 +42,14 @@ func validateKeySpecUsage(keySpec, keyUsage string) error {
 		if keyUsage != "" && keyUsage != KeyUsageSignVerify && keyUsage != KeyUsageEncryptDecrypt {
 			return fmt.Errorf(
 				"%w: key spec %q supports KeyUsage=%s or KeyUsage=%s only",
-				ErrInvalidKeyUsage, keySpec, KeyUsageSignVerify, KeyUsageEncryptDecrypt,
+				ErrUnsupportedParameter, keySpec, KeyUsageSignVerify, KeyUsageEncryptDecrypt,
 			)
 		}
 	case keySpecECCP256, keySpecECCP384, keySpecECCP521:
 		if keyUsage != "" && keyUsage != KeyUsageSignVerify && keyUsage != KeyUsageKeyAgreement {
 			return fmt.Errorf(
 				"%w: key spec %q is not compatible with key usage %q; ECC keys require SIGN_VERIFY or KEY_AGREEMENT",
-				ErrInvalidKeyUsage,
+				ErrUnsupportedParameter,
 				keySpec,
 				keyUsage,
 			)
@@ -50,7 +58,7 @@ func validateKeySpecUsage(keySpec, keyUsage string) error {
 		if keyUsage != "" && keyUsage != KeyUsageGenerateMac {
 			return fmt.Errorf(
 				"%w: key spec %q is not compatible with key usage %q; HMAC keys require GENERATE_VERIFY_MAC",
-				ErrInvalidKeyUsage,
+				ErrUnsupportedParameter,
 				keySpec,
 				keyUsage,
 			)
@@ -182,29 +190,18 @@ func (b *InMemoryBackend) CreateKey(
 	keyUsage := input.KeyUsage
 	keySpec := input.KeySpec
 
-	// Validate that KeySpec and KeyUsage are compatible when both are specified.
-	// gopherstack-h88p: CreateKey's declared error set (kms@v1.55.4
-	// deserializeOpErrorCreateKey) has no key-usage-shaped code, and unlike most
-	// ErrValidation sites this check is a real cross-field business rule a client
-	// can trigger with well-formed fields, not a client-side-rejected required-field
-	// case -- so no swap, left as a known gap.
+	// Validate that KeySpec and KeyUsage are compatible when both are specified
+	// (gopherstack-5rjn: see validateKeySpecUsage's doc for the error-code reasoning).
 	if err := validateKeySpecUsage(keySpec, keyUsage); err != nil {
 		return nil, err
 	}
 
 	keySpec, keyUsage = deriveKeySpecUsage(keySpec, keyUsage)
 
-	// HMAC keys do not support MultiRegion.
-	// gopherstack-h88p: same declared-set gap as validateKeySpecUsage above.
-	if input.MultiRegion {
-		switch keySpec {
-		case keySpecHMAC256, keySpecHMAC384, keySpecHMAC512:
-			return nil, fmt.Errorf(
-				"%w: HMAC keys (spec %q) do not support MultiRegion",
-				ErrInvalidKeyUsage, keySpec,
-			)
-		}
-	}
+	// HMAC keys DO support MultiRegion: kms@v1.55.4's own api_op_CreateKey.go doc is
+	// explicit -- "You can create multi-Region KMS keys for all supported KMS key
+	// types: symmetric encryption KMS keys, HMAC KMS keys, asymmetric encryption KMS
+	// keys, and asymmetric signing KMS keys." No rejection belongs here (gopherstack-5rjn).
 
 	if err := b.validateCustomKeyStoreLink(
 		region, input.CustomKeyStoreID, keySpec, keyUsage, input.MultiRegion,

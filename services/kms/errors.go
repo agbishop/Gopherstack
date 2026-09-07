@@ -101,7 +101,8 @@ var (
 	// GenerateDataKeyPair(WithoutPlaintext), GetParametersForImport, the rotation
 	// ops and PutKeyPolicy all recognize UnsupportedOperationException for an
 	// unsupported parameter value, per its doc ("a specified parameter is not
-	// supported") -- gopherstack-i4q8 added the PutKeyPolicy reuse.
+	// supported") -- gopherstack-i4q8 added the PutKeyPolicy reuse; gopherstack-5rjn
+	// added validateKeySpecUsage's KeySpec/KeyUsage pairing check.
 	ErrUnsupportedParameter = errors.New("UnsupportedOperationException")
 	// ErrInvalidImportToken is returned when ImportKeyMaterial's wrapped key material
 	// cannot be unwrapped because no GetParametersForImport wrapping key is on record

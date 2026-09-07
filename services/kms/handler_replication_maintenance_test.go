@@ -365,16 +365,6 @@ func TestKMS_ErrorClassification_MissingTableEntries(t *testing.T) {
 	})
 }
 
-func TestHandlerCreateKeyHMACMultiRegionRejected(t *testing.T) {
-	t.Parallel()
-
-	b := newTestBackend()
-	h := kms.NewHandler(b)
-
-	rec := sendKMSOp(t, h, "CreateKey", `{"KeySpec":"HMAC_256","KeyUsage":"GENERATE_VERIFY_MAC","MultiRegion":true}`)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-}
-
 func TestHandlerReplicateKeyRequiresMultiRegion(t *testing.T) {
 	t.Parallel()
 

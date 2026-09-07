@@ -759,6 +759,12 @@ func validateSigningAlgorithm(signingAlgorithm, keySpec string) error {
 // by buildEncryptionContextAAD: sorted "key=value" pairs separated by NUL
 // bytes (we omit the leading keyID and treat keyID separator weight as 1 byte
 // per pair, matching the AAD shape minus the prefix).
+//
+// Reached by GenerateDataKey(Pair)(WithoutPlaintext), Encrypt, Decrypt and
+// ReEncrypt; none of their declared sets has a size-shaped code (gopherstack-4ra7).
+// ErrValidation is kept: this is a single-field length cap, not a cross-field
+// business rule, so it fits the pre-dispatch/structural class of fault
+// gopherstack-q9bs confirmed the ValidationException allowlist entry is for.
 func validateEncryptionContextSize(ctx map[string]string) error {
 	if len(ctx) == 0 {
 		return nil
