@@ -116,12 +116,13 @@ func TestInMemoryBackend_GetIntrospectionSchema(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		wantErrIs error
-		name      string
-		format    string
-		wantSDL   string
-		hasSchema bool
-		wantErr   bool
+		wantErrIs  error
+		name       string
+		format     string
+		wantSDL    string
+		hasSchema  bool
+		invalidSDL bool
+		wantErr    bool
 	}{
 		{
 			name:      "sdl_format_returns_schema_sdl_verbatim",
@@ -149,6 +150,18 @@ func TestInMemoryBackend_GetIntrospectionSchema(t *testing.T) {
 			wantErr:   true,
 			wantErrIs: appsync.ErrValidation,
 		},
+		{
+			// gopherstack-w4kf: JSON introspection of an unparsed schema must
+			// raise ErrGraphQLSchemaInvalid, not the ErrInvalidSchema sentinel
+			// StartSchemaCreation uses -- this op's declared set has no
+			// BadRequestException.
+			name:       "invalid_schema_json_format_rejected",
+			format:     "JSON",
+			hasSchema:  true,
+			invalidSDL: true,
+			wantErr:    true,
+			wantErrIs:  appsync.ErrGraphQLSchemaInvalid,
+		},
 	}
 
 	for _, tt := range tests {
@@ -159,7 +172,12 @@ func TestInMemoryBackend_GetIntrospectionSchema(t *testing.T) {
 			api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 
 			if tt.hasSchema {
-				_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
+				sdl := `type Query { hello: String }`
+				if tt.invalidSDL {
+					sdl = `type { broken schema`
+				}
+
+				_, _ = b.StartSchemaCreation(api.APIID, sdl)
 			}
 
 			sdl, err := b.GetIntrospectionSchema(api.APIID, tt.format, true)

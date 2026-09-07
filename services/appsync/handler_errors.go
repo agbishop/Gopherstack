@@ -33,6 +33,10 @@ func (h *Handler) handleError(ctx context.Context, c *echo.Context, op string, e
 		return c.JSON(http.StatusBadRequest, errorResponse("ApiKeyValidityOutOfBoundsException", err.Error()))
 	}
 
+	if errors.Is(err, ErrGraphQLSchemaInvalid) {
+		return c.JSON(http.StatusBadRequest, errorResponse("GraphQLSchemaException", err.Error()))
+	}
+
 	if errors.Is(err, awserr.ErrInvalidParameter) {
 		return c.JSON(http.StatusBadRequest, errorResponse("BadRequestException", err.Error()))
 	}

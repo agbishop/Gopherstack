@@ -88,6 +88,10 @@ func (b *InMemoryBackend) GetIntrospectionSchema(apiID, format string, includeDi
 	}
 
 	if !isValidTypeFormat(TypeDefinitionFormat(format)) {
+		// Landmine (gopherstack-w4kf): none of this op's declared errors
+		// (GraphQLSchemaException/InternalFailureException/NotFoundException/
+		// UnauthorizedException) fits a malformed format value -- BadRequestException
+		// stays wrong on the wire here; no safe swap found.
 		return nil, fmt.Errorf("%w: invalid format %q, must be SDL or JSON", ErrValidation, format)
 	}
 
@@ -103,7 +107,7 @@ func (b *InMemoryBackend) GetIntrospectionSchema(apiID, format string, includeDi
 	if schema.parsedSchema == nil {
 		return nil, fmt.Errorf(
 			"%w: schema for api %s has no valid parsed schema for JSON introspection",
-			ErrInvalidSchema, apiID,
+			ErrGraphQLSchemaInvalid, apiID,
 		)
 	}
 

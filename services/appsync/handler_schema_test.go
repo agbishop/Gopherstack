@@ -189,6 +189,28 @@ func TestHandler_GetIntrospectionSchema_Format(t *testing.T) {
 	}
 }
 
+// TestHandler_GetIntrospectionSchema_InvalidSchema_JSON proves that when the
+// stored schema failed to parse and format=JSON is requested, the handler
+// emits GraphQLSchemaException on the wire -- GetIntrospectionSchema's
+// declared error set (appsync@v1.56.4 deserializers.go) has no
+// BadRequestException member, unlike StartSchemaCreation's (gopherstack-w4kf).
+func TestHandler_GetIntrospectionSchema_InvalidSchema_JSON(t *testing.T) {
+	t.Parallel()
+
+	h, b := newTestHandler()
+	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+
+	_, err := b.StartSchemaCreation(api.APIID, `type { broken schema`)
+	require.Error(t, err)
+
+	rec := doRequest(t, h, http.MethodGet, "/v1/apis/"+api.APIID+"/schema?format=JSON", nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	assert.Equal(t, "GraphQLSchemaException", resp["code"])
+}
+
 func TestHandler_SchemaCreations_MethodNotAllowed(t *testing.T) {
 	t.Parallel()
 

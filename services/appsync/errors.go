@@ -13,6 +13,12 @@ var (
 	ErrAlreadyExists = awserr.New("BadRequestException", awserr.ErrAlreadyExists)
 	// ErrInvalidSchema is returned when the provided schema SDL is invalid.
 	ErrInvalidSchema = errors.New("InvalidSchemaError")
+	// ErrGraphQLSchemaInvalid is returned by GetIntrospectionSchema when the
+	// stored schema has no valid parsed form to introspect. Its declared error
+	// set (appsync@v1.56.4 deserializers.go) has GraphQLSchemaException but no
+	// BadRequestException, unlike StartSchemaCreation's -- do not reuse
+	// ErrInvalidSchema here (gopherstack-w4kf).
+	ErrGraphQLSchemaInvalid = awserr.New("GraphQLSchemaException", awserr.ErrInvalidParameter)
 	// ErrValidation is returned when input validation fails.
 	ErrValidation = awserr.New("BadRequestException", awserr.ErrInvalidParameter)
 	// ErrUnsupportedJSCode is returned when EvaluateCode is given an APPSYNC_JS
