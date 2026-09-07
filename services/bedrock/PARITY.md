@@ -944,3 +944,67 @@ the fix, then restored; see commit history).
 Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
 `GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
 both clean.
+
+## 2026-09-07 (gopherstack-kr6t): DeleteAgent ignored SkipResourceInUseCheck
+
+**TOO STRICT, fixed.** `DeleteAgentInput.SkipResourceInUseCheck` (a plain
+`bool`, not `*bool`; bedrockagent@v1.58.4 api_op_DeleteAgent.go:38, doc:
+"By default, this value is false and deletion is stopped if the resource is
+in use. If you set it to true , the resource will be deleted even if the
+resource is in use.") was declared in the SDK but never read on this
+backend's `DeleteAgent` path, so a caller who legitimately asked to bypass
+the alias-in-use precondition was refused with `ConflictException`
+unconditionally.
+
+Only the query param is wire-observable: `serializers.go:1564-1565`
+serializes it with `if v.SkipResourceInUseCheck { encoder.SetQuery(...) }`,
+so "absent" and "explicit false" are indistinguishable on the wire and both
+mean "perform the check" -- there is no separate "explicit false" case to
+get wrong at the plain-`bool` level despite the field not being a pointer.
+
+**Sibling check**: five `Delete*Input` structs in bedrockagent@v1.58.4 carry
+`SkipResourceInUseCheck` -- `DeleteAgent`, `DeleteAgentVersion`,
+`DeleteAgentActionGroup`, `DeleteFlow`, `DeleteFlowVersion` (grepped across
+the module's `api_op_Delete*.go`). `DeleteAgentAlias`, named as a candidate
+in the issue, does **not** carry the field at all -- its `Input` has only
+`AgentAliasId`/`AgentId`. Of the five, only `DeleteAgent` has an existing
+in-use gate in this backend (the alias check); `DeleteAgentVersion`,
+`DeleteAgentActionGroup`, `DeleteFlowVersion` delete unconditionally with no
+gate to skip, and `DeleteFlow` already unconditionally cascades its aliases
+with no gate either. So `DeleteAgent` is the only op with the omission this
+issue describes; the other four were left alone.
+
+**Alias fate when skipped**: skipping the check must not leave the
+bypassed aliases addressable as ghost rows -- gopherstack-wg7i's commit
+message had recorded "agent aliases are clean by construction since
+DeleteAgent refuses while any exist," an invariant this fix breaks on
+purpose. Matched this package's own cascade convention (`DeleteFlow`
+unconditionally deletes `flowAliases` for the flow being deleted;
+`DeleteKnowledgeBase`/`DeleteDataSource` cascade their dependents the same
+way): `DeleteAgent`, when `skipResourceInUseCheck` is true and aliases
+exist, now deletes every `AgentAlias` for that agent (and its `agentTags`
+entry, matching `DeleteAgentAlias`'s own per-item cleanup) instead of
+leaving them behind. Proven by
+`TestDeleteAgent_SkipResourceInUseCheck_True_CascadesAliases`, which creates
+two aliases on the deleted agent plus one on a sibling agent and asserts the
+sibling's alias survives untouched.
+
+**FIXED**: `DeleteAgent` (agents.go) takes a new `skipResourceInUseCheck
+bool` parameter; the alias-in-use guard is skipped when true, and the
+alias cascade above runs whenever the agent is deleted. `handleDeleteAgent`
+(handler_agents.go) reads `c.QueryParam("skipResourceInUseCheck")` via
+`strconv.ParseBool`, so a missing or unparsable value defaults to `false`
+(check performed), matching the SDK's own absent-means-false wire
+semantics.
+
+Files changed: `services/bedrock/agents.go` (`DeleteAgent` signature and
+alias-cascade), `services/bedrock/handler_agents.go` (reads the query
+param), `services/bedrock/ghost_row_wg7i_test.go` (updated the one existing
+caller for the new signature), `services/bedrock/ghost_row_kr6t_test.go`
+(new -- six regression tests; the two behavior-asserting ones confirmed
+failing against the unmodified guard/cascade before the fix, then
+restored; see commit history).
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
+both clean.

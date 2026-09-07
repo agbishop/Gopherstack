@@ -45,7 +45,7 @@ func TestDeleteAgent_ClearsVersionsAndCollaborators(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	require.NoError(t, b.DeleteAgent(ag.AgentID))
+	require.NoError(t, b.DeleteAgent(ag.AgentID, false))
 
 	_, err = b.GetAgentVersion(ag.AgentID, ver.AgentVersion)
 	require.Error(t, err, "agent version must not survive the agent's deletion")
