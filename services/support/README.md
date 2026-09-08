@@ -9,9 +9,13 @@
 | --- | --- |
 | PARITY entries audited | 16 (16 ok) |
 | Feature families | 5 (5 ok) |
-| Known gaps | none |
+| Known gaps | 1 |
 | Deferred items | 1 |
 | Resource leaks | clean |
+
+### Known gaps
+
+- CaseDetails.Status declares 8 valid values (types.go Status field doc comment: all-open, customer-action-completed, opened, pending-customer-action, reopened, resolved, unassigned, work-in-progress); this backend reaches 3 -- opened (CreateCase cases.go:64, CreateCaseWithOptions cases.go:209), resolved (ResolveCase cases.go:134, ResolveCaseWithStatus cases.go:282), and reopened (AddCommunicationWithOptions reopening a resolved case, communications.go:83). Enumerated every Case.Status write site in services/support/*.go (non-test) and found no others. The other 5 have no client-callable trigger: of the API's 16 operations only CreateCase, AddCommunicationToCase, and ResolveCase can plausibly mutate status, and none of their doc comments (api_op_CreateCase.go, api_op_AddCommunicationToCase.go, api_op_ResolveCase.go) describe a transition into unassigned/work-in-progress/pending-customer-action/customer-action-completed -- those are AWS support-staff-side case-management states (agent assignment, agent work, an agent requesting or receiving further customer input) with no modeled client operation that sets them; DescribeCasesInput (api_op_DescribeCases.go) also has no status filter parameter at all, so all-open is not even reachable as a request value, and reads as a leaked console-filter label in AWS's own doc comment rather than a state CaseDetails.Status is documented to actually hold. Same class as gopherstack-g2eo (directoryservice TrustState/SnapshotStatus): verdict modelling gap, not a defect; no code changed. (gopherstack-hwlt)
 
 ### Deferred
 

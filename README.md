@@ -628,7 +628,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 
 | Service | Parity | PARITY Entries | Notes |
 |---|---|---|---|
-| [Amplify](services/amplify/README.md) | A | 37 | 4 gaps |
+| [Amplify](services/amplify/README.md) | A | 37 | 6 gaps |
 | [CodeArtifact](services/codeartifact/README.md) | A | 48 | 8 gaps; 3 deferred |
 | [CodeBuild](services/codebuild/README.md) | A | 59 | 1 gap; 1 deferred |
 | [CodeCommit](services/codecommit/README.md) | A | 79 | 5 gaps |
@@ -710,7 +710,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Networkmanager](services/networkmanager/README.md) | A | 95 | 6 gaps; 2 structural gaps |
 | [Outposts](services/outposts/README.md) | A | 43 | 3 gaps; 7 structural gaps |
 | [Resiliencehub](services/resiliencehub/README.md) | A | 63 | 1 gap; 7 structural gaps |
-| [Support](services/support/README.md) | A | 16 | 1 deferred |
+| [Support](services/support/README.md) | A | 16 | 1 gap; 1 deferred |
 | [WorkSpaces](services/workspaces/README.md) | A | 34 | 3 gaps |
 <!-- END GENERATED SERVICES -->
 
