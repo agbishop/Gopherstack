@@ -138,6 +138,7 @@ type StorageBackend interface {
 	DeleteCluster(ctx context.Context, id string) error
 	SetClusterSubnetGroupName(ctx context.Context, id, subnetGroupName string) error
 	SetClusterSnapshotRetentionLimit(ctx context.Context, id string, limit *int) error
+	SetClusterReplicationGroupID(ctx context.Context, id, replicationGroupID string) error
 	DescribeClusters(ctx context.Context, id, marker string, maxRecords int, notInRG bool) (page.Page[Cluster], error)
 	ModifyCluster(
 		ctx context.Context,

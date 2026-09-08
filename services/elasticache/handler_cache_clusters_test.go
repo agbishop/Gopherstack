@@ -1027,3 +1027,74 @@ func TestCacheCluster_SnapshotRetentionLimit(t *testing.T) {
 	assert.Equal(t, int32(0), aws.ToInt32(described.CacheClusters[0].SnapshotRetentionLimit),
 		"explicit SnapshotRetentionLimit=0 must be honoured (AWS: backups turned off) and persisted, not ignored")
 }
+
+// TestCreateCacheCluster_ReplicationGroupId_AttachesAndProtectsFromDelete
+// proves gopherstack-v5fe's fix end to end through the real API surface, not
+// whitebox test seeding: real CreateCacheCluster's ReplicationGroupId
+// parameter (api_op_CreateCacheCluster.go:299-309) "adds the cluster to the
+// specified replication group as a read replica", and DeleteCacheCluster
+// must then refuse to delete it as the group's last member
+// (cache_clusters.go isLastRGMemberLocked). Before the fix,
+// Cluster.ReplicationGroupID was never set by any real API call, so this
+// guard could not fire this way and this test failed with no error at the
+// DeleteCacheCluster step.
+func TestCreateCacheCluster_ReplicationGroupId_AttachesAndProtectsFromDelete(t *testing.T) {
+	t.Parallel()
+
+	client := newTestStack(t)
+
+	_, err := client.CreateReplicationGroup(t.Context(), &elasticachesdk.CreateReplicationGroupInput{
+		ReplicationGroupId:          aws.String("rg-attach-target"),
+		ReplicationGroupDescription: aws.String("test"),
+	})
+	require.NoError(t, err)
+
+	created, err := client.CreateCacheCluster(t.Context(), &elasticachesdk.CreateCacheClusterInput{
+		CacheClusterId:     aws.String("rg-attach-replica"),
+		Engine:             aws.String("redis"),
+		ReplicationGroupId: aws.String("rg-attach-target"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "rg-attach-target", aws.ToString(created.CacheCluster.ReplicationGroupId),
+		"ReplicationGroupId must round-trip from CreateCacheCluster, proving the cluster actually attached")
+
+	described, err := client.DescribeCacheClusters(t.Context(), &elasticachesdk.DescribeCacheClustersInput{
+		CacheClusterId: aws.String("rg-attach-replica"),
+	})
+	require.NoError(t, err)
+	require.Len(t, described.CacheClusters, 1)
+	assert.Equal(t, "rg-attach-target", aws.ToString(described.CacheClusters[0].ReplicationGroupId))
+
+	_, err = client.DeleteCacheCluster(t.Context(), &elasticachesdk.DeleteCacheClusterInput{
+		CacheClusterId: aws.String("rg-attach-replica"),
+	})
+	require.Error(t, err, "deleting the last real-API-attached RG member must be refused")
+	requireFault[elasticachetypes.InvalidCacheClusterStateFault](t, err)
+	requireHTTPStatus(t, err, http.StatusBadRequest)
+}
+
+// TestCreateCacheCluster_ReplicationGroupId_NotFound pins the modeled
+// ReplicationGroupNotFoundFault (CreateCacheCluster's errors list in
+// botocore's service-2.json includes it) for a ReplicationGroupId naming a
+// replication group that does not exist, and confirms no cluster is left
+// behind by the rejected create.
+func TestCreateCacheCluster_ReplicationGroupId_NotFound(t *testing.T) {
+	t.Parallel()
+
+	client := newTestStack(t)
+
+	_, err := client.CreateCacheCluster(t.Context(), &elasticachesdk.CreateCacheClusterInput{
+		CacheClusterId:     aws.String("rg-attach-orphan"),
+		Engine:             aws.String("redis"),
+		ReplicationGroupId: aws.String("no-such-rg"),
+	})
+	require.Error(t, err)
+	requireFault[elasticachetypes.ReplicationGroupNotFoundFault](t, err)
+	requireHTTPStatus(t, err, http.StatusNotFound)
+
+	_, err = client.DescribeCacheClusters(t.Context(), &elasticachesdk.DescribeCacheClustersInput{
+		CacheClusterId: aws.String("rg-attach-orphan"),
+	})
+	require.Error(t, err, "a create rejected for a nonexistent replication group must not leave a cluster behind")
+	requireFault[elasticachetypes.CacheClusterNotFoundFault](t, err)
+}

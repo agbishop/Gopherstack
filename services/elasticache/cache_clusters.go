@@ -357,6 +357,36 @@ func (b *InMemoryBackend) SetClusterSnapshotRetentionLimit(ctx context.Context, 
 	return nil
 }
 
+// SetClusterReplicationGroupID attaches an existing cluster to an existing
+// replication group as a read replica, wiring CreateCacheCluster's
+// ReplicationGroupId parameter (api_op_CreateCacheCluster.go: "the cluster is
+// added to the specified replication group as a read replica"). Kept
+// separate from CreateClusterWithOptions for the same reason as
+// SetClusterSubnetGroupName.
+func (b *InMemoryBackend) SetClusterReplicationGroupID(ctx context.Context, id, replicationGroupID string) error {
+	if replicationGroupID == "" {
+		return nil
+	}
+
+	region := getRegion(ctx, b.region)
+
+	b.mu.Lock("SetClusterReplicationGroupID")
+	defer b.mu.Unlock()
+
+	if _, exists := b.replicationGroupsStore(region).Get(replicationGroupID); !exists {
+		return ErrReplicationGroupNotFound
+	}
+
+	c, exists := b.clustersStore(region).Get(id)
+	if !exists {
+		return ErrClusterNotFound
+	}
+
+	c.ReplicationGroupID = replicationGroupID
+
+	return nil
+}
+
 // DescribeClusters returns one cluster by id, or a paginated list of all clusters when id is empty.
 // When notInRG is true, only clusters with no ReplicationGroupID are returned (standalone clusters).
 func (b *InMemoryBackend) DescribeClusters(

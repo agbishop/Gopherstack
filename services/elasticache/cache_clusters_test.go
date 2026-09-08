@@ -409,6 +409,45 @@ func TestBackend_DeleteCluster_LastRGMemberRejected(t *testing.T) {
 	require.ErrorIs(t, err, elasticache.ErrClusterInReplicationGroup)
 }
 
+func TestBackend_SetClusterReplicationGroupID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("not found", func(t *testing.T) {
+		t.Parallel()
+
+		b := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
+
+		_, err := b.CreateClusterWithOptions(
+			context.Background(), "setrg-cl", "redis", "cache.t3.micro", "", "", "", 1, 0,
+		)
+		require.NoError(t, err)
+
+		err = b.SetClusterReplicationGroupID(context.Background(), "setrg-cl", "rg-missing")
+		require.ErrorIs(t, err, elasticache.ErrReplicationGroupNotFound)
+	})
+
+	t.Run("attaches", func(t *testing.T) {
+		t.Parallel()
+
+		b := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
+
+		_, err := b.CreateReplicationGroup(context.Background(), "setrg-rg", "desc")
+		require.NoError(t, err)
+
+		_, err = b.CreateClusterWithOptions(
+			context.Background(), "setrg-cl2", "redis", "cache.t3.micro", "", "", "", 1, 0,
+		)
+		require.NoError(t, err)
+
+		require.NoError(t, b.SetClusterReplicationGroupID(context.Background(), "setrg-cl2", "setrg-rg"))
+
+		p, err := b.DescribeClusters(context.Background(), "setrg-cl2", "", 0, false)
+		require.NoError(t, err)
+		require.Len(t, p.Data, 1)
+		assert.Equal(t, "setrg-rg", p.Data[0].ReplicationGroupID)
+	})
+}
+
 func TestBackend_DescribeClusters_Pagination(t *testing.T) {
 	t.Parallel()
 

@@ -82,6 +82,16 @@ func (h *Handler) createCacheCluster(ctx context.Context, c *echo.Context, form 
 		return restoreErr
 	}
 
+	// Reject a nonexistent ReplicationGroupId before creating anything:
+	// ReplicationGroupNotFoundFault is in CreateCacheCluster's modeled error
+	// list (CreateCacheClusterMessage/errors in botocore's service-2.json),
+	// and real AWS never materializes the cluster in that case.
+	if replicationGroupID := form.Get("ReplicationGroupId"); replicationGroupID != "" {
+		if rgErr := h.checkReplicationGroupExists(ctx, replicationGroupID); rgErr != nil {
+			return h.replicationGroupErrorResponse(c, rgErr)
+		}
+	}
+
 	cluster, err := h.Backend.CreateClusterWithOptions(ctx,
 		id,
 		engine,
@@ -114,6 +124,10 @@ func (h *Handler) createCacheCluster(ctx context.Context, c *echo.Context, form 
 
 	if srErr := h.applyClusterSnapshotRetentionLimit(ctx, c, form, id, cluster); srErr != nil {
 		return srErr
+	}
+
+	if rgErr := h.applyClusterReplicationGroup(ctx, form, id, cluster); rgErr != nil {
+		return h.replicationGroupErrorResponse(c, rgErr)
 	}
 
 	type result struct {
@@ -171,6 +185,56 @@ func (h *Handler) applyClusterSnapshotRetentionLimit(
 	}
 
 	cluster.SnapshotRetentionLimit = n
+
+	return nil
+}
+
+// checkReplicationGroupExists returns ErrReplicationGroupNotFound (or a
+// generic backend error) when replicationGroupID names no replication
+// group, nil otherwise. Returns the raw error rather than an xmlError so
+// createCacheCluster maps and returns it directly -- see
+// replicationGroupErrorResponse.
+func (h *Handler) checkReplicationGroupExists(ctx context.Context, replicationGroupID string) error {
+	_, err := h.Backend.DescribeReplicationGroups(ctx, replicationGroupID, "", 0)
+
+	return err
+}
+
+// replicationGroupErrorResponse maps a raw replication-group lookup error to
+// its wire fault. Must be called as "return h.replicationGroupErrorResponse(...)"
+// directly at the error site, not stored and conditionally re-returned:
+// xmlError/xmlResp return nil on a successful write, so a caller checking a
+// bubbled-up "if storedErr != nil" would never see the rejection and would
+// fall through past it.
+func (h *Handler) replicationGroupErrorResponse(c *echo.Context, err error) error {
+	if errors.Is(err, ErrReplicationGroupNotFound) {
+		return xmlError(c, http.StatusNotFound, "ReplicationGroupNotFoundFault", "Replication group not found")
+	}
+
+	return xmlError(c, http.StatusInternalServerError, "InternalFailure", err.Error())
+}
+
+// applyClusterReplicationGroup attaches a just-created cluster to an existing
+// replication group as a read replica, if the caller supplied
+// ReplicationGroupId (api_op_CreateCacheCluster.go ReplicationGroupId doc:
+// "the cluster is added to the specified replication group as a read
+// replica"). Returns the raw backend error (nil on success, in which case
+// cluster is mutated in place) rather than an xmlError, for the same reason
+// as checkReplicationGroupExists: createCacheCluster must map and return it
+// directly, not through a bubbled-up nil-on-success value.
+func (h *Handler) applyClusterReplicationGroup(
+	ctx context.Context, form url.Values, id string, cluster *Cluster,
+) error {
+	replicationGroupID := form.Get("ReplicationGroupId")
+	if replicationGroupID == "" {
+		return nil
+	}
+
+	if err := h.Backend.SetClusterReplicationGroupID(ctx, id, replicationGroupID); err != nil {
+		return err
+	}
+
+	cluster.ReplicationGroupID = replicationGroupID
 
 	return nil
 }
