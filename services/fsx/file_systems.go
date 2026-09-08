@@ -480,7 +480,7 @@ func (b *InMemoryBackend) CreateFileSystem(input *createFileSystemInput) (*FileS
 		)
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
@@ -1017,7 +1017,7 @@ func resolveFileSystemFromBackupFields(
 
 // CreateFileSystemFromBackup creates a new file system from an existing backup.
 func (b *InMemoryBackend) CreateFileSystemFromBackup(input *createFileSystemFromBackupInput) (*FileSystem, error) {
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 

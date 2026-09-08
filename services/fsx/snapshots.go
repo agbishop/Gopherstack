@@ -43,7 +43,7 @@ func (b *InMemoryBackend) CreateSnapshot(input *createSnapshotInput) (*Snapshot,
 		return nil, ErrValidation
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 

@@ -85,6 +85,34 @@ func (b *InMemoryBackend) ListTagsForResource(resourceARN string) ([]Tag, error)
 	return tagsMapToSlice(b.tags[resourceARN]), nil
 }
 
+// validateCreateTags is validateTags plus the shared "Tags" shape's own
+// list-length constraint (fsx@v1.68.4 botocore service-2.json.gz, "A list
+// of Tag values, with a maximum of 50 elements", max: 50) -- for every
+// Create* op's initial Tags input, not TagResource's separate
+// cumulative-existing-plus-new check (tags.go's maxTagsPerResource above,
+// which already has its own op-specific wire code). The real SDK's own
+// client-side validator (validateOpCreate<Op>Input -> validateTags,
+// validators.go) never checks this length, only each tag's own key/value
+// constraints, so a real client can put more than 50 tags on the wire.
+// ServiceLimitExceeded is legitimately declared by every caller of this
+// function (CopyBackup, CreateBackup, CreateDataRepositoryAssociation,
+// CreateDataRepositoryTask, CreateFileCache, CreateFileSystem,
+// CreateFileSystemFromBackup, CreateSnapshot, CreateStorageVirtualMachine,
+// CreateVolume, CreateVolumeFromBackup -- each op's own
+// deserializeOpError<Op> switch confirmed), unlike TagResource which does
+// not declare it (see the doc comment on TagResource's own check above).
+func validateCreateTags(tags []Tag) error {
+	if err := validateTags(tags); err != nil {
+		return err
+	}
+
+	if len(tags) > maxTagsPerResource {
+		return fmt.Errorf("%w: %d tag(s) exceeds the %d-tag limit", ErrTagLimitExceeded, len(tags), maxTagsPerResource)
+	}
+
+	return nil
+}
+
 // validateTags returns ErrTagInvalid if any tag key or value violates FSx constraints:
 // key must be 1–128 chars and must not start with "aws:"; value must be 0–256 chars.
 func validateTags(tags []Tag) error {

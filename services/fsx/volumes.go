@@ -86,7 +86,7 @@ func (b *InMemoryBackend) CreateVolume(input *createVolumeInput) (*Volume, error
 		return nil, ErrValidation
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
@@ -172,7 +172,7 @@ type createVolumeFromBackupInput struct {
 // real client to specify it, since CreateVolumeFromBackupInput carries no
 // top-level StorageVirtualMachineId.
 func (b *InMemoryBackend) CreateVolumeFromBackup(input *createVolumeFromBackupInput) (*Volume, error) {
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 

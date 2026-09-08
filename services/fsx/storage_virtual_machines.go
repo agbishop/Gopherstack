@@ -50,7 +50,7 @@ func (b *InMemoryBackend) CreateStorageVirtualMachine(
 		return nil, ErrValidation
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 

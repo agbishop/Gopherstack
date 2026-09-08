@@ -157,7 +157,7 @@ func (b *InMemoryBackend) CreateFileCache(input *createFileCacheInput) (*FileCac
 		return nil, fmt.Errorf("%w: SubnetIds is required", ErrValidation)
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 

@@ -48,7 +48,7 @@ type createDataRepositoryTaskInput struct {
 // Enabled member is required whenever Report is present (validateCompletionReport)
 // -- the pre-fix request never read Report at all.
 func (b *InMemoryBackend) CreateDataRepositoryTask(input *createDataRepositoryTaskInput) (*DataRepositoryTask, error) {
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
