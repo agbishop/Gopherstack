@@ -1,5 +1,5 @@
 service: workspaces
-sdk_module: aws-sdk-go-v2/service/workspaces@v1.73.1
+sdk_module: aws-sdk-go-v2/service/workspaces@v1.79.0
 last_audit_commit: 7c8077891728
 last_audit_date: 2026-08-28
 # 2026-09-07 (gopherstack-s3v4): CreateWorkspaces stored WorkspaceProperties verbatim: no default

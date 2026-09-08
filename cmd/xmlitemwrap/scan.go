@@ -347,7 +347,7 @@ func isSentinelTag(xmlVal string) bool {
 // any comma-separated options), e.g. "cidrSet>item" -> "item",
 // "instanceId,omitempty" -> "instanceId".
 func xmlBaseName(xmlVal string) string {
-	namePath := strings.Split(xmlVal, ",")[0]
+	namePath, _, _ := strings.Cut(xmlVal, ",")
 	if idx := strings.LastIndex(namePath, ">"); idx >= 0 {
 		return namePath[idx+1:]
 	}

@@ -1,6 +1,6 @@
 ---
 service: iot
-sdk_module: aws-sdk-go-v2/service/iot@v1.77.4
+sdk_module: aws-sdk-go-v2/service/iot@v1.83.0
 sibling_sdk_modules: [aws-sdk-go-v2/service/iotdataplane@v1.35.0]  # device-shadow ops (Get/Update/DeleteThingShadow, ListNamedShadowsForThing); see device_shadows family
 last_audit_commit: 2a94081753c196de1bbad6b25b8f9b9a90dce321  # pass #4; pass #5 below is uncommitted at write time
 last_audit_date: 2026-08-29

@@ -1,6 +1,6 @@
 ---
 service: sns
-sdk_module: aws-sdk-go-v2/service/sns@v1.42.4
+sdk_module: aws-sdk-go-v2/service/sns@v1.46.0
 last_audit_commit: 3afc23468
 last_audit_date: 2026-08-10
 overall: A

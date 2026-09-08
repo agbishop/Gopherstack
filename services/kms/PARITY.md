@@ -1,6 +1,6 @@
 ---
 service: kms
-sdk_module: aws-sdk-go-v2/service/kms@v1.55.4
+sdk_module: aws-sdk-go-v2/service/kms@v1.59.0
 last_audit_commit: 13c27883a00454a6e63bc767d096528ecfd6c4b1
 last_audit_date: 2026-07-23
 overall: A            # Full sweep of the 5 gaps/2 deferred items this file previously

@@ -18,5 +18,10 @@ func TestSDKCompleteness(t *testing.T) {
 
 	// NewHandler accepts nil because GetSupportedOperations does not use the backend.
 	h := lambda.NewHandler(nil)
-	sdkcheck.CheckCompleteness(t, &lambdasdk.Client{}, h.GetSupportedOperations(), []string{})
+	sdkcheck.CheckCompleteness(t, &lambdasdk.Client{}, h.GetSupportedOperations(), []string{
+		// Added by the lambda SDK bump v1.101.2 -> v1.107.0; unimplemented.
+		"DeleteResourcePolicy",
+		"GetResourcePolicy",
+		"PutResourcePolicy",
+	})
 }

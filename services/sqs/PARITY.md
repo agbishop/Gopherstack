@@ -1,6 +1,6 @@
 ---
 service: sqs
-sdk_module: aws-sdk-go-v2/service/sqs@v1.46.4
+sdk_module: aws-sdk-go-v2/service/sqs@v1.51.0
 last_audit_commit: f51bf624e
 last_audit_date: 2026-08-10
 overall: A

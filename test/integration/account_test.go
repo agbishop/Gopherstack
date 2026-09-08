@@ -42,8 +42,7 @@ func accountCleanupCtx() (context.Context, context.CancelFunc) {
 
 // accountErrorCode extracts the smithy error code from err, or "" if err isn't one.
 func accountErrorCode(err error) string {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 		return apiErr.ErrorCode()
 	}
 

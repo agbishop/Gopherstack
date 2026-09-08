@@ -97,7 +97,7 @@ func TestSDKRoundTrip_DataSetPhysicalTableMap(t *testing.T) {
 		Name:             aws.String("RoundTrip DataSet"),
 		ImportMode:       types.DataSetImportModeDirectQuery,
 		PhysicalTableMap: physicalTableMap,
-		LogicalTableMap:  logicalTableMap,
+		LogicalTableMap:  logicalTableMap, //nolint:staticcheck // still wired and tested; SDK marks it legacy, not removed
 	})
 	require.NoError(t, err)
 

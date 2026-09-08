@@ -290,9 +290,9 @@ func TestIntegration_SQS_SystemAttributes(t *testing.T) {
 	require.NoError(t, err)
 
 	recv, err := client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
-		QueueUrl:            aws.String(qURL),
-		MaxNumberOfMessages: 1,
-		AttributeNames:      []sqstypes.QueueAttributeName{sqstypes.QueueAttributeNameAll},
+		QueueUrl:                    aws.String(qURL),
+		MaxNumberOfMessages:         1,
+		MessageSystemAttributeNames: []sqstypes.MessageSystemAttributeName{sqstypes.MessageSystemAttributeNameAll},
 	})
 	require.NoError(t, err)
 	require.Len(t, recv.Messages, 1)

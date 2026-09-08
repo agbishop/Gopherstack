@@ -18,5 +18,12 @@ func TestSDKCompleteness(t *testing.T) {
 
 	backend := eks.NewInMemoryBackend(t.Context(), "000000000000", "us-east-1")
 	h := eks.NewHandler(backend)
-	sdkcheck.CheckCompleteness(t, &ekssdk.Client{}, h.GetSupportedOperations(), nil)
+	sdkcheck.CheckCompleteness(t, &ekssdk.Client{}, h.GetSupportedOperations(), []string{
+		// Added by the eks SDK bump v1.90.4 -> v1.98.0; unimplemented.
+		"ActivateCertificateAuthority",
+		"CreateCertificateAuthority",
+		"DeleteCertificateAuthority",
+		"DescribeCertificateAuthority",
+		"ListCertificateAuthorities",
+	})
 }

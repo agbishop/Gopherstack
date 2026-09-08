@@ -32,10 +32,8 @@ func startPurgeContainer(t *testing.T, ttl string) (testcontainers.Container, st
 	require.NoError(t, err)
 
 	req := testcontainers.ContainerRequest{
-		FromDockerfile: testcontainers.FromDockerfile{
-			Context:    "../../",
-			Dockerfile: dockerfile,
-		},
+		Context:    "../../",
+		Dockerfile: dockerfile,
 		Env: map[string]string{
 			"AUTO_PURGE_TTL": ttl,
 		},

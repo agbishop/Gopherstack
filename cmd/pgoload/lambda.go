@@ -32,8 +32,7 @@ func ensureLambdaFunction(ctx context.Context, cl *lambda.Client, roleArn string
 		Code:         &lambdatypes.FunctionCode{ZipFile: lambdaDummyZip()},
 	})
 	if err != nil {
-		var exists *lambdatypes.ResourceConflictException
-		if !errors.As(err, &exists) {
+		if _, ok := errors.AsType[*lambdatypes.ResourceConflictException](err); !ok {
 			return "", fmt.Errorf("create function %s: %w", lambdaFunctionName, err)
 		}
 

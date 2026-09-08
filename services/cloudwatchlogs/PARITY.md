@@ -1,6 +1,6 @@
 ---
 service: cloudwatchlogs
-sdk_module: aws-sdk-go-v2/service/cloudwatchlogs@v1.81.1
+sdk_module: aws-sdk-go-v2/service/cloudwatchlogs@v1.86.0
 last_audit_commit: 3884816a
 last_audit_date: 2026-08-13
 overall: A            # 2026-08-13 (gopherstack-wl0s): GetLogFields never read dataSourceType

@@ -5,7 +5,7 @@
 # AND check the SDK module for ops added since sdk_version. Only audit changed/new surface;
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: ssm
-sdk_module: aws-sdk-go-v2/service/ssm@v1.73.4
+sdk_module: aws-sdk-go-v2/service/ssm@v1.77.0
 last_audit_commit: d3b4494d3
 last_audit_date: 2026-08-21
 overall: A                 # cursor-population sweep (2026-08-29, fix/wrapper-key-sweep-rds-cloudwatch-sqs-sns):

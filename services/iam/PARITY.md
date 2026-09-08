@@ -1,6 +1,6 @@
 ---
 service: iam
-sdk_module: aws-sdk-go-v2/service/iam@v1.58.1   # version audited against (go.mod pin; was stale
+sdk_module: aws-sdk-go-v2/service/iam@v1.63.0   # version audited against (go.mod pin; was stale
   # at v1.55.0 -- SimulateCustomPolicy/SimulatePrincipalPolicy's response shape
   # changed in v1.57.0 (top-level results now aggregate across resources instead
   # of one entry per resource); policy simulation was already flagged as NOT

@@ -535,6 +535,12 @@ linters:
       # SDK client end to end.
       - path: 'cli_iotanalytics_lambda_iot_wiring_test.go'
         linters: [ staticcheck ]
+      # Same reasoning as iotanalytics/handler_create_tags_test.go above -- the
+      # go-sdk-v2 upgrade extended SA1019 from the deprecated methods to every
+      # input/output field they touch, well past what scattered per-line
+      # nolints (the file's prior approach) can track.
+      - path: 'test/integration/iotanalytics_test.go'
+        linters: [ staticcheck ]
       # Same reasoning as iotanalytics above -- opsworks is also AWS-deprecated,
       # so its first typed-client round-trip tests (gopherstack-n3zi) carry the
       # same blanket SA1019 noise on every SDK type/method/field touched.

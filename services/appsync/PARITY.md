@@ -1,6 +1,6 @@
 ---
 service: appsync
-sdk_module: aws-sdk-go-v2/service/appsync@v1.56.4
+sdk_module: aws-sdk-go-v2/service/appsync@v1.60.0
 last_audit_commit: 198990e82
 last_audit_date: 2026-09-04
 overall: A            # 2026-09-04 (gopherstack-2yo): DeleteGraphqlApi's cascade-delete (issue #842) missed two ghost-row classes -- SourceAPIAssociation rows (either SourceAPIID or MergedAPIID matching the deleted API) and the APIAssociation/DomainName.APIID link created by AssociateApi -- both outlived the API indefinitely, so Get/ListSourceApiAssociations and GetApiAssociation kept returning associations pointing at a deleted API forever. Fixed for real (cascadeDeleteAPIAssociations); regression tests added. Also fixed: CreateApiKey's default expiry was wrong (365 days; real SDK doc says 7) and Create/UpdateApiKey's two AppSync-specific error codes (ApiKeyLimitExceededException, ApiKeyValidityOutOfBoundsException) were never actually surfaced -- both collapsed into a generic BadRequestException, and an out-of-bounds custom expiry was silently clamped into range instead of rejected. Also disclosed (not fixed, structural): GetIntrospectionSchema's format/includeDirectives were silently ignored, same missing-SDL<->JSON-converter class already disclosed for ListTypes/GetType/ListTypesByAssociation but not previously called out for this op. Grade held at A.

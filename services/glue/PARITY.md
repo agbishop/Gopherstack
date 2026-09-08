@@ -1,6 +1,6 @@
 ---
 service: glue
-sdk_module: aws-sdk-go-v2/service/glue@v1.152.0
+sdk_module: aws-sdk-go-v2/service/glue@v1.157.0
 last_audit_commit: a7f9c5fb2  # gopherstack-uult (2026-08-13) fixed after this hash was recorded; hash not yet known at edit time
 last_audit_date: 2026-08-13
 # 2026-08-30 wrapper-key/sort-totality sweep (Class F: a sort that exists but is

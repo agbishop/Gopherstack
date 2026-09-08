@@ -27,8 +27,7 @@ func ensureLogGroup(ctx context.Context, cl *cloudwatchlogs.Client, log *slog.Lo
 		return nil
 	}
 
-	var exists *cwltypes.ResourceAlreadyExistsException
-	if errors.As(err, &exists) {
+	if _, ok := errors.AsType[*cwltypes.ResourceAlreadyExistsException](err); ok {
 		log.InfoContext(ctx, "cloudwatch logs group already exists", "group", cwlGroupName)
 
 		return nil
@@ -64,8 +63,7 @@ func ensureLogStream(ctx context.Context, cl *cloudwatchlogs.Client, workerID in
 		return nil
 	}
 
-	var exists *cwltypes.ResourceAlreadyExistsException
-	if errors.As(err, &exists) {
+	if _, ok := errors.AsType[*cwltypes.ResourceAlreadyExistsException](err); ok {
 		return nil
 	}
 

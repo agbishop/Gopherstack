@@ -18,5 +18,15 @@ func TestSDKCompleteness(t *testing.T) {
 
 	backend := backup.NewInMemoryBackend("000000000000", "us-east-1")
 	h := backup.NewHandler(backend)
-	sdkcheck.CheckCompleteness(t, &backupsdk.Client{}, h.GetSupportedOperations(), []string{})
+
+	// Added by the aws-sdk-go-v2/service/backup v1.64.0 bump; unimplemented.
+	notImplemented := []string{
+		"CreateBackupAccessPoint",
+		"DeleteBackupAccessPoint",
+		"DescribeBackupAccessPoint",
+		"ListBackupAccessPoints",
+		"ListBackupAccessPointsByRecoveryPoint",
+		"ListBackupAccessPointsByResource",
+	}
+	sdkcheck.CheckCompleteness(t, &backupsdk.Client{}, h.GetSupportedOperations(), notImplemented)
 }

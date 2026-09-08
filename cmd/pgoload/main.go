@@ -355,8 +355,7 @@ func ensureDDBTable(ctx context.Context, cl *dynamodb.Client, log *slog.Logger) 
 		},
 	})
 	if err != nil {
-		var inUse *ddbtypes.ResourceInUseException
-		if !errors.As(err, &inUse) {
+		if _, ok := errors.AsType[*ddbtypes.ResourceInUseException](err); !ok {
 			return fmt.Errorf("create table %s: %w", ddbTableName, err)
 		}
 

@@ -1,6 +1,6 @@
 ---
 service: rekognition
-sdk_module: aws-sdk-go-v2/service/rekognition@v1.54.4   # version audited against (was stale at v1.51.26; go.mod pins v1.54.4 -- corrected this sweep)
+sdk_module: aws-sdk-go-v2/service/rekognition@v1.58.0   # version audited against (was stale at v1.51.26; go.mod pins v1.54.4 -- corrected this sweep)
 last_audit_commit: 903d74b67                       # HEAD when this manifest was written
 last_audit_date: 2026-08-29
 overall: A            # field-completeness follow-up sweep (see Notes #6): shallow CreateProjectVersion/StartProjectVersion/CopyProjectVersion fields and async-video Get* JobTag/Video/SelectedSegmentTypes/GetRequestMetadata now modeled; deep Custom Labels manifests and post-training fields stay deliberately deferred

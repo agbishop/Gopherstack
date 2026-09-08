@@ -234,7 +234,7 @@ func TestCredentialReport_Columns(t *testing.T) {
 			decoded, err := base64.StdEncoding.DecodeString(resp.Result.Content)
 			require.NoError(t, err, "Content must be valid base64")
 
-			headerLine := strings.Split(string(decoded), "\n")[0]
+			headerLine, _, _ := strings.Cut(string(decoded), "\n")
 			cols := strings.Split(headerLine, ",")
 
 			assert.Len(t, cols, len(requiredColumns),

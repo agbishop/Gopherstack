@@ -1,6 +1,6 @@
 ---
 service: ecr
-sdk_module: aws-sdk-go-v2/service/ecr@v1.60.4
+sdk_module: aws-sdk-go-v2/service/ecr@v1.64.0
 last_audit_commit: fba3c784              # this pass's changes are uncommitted working-tree edits; see Notes
 last_audit_date: 2026-08-15
 overall: A  # round 4 (gopherstack-6flj wrapper-key sweep) found and fixed 6 more real wire-shape bugs the round-3 "wire: ok" claims had missed -- see "Genuine fixes made this pass, round 4" below. Round 3 closed every remaining gap it found: item for real (not by weakening tests) -- see "Genuine fixes made this pass, round 3" below. All 6 previously-deferred error/behavior gaps now enforced with passing tests, plus the previously out-of-scope ListPullTimeUpdateExclusions pagination gap.

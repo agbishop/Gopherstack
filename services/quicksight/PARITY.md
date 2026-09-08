@@ -1,5 +1,5 @@
 service: quicksight
-sdk_module: aws-sdk-go-v2/service/quicksight@v1.123.1
+sdk_module: aws-sdk-go-v2/service/quicksight@v1.129.0
 last_audit_commit: 73f133771
 last_audit_date: 2026-08-13 # gopherstack-wl0s: CreateOAuthClientApplication's ClientId,
                       # ClientSecret, OAuthClientAuthenticationType, and OAuthTokenEndpointUrl

@@ -34,8 +34,7 @@ func ensureKinesisStream(ctx context.Context, cl *kinesis.Client, log *slog.Logg
 		ShardCount: aws.Int32(kinesisShardCount),
 	})
 	if err != nil {
-		var inUse *kinesistypes.ResourceInUseException
-		if !errors.As(err, &inUse) {
+		if _, ok := errors.AsType[*kinesistypes.ResourceInUseException](err); !ok {
 			return "", fmt.Errorf("create stream %s: %w", kinesisStreamName, err)
 		}
 

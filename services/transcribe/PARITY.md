@@ -5,7 +5,7 @@
 # AND check the SDK module for ops added since sdk_version. Only audit changed/new surface;
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: transcribe
-sdk_module: aws-sdk-go-v2/service/transcribe@v1.58.4   # version audited against
+sdk_module: aws-sdk-go-v2/service/transcribe@v1.64.0   # version audited against
 last_audit_commit:                                # unknown: gopherstack-6flj wrapper-key sweep pass ran without git access at write time, never backfilled -- gopherstack-33in
 last_audit_date: 2026-09-05
 overall: A            # A = genuine fixes found; B = already-accurate, proven op-by-op

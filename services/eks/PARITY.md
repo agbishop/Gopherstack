@@ -1,7 +1,7 @@
 ---
 # PARITY MANIFEST SCHEMA — see services/_PARITY_TEMPLATE.md for the schema doc.
 service: eks
-sdk_module: aws-sdk-go-v2/service/eks@v1.90.4
+sdk_module: aws-sdk-go-v2/service/eks@v1.98.0
 last_audit_commit: 7c297a53  # gopherstack-uult (2026-08-13) fixed after this hash was recorded; hash not yet known at edit time
 last_audit_date: 2026-08-13
 # ERROR path verified 2026-08-29 (wrapper-key-sweep pass): extracted every

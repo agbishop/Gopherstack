@@ -1,6 +1,6 @@
 ---
 service: route53resolver
-sdk_module: aws-sdk-go-v2/service/route53resolver@v1.48.4
+sdk_module: aws-sdk-go-v2/service/route53resolver@v1.53.0
 last_audit_commit: 22d69640
 last_audit_date: 2026-08-29
                        # 2026-08-30: pagination-tie sweep (does a name-sorted List op lose or

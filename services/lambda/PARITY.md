@@ -1,6 +1,6 @@
 ---
 service: lambda
-sdk_module: aws-sdk-go-v2/service/lambda@v1.101.2
+sdk_module: aws-sdk-go-v2/service/lambda@v1.107.0
 last_audit_commit: a007ec3e
 last_audit_date: 2026-09-03
 overall: A   # durable_execution wire-shape rewrite closed the last open gap; all gates green

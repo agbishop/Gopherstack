@@ -1,6 +1,6 @@
 ---
 service: dynamodb
-sdk_module: aws-sdk-go-v2/service/dynamodb@v1.63.1   # version audited against (go.mod pin)
+sdk_module: aws-sdk-go-v2/service/dynamodb@v1.67.0   # version audited against (go.mod pin)
 last_audit_commit: 97805509b
 last_audit_date: 2026-08-23  # manifest-harvest pass: fixed UpdateGlobalTableSettings autoscaling
   # accept-and-drop gap and DisableKinesisStreamingDestination's never-echoed

@@ -1,6 +1,6 @@
 ---
 service: ec2
-sdk_module: aws-sdk-go-v2/service/ec2@v1.319.1   # version audited against (go.mod pin; previously recorded as "see go.mod", never a parseable pin)
+sdk_module: aws-sdk-go-v2/service/ec2@v1.329.0   # version audited against (go.mod pin; previously recorded as "see go.mod", never a parseable pin)
 last_audit_commit:                                # unknown: pass was instructed not to commit and had no git access at write time, never backfilled -- gopherstack-33in
 last_audit_date: 2026-08-30
 overall: A   # unrecorded-Describe/List sweep, second pass (this pass, fix/wrapper-key-sweep

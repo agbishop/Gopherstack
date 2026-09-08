@@ -5,7 +5,7 @@
 # AND check the SDK module for ops added since sdk_version. Only audit changed/new surface;
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: dynamodbstreams
-sdk_module: aws-sdk-go-v2/service/dynamodbstreams@v1.36.4   # version audited against
+sdk_module: aws-sdk-go-v2/service/dynamodbstreams@v1.40.0   # version audited against
 last_audit_commit: 8ba0d8ad2                                  # HEAD when this manifest was written
 last_audit_date: 2026-07-24
 overall: A            # gaps closed upstream in services/dynamodb by 8ba0d8ad2; verified in this pass

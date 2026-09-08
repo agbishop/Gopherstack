@@ -24,10 +24,8 @@ func startLatencyContainer(t *testing.T, latencyMs string) (testcontainers.Conta
 	require.NoError(t, err)
 
 	req := testcontainers.ContainerRequest{
-		FromDockerfile: testcontainers.FromDockerfile{
-			Context:    "../../",
-			Dockerfile: dockerfile,
-		},
+		Context:    "../../",
+		Dockerfile: dockerfile,
 		Env: map[string]string{
 			"LATENCY_MS": latencyMs,
 		},

@@ -44,8 +44,7 @@ func ensureSecrets(ctx context.Context, cl *secretsmanager.Client, log *slog.Log
 			continue
 		}
 
-		var exists *smtypes.ResourceExistsException
-		if errors.As(err, &exists) {
+		if _, ok := errors.AsType[*smtypes.ResourceExistsException](err); ok {
 			continue
 		}
 

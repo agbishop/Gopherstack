@@ -1,6 +1,6 @@
 ---
 service: secretsmanager
-sdk_module: aws-sdk-go-v2/service/secretsmanager@v1.44.4
+sdk_module: aws-sdk-go-v2/service/secretsmanager@v1.48.0
 last_audit_commit: 1a7ddc64b  # STALE/WRONG -- this hash resolves to an unrelated build/CI commit, not
                               # a secretsmanager audit; not an ancestor of HEAD on this branch either.
                               # Left uncorrected (this pass made no commit); a future audit should

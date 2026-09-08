@@ -44,8 +44,7 @@ func networkManagerCleanupCtx() (context.Context, context.CancelFunc) {
 
 // networkManagerErrorCode extracts the smithy error code from err, or "" if err isn't one.
 func networkManagerErrorCode(err error) string {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 		return apiErr.ErrorCode()
 	}
 
