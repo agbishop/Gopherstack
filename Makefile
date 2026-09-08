@@ -7,7 +7,7 @@ BUILD_VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "
 # Single source of truth for the golangci-lint version. ci.yml and
 # copilot-setup-steps.yml grep this line and pass it to the action's
 # `version:` input, so local and CI can't drift apart (gopherstack-ht49).
-GOLANGCI_LINT_VERSION=2.12.2
+GOLANGCI_LINT_VERSION=2.13.2
 
 build: ui-build
 	go build \
