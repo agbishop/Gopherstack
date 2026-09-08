@@ -97,14 +97,34 @@ func Test_ApplyStructuredPatch_StageCanaryPromotion(t *testing.T) {
 	t.Parallel()
 
 	h := newAPIGWHandler()
-	apiID, stageName := setupStage(t, h, nil, &apigateway.CanarySettings{
-		DeploymentID:   "canary-depl-id",
-		PercentTraffic: 50,
+	api, err := h.Backend.CreateRestAPI(apigateway.CreateRestAPIInput{Name: "canary-promo-api"})
+	require.NoError(t, err)
+
+	mainDepl, err := h.Backend.CreateDeployment(api.ID, "", "v1")
+	require.NoError(t, err)
+
+	// The canary deployment must be a real Deployment on the same REST API --
+	// UpdateStage now validates deploymentId (this sweep), matching
+	// CreateStage's existing guard, so a fabricated id would be rejected here.
+	canaryDepl, err := h.Backend.CreateDeployment(api.ID, "", "canary")
+	require.NoError(t, err)
+
+	_, err = h.Backend.CreateStage(apigateway.CreateStageInput{
+		RestAPIID:    api.ID,
+		StageName:    "prod",
+		DeploymentID: mainDepl.ID,
+		CanarySettings: &apigateway.CanarySettings{
+			DeploymentID:   canaryDepl.ID,
+			PercentTraffic: 50,
+		},
 	})
+	require.NoError(t, err)
+
+	apiID, stageName := api.ID, "prod"
 
 	before, err := h.Backend.GetStage(apiID, stageName)
 	require.NoError(t, err)
-	require.NotEqual(t, "canary-depl-id", before.DeploymentID, "precondition: main deployment differs from canary")
+	require.NotEqual(t, canaryDepl.ID, before.DeploymentID, "precondition: main deployment differs from canary")
 
 	body := `{"patchOperations":[{"op":"copy","from":"/canarySettings/deploymentId","path":"/deploymentId"}]}`
 	rec := restRequest(t, h, http.MethodPatch, fmt.Sprintf("/restapis/%s/stages/%s", apiID, stageName), body)
@@ -112,7 +132,7 @@ func Test_ApplyStructuredPatch_StageCanaryPromotion(t *testing.T) {
 
 	after, err := h.Backend.GetStage(apiID, stageName)
 	require.NoError(t, err)
-	assert.Equal(t, "canary-depl-id", after.DeploymentID,
+	assert.Equal(t, canaryDepl.ID, after.DeploymentID,
 		"promoted deployment id should replace the stage's deploymentId")
 }
 
