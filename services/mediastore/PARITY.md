@@ -47,7 +47,45 @@ families:
   LifecyclePolicy: {status: ok, note: "Put/Get/Delete round-trip the raw JSON string verbatim."}
   MetricPolicy: {status: ok, note: "Put validates ContainerLevelMetrics enum and >5-rule limit; Get/Delete round-trip full policy including MetricPolicyRules."}
   Tags: {status: ok, note: "Tag/Untag/ListTagsForResource keyed by ARN via containerNameFromARN; tags also settable at CreateContainer time."}
-gaps: []          # all three prior gaps closed this pass -- see "Re-audit 2026-07-24 (gap closure)" below
+gaps:
+  - "gopherstack-apg3 (2026-09-07, audited, NOT fixed -- structural): DeleteContainer does not
+    require the container to be empty. Real AWS's doc comment (aws-sdk-go-v2/service/mediastore
+    @v1.32.4 api_op_DeleteContainer.go:10-12, byte-identical in botocore's mediastore/2017-09-01/
+    service-2.json.gz operations.DeleteContainer.documentation) states \"Before you make a
+    DeleteContainer request, delete any objects in the container or in any folders in the
+    container. You can delete only empty containers,\" but DeleteContainer's own modeled error
+    set (deserializers.go:201-251's awsAwsjson11_deserializeOpErrorDeleteContainer switch;
+    identical in botocore's operations.DeleteContainer.errors) is only ContainerInUseException,
+    ContainerNotFoundException, InternalServerError -- no distinct \"container not empty\"
+    exception exists to enforce against. ContainerInUseException's own doc (types/errors.go:10-11:
+    \"The container that you specified in the request already exists or is being updated\")
+    already maps 1:1 to gopherstack's existing create-time already-exists/being-updated case
+    (handler.go:643-645), not emptiness. STRUCTURAL, not fixable without new cross-service
+    architecture: services/mediastoredata (the object data plane) is a fully independent
+    provider -- its Init (mediastoredata/provider.go:17-30) builds its own NewInMemoryBackend
+    with no handle to mediastore, matching pkgs/service.AppContext (service.go:179-185), which
+    carries only Config/JanitorCtx/Logger/PortAlloc/JanitorTimeout, no cross-service registry --
+    the same isolation shape as appconfig/appconfigdata. It goes deeper than isolation, though:
+    mediastoredata's object store (InMemoryBackend.states map[string]*store.Table[Object],
+    mediastoredata/store.go:38-42) is keyed ONLY by region (getRegion, store.go:15-27), with no
+    container dimension at all -- its handler resolves only the SigV4 region per request
+    (requestContext, handler.go:118-126), never a container identifier. Even a hypothetical
+    shared backend could not answer \"is this container empty\" today: mediastoredata would
+    first need a container key added to its storage model, on top of the missing cross-service
+    handle. Left unenforced rather than fabricated. Adjacent items checked per the same issue:
+    error type for a missing container is correct (ContainerNotFoundException, handler.go:625-631,
+    already pinned by a terraform-provider-aws-waiter comment); container-name format validation
+    (validateContainerName, containers.go:19-26) runs only on CreateContainer, not Delete or any
+    other container-name-consuming op -- long-standing and uniform across this file, and the real
+    SDK's client-side validator (validators.go:33-51) only checks required-ness, not the
+    pattern/max shape traits, so there is no clear SDK-side evidence this diverges from real AWS;
+    left as-is, unverified rather than asserted as a bug. DeleteContainer skips any Status
+    precondition (containers.go:107-143): deleting a CREATING container is a tested, deliberate
+    choice (supersedes the pending creating->active transition -- containers.go:125-129's comment,
+    pinned by containers_test.go's TestInMemoryBackend_ContainerActivationDelay); a second
+    DeleteContainer call on an already-DELETING container is UNTESTED and its real-AWS behavior
+    (idempotent success vs. ContainerInUseException) could not be verified from the SDK/botocore
+    model -- flagged as unverified, not fixed."
 deferred: []
 leaks: {status: clean, note: "No goroutines, timers, or janitors in this service; InMemoryBackend is a single lockmetrics.RWMutex over per-region store.Table maps. The new container-lifecycle simulation (activationDelay/containerTransitions, see gap-closure note below) does NOT add a goroutine -- transitions are advanced lazily on read/mutate (advanceContainerStates), matching services/redshift's clusterTransitions pattern minus its optional background reconciler goroutine, which was deliberately not added here since lazy advancement alone is sufficient for every caller (SDK waiters always call Describe/List in a loop) and keeps this service goroutine-free."}
 ---
@@ -389,3 +427,53 @@ other concurrent work, not touched here.
 MetricPolicy field lists, `MaxAgeSeconds` int32, lifecycle policy as string,
 enum sets) matched the pinned v1.32.4 SDK exactly -- nothing in the brief
 disagreed with the pinned SDK.
+
+## Audit 2026-09-07 (gopherstack-apg3 -- DeleteContainer empty-container precondition)
+
+Title-only issue, no description. Verdict: **STRUCTURAL GAP, not fixed** --
+see the `gaps` entry above for the full citation trail. Short version: real
+AWS's DeleteContainer doc prose requires an empty container, but neither the
+Go SDK's nor botocore's modeled error set for the op names a distinct
+"container not empty" exception to enforce it against, and this repo's
+object data plane (`services/mediastoredata`) is not merely isolated from
+`services/mediastore` the way appconfig/appconfigdata are (separate
+`Provider.Init`, no cross-service handle in `pkgs/service.AppContext`) --
+its `InMemoryBackend.states` is keyed only by region
+(`services/mediastoredata/store.go:38-42`), with **no container dimension in
+the data model at all**. Fixing this for real needs two things, neither of
+which this pass built: (1) a cross-service handle from mediastore to
+mediastoredata's backend (or a shared store), and (2) adding a container key
+to mediastoredata's object table, which today only exists per-region.
+Building either is new cross-service architecture, correctly out of scope
+for a parity fix.
+
+Also checked the scope note's three adjacent questions: DeleteContainer's
+error type for a missing container is correct
+(`ContainerNotFoundException`, already verified and pinned by prior audits);
+container-name format validation runs only on `CreateContainer`
+(`validateContainerName`, `containers.go:19-26`), not on `DeleteContainer` or
+any other container-name-consuming op -- this is a pre-existing, uniform
+choice across the whole file, not something introduced or specific to
+`DeleteContainer`, and the real SDK's client-side validator
+(`validators.go:33-51`) only checks required-ness, not the `ContainerName`
+shape's `pattern`/`max` traits, so there's no clear SDK-side evidence this
+actually diverges from real AWS; left unverified rather than "fixed" on a
+guess. DeleteContainer has no `Status` precondition: deleting a `CREATING`
+container is intentional, tested behavior (supersedes the pending
+`CREATING`->`ACTIVE` transition, per `containers.go:125-129`'s comment and
+`TestInMemoryBackend_ContainerActivationDelay`); a second `DeleteContainer`
+call while a container is already `DELETING` is untested and its real-AWS
+behavior could not be established from the SDK/botocore model available
+here -- flagged as an open question, not asserted as a bug.
+
+No code changed this session (no fixable defect within reach). Gates run
+against unmodified code for the record: `GOTOOLCHAIN=go1.27.0 golangci-lint
+run ./services/mediastore/... ./services/mediastoredata/...` -> `0 issues.`;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/mediastore/...
+./services/mediastoredata/...` -> both `ok`. Confidence: high on the
+structural-isolation finding (multiple independent code-level confirmations:
+provider wiring, `AppContext` shape, and mediastoredata's region-only
+storage keying); lower on the two flagged-but-unverified adjacent items
+(name-format validation on non-Create ops, double-delete-while-DELETING
+semantics), which are genuinely unconfirmed against real AWS rather than
+dismissed.
