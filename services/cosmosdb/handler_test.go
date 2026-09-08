@@ -81,7 +81,12 @@ func TestHandler_InvalidURI(t *testing.T) {
 		name string
 		path string
 	}{
-		{name: "not dbs", path: "/foo"},
+		// "/foo" (a single path segment, not "dbs") used to be an invalid
+		// Core/SQL URI; it is now a valid Table API entity-collection path
+		// (see table_api.go's isTableAPIPath and
+		// TestHandler_TableAPI_UnknownTableIs404) -- AZURE.md section 9's M6
+		// milestone repurposed exactly this path shape, so it is no longer
+		// covered here.
 		{name: "too many segments", path: "/dbs/a/colls/b/docs/c/extra"},
 		{name: "colls typo", path: "/dbs/a/bogus"},
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/azureauth"
 	"github.com/blackbirdworks/gopherstack/pkgs/lockmetrics"
 	"github.com/blackbirdworks/gopherstack/pkgs/logger"
+	"github.com/blackbirdworks/gopherstack/pkgs/odatatable"
 	"github.com/blackbirdworks/gopherstack/pkgs/service"
 	"github.com/blackbirdworks/gopherstack/pkgs/telemetry"
 )
@@ -74,18 +75,9 @@ const xHTTPMethodOverrideHeader = "X-Http-Method"
 // (odataLevelFromAccept) and used throughout table_ops.go/entity_ops.go to
 // vary response shape.
 const (
-	odataLevelNoMetadata      = "nometadata"
-	odataLevelMinimalMetadata = "minimalmetadata"
-	odataLevelFullMetadata    = "fullmetadata"
-)
-
-// System entity property names, shared across path-predicate parsing
-// (entity_ops.go), $filter identifier resolution (odata_filter_eval.go), and
-// entity body decode/encode.
-const (
-	partitionKeyProperty = "PartitionKey"
-	rowKeyProperty       = "RowKey"
-	timestampProperty    = "Timestamp"
+	odataLevelNoMetadata      = odatatable.MetadataLevelNoMetadata
+	odataLevelMinimalMetadata = odatatable.MetadataLevelMinimal
+	odataLevelFullMetadata    = odatatable.MetadataLevelFull
 )
 
 // Handler is the Echo HTTP handler for Azure Table Storage operations.
