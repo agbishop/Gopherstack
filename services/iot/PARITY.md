@@ -1908,3 +1908,65 @@ No code changes this pass. Gates: `go build ./services/iot/...` clean,
 count after this pass: unchanged at 10 (6 confirmed-correct-but-flagged,
 4 confirmed-real-but-ambiguous) -- filed as gopherstack-yr88 stays open for
 a human tiebreak on the 4, not because verification was skipped.
+
+## 2026-09-08 pass (gopherstack-y3om): the client-breakage premise itself doesn't hold here
+
+Every prior pass on these same 4 findings (`DeleteCommand`, `DeleteCommandExecution`,
+`DeletePackage`, `DeletePackageVersion`) assumed the usual reason an
+undeclared wire code matters: a real client's
+`errors.As(err, &types.XException{})` can supposedly never match a code its
+operation's `deserializeOpError` switch doesn't list. That assumption was
+never actually tested against a live client for this service, and it is
+false for iot's currently-pinned SDK.
+
+**iot@v1.83.0 has no `deserializers.go`.** Confirmed by directory listing of
+the pinned module (`~/go/pkg/mod/.../service/iot@v1.83.0/`): no per-operation
+`deserializeOpError` switches exist at all. Instead the module ships
+`type_registry.go` (a `smithy.TypeRegistry` keyed by absolute shape ID, e.g.
+`"com.amazonaws.iot#ResourceNotFoundException"`) and a generated `schemas/`
+package -- smithy-go's schema-based codegen, the same shape confirmed for
+codepipeline@v1.54.0 (`services/codepipeline/undeclared_error_codes_test.go`).
+Error deserialization in this codegen resolves the wire error code against
+the whole-service `TypeRegistry`, not the calling operation's declared set.
+
+**Empirically verified, not just inferred from the codegen shape**: drove
+all 4 ops through a real `aws-sdk-go-v2/service/iot` client
+(`newTestIoTClient`, httptest server) against an unknown resource ID and
+checked `errors.As`. All 4 deserialize into their own specific
+`*types.ResourceNotFoundException` and do NOT coerce into any of their own
+op's declared types (`ConflictException` for the two Command ops,
+`ValidationException` for the two Package ops). Locked as a permanent
+regression: `undeclared_error_codes_test.go`,
+`TestUndeclaredErrorCodes_MatchTheirOwnRealSDKType` (4 subtests, one per
+op) plus `TestUndeclaredErrorCodes_NoTypeRegistryEntry_WouldFailToDeserialize`
+(pins that the `ResourceNotFoundException` TypeRegistry entry itself exists,
+so a future SDK repin that drops it fails loudly here instead of silently).
+
+**Verdict: this is a documentation divergence, not a client-breaking
+defect.** The consequence every prior pass cited as the reason to treat this
+as a bug -- "a real caller's typed catch for `ResourceNotFoundException`
+can never fire" -- does not happen. A caller doing
+`errors.As(err, &types.ResourceNotFoundException{})` today gets exactly what
+they'd get from real AWS if AWS also returns this code (undocumented in the
+model, but the wire code itself is real and has a real exception type).
+gopherstack's operation model (its own `deserializeOpError`-shaped
+declared-set reasoning in the entries above) is stale for the reason it was
+written, not for the code it emits.
+
+**The idempotency question is unaffected by this finding and remains
+unresolved for the same reason as every prior pass**: re-checked
+botocore's `iot/2015-05-28/service-2.json` `errors` lists directly (not
+`deserializers.go`, since none exists to check) --
+identical sets to the ones already recorded above. Doc text: `DeleteCommand`
+"Delete a command resource.", `DeleteCommandExecution` "Delete a command
+execution. Only command executions that enter a terminal state can be
+deleted from your account.", `DeletePackage`/`DeletePackageVersion` "Deletes
+a specific version from a software package." -- none describe idempotent
+behavior for a missing resource, unlike workmail's
+`DeleteMobileDeviceAccessOverride`. No new evidence on this axis beyond what
+2026-08-31/gopherstack-yr88 already weighed and reverted. Left unchanged.
+
+No code changes this pass -- only the regression test above, which locks
+present behavior rather than changing it. Gates: `go test -race
+./services/iot/...` pass, `golangci-lint run ./services/iot/...` `0
+issues`.
