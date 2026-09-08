@@ -1,7 +1,7 @@
 ---
 service: elasticache
 sdk_module: aws-sdk-go-v2/service/elasticache@v1.56.4
-last_audit_commit: pending (uncommitted this pass -- see git log at merge time)
+last_audit_commit: 221e362fa                    # gopherstack-8haq fix commit
 last_audit_date: 2026-09-08
 overall: A            # 2026-09-08 (gopherstack-8haq, P1): xmlError/xmlResp return nil after a
                        # successful write (handler.go), so any helper that rejects a request via
