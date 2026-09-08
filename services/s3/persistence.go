@@ -125,7 +125,7 @@ func reinitBucketMutexes(buckets []*StoredBucket) {
 // reinitSingleBucket reinitialises one bucket's mutex, nil maps, and per-object mutexes.
 func reinitSingleBucket(bucket *StoredBucket) {
 	if bucket.mu == nil {
-		bucket.mu = lockmetrics.New("s3-bucket")
+		bucket.mu = lockmetrics.New("s3.bucket." + bucket.Name)
 	}
 
 	if bucket.Objects == nil {
@@ -150,7 +150,7 @@ func reinitSingleBucket(bucket *StoredBucket) {
 
 	for _, obj := range bucket.Objects {
 		if obj.mu == nil {
-			obj.mu = lockmetrics.New("s3-object")
+			obj.mu = lockmetrics.New("s3.object")
 		}
 	}
 }
