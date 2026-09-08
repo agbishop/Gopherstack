@@ -138,7 +138,14 @@ func (i *storedIngestion) toIngestion() *Ingestion {
 }
 
 type storedDashboard struct {
-	CreatedTime            time.Time            `json:"createdTime"`
+	CreatedTime time.Time `json:"createdTime"`
+	// DeletedVersions tracks version numbers removed by a targeted
+	// DeleteDashboard(VersionNumber) call. This backend has no real
+	// per-version content storage (see DeleteDashboard's doc comment), but a
+	// deleted version number must still stop being reported live by
+	// ListDashboardVersions and must 404 rather than re-succeed on a repeat
+	// delete -- both observable independent of full version history.
+	DeletedVersions        map[int64]bool       `json:"deletedVersions,omitempty"`
 	LastUpdatedTime        time.Time            `json:"lastUpdatedTime"`
 	LastPublishedTime      time.Time            `json:"lastPublishedTime"`
 	Definition             map[string]any       `json:"definition,omitempty"`

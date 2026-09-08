@@ -253,6 +253,47 @@ func TestQuickSight_Dashboards(t *testing.T) {
 	}
 }
 
+// TestQuickSight_DeleteDashboard_SpecificVersion mirrors
+// TestQuickSight_DeleteTemplate_SpecificVersion (handler_templates_test.go).
+// DeleteDashboard with a VersionNumber currently validates-and-no-ops (see
+// dashboard.go's DeleteDashboard doc comment, gopherstack-86y) because this
+// backend has no per-version storage -- but the deleted version number must
+// still stop being reported as live: ListDashboardVersions must drop it, and
+// a repeat delete of the same version must now 404 rather than keep
+// succeeding, matching DeleteTemplate's real removal (templates.go's
+// DeleteTemplate deletes t.Versions[versionNumber], so a second delete of the
+// same version already 404s there).
+func TestQuickSight_DeleteDashboard_SpecificVersion(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, http.MethodPost, accountPath("/dashboards/dvdash"), map[string]any{"Name": "D1"})
+	doRequest(t, h, http.MethodPut, accountPath("/dashboards/dvdash"), map[string]any{"Name": "D2"})
+
+	delRec := doRequest(t, h, http.MethodDelete, accountPath("/dashboards/dvdash?version-number=1"), nil)
+	require.Equal(t, http.StatusOK, delRec.Code)
+
+	// Dashboard itself still exists (version 2 remains).
+	describeRec := doRequest(t, h, http.MethodGet, accountPath("/dashboards/dvdash"), nil)
+	require.Equal(t, http.StatusOK, describeRec.Code)
+
+	// Version 1 must no longer be reported as a live version.
+	versionsRec := doRequest(t, h, http.MethodGet, accountPath("/dashboards/dvdash/versions"), nil)
+	require.Equal(t, http.StatusOK, versionsRec.Code)
+	items, ok := parseBody(t, versionsRec)["DashboardVersionSummaryList"].([]any)
+	require.True(t, ok)
+	for _, item := range items {
+		v, itemOK := item.(map[string]any)
+		require.True(t, itemOK)
+		assert.NotEqual(t, float64(1), v["VersionNumber"], "deleted version 1 must not be listed")
+	}
+
+	// A repeat delete of the same, already-deleted version must 404, not
+	// silently succeed again.
+	redeleteRec := doRequest(t, h, http.MethodDelete, accountPath("/dashboards/dvdash?version-number=1"), nil)
+	assert.Equal(t, http.StatusNotFound, redeleteRec.Code)
+}
+
 // ---- UpdateDashboardPublishedVersion ----
 
 func TestQuickSight_UpdateDashboardPublishedVersion(t *testing.T) {
@@ -282,6 +323,29 @@ func TestQuickSight_UpdateDashboardPublishedVersion(t *testing.T) {
 	// Unknown dashboard.
 	rec = doRequest(t, h, http.MethodPut, accountPath("/dashboards/nope/versions/1"), nil)
 	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestQuickSight_UpdateDashboardPublishedVersion_DeletedVersion pins the
+// DeletedVersions guard: publishing a version that DeleteDashboard already
+// removed must 404, not succeed.
+func TestQuickSight_UpdateDashboardPublishedVersion_DeletedVersion(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, http.MethodPost, accountPath("/dashboards/pubdel"), map[string]any{"Name": "D1"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, http.MethodPut, accountPath("/dashboards/pubdel"), map[string]any{"Name": "D2"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	delRec := doRequest(t, h, http.MethodDelete, accountPath("/dashboards/pubdel?version-number=1"), nil)
+	require.Equal(t, http.StatusOK, delRec.Code)
+
+	rec = doRequest(t, h, http.MethodPut, accountPath("/dashboards/pubdel/versions/1"), nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	body := parseBody(t, rec)
+	assert.Equal(t, "ResourceNotFoundException", body["Code"])
 }
 
 // ---- UpdateDashboardLinks ----

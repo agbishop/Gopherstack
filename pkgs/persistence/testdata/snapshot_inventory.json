@@ -20965,6 +20965,7 @@
       "storedDashboard.CreatedTime time.Time `json:\"createdTime\"`",
       "storedDashboard.DashboardID string `json:\"dashboardId\"`",
       "storedDashboard.Definition map[string]any `json:\"definition,omitempty\"`",
+      "storedDashboard.DeletedVersions map[int64]bool `json:\"deletedVersions,omitempty\"`",
       "storedDashboard.LastPublishedTime time.Time `json:\"lastPublishedTime\"`",
       "storedDashboard.LastUpdatedTime time.Time `json:\"lastUpdatedTime\"`",
       "storedDashboard.LinkEntities []string `json:\"linkEntities,omitempty\"`",
