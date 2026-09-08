@@ -458,3 +458,38 @@ hypotheses this pass specifically went looking for (replay, non-invalidation, at
 wrong error type) were each independently traced through `account_info.go` and found already
 correct, not newly fixed. `go test -race ./services/account/...` and
 `golangci-lint run ./services/account/...` both still pass (unchanged).
+
+## 2026-09-08: writeError nil-on-write fall-through sweep (gopherstack-246v) -- clean
+
+Part of the 12-service sweep for the elasticache class bug (gopherstack-8haq): a helper
+that rejects a request via the local response writer and *returns* that writer's result
+hands a caller doing `if err != nil { return err }` a `nil`, since the writer returns nil
+after a successful write -- the rejection is silently skipped and the operation continues.
+
+**Base writer**: `writeError` (`handler.go:640`) returns `c.JSON(status, ...)` directly --
+nil on a successful write, matching the vulnerable shape's precondition. `writeBackendError`
+(`handler.go:653`) wraps it, `return writeError(...)` at every branch.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script parsed every non-test `.go` file,
+found every function with a `return`-statement whose result is a bare call to `writeError`,
+then fixed-point-expanded that set to any function bare-returning a call to an
+already-found member (this is how `writeBackendError` and all 16 `handleXxx` op handlers
+were discovered as capable of propagating the nil-after-write value) -- 19 such functions.
+Cross-referenced against dispatch: `Handler()` returns `h.route(c)` directly; `route`
+resolves `operationHandlers` (a flat `map[string]handlerFunc`, 16 entries, one per op) and
+returns `fn(h, c, body)` directly -- confirmed by reading `route`, no intermediate
+`if err != nil` anywhere in the dispatch path. All 16 `handleXxx` functions are therefore
+dispatch targets, safe by construction; `writeBackendError` is the only non-dispatch helper
+in the discovered set.
+
+Every call site of both `writeError` and `writeBackendError` across the package (47 total)
+was enumerated and classified: **all 47 are `return writeError(...)` / `return
+writeBackendError(...)` direct returns. Zero stored-then-checked sites, zero `_ =`
+discards.** Independently confirmed by grepping every non-test-file occurrence of
+`writeError(`/`writeBackendError(` outside their own definitions: every one is immediately
+preceded by `return` on the same line -- no `if err := writeError(...); err != nil` or
+bare-assignment shape exists anywhere in this package.
+
+**No instance of the broken shape exists in account.** No code changed. Gates re-run for
+the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/account/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/account/...` ok.

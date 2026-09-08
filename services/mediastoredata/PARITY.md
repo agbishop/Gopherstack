@@ -145,3 +145,37 @@ leaks: {status: clean, note: "no goroutines/janitors; region map lazily allocate
   fix via hand-revert. Everything else re-checked this pass (all 5 *Input doc comments,
   `types/errors.go`'s 4-exception list, `types/enums.go`, `persistence.go`/`store_setup.go`)
   found correct, no other changes needed.
+
+## 2026-09-08: writeErrorJSON nil-on-write fall-through sweep (gopherstack-246v) -- clean
+
+Part of the 12-service sweep for the elasticache class bug (gopherstack-8haq): a helper
+that rejects a request via the local response writer and *returns* that writer's result
+hands a caller doing `if err != nil { return err }` a `nil`, since the writer returns nil
+after a successful write -- the rejection is silently skipped and the operation continues.
+
+**Base writer**: `writeErrorJSON` (`handler.go:583`) returns `c.JSON(status,
+errorResponse(...))` directly -- nil on a successful write. `(h *Handler) writeError`
+(`handler.go:553`) wraps it, `return writeErrorJSON(...)` at every branch.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test `.go` file (9
+files) found every function with a `return`-statement whose result is a bare call to
+`writeErrorJSON`, then fixed-point-expanded to any function bare-returning a call to an
+already-found member -- 8 functions discovered: the `writeError` method and the 6
+verb-named op handlers (`handlePutObject`, `handleGetObject`, `handleRangeGet`,
+`handleDeleteObject`, `handleListItems`, `handleDescribeObject`), plus `Handler` itself.
+
+**Dispatch verified, not assumed.** `Handler()` is a direct `switch r.Method` with one
+`return h.handleXxx(c)` per case (`handler.go:130-165`) -- read in full, no intermediate
+variable or `if err != nil` anywhere in the switch. All 6 op handlers are dispatch targets,
+safe by construction; `writeError` (the method) is the only non-dispatch helper discovered.
+
+Every call site of `writeErrorJSON` and the `writeError` method across the package (18
+total) was enumerated and classified: **all 18 are direct `return writeErrorJSON(...)` /
+`return writeError(...)` / `return h.handleXxx(c)` returns. Zero stored-then-checked sites,
+zero `_ =` discards.** Independently confirmed by grepping every non-test-file occurrence
+of `writeErrorJSON(`/`writeError(` outside their own definitions: every one is immediately
+preceded by `return` on the same line.
+
+**No instance of the broken shape exists in mediastoredata.** No code changed. Gates re-run
+for the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/mediastoredata/...` 0
+issues; `GOTOOLCHAIN=go1.27.0 go test -race ./services/mediastoredata/...` ok.

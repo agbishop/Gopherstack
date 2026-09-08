@@ -511,3 +511,44 @@ generic, not specific to this case. No fix applied; sharpened the landmine comme
 Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/memorydb/...` ok;
 `GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/memorydb/...` 0 issues. Re-ran
 `cmd/errtargetaudit`: same finding, same line, confirming no emission change.
+
+## 2026-09-08: writeError nil-on-write fall-through sweep (gopherstack-246v) -- clean
+
+Part of the 12-service sweep for the elasticache class bug (gopherstack-8haq): a helper
+that rejects a request via the local response writer and *returns* that writer's result
+hands a caller doing `if err != nil { return err }` a `nil`, since the writer returns nil
+after a successful write -- the rejection is silently skipped and the operation continues.
+
+**Base writer**: `writeError` (`handler.go:536`) returns `c.JSON(status, errorResponse{...})`
+directly -- nil on a successful write. `writeBackendError` (`handler.go:467`, a method)
+wraps it: a loop over `errCodeLookup` plus a fallback switch, every branch `return
+writeError(...)`.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test `.go` file (46
+files) found every function with a `return`-statement whose result is a bare call to
+`writeError`, then fixed-point-expanded to any function bare-returning a call to an
+already-found member -- 53 functions discovered: `writeBackendError`, all ~46 `handleXxx`
+op handlers, and the 6 `dispatch`/`dispatchXxxOps` routing functions.
+
+**Dispatch verified, not assumed.** `dispatch` and its sub-dispatchers use the same
+`(bool, error)` handled-tuple chain as iotwireless/memorydb's sibling services:
+`Handler()` -> `dispatch` -> `dispatchCoreOps`/`dispatchNewOps` -> `dispatchSnapshotAnd
+EngineOps`/`dispatchMultiRegionOps`/`dispatchParameterAndShardOps`, each level doing `if
+handled, result := h.dispatchX(...); handled { return result }` -- branches on the
+`handled` bool, never on `result != nil`, so a matched op that rejected via `writeError`
+(returning nil) still propagates by the bare `return result` inside the `handled` branch.
+Read all 3 such sites (`handler.go:209-266`) confirming zero exceptions.
+`dispatchCoreOps` itself resolves via a flat `memorydbCoreOps` map and returns `fn(h, ctx,
+c, body)` directly.
+
+Every call site of `writeError` and `writeBackendError` across the package (174 total) was
+enumerated: 171 are direct `return writeError(...)` / `return writeBackendError(...)` /
+`return h.handleXxx(...)` sites; the other 3 are the `(handled, result)` dispatch-chain
+assigns above, verified safe. Zero `_ =` discards, zero stored-single-value-and-`!=
+nil`-checked sites. Independently confirmed by grepping every non-test-file occurrence of
+`writeError(`/`writeBackendError(` outside their own definitions: every one is immediately
+preceded by `return` on the same line.
+
+**No instance of the broken shape exists in memorydb.** No code changed. Gates re-run for
+the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/memorydb/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/memorydb/...` ok.

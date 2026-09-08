@@ -267,3 +267,46 @@ traps so the next auditor doesn't re-flag them.
   Both verdicts hold. Effort for this pass went to `services/bedrock`
   instead, which had no equivalent prior fix and four real bugs on this
   axis (see its own PARITY.md, same date).
+
+## 2026-09-08: writeError/writeJSON/handleError nil-on-write fall-through sweep (gopherstack-246v) -- clean
+
+Part of the 12-service sweep for the elasticache class bug (gopherstack-8haq): a helper
+that rejects a request via the local response writer and *returns* that writer's result
+hands a caller doing `if err != nil { return err }` a `nil`, since the writer returns nil
+after a successful write -- the rejection is silently skipped and the operation continues.
+
+**Base writers**: `writeError` (`handler.go:955`) and `writeJSON` (`handler.go:968`) both
+write directly via `c.Response()` and unconditionally `return nil`; `handleError`
+(`handler.go:1004`) dispatches to `writeError` on every branch.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test `.go` file (20
+files) found every function with a `return`-statement whose result is a bare call to one
+of the three base writers, then fixed-point-expanded to any function bare-returning a call
+to an already-found member. This discovered 128 functions: `handleError` itself, all ~70
+per-operation `handleXxx`/verb-named handlers (`createDestination`, `getWirelessDevice`,
+...), and every `dispatchXxx` routing function.
+
+**Dispatch verified, not assumed.** This service's dispatch is a multi-level `(bool,
+error)` chain: `Handler()` -> `dispatch` -> `dispatchCoreOps` -> per-family
+`dispatchWirelessDevice`/`dispatchWirelessGateway`/etc., down to leaf switches over `op`
+that `return true, h.someOpHandler(...)`. Every intermediate level uses the uniform
+`if handled, result := h.dispatchX(...); handled { return true, result }` shape -- it
+branches on the `handled` bool, never on `result != nil`, so a sub-dispatcher that
+"handled" a rejected op by writing an error and returning `nil` still propagates
+correctly (handled=true short-circuits with a bare `return`); the value of `result` is
+never inspected on the miss path either, only discarded to try the next family. Read all
+16 such branch sites (`handler.go:472-865`) confirming the pattern holds with zero
+exceptions -- none stores an err/result and branches on `!= nil`.
+
+Every call site of the 3 base writers plus all 128 discovered wrapper functions across the
+package was enumerated: 294 total. 278 are direct `return writeError(...)` / `return
+writeJSON(...)` / `return handleError(...)` / `return h.handleXxx(...)` sites; the other 16
+are the `(handled, result)` dispatch-chain assigns above, verified safe. Zero `_ =`
+discards, zero instances of a stored single-value error checked with `if err != nil`.
+Independently confirmed by grepping every non-test-file occurrence of
+`writeError(`/`writeJSON(`/`handleError(` outside their own definitions: every one is
+immediately preceded by `return` on the same line.
+
+**No instance of the broken shape exists in iotwireless.** No code changed. Gates re-run
+for the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/iotwireless/...` 0
+issues; `GOTOOLCHAIN=go1.27.0 go test -race ./services/iotwireless/...` ok.

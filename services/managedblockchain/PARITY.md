@@ -367,3 +367,43 @@ prior entry (`d08692ef`, dated `2026-08-10` in this file) checks out: `git show 
 d08692ef` returns `2026-08-10`, matching the manifest's `last_audit_date` -- unlike appmesh and
 codeconnections, both caught this campaign citing a 2026-07-13 sha against a 2026-08-10 audit
 date. Verdict: clean provenance, no fabricated audit trail.
+
+## 2026-09-08: writeError nil-on-write fall-through sweep (gopherstack-246v) -- clean
+
+Part of the 12-service sweep for the elasticache class bug (gopherstack-8haq): a helper
+that rejects a request via the local response writer and *returns* that writer's result
+hands a caller doing `if err != nil { return err }` a `nil`, since the writer returns nil
+after a successful write -- the rejection is silently skipped and the operation continues.
+
+**Base writer**: `writeError` (`handler.go:627`) returns `c.JSON(status, errorResponse{...})`
+directly -- nil on a successful write. `writeBackendError` (`handler.go:613`, a method) wraps
+it, `return writeError(...)` at every branch of its error-classification switch.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test `.go` file found
+every function with a `return`-statement whose result is a bare call to `writeError`, then
+fixed-point-expanded to any function bare-returning a call to an already-found member --
+35 functions discovered: `writeBackendError`, all ~28 `handleXxx` op handlers, and the 6
+`dispatch`/`dispatchXxxOps` routing functions.
+
+**Dispatch verified, not assumed.** `dispatch` and its four sub-dispatchers
+(`dispatchNetworkOps`, `dispatchAccessorOps`, `dispatchProposalOps`, `dispatchInvitationOps`,
+plus `dispatchMemberNodeOps`) use a single-error-value sentinel chain: each leaf switches on
+`op` and `return`s a `handleXxx(...)` call directly per case, falling through to a private
+`errUnknownOp` sentinel if no case matched. Callers check `if err := h.dispatchX(...);
+!errors.Is(err, errUnknownOp) { return err }` -- the branch is on the sentinel identity, not
+on `err != nil`, so a matched op that rejected via `writeError` (returning nil) still takes
+the `!errors.Is(...)` == true path and propagates by bare `return err`. Read all 5 such
+sites (`handler.go:490-536`) confirming zero exceptions to the pattern.
+
+Every call site of `writeError` and `writeBackendError` across the package (109 total) was
+enumerated: 104 are direct `return writeError(...)` / `return writeBackendError(...)` /
+`return h.handleXxx(...)` sites; the other 5 are the `errUnknownOp`-sentinel dispatch
+assigns above, verified safe. Zero `_ =` discards, zero stored-and-`!= nil`-checked sites.
+Independently confirmed by grepping every non-test-file occurrence of
+`writeError(`/`writeBackendError(` outside their own definitions: every one is immediately
+preceded by `return` on the same line.
+
+**No instance of the broken shape exists in managedblockchain.** No code changed. Gates
+re-run for the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run
+./services/managedblockchain/...` 0 issues; `GOTOOLCHAIN=go1.27.0 go test -race
+./services/managedblockchain/...` ok.

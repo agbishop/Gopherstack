@@ -477,3 +477,38 @@ storage keying); lower on the two flagged-but-unverified adjacent items
 (name-format validation on non-Create ops, double-delete-while-DELETING
 semantics), which are genuinely unconfirmed against real AWS rather than
 dismissed.
+
+## 2026-09-08: writeError nil-on-write fall-through sweep (gopherstack-246v) -- clean
+
+Part of the 12-service sweep for the elasticache class bug (gopherstack-8haq): a helper
+that rejects a request via the local response writer and *returns* that writer's result
+hands a caller doing `if err != nil { return err }` a `nil`, since the writer returns nil
+after a successful write -- the rejection is silently skipped and the operation continues.
+
+**Base writer**: `writeError` (`handler.go:664`) returns `c.JSON(status, errorResponse{...})`
+directly -- nil on a successful write. `writeBackendError` (`handler.go:623`, a method)
+wraps it, `return writeError(...)` at every branch of its error-classification switch.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test `.go` file found
+every function with a `return`-statement whose result is a bare call to `writeError`, then
+fixed-point-expanded to any function bare-returning a call to an already-found member --
+24 functions discovered: `writeBackendError`, all 20 `handleXxx` op handlers, and `dispatch`.
+
+**Dispatch verified, not assumed.** `Handler()` returns `h.dispatch(c, op, body)` directly;
+`dispatch` looks up `op` in `mediastoreDispatch`, a flat `map[string]func(*Handler,
+*echo.Context, []byte) error` (20 entries), and returns `fn(h, c, body)` directly -- read
+in full, no intermediate `if err != nil` anywhere in the dispatch path. All 20 `handleXxx`
+functions are dispatch targets, safe by construction; `writeBackendError` is the only
+non-dispatch helper in the discovered set.
+
+Every call site of `writeError` and `writeBackendError` across the package (73 total) was
+enumerated and classified: **all 73 are direct `return writeError(...)` / `return
+writeBackendError(...)` / `return fn(h, c, body)` returns. Zero stored-then-checked sites,
+zero `_ =` discards.** Independently confirmed by grepping every non-test-file occurrence
+of `writeError(`/`writeBackendError(` outside their own definitions: every one is
+immediately preceded by `return` on the same line.
+
+**No instance of the broken shape exists in mediastore.** No code changed. Gates re-run for
+the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/mediastore/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/mediastore/...` ok. (mediastoredata's own
+audit is recorded separately in its own PARITY.md, same date.)
