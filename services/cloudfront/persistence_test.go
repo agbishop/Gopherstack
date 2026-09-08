@@ -308,3 +308,50 @@ func TestPersistenceRoundTrip_IndexesRebuilt(t *testing.T) {
 	_, err = b2.CreateCachePolicy("persist-cp", "comment", 86400, 31536000, 0)
 	require.Error(t, err, "duplicate cache policy name should be rejected after restore")
 }
+
+// TestPersistenceRoundTrip_FieldLevelEncryptionSharedCallerReference is a regression test for
+// gopherstack-lt9v: two FLE configs may legitimately share a CallerReference after
+// UpdateFieldLevelEncryption (gopherstack-kpk5), so a snapshot/restore round trip must not
+// lose either config, and the create-time collision check must still work correctly
+// afterwards.
+func TestPersistenceRoundTrip_FieldLevelEncryptionSharedCallerReference(t *testing.T) {
+	t.Parallel()
+
+	b := cloudfront.NewInMemoryBackend(t.Context(), "123456789012", config.DefaultRegion)
+
+	owner, err := b.CreateFieldLevelEncryption("shared-ref", "owner", nil)
+	require.NoError(t, err)
+	other, err := b.CreateFieldLevelEncryption("other-ref", "other", nil)
+	require.NoError(t, err)
+
+	_, err = b.UpdateFieldLevelEncryption(other.ID, "shared-ref", "renamed onto owner", nil)
+	require.NoError(t, err)
+
+	h := cloudfront.NewHandler(b)
+	snap := h.Snapshot(t.Context())
+	require.NotEmpty(t, snap)
+
+	b2 := cloudfront.NewInMemoryBackend(t.Context(), "123456789012", config.DefaultRegion)
+	h2 := cloudfront.NewHandler(b2)
+	require.NoError(t, h2.Restore(t.Context(), snap))
+
+	gotOwner, err := b2.GetFieldLevelEncryption(owner.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "shared-ref", gotOwner.Name)
+
+	gotOther, err := b2.GetFieldLevelEncryption(other.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "shared-ref", gotOther.Name)
+
+	_, err = b2.CreateFieldLevelEncryption("shared-ref", "should still collide", nil)
+	require.ErrorIs(t, err, cloudfront.ErrFLEAlreadyExists)
+
+	require.NoError(t, b2.DeleteFieldLevelEncryption(owner.ID))
+
+	stillProtected, err := b2.GetFieldLevelEncryption(other.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "shared-ref", stillProtected.Name)
+
+	_, err = b2.CreateFieldLevelEncryption("shared-ref", "should collide with other", nil)
+	require.ErrorIs(t, err, cloudfront.ErrFLEAlreadyExists)
+}

@@ -1345,6 +1345,41 @@ new `CallerReference` echoed back, and asserts the body contains neither
 Confirmed to fail with `409 FieldLevelEncryptionConfigAlreadyExists` against the pre-fix
 code before the fix landed.
 
+**Follow-up (CONFIRMED, FIXED 2026-09-08, gopherstack-lt9v):** the gopherstack-kpk5 fix above
+left `fieldLevelEncryptionByName` as a unique `map[string]string` (name -> ID) even though it
+now must represent two FLE configs sharing a `CallerReference`. Reproduced: create A
+(name="nameA") and B (name="nameB"); rename B onto "nameA" (`index["nameA"]` now points at B,
+A's entry is gone); delete A (`DeleteFieldLevelEncryption` did `delete(index, A.Name)` ==
+`delete(index, "nameA")`, wiping B's entry too); create C with name="nameA" then succeeded,
+even though B still held it and `CreateFieldLevelEncryptionConfig` does declare
+`FieldLevelEncryptionConfigAlreadyExists` (cloudfront@v1.67.4 deserializers.go:2898
+`awsRestxml_deserializeOpErrorCreateFieldLevelEncryptionConfig`), unlike Update. The index was
+also captured/restored in `persistence.go`, so a stale entry could survive a snapshot round
+trip. Fix: dropped `fieldLevelEncryptionByName` entirely (`store.go`, `persistence.go`,
+`store_setup.go`) -- `CreateFieldLevelEncryption` (`field_level_encryption.go`) now checks
+collisions with `fleNameInUse`, an O(n) scan of `fieldLevelEncryptions` for a matching `Name`;
+this table exists only for the create-time check and rename bookkeeping, and removing the
+index (rather than turning it into a `name -> []id` multimap) means there is no longer an
+index for a snapshot round trip to leave stale. `UpdateFieldLevelEncryption` and
+`DeleteFieldLevelEncryption` no longer touch any name index. Verified
+`UpdateFieldLevelEncryptionProfile`'s rejection is unaffected and correct: its declared error
+set (deserializers.go:24257 `awsRestxml_deserializeOpErrorUpdateFieldLevelEncryptionProfile`)
+does include `FieldLevelEncryptionProfileAlreadyExists`, so two profiles genuinely can never
+share a name and `renameInIndex` on `fieldLevelEncryptionProfileByName` (unchanged) is correct.
+
+Regression:
+`TestCreateFieldLevelEncryptionConfig_CallerReferenceCollisionAfterDelete` reproduces the
+exact sequence above through the HTTP handler and pins `409` with
+`FieldLevelEncryptionConfigAlreadyExists` on the wire;
+`TestFieldLevelEncryption_NameSurvivesDeleteOfOriginalOwner` covers the same collision and a
+second case (the surviving config stays `Get`-able and still protects its name) at the backend
+level via `ErrorIs(err, ErrFLEAlreadyExists)`;
+`TestPersistenceRoundTrip_FieldLevelEncryptionSharedCallerReference`
+(`persistence_test.go`) proves two configs sharing a `CallerReference` both survive a
+Snapshot/Restore round trip and the collision check still works, both before and after
+deleting the original owner. All three failed against the pre-fix code (create C succeeded
+with `err=nil` / `201`).
+
 **Verdict table** (all 32; raw extraction is `awk "/deserializeOpError<Op>\(/,/^}/"
 deserializers.go | grep -oE '"[A-Za-z0-9]+"' | sort -u`, scripted per op in a bash loop):
 

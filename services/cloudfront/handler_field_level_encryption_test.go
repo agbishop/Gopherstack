@@ -411,6 +411,99 @@ func TestUpdateFieldLevelEncryptionConfig_CallerReferenceCollisionAllowed(t *tes
 	assert.Equal(t, "fle-collision-target", stillThere.Name)
 }
 
+// TestCreateFieldLevelEncryptionConfig_CallerReferenceCollisionAfterDelete is a regression
+// test for gopherstack-lt9v. fieldLevelEncryptionByName used to be a unique name->ID index;
+// once UpdateFieldLevelEncryptionConfig legitimately lets two configs share a CallerReference
+// (gopherstack-kpk5), deleting whichever config "owns" the shared index entry wipes it, and a
+// subsequent Create with that same CallerReference no longer sees the surviving config at all.
+// Real CreateFieldLevelEncryptionConfig does declare FieldLevelEncryptionConfigAlreadyExists
+// (cloudfront@v1.67.4 deserializers.go:2898 awsRestxml_deserializeOpErrorCreateFieldLevelEncryptionConfig),
+// so this must still be rejected.
+func TestCreateFieldLevelEncryptionConfig_CallerReferenceCollisionAfterDelete(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	a, err := h.Backend.CreateFieldLevelEncryption("nameA", "a", nil)
+	require.NoError(t, err)
+	b, err := h.Backend.CreateFieldLevelEncryption("nameB", "b", nil)
+	require.NoError(t, err)
+
+	_, err = h.Backend.UpdateFieldLevelEncryption(b.ID, "nameA", "b renamed onto a", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, h.Backend.DeleteFieldLevelEncryption(a.ID))
+
+	body := []byte(`<FieldLevelEncryptionConfig><CallerReference>nameA</CallerReference>` +
+		`<Comment>should collide with b</Comment></FieldLevelEncryptionConfig>`)
+	rec := doXML(t, h, http.MethodPost, "/2020-05-31/field-level-encryption", body)
+
+	require.Equal(t, http.StatusConflict, rec.Code, "body=%s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "<Code>FieldLevelEncryptionConfigAlreadyExists</Code>")
+}
+
+// TestFieldLevelEncryption_NameSurvivesDeleteOfOriginalOwner is a regression test for
+// gopherstack-lt9v covering the two ways the stale-index bug could manifest once two
+// configs may share a CallerReference (gopherstack-kpk5).
+func TestFieldLevelEncryption_NameSurvivesDeleteOfOriginalOwner(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		run  func(t *testing.T, b *cloudfront.InMemoryBackend)
+		name string
+	}{
+		{
+			name: "reused name still rejected after original owner deleted",
+			run: func(t *testing.T, b *cloudfront.InMemoryBackend) {
+				t.Helper()
+
+				a, err := b.CreateFieldLevelEncryption("nameA", "a", nil)
+				require.NoError(t, err)
+				second, err := b.CreateFieldLevelEncryption("nameB", "b", nil)
+				require.NoError(t, err)
+
+				_, err = b.UpdateFieldLevelEncryption(second.ID, "nameA", "b renamed onto a", nil)
+				require.NoError(t, err)
+
+				require.NoError(t, b.DeleteFieldLevelEncryption(a.ID))
+
+				_, err = b.CreateFieldLevelEncryption("nameA", "c", nil)
+				require.ErrorIs(t, err, cloudfront.ErrFLEAlreadyExists)
+			},
+		},
+		{
+			name: "surviving config stays discoverable and still protects the name",
+			run: func(t *testing.T, b *cloudfront.InMemoryBackend) {
+				t.Helper()
+
+				owner, err := b.CreateFieldLevelEncryption("shared", "owner", nil)
+				require.NoError(t, err)
+				other, err := b.CreateFieldLevelEncryption("other", "other", nil)
+				require.NoError(t, err)
+
+				_, err = b.UpdateFieldLevelEncryption(other.ID, "shared", "renamed onto owner", nil)
+				require.NoError(t, err)
+
+				require.NoError(t, b.DeleteFieldLevelEncryption(owner.ID))
+
+				got, err := b.GetFieldLevelEncryption(other.ID)
+				require.NoError(t, err)
+				assert.Equal(t, "shared", got.Name)
+
+				_, err = b.CreateFieldLevelEncryption("shared", "should collide with other", nil)
+				require.ErrorIs(t, err, cloudfront.ErrFLEAlreadyExists)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.run(t, newB(t))
+		})
+	}
+}
+
 // TestUpdateFieldLevelEncryptionProfile_RealClient drives the real
 // aws-sdk-go-v2 client to prove UpdateFieldLevelEncryptionProfile is
 // reachable. Real UpdateFieldLevelEncryptionProfile PUTs to
