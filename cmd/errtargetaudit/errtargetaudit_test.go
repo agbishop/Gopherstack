@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -1977,6 +1978,54 @@ func TestCoverageWarnings_UntraceableModule_FiresEvenAtZeroGroundTruth(t *testin
 	require.Contains(t, warnings[0], `"cloudwatch"`)
 }
 
+// TestCoverageWarnings_MixedGovernance_FiresWithFindings is gopherstack-f3ql's
+// direct unit test: a service recorded in ModulesNoOpFuncs that ALSO has
+// class A findings (necessarily built against a different, co-resolved
+// module -- see report.go's mixedGovernanceWarnings doc comment) must get
+// the DOCUMENTATION DIVERGENCE caveat, not just the plain UNTRACEABLE
+// warning untraceableModuleWarnings already produces.
+func TestCoverageWarnings_MixedGovernance_FiresWithFindings(t *testing.T) {
+	t.Parallel()
+
+	sr := serviceScan{
+		OpsGroundTruth:   1,
+		OpsResolved:      1,
+		OpsWithEmission:  1,
+		ModulesNoOpFuncs: []string{"eventbridge"},
+		Findings:         []finding{{Op: "SearchSchemas", Code: "NotFoundException"}},
+	}
+
+	warnings := coverageWarnings(sr)
+
+	found := false
+
+	for _, w := range warnings {
+		if strings.Contains(w, "DOCUMENTATION DIVERGENCE") && strings.Contains(w, "eventbridge") {
+			found = true
+		}
+	}
+
+	require.True(t, found,
+		"a schema-based module co-occurring with class A findings must get the mixed-governance caveat")
+}
+
+// TestCoverageWarnings_MixedGovernance_SilentWithoutFindings proves the
+// caveat is scoped to services that actually have class A findings to
+// caveat -- cloudwatch's real scan (ModulesNoOpFuncs=["cloudwatch"], zero
+// findings since its co-resolved s3 import never resolves a handler) must
+// not get a warning about findings that do not exist.
+func TestCoverageWarnings_MixedGovernance_SilentWithoutFindings(t *testing.T) {
+	t.Parallel()
+
+	sr := serviceScan{ModulesNoOpFuncs: []string{"cloudwatch"}}
+
+	warnings := coverageWarnings(sr)
+
+	for _, w := range warnings {
+		require.NotContains(t, w, "DOCUMENTATION DIVERGENCE")
+	}
+}
+
 // TestWorthReporting_KeepsZeroGroundTruthServiceWithWarnings is main.go's
 // run() filter, unit-tested directly since no existing test drives run()
 // against the real filesystem/module cache.
@@ -2027,6 +2076,49 @@ func TestScanServiceDir_RealCorpus_WarningsBranchReachable(t *testing.T) {
 	require.Contains(t, sr.Warnings[0], "UNTRACEABLE")
 	require.True(t, worthReporting(sr),
 		"worthReporting's warnings disjunct must keep this real, zero-ground-truth service reachable to run()")
+}
+
+// TestScanServiceDir_RealCorpus_MixedGovernanceWarning is gopherstack-f3ql's
+// regression guard, driving the real production pipeline the way
+// TestScanServiceDir_RealCorpus_WarningsBranchReachable does. eventbridge's
+// real pinned SDK modules (go.mod's current pin) are eventbridge itself
+// (schema-based, no deserializers.go) and schemas (classic codegen,
+// resolved into the same "Handler" domain since it implements Schema
+// Registry operations too) -- so eventbridge's real scan has both
+// ModulesNoOpFuncs=["eventbridge"] and at least one class A finding
+// (SearchSchemas, governed by schemas), the exact co-occurrence
+// mixedGovernanceWarnings exists to caveat.
+func TestScanServiceDir_RealCorpus_MixedGovernanceWarning(t *testing.T) {
+	t.Parallel()
+
+	repoRoot, err := repoRootDir()
+	require.NoError(t, err)
+
+	cache, err := gomodcacheDir(repoRoot)
+	require.NoError(t, err)
+
+	goModVersions, err := loadGoModVersions(filepath.Join(repoRoot, "go.mod"))
+	require.NoError(t, err)
+
+	sr, err := scanServiceDir(filepath.Join(repoRoot, "services", "eventbridge"), repoRoot, cache, goModVersions)
+	require.NoError(t, err)
+
+	require.Contains(t, sr.ModulesNoOpFuncs, "eventbridge",
+		"eventbridge's real pinned SDK module must have zero per-op ground truth for this case to be load-bearing")
+	require.NotEmpty(t, sr.Findings,
+		"eventbridge must have a real class A finding, built against the co-resolved schemas module, "+
+			"for this case to be load-bearing")
+
+	found := false
+
+	for _, w := range sr.Warnings {
+		if strings.Contains(w, "DOCUMENTATION DIVERGENCE") {
+			found = true
+		}
+	}
+
+	require.True(t, found,
+		"mixedGovernanceWarnings must fire on the real corpus when a schema-based module and class A findings coexist")
 }
 
 // fixtureInternalServerException and fixtureValidationException name-share

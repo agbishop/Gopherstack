@@ -63,7 +63,12 @@ type serviceScan struct {
 	// deserializers.go file at all (a newer smithy schema-based codegen),
 	// so it can never contribute an OpFuncs entry no matter how deser.go
 	// is taught to parse deserializers.go, because that file does not
-	// exist. See report.go's untraceableModuleWarnings.
+	// exist. See report.go's untraceableModuleWarnings. When this service
+	// ALSO has class A findings, see report.go's mixedGovernanceWarnings
+	// (gopherstack-f3ql): they are necessarily built against a different,
+	// co-resolved module -- legitimate where the op is uniquely that
+	// module's own, a documentation divergence (not client-breaking) where
+	// the op name collides with this module's own real API.
 	ModulesNoOpFuncs []string `json:"modulesNoOpFuncs,omitempty"`
 	// ModulesSparse is every resolved module whose own deserializer matched
 	// a code for under half its OpFuncs (deser.go's sparselyModeled) --

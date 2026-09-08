@@ -21,6 +21,7 @@ const minOpsForResolutionGuard = 5
 
 func coverageWarnings(sr serviceScan) []string {
 	warnings := untraceableModuleWarnings(sr)
+	warnings = append(warnings, mixedGovernanceWarnings(sr)...)
 	warnings = append(warnings, sparseModuleWarnings(sr)...)
 
 	if sr.OpsGroundTruth == 0 {
@@ -78,6 +79,60 @@ func untraceableModuleWarnings(sr serviceScan) []string {
 	}
 
 	return warnings
+}
+
+// mixedGovernanceWarnings is gopherstack-f3ql's crux, recorded where the
+// reasoning is actually applied. A module in ModulesNoOpFuncs contributes NO
+// entries to unionOpFuncs (deser.go/scan.go), so it structurally can never
+// be the module a class A finding is checked against -- scanOneOp's
+// `!mgt.OpFuncs[op]` guard (scan.go) sees it as empty for every op. So when
+// such a service ALSO has class A findings, every one of them was built
+// against a DIFFERENT, co-resolved classic-codegen module (moduleassign.go's
+// bestOverlapModule assigns a whole domain -- a receiver type -- to one
+// module by total op-name overlap, never per operation).
+//
+// That co-resolved module genuinely governs wire-level error resolution
+// when the finding's op is uniquely its own: confirmed live for eventbridge
+// (SearchSchemas, governed by the classic-codegen "schemas" module -- the
+// real, separate AWS Schemas API) and iot (UpdateThingShadow, governed by
+// "iotdataplane" -- the real, separate IoT Data Plane API). Those two
+// findings are exactly as trustworthy as any class A finding elsewhere in
+// this corpus, and must not be suppressed -- suppression would delete real,
+// verified parity information.
+//
+// But moduleassign.go's domain-wide (not per-operation) assignment cannot
+// tell that apart from a shared/generic op name the SCHEMA-BASED module's
+// own real API also exposes: eventbridge's own TagResource, UntagResource
+// and ListTagsForResource are real EventBridge operations too (confirmed:
+// aws-sdk-go-v2/service/eventbridge's own Client has all three), served by
+// the SAME shared handler (services/eventbridge/handler_tags.go's
+// tagActions(), on *Handler, the same domain SearchSchemas resolves under).
+// A future finding on one of those op names would be checked only against
+// schemas' declared set, even for an invocation reached via EventBridge's
+// own real wire route -- where the actual governing resolution is
+// eventbridge's own whole-service TypeRegistry (smithy-go transport/http/
+// protocol/awsjson), which matches by wire code regardless of declaring
+// operation and would accept a code this scan calls "undeclared" without
+// complaint. So for that shape, "op emits a code it does not declare" is a
+// documentation divergence against the co-resolved module's model, not a
+// confirmed client-breaking defect -- this scan cannot yet tell the two
+// shapes apart per finding, so the whole section is labelled, not filtered.
+func mixedGovernanceWarnings(sr serviceScan) []string {
+	if len(sr.ModulesNoOpFuncs) == 0 || len(sr.Findings) == 0 {
+		return nil
+	}
+
+	return []string{fmt.Sprintf(
+		"module(s) %s are schema-based with no per-operation ground truth of their own (see the UNTRACEABLE "+
+			"warning above) -- every class A finding below is therefore built against a DIFFERENT, co-resolved "+
+			"module's declared sets, not %s's. Trustworthy where the finding's op is uniquely that co-resolved "+
+			"module's own. But where the op name is one %s's OWN real API also exposes (a shared/generic "+
+			"handler serving both), treat the finding as a DOCUMENTATION DIVERGENCE, not a confirmed "+
+			"client-breaking defect: %s's real error resolution is a whole-service TypeRegistry match by wire "+
+			"code, not scoped to the declaring operation, so it may legitimately accept a code this scan calls "+
+			"undeclared",
+		moduleList(sr.ModulesNoOpFuncs), moduleList(sr.ModulesNoOpFuncs),
+		moduleList(sr.ModulesNoOpFuncs), moduleList(sr.ModulesNoOpFuncs))}
 }
 
 // sparseModuleWarnings flags a resolved module whose own deserializer
