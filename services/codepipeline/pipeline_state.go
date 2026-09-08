@@ -246,16 +246,19 @@ func (b *InMemoryBackend) RetryStageExecution(
 		return nil, fmt.Errorf("%w: stage %q not found in pipeline %q", ErrStageNotFound, stageName, pipelineName)
 	}
 
-	// gopherstack-3djp (errtargetaudit): same undeclared-code issue as
-	// OverrideStageCondition above -- PipelineExecutionNotFoundException is
-	// not in RetryStageExecution's modeled error set
-	// (deserializeOpErrorRetryStageExecution: PipelineNotFoundException/
+	// gopherstack-wlab: same undeclared-code issue as OverrideStageCondition
+	// below -- PipelineExecutionNotFoundException is not in
+	// RetryStageExecution's declared error set per botocore
+	// codepipeline/2015-07-09/service-2.json (PipelineNotFoundException/
 	// StageNotFoundException/StageNotRetryableException/
 	// NotLatestPipelineExecutionException/
 	// ConcurrentPipelineExecutionsLimitExceededException/ConflictException/
-	// ValidationException only). Left unfixed: StageNotRetryableException
-	// ("the stage contains no failed actions") also plausibly covers a
-	// bogus executionID, but that's a guess, not a confirmed replacement.
+	// ValidationException only). Left unfixed: StageNotRetryableException's
+	// doc text ("stage state might have changed ... or the stage contains
+	// no failed actions") describes a stage-condition mismatch on a real
+	// execution, not a nonexistent executionID -- doesn't fit. NOTE: this
+	// does not break errors.As for a real caller -- see
+	// undeclared_error_codes_test.go.
 	exec := findExecution(b.executionsStore(region)[pipelineName], executionID)
 	if exec == nil {
 		return nil, fmt.Errorf("%w: pipeline %q execution %q", ErrExecutionNotFound, pipelineName, executionID)
@@ -458,18 +461,20 @@ func (b *InMemoryBackend) OverrideStageCondition(
 		return fmt.Errorf("%w: stage %q not found in pipeline %q", ErrStageNotFound, stageName, pipelineName)
 	}
 
-	// gopherstack-3djp (errtargetaudit): PipelineExecutionNotFoundException
-	// is not in OverrideStageCondition's modeled error set
-	// (deserializeOpErrorOverrideStageCondition, codepipeline@v1.49.4
-	// deserializers.go: PipelineNotFoundException/StageNotFoundException/
-	// ConditionNotOverridableException/NotLatestPipelineExecutionException/
+	// gopherstack-wlab: PipelineExecutionNotFoundException is not in
+	// OverrideStageCondition's declared error set per botocore
+	// codepipeline/2015-07-09/service-2.json (PipelineNotFoundException/
+	// StageNotFoundException/ConditionNotOverridableException/
+	// NotLatestPipelineExecutionException/
 	// ConcurrentPipelineExecutionsLimitExceededException/ConflictException/
-	// ValidationException only). Left unfixed: no single declared code is an
-	// obvious replacement for "this executionID doesn't exist" --
-	// NotLatestPipelineExecutionException is the closest semantic fit but
-	// its doc text ("the pipelineExecutionId ... is out of date") describes
-	// a stale-but-once-valid ID, not a never-existed one, and this backend
-	// cannot tell the two cases apart from AWS docs alone.
+	// ValidationException only; NOTE: this does not break errors.As for a
+	// real caller -- see undeclared_error_codes_test.go). Left unfixed: no
+	// single declared code is an obvious replacement for "this executionID
+	// doesn't exist" -- NotLatestPipelineExecutionException is the closest
+	// semantic fit, but its doc text ("the pipelineExecutionId ... is out
+	// of date") describes a stale-but-once-valid ID, not a never-existed
+	// one, and this backend cannot tell the two cases apart from AWS docs
+	// alone.
 	if findExecution(b.executionsStoreRO(region)[pipelineName], executionID) == nil {
 		return fmt.Errorf("%w: pipeline %q execution %q", ErrExecutionNotFound, pipelineName, executionID)
 	}

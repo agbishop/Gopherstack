@@ -7,8 +7,40 @@
 service: codepipeline
 sdk_module: aws-sdk-go-v2/service/codepipeline@v1.54.0   # version audited against
 last_audit_commit: d50d1410                              # stale -- git usage disallowed this pass; see last_audit_date
-last_audit_date: 2026-09-07
-overall: A            # 2026-09-07 (gopherstack-3djp) errtargetaudit sweep: 7 class A findings,
+last_audit_date: 2026-09-08
+overall: A            # 2026-09-08 (gopherstack-wlab) re-audit of the same 7 findings, using
+# botocore codepipeline/2015-07-09/service-2.json as the declared-error-set oracle (its per-op
+# "errors" lists are IDENTICAL to what gopherstack-3djp cited from codepipeline@v1.49.4's
+# deserializers.go -- no drift there). Conclusion for all 7 unchanged: no declared code fits
+# any of the 7 conditions (duplicate custom-action-type, 3x not-found-by-name,
+# 3x not-found-by-executionId), so none were changed. BUT a load-bearing correction: the
+# comments and this file previously stated the consequence as "a real client's
+# errors.As(err, &types.XException{}) never matches the specific type" -- that is FALSE for
+# codepipeline's actually-pinned SDK (v1.54.0). Confirmed by grep: v1.54.0 has ZERO
+# deserializeOpError<Op> functions anywhere in the module (unlike accessanalyzer@v1.51.4, which
+# still has 78 -- services/accessanalyzer/error_shapes_test.go relies on that classic dispatch
+# to prove ITS undeclared codes fall back to a generic type). codepipeline switched to
+# schema-based (de)serialization in SDK v1.50.0 ("Enable schema-based (de)serialization for
+# this service", CHANGELOG.md) -- go.mod bumped codepipeline straight from v1.49.4 to v1.54.0
+# in commit 3424b2a05 (2026-05-24), well before gopherstack-3djp's 2026-09-07 pass, which cited
+# v1.49.4's deserializers.go from stale assumption rather than checking the actually-pinned
+# module. Under the new codegen, error deserialization
+# (smithy-go@v1.28.1 transport/http/protocol/awsjson/awsjson.go:191 deserializeError) resolves
+# the wire error code against the WHOLE SERVICE's TypeRegistry with no reference to the calling
+# operation's schema at all -- so any of these 7 undeclared codes still deserializes into its
+# own specific exception type and DOES satisfy errors.As; it just also fails to match any of
+# the op's declared types (neither of which any earlier pass had verified against a real
+# client). Both directions proven for all 7 ops with a real gopherstack handler + real SDK
+# client: services/codepipeline/undeclared_error_codes_test.go
+# (TestUndeclaredErrorCodes_MatchTheirOwnRealSDKType), run 10x under -race clean. The 7
+# landmine comments (custom_action_types.go, pipelines.go, pipeline_state.go) were rewritten to
+# cite botocore instead of the nonexistent deserializeOpError<Op> functions and to record this
+# correction; none of the 7 emitted codes changed. Net effect: this class is real (gopherstack
+# diverges from the AWS error model for these 7 conditions) but the specific client-breakage
+# mechanism cited when gopherstack-wlab was filed does not apply to codepipeline's current SDK
+# -- worth reflecting in the issue's severity. Gates: `golangci-lint run
+# ./services/codepipeline/...` and `go test -race ./services/codepipeline/...` both clean.
+# 2026-09-07 (gopherstack-3djp) errtargetaudit sweep: 7 class A findings,
 # all "sentinel reference" mechanism (emitted code doesn't match any code the op's own
 # deserializeOpError<Op> models). Verified each against codepipeline@v1.49.4's deserializers.go
 # AND the live docs.aws.amazon.com/codepipeline/latest/APIReference Errors sections (both agree
@@ -108,6 +140,7 @@ gaps:                     # known divergences NOT fixed — link bd issue ids
   - "gopherstack-3djp (2026-09-07): OverrideStageCondition/RetryStageExecution/StopPipelineExecution all emit PipelineExecutionNotFoundException for an unknown pipelineExecutionId, a code confirmed NOT in any of their three modeled error sets (codepipeline@v1.49.4 deserializers.go) -- but no single declared code is an obvious, confirmed replacement (NotLatestPipelineExecutionException/StageNotRetryableException/PipelineExecutionNotStoppableException are each plausible, unconfirmed guesses). Needs a follow-up bd issue to pick (or independently verify) the correct code per op."
   - "gopherstack-3djp (2026-09-07): UpdatePipeline emits PipelineNotFoundException for a nonexistent pipeline name, also confirmed NOT in its modeled error set. An update against nothing has no benign no-op outcome; InvalidStructureException is a plausible but unconfirmed replacement. Needs a follow-up bd issue."
   - "gopherstack-3djp (2026-09-07): CreateCustomActionType emits InvalidStructureException on a duplicate category/provider/version, and DeleteCustomActionType emits ActionTypeNotFoundException on a nonexistent type, and DeletePipeline emits PipelineNotFoundException on a nonexistent name -- all three confirmed NOT in their op's modeled error set. A first pass 'fixed' all three by making them idempotent-success, reasoning from each op's live-docs 'HTTP 200 response with an empty HTTP body' Response Elements sentence -- reverted on review: that sentence is generic Response-shape boilerplate present verbatim even on ops that DO throw a not-found error (DisableStageTransition has the identical sentence and models PipelineNotFoundException), so it is not evidence of idempotent/upsert semantics by itself, unlike workmail's campaign-established bar (an explicit 'does not return an error'-equivalent sentence). Needs a follow-up bd issue per op; no safe remedy is currently evidenced for any of the three."
+  - "gopherstack-wlab (2026-09-08), the follow-up the three entries above asked for: re-derived all 7 declared error sets from botocore's model instead of the Go SDK (which for codepipeline@v1.54.0 no longer encodes per-op error sets at all -- see header note) and re-checked every candidate's doc text. Same conclusion for all 7: no declared code's documented meaning fits its condition (InvalidStructureException/ActionTypeNotFoundException/PipelineNotFoundException/PipelineExecutionNotFoundException all remain the only semantic fits and all remain undeclared for their op). Not fixed; not a guess-and-ship. This is the standing answer unless new evidence surfaces -- no further follow-up issue needed on the 'which code' question, only on whether to reclassify severity given the errors.As correction in the header note."
   - "OverrideStageCondition validates pipeline/stage/execution existence and conditionType but mutates no modeled state -- there is no condition-rule/before-entry-condition engine anywhere else in this backend to be inconsistent with (same class as ListRuleExecutions' deliberately scoped-down design). A full fix requires modeling BeforeEntry/OnFailure/OnSuccess as real StageDeclaration input (parsed by CreatePipeline) and StageState.{BeforeEntryConditionState,OnSuccessConditionState,OnFailureConditionState} as real, gating output that StartPipelineExecution/runPipelineActions produces and this op can then flip to Overridden -- a new subsystem, out of scope for this pass. See the rewritten backend comment in pipeline_state.go for the precise real mutation this would need to perform."
   - "ListActionTypes' RegionFilter request parameter is parsed but never applied -- low severity, since this backend already implicitly scopes ListActionTypes to the request-context region (there is no cross-region action-type catalog to filter within in the first place)."
   - "ListRuleTypes omits the real, required RuleType.InputArtifactDetails member entirely -- not fixed this pass because there is no AWS-documented deterministic MinimumCount/MaximumCount per rule provider (Deployment/LambdaInvoke/CloudWatchAlarm/VariableCheck) this pass could verify with confidence; guessing counts would be a fabrication, not a fix."
