@@ -1125,6 +1125,294 @@ func TestBackend_CreateReceiptRule_TLSPolicyValidation(t *testing.T) {
 	}
 }
 
+// TestBackend_CreateReceiptRule_ActionValidation tests that required members on
+// each ReceiptAction subtype (per ses@v1.37.4 types/types.go / botocore
+// ses/2010-12-01 service-2.json "required" lists) are enforced, matching the
+// real CreateReceiptRule/UpdateReceiptRule declared error set (deserializers.go:
+// AlreadyExists, InvalidLambdaFunction, InvalidS3Configuration, InvalidSnsTopic,
+// LimitExceeded, RuleDoesNotExist, RuleSetDoesNotExist -- any other code,
+// including InvalidParameterValue, is decoded by a real client as a generic
+// smithy.GenericAPIError, so it cannot collide with a typed exception).
+func TestBackend_CreateReceiptRule_ActionValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		action  ses.ReceiptAction
+		wantErr bool
+	}{
+		{name: "s3_missing_bucket", action: ses.ReceiptAction{Type: ses.ReceiptActionTypeS3}, wantErr: true},
+		{
+			name:    "s3_with_bucket_ok",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeS3, S3BucketName: "b"},
+			wantErr: false,
+		},
+		{name: "sns_missing_topic", action: ses.ReceiptAction{Type: ses.ReceiptActionTypeSNS}, wantErr: true},
+		{
+			name:    "sns_with_topic_ok",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeSNS, SNSTopicARN: "arn:aws:sns:us-east-1:123:t"},
+			wantErr: false,
+		},
+		{
+			name:    "lambda_missing_function",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeLambda},
+			wantErr: true,
+		},
+		{
+			name: "lambda_with_function_ok",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeLambda, LambdaFunctionARN: "arn:aws:lambda:us-east-1:123:function:f",
+			},
+			wantErr: false,
+		},
+		{
+			name: "bounce_missing_smtp_reply_code",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeBounce, Message: "m", Sender: "s@example.com",
+			},
+			wantErr: true,
+		},
+		{
+			name: "bounce_missing_message",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeBounce, SMTPReplyCode: "550", Sender: "s@example.com",
+			},
+			wantErr: true,
+		},
+		{
+			name: "bounce_missing_sender",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeBounce, SMTPReplyCode: "550", Message: "m",
+			},
+			wantErr: true,
+		},
+		{
+			name: "bounce_all_required_ok",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeBounce, SMTPReplyCode: "550", Message: "m", Sender: "s@example.com",
+			},
+			wantErr: false,
+		},
+		{
+			name:    "addheader_missing_name",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeAddHeader, HeaderValue: "v"},
+			wantErr: true,
+		},
+		{
+			name:    "addheader_missing_value",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeAddHeader, HeaderName: "X-Foo"},
+			wantErr: true,
+		},
+		{
+			name:    "addheader_both_present_ok",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeAddHeader, HeaderName: "X-Foo", HeaderValue: "v"},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := ses.NewInMemoryBackend()
+			require.NoError(t, b.CreateReceiptRuleSet("rs"))
+			err := b.CreateReceiptRule("rs", ses.ReceiptRule{Name: "r1", Actions: []ses.ReceiptAction{tt.action}}, "")
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ses.ErrInvalidParameter)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestHandler_CreateReceiptRule_ActionValidation_WireErrorCode asserts the
+// actual wire error code emitted for a missing required action member, at the
+// HTTP layer.
+func TestHandler_CreateReceiptRule_ActionValidation_WireErrorCode(t *testing.T) {
+	t.Parallel()
+
+	h := newHandler()
+	require.NoError(t, h.Backend.CreateReceiptRuleSet("rs"))
+
+	vals := url.Values{
+		"Action":       {"CreateReceiptRule"},
+		"Version":      {"2010-12-01"},
+		"RuleSetName":  {"rs"},
+		"Rule.Name":    {"r1"},
+		"Rule.Enabled": {"true"},
+		// S3Action present but BucketName omitted -- BucketName is a required
+		// member of S3Action (ses@v1.37.4 types/types.go:1129).
+		"Rule.Actions.member.1.S3Action.ObjectKeyPrefix": {"emails/"},
+	}
+
+	rec := postForm(t, h, vals.Encode())
+	assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "InvalidParameterValue")
+}
+
+// TestBackend_UpdateReceiptRule_ActionValidation mirrors
+// TestBackend_CreateReceiptRule_ActionValidation for UpdateReceiptRule: the
+// same required-member set must be enforced on the update path, which has its
+// own validateReceiptActions call site (receipt_rules.go).
+func TestBackend_UpdateReceiptRule_ActionValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		action  ses.ReceiptAction
+		wantErr bool
+	}{
+		{name: "s3_missing_bucket", action: ses.ReceiptAction{Type: ses.ReceiptActionTypeS3}, wantErr: true},
+		{
+			name:    "s3_with_bucket_ok",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeS3, S3BucketName: "b"},
+			wantErr: false,
+		},
+		{name: "sns_missing_topic", action: ses.ReceiptAction{Type: ses.ReceiptActionTypeSNS}, wantErr: true},
+		{
+			name:    "sns_with_topic_ok",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeSNS, SNSTopicARN: "arn:aws:sns:us-east-1:123:t"},
+			wantErr: false,
+		},
+		{
+			name:    "lambda_missing_function",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeLambda},
+			wantErr: true,
+		},
+		{
+			name: "lambda_with_function_ok",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeLambda, LambdaFunctionARN: "arn:aws:lambda:us-east-1:123:function:f",
+			},
+			wantErr: false,
+		},
+		{
+			name: "bounce_missing_smtp_reply_code",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeBounce, Message: "m", Sender: "s@example.com",
+			},
+			wantErr: true,
+		},
+		{
+			name: "bounce_missing_message",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeBounce, SMTPReplyCode: "550", Sender: "s@example.com",
+			},
+			wantErr: true,
+		},
+		{
+			name: "bounce_missing_sender",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeBounce, SMTPReplyCode: "550", Message: "m",
+			},
+			wantErr: true,
+		},
+		{
+			name: "bounce_all_required_ok",
+			action: ses.ReceiptAction{
+				Type: ses.ReceiptActionTypeBounce, SMTPReplyCode: "550", Message: "m", Sender: "s@example.com",
+			},
+			wantErr: false,
+		},
+		{
+			name:    "addheader_missing_name",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeAddHeader, HeaderValue: "v"},
+			wantErr: true,
+		},
+		{
+			name:    "addheader_missing_value",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeAddHeader, HeaderName: "X-Foo"},
+			wantErr: true,
+		},
+		{
+			name:    "addheader_both_present_ok",
+			action:  ses.ReceiptAction{Type: ses.ReceiptActionTypeAddHeader, HeaderName: "X-Foo", HeaderValue: "v"},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := ses.NewInMemoryBackend()
+			require.NoError(t, b.CreateReceiptRuleSet("rs"))
+			require.NoError(t, b.CreateReceiptRule("rs", ses.ReceiptRule{Name: "r1"}, ""))
+
+			err := b.UpdateReceiptRule("rs", ses.ReceiptRule{Name: "r1", Actions: []ses.ReceiptAction{tt.action}})
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ses.ErrInvalidParameter)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestHandler_UpdateReceiptRule_ActionValidation_WireErrorCode mirrors
+// TestHandler_CreateReceiptRule_ActionValidation_WireErrorCode, asserting the
+// actual wire error code UpdateReceiptRule emits for a missing required
+// action member, at the HTTP layer.
+func TestHandler_UpdateReceiptRule_ActionValidation_WireErrorCode(t *testing.T) {
+	t.Parallel()
+
+	h := newHandler()
+	require.NoError(t, h.Backend.CreateReceiptRuleSet("rs"))
+	require.NoError(t, h.Backend.CreateReceiptRule("rs", ses.ReceiptRule{Name: "r1"}, ""))
+
+	vals := url.Values{
+		"Action":       {"UpdateReceiptRule"},
+		"Version":      {"2010-12-01"},
+		"RuleSetName":  {"rs"},
+		"Rule.Name":    {"r1"},
+		"Rule.Enabled": {"true"},
+		// S3Action present but BucketName omitted -- BucketName is a required
+		// member of S3Action (ses@v1.37.4 types/types.go:1129).
+		"Rule.Actions.member.1.S3Action.ObjectKeyPrefix": {"emails/"},
+	}
+
+	rec := postForm(t, h, vals.Encode())
+	assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "InvalidParameterValue")
+}
+
+// TestBackend_UpdateReceiptRule_RejectsInvalidActionLeavesRuleUnchanged covers
+// the update-specific path CreateReceiptRule cannot reach: updating an
+// existing, valid rule with a now-invalid action must be rejected AND must
+// leave the stored rule's actions unchanged.
+func TestBackend_UpdateReceiptRule_RejectsInvalidActionLeavesRuleUnchanged(t *testing.T) {
+	t.Parallel()
+
+	b := ses.NewInMemoryBackend()
+	require.NoError(t, b.CreateReceiptRuleSet("rs"))
+
+	original := ses.ReceiptRule{
+		Name:    "r1",
+		Enabled: true,
+		Actions: []ses.ReceiptAction{
+			{Type: ses.ReceiptActionTypeS3, S3BucketName: "good-bucket"},
+		},
+	}
+	require.NoError(t, b.CreateReceiptRule("rs", original, ""))
+
+	err := b.UpdateReceiptRule("rs", ses.ReceiptRule{
+		Name:    "r1",
+		Enabled: true,
+		Actions: []ses.ReceiptAction{
+			{Type: ses.ReceiptActionTypeS3}, // BucketName omitted: invalid.
+		},
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, ses.ErrInvalidParameter)
+
+	stored, err := b.DescribeReceiptRule("rs", "r1")
+	require.NoError(t, err)
+	assert.Equal(t, original.Actions, stored.Actions)
+}
+
 // TestBackend_CreateReceiptRule_PrependWhenAfterEmpty tests that rules are prepended when after="".
 func TestBackend_CreateReceiptRule_PrependWhenAfterEmpty(t *testing.T) {
 	t.Parallel()
