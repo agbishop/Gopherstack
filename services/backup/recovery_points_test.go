@@ -1,9 +1,13 @@
 package backup_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/blackbirdworks/gopherstack/services/backup"
 )
@@ -189,6 +193,120 @@ func TestListRecoveryPointsPagination(t *testing.T) {
 		if len(all) != total {
 			t.Errorf("pagination: want %d got %d", total, len(all))
 		}
+	})
+}
+
+// ---- DeleteRecoveryPoint ----
+
+func TestDeleteRecoveryPointVaultLock(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unlocked vault allows delete", func(t *testing.T) {
+		t.Parallel()
+		b := newTestBackend(t)
+		mustVault(t, b, "unlocked")
+		mustRP(t, b, "unlocked", "arn:aws:backup:::rp/1", "arn:aws:ec2:::instance/i-1", "EC2")
+
+		err := b.DeleteRecoveryPoint("unlocked", "arn:aws:backup:::rp/1")
+		require.NoError(t, err)
+	})
+
+	t.Run("locked vault blocks delete", func(t *testing.T) {
+		t.Parallel()
+		b := newTestBackend(t)
+		mustVault(t, b, "locked")
+		mustRP(t, b, "locked", "arn:aws:backup:::rp/1", "arn:aws:ec2:::instance/i-1", "EC2")
+		require.NoError(t, b.PutBackupVaultLockConfiguration("locked", &backup.VaultLockConfig{
+			MinRetentionDays: 1,
+			MaxRetentionDays: 365,
+		}))
+
+		err := b.DeleteRecoveryPoint("locked", "arn:aws:backup:::rp/1")
+		require.Error(t, err)
+
+		rp, describeErr := b.DescribeRecoveryPoint("locked", "arn:aws:backup:::rp/1")
+		require.NoError(t, describeErr)
+		assert.NotNil(t, rp)
+	})
+
+	t.Run("delete clears index status ghost row", func(t *testing.T) {
+		t.Parallel()
+		b := newTestBackend(t)
+		mustVault(t, b, "idx-vault")
+		mustRP(t, b, "idx-vault", "arn:aws:backup:::rp/1", "arn:aws:ec2:::instance/i-1", "EC2")
+		require.NoError(t, b.UpdateRecoveryPointIndexSettings("idx-vault", "arn:aws:backup:::rp/1", "ACTIVE"))
+
+		require.NoError(t, b.DeleteRecoveryPoint("idx-vault", "arn:aws:backup:::rp/1"))
+
+		// UpdateRecoveryPointIndexSettings/GetRecoveryPointIndexDetails key on
+		// "vaultName:arn" (colon), not recoveryPointKey's "vaultName#arn" (hash)
+		// -- inspect the persisted snapshot directly rather than through
+		// GetRecoveryPointIndexDetails, which defaults an absent key to ACTIVE
+		// and so can't distinguish "cleared" from "never leaked".
+		var probe struct {
+			RecoveryPointIndexStatus map[string]string `json:"recoveryPointIndexStatus"`
+		}
+		require.NoError(t, json.Unmarshal(b.Snapshot(t.Context()), &probe))
+		assert.NotContains(t, probe.RecoveryPointIndexStatus, "idx-vault:arn:aws:backup:::rp/1")
+	})
+}
+
+// ---- DeleteRecoveryPoint / DisassociateRecoveryPoint legal holds ----
+
+func TestRecoveryPointDeletionBlockedByLegalHold(t *testing.T) {
+	t.Parallel()
+
+	t.Run("delete blocked by active legal hold", func(t *testing.T) {
+		t.Parallel()
+		b := newTestBackend(t)
+		mustVault(t, b, "held-vault")
+		mustRP(t, b, "held-vault", "arn:aws:backup:::rp/1", "arn:aws:ec2:::instance/i-1", "EC2")
+		_, err := b.CreateLegalHold("litigation", "desc", nil)
+		require.NoError(t, err)
+
+		err = b.DeleteRecoveryPoint("held-vault", "arn:aws:backup:::rp/1")
+		require.ErrorIs(t, err, backup.ErrInvalidRequest)
+
+		rp, describeErr := b.DescribeRecoveryPoint("held-vault", "arn:aws:backup:::rp/1")
+		require.NoError(t, describeErr)
+		assert.NotNil(t, rp)
+	})
+
+	t.Run("disassociate blocked by active legal hold", func(t *testing.T) {
+		t.Parallel()
+		b := newTestBackend(t)
+		mustVault(t, b, "held-vault-2")
+		mustRP(t, b, "held-vault-2", "arn:aws:backup:::rp/2", "arn:aws:ec2:::instance/i-2", "EC2")
+		_, err := b.CreateLegalHold("litigation-2", "desc", nil)
+		require.NoError(t, err)
+
+		err = b.DisassociateRecoveryPoint("held-vault-2", "arn:aws:backup:::rp/2")
+		require.ErrorIs(t, err, backup.ErrInvalidRequest)
+	})
+
+	t.Run("delete succeeds once the covering hold is canceled", func(t *testing.T) {
+		t.Parallel()
+		b := newTestBackend(t)
+		mustVault(t, b, "held-vault-3")
+		mustRP(t, b, "held-vault-3", "arn:aws:backup:::rp/3", "arn:aws:ec2:::instance/i-3", "EC2")
+		lh, err := b.CreateLegalHold("litigation-3", "desc", nil)
+		require.NoError(t, err)
+		require.NoError(t, b.CancelLegalHold(lh.LegalHoldID))
+
+		require.NoError(t, b.DeleteRecoveryPoint("held-vault-3", "arn:aws:backup:::rp/3"))
+	})
+
+	t.Run("delete unaffected by a hold scoped to a different vault", func(t *testing.T) {
+		t.Parallel()
+		b := newTestBackend(t)
+		mustVault(t, b, "held-vault-4")
+		mustRP(t, b, "held-vault-4", "arn:aws:backup:::rp/4", "arn:aws:ec2:::instance/i-4", "EC2")
+		_, err := b.CreateLegalHold("litigation-4", "desc", &backup.RecoveryPointSelection{
+			VaultNames: []string{"other-vault"},
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, b.DeleteRecoveryPoint("held-vault-4", "arn:aws:backup:::rp/4"))
 	})
 }
 

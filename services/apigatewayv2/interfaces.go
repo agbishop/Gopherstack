@@ -218,4 +218,9 @@ type StorageBackend interface {
 
 	// DeleteRouteRequestParameter removes a specific request parameter from a route.
 	DeleteRouteRequestParameter(apiID, routeID, requestParameterKey string) error
+
+	// EnforceRouteThrottle applies a stage's RouteSettings/DefaultRouteSettings
+	// throttling for a request to routeKey. It returns ErrThrottled when the
+	// limit is exceeded, or nil when unconfigured or within the configured rate.
+	EnforceRouteThrottle(apiID, stageName, routeKey string) error
 }

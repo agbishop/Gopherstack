@@ -97,6 +97,29 @@ func TestMobileDeviceAccessRuleLifecycle(t *testing.T) {
 	assert.Len(t, rules, 1)
 }
 
+// TestDeleteMobileDeviceAccessRule_NonExistent locks the real WorkMail wire
+// behavior (aws-sdk-go-v2 api_op_DeleteMobileDeviceAccessRule.go doc:
+// "Deleting already deleted and non-existing rules does not produce an
+// error. In those cases, the service sends back an HTTP 200 response with an
+// empty HTTP body."). DeleteMobileDeviceAccessRule's own error model
+// (awsAwsjson11_deserializeOpErrorDeleteMobileDeviceAccessRule) also declares
+// no EntityNotFoundException at all.
+func TestDeleteMobileDeviceAccessRule_NonExistent(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	orgID := createTestOrg(t, h, "mdar-missing-org")
+
+	rec := doOp(t, h, "DeleteMobileDeviceAccessRule", fmt.Sprintf(
+		`{"OrganizationId":%q,"MobileDeviceAccessRuleId":"never-existed"}`, orgID,
+	))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	m := decodeJSON(t, rec)
+	_, hasType := m["__type"]
+	assert.False(t, hasType, "expected empty success body, got error type %v", m["__type"])
+}
+
 func TestGetMobileDeviceAccessEffect(t *testing.T) {
 	t.Parallel()
 

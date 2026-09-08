@@ -49,6 +49,39 @@ func TestHandler_ExperimentLifecycle(t *testing.T) {
 	assert.Equal(t, http.StatusOK, recDelete.Code)
 }
 
+// TestHandler_DeleteExperiment_HasTrials asserts DeleteExperiment rejects an
+// experiment that still has an associated trial
+// (api_op_DeleteExperiment.go: "All trials associated with the experiment
+// must be deleted first.").
+func TestHandler_DeleteExperiment_HasTrials(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doSageMakerRequest(t, h, "CreateExperiment", map[string]any{
+		"ExperimentName": "exp-with-trial",
+	})
+	doSageMakerRequest(t, h, "CreateTrial", map[string]any{
+		"TrialName":      "trial-in-exp",
+		"ExperimentName": "exp-with-trial",
+	})
+
+	recEarly := doSageMakerRequest(t, h, "DeleteExperiment", map[string]any{
+		"ExperimentName": "exp-with-trial",
+	})
+	assert.Equal(t, http.StatusBadRequest, recEarly.Code)
+
+	recDeleteTrial := doSageMakerRequest(t, h, "DeleteTrial", map[string]any{
+		"TrialName": "trial-in-exp",
+	})
+	require.Equal(t, http.StatusOK, recDeleteTrial.Code)
+
+	recDelete := doSageMakerRequest(t, h, "DeleteExperiment", map[string]any{
+		"ExperimentName": "exp-with-trial",
+	})
+	assert.Equal(t, http.StatusOK, recDelete.Code)
+}
+
 func TestHandler_Experiment_NotFound(t *testing.T) {
 	t.Parallel()
 

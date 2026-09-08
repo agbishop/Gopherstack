@@ -257,22 +257,49 @@ func (b *InMemoryBackend) UpdateAutomatedReasoningPolicy(
 	return &cp, nil
 }
 
-// DeleteAutomatedReasoningPolicy removes a policy and its related resources.
-func (b *InMemoryBackend) DeleteAutomatedReasoningPolicy(policyARN string) error {
-	b.mu.Lock("DeleteAutomatedReasoningPolicy")
-	defer b.mu.Unlock()
-
-	policy, ok := b.automatedReasoningPolicies.Get(policyARN)
-	if !ok {
-		return fmt.Errorf("%w: automated reasoning policy %s not found", ErrNotFound, policyARN)
+// arpHasTestCases reports whether any test case still belongs to policyARN.
+// Caller must hold at least a read lock.
+func (b *InMemoryBackend) arpHasTestCases(policyARN string) bool {
+	for _, tc := range b.arpTestCases.All() {
+		if tc.PolicyArn == policyARN {
+			return true
+		}
 	}
 
-	delete(b.arpByName, policy.Name)
-	b.automatedReasoningPolicies.Delete(policyARN)
+	return false
+}
 
-	// Remove associated workflows and test cases.
+// arpHasVersions reports whether any version still belongs to policyARN.
+// Caller must hold at least a read lock.
+func (b *InMemoryBackend) arpHasVersions(policyARN string) bool {
+	for _, v := range b.arpVersions.All() {
+		if base, _, versioned := splitVersionedARN(v.PolicyArn); versioned && base == policyARN {
+			return true
+		}
+	}
+
+	return false
+}
+
+// deleteARPAnnotationState removes the annotation-state entries
+// (arpAnnotations/arpAnnotationSetHash/arpAnnotationsUpdatedAt) minted for
+// one build workflow. Plain maps, not store.Table -- delete() is correct
+// (see store_setup.go's registerAllTables doc comment). Caller must hold the
+// write lock.
+func (b *InMemoryBackend) deleteARPAnnotationState(policyARN, buildWorkflowID string) {
+	key := arpAnnotationsKey(policyARN, buildWorkflowID)
+	delete(b.arpAnnotations, key)
+	delete(b.arpAnnotationSetHash, key)
+	delete(b.arpAnnotationsUpdatedAt, key)
+}
+
+// deleteARPArtifacts removes every build workflow (and its annotation
+// state), test case, and version belonging to policyARN. Caller must hold
+// the write lock.
+func (b *InMemoryBackend) deleteARPArtifacts(policyARN string) {
 	for _, wf := range b.arpBuildWorkflows.All() {
 		if wf.PolicyArn == policyARN {
+			b.deleteARPAnnotationState(policyARN, wf.BuildWorkflowID)
 			b.arpBuildWorkflows.Delete(wf.BuildWorkflowID)
 		}
 	}
@@ -282,6 +309,45 @@ func (b *InMemoryBackend) DeleteAutomatedReasoningPolicy(policyARN string) error
 			b.arpTestCases.Delete(tc.TestCaseID)
 		}
 	}
+
+	for _, v := range b.arpVersions.All() {
+		if base, _, versioned := splitVersionedARN(v.PolicyArn); versioned && base == policyARN {
+			b.arpVersions.Delete(arpVersionsKeyFn(v))
+		}
+	}
+}
+
+// DeleteAutomatedReasoningPolicy removes a policy and its related resources.
+// When force is false, AWS validates that all artifacts (policy versions,
+// test cases) have already been deleted before allowing the policy itself
+// to be removed (bedrock@v1.66.4 api_op_DeleteAutomatedReasoningPolicy.go:36-41).
+func (b *InMemoryBackend) DeleteAutomatedReasoningPolicy(policyARN string, force bool) error {
+	b.mu.Lock("DeleteAutomatedReasoningPolicy")
+	defer b.mu.Unlock()
+
+	policy, ok := b.automatedReasoningPolicies.Get(policyARN)
+	if !ok {
+		return fmt.Errorf("%w: automated reasoning policy %s not found", ErrNotFound, policyARN)
+	}
+
+	if !force && b.arpHasTestCases(policyARN) {
+		return fmt.Errorf(
+			"%w: automated reasoning policy %s still has test cases; delete them or pass force",
+			ErrResourceInUse, policyARN,
+		)
+	}
+
+	if !force && b.arpHasVersions(policyARN) {
+		return fmt.Errorf(
+			"%w: automated reasoning policy %s still has versions; delete them or pass force",
+			ErrResourceInUse, policyARN,
+		)
+	}
+
+	delete(b.arpByName, policy.Name)
+	delete(b.arpVersionCountByPolicy, policyARN)
+	b.automatedReasoningPolicies.Delete(policyARN)
+	b.deleteARPArtifacts(policyARN)
 
 	return nil
 }
@@ -374,6 +440,7 @@ func (b *InMemoryBackend) DeleteAutomatedReasoningPolicyBuildWorkflow(policyARN,
 		return fmt.Errorf("%w: build workflow %s not found", ErrNotFound, workflowID)
 	}
 
+	b.deleteARPAnnotationState(policyARN, workflowID)
 	b.arpBuildWorkflows.Delete(workflowID)
 
 	return nil

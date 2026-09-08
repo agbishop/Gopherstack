@@ -66,18 +66,13 @@ func (b *InMemoryBackend) UpdateIPSet(id, changeToken string, updates []IPSetUpd
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			ipSet.IPSetDescriptors = append(ipSet.IPSetDescriptors, u.IPSetDescriptor)
-		case updateDelete:
-			filtered := ipSet.IPSetDescriptors[:0]
-			for _, d := range ipSet.IPSetDescriptors {
-				if d.Type != u.IPSetDescriptor.Type || d.Value != u.IPSetDescriptor.Value {
-					filtered = append(filtered, d)
-				}
-			}
-			ipSet.IPSetDescriptors = filtered
+		descriptors, err := applyEntryUpdate(ipSet.IPSetDescriptors, u.Action, u.IPSetDescriptor,
+			func(a, b IPSetDescriptor) bool { return a.Type == b.Type && a.Value == b.Value })
+		if err != nil {
+			return err
 		}
+
+		ipSet.IPSetDescriptors = descriptors
 	}
 
 	return nil
@@ -108,6 +103,7 @@ func (b *InMemoryBackend) DeleteIPSet(id, changeToken string) error {
 	}
 
 	b.ipSets.Delete(id)
+	delete(b.tags, b.ipSetARN(id))
 
 	return nil
 }

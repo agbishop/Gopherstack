@@ -73,6 +73,32 @@ func CreateJourneyForTest(b *InMemoryBackend, region, accountID, appID string) e
 	return err
 }
 
+// CreateJourneyIDForTest creates a journey and returns its ID.
+func CreateJourneyIDForTest(b *InMemoryBackend, region, accountID, appID string) (string, error) {
+	j, err := b.CreateJourney(region, accountID, appID, createJourneyRequest{})
+	if err != nil {
+		return "", err
+	}
+
+	return j.ID, nil
+}
+
+// CampaignActivityCount returns the number of stored activity entries for a campaign.
+func CampaignActivityCount(b *InMemoryBackend, appID, campaignID string) int {
+	b.mu.RLock("CampaignActivityCount")
+	defer b.mu.RUnlock()
+
+	return len(b.campaignActivities[appID+"/"+campaignID])
+}
+
+// JourneyRunCount returns the number of stored run entries for a journey.
+func JourneyRunCount(b *InMemoryBackend, appID, journeyID string) int {
+	b.mu.RLock("JourneyRunCount")
+	defer b.mu.RUnlock()
+
+	return len(b.journeyRuns[appID+"/"+journeyID])
+}
+
 // TemplateVersionCount returns the number of stored versions for a template.
 func TemplateVersionCount(b *InMemoryBackend, templateName, templateType string) int {
 	b.mu.RLock("TemplateVersionCount")

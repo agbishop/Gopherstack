@@ -275,10 +275,10 @@ func vpnGatewaysKeyFn(v *VpnGateway) string       { return v.VpnGatewayID }
 // runtime resets go through registry.ResetAll() instead (see InMemoryBackend.Reset
 // in accept_ops.go).
 //
-// addressTransfers, instanceIMDSOptions, verifiedAccessEndpointPolicies,
-// verifiedAccessGroupPolicies, vpcCidrAssociations, and vpcPeeringOptions stay
-// plain maps here: their key isn't a pure function of the stored value's own
-// fields, which store.Table requires.
+// addressTransfers, verifiedAccessEndpointPolicies, verifiedAccessGroupPolicies,
+// vpcCidrAssociations, and vpcPeeringOptions stay plain maps here: their key
+// isn't a pure function of the stored value's own fields, which store.Table
+// requires.
 func registerAllTables(b *InMemoryBackend) {
 	for _, register := range tableRegistrations {
 		register(b)

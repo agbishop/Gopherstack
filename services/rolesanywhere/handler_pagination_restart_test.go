@@ -25,7 +25,7 @@ func TestHandler_ListTrustAnchors_Pagination_DeletedMidPage(t *testing.T) {
 		})
 	}
 
-	rec := doREST(t, h, http.MethodGet, "/trustanchors?maxResults=2", nil)
+	rec := doREST(t, h, http.MethodGet, "/trustanchors?pageSize=2", nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp1 map[string]any
@@ -46,7 +46,7 @@ func TestHandler_ListTrustAnchors_Pagination_DeletedMidPage(t *testing.T) {
 	recDel := doREST(t, h, http.MethodDelete, "/trustanchor/"+nextToken, nil)
 	require.Equal(t, http.StatusOK, recDel.Code)
 
-	rec = doREST(t, h, http.MethodGet, "/trustanchors?maxResults=2&nextToken="+nextToken, nil)
+	rec = doREST(t, h, http.MethodGet, "/trustanchors?pageSize=2&nextToken="+nextToken, nil)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp2 map[string]any
@@ -81,7 +81,7 @@ func TestHandler_ListTrustAnchors_Pagination_TiedNamesTotalOrder(t *testing.T) {
 	nextToken := ""
 
 	for range 10 {
-		path := "/trustanchors?maxResults=2"
+		path := "/trustanchors?pageSize=2"
 		if nextToken != "" {
 			path += "&nextToken=" + nextToken
 		}

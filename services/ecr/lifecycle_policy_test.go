@@ -329,6 +329,32 @@ func TestGetLifecyclePolicyPreview_NoPreview_Returns404(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// TestGetLifecyclePolicyPreview_NoPreview_ErrorType verifies the wire __type
+// for a missing preview is LifecyclePolicyPreviewNotFoundException, not
+// LifecyclePolicyNotFoundException.
+//
+// GetLifecyclePolicyPreview's own deserializeOpError (aws-sdk-go-v2/service/
+// ecr@v1.60.4 deserializers.go) recognizes InvalidParameterException,
+// LifecyclePolicyPreviewNotFoundException, RepositoryNotFoundException,
+// ServerException and ValidationException -- LifecyclePolicyNotFoundException
+// (the code GetLifecyclePolicy/DeleteLifecyclePolicy/PutLifecyclePolicy use)
+// is a distinct, real exception type this op does not model.
+func TestGetLifecyclePolicyPreview_NoPreview_ErrorType(t *testing.T) {
+	t.Parallel()
+
+	h := newAccuracyHandler()
+	mustCreateRepo(t, h, "no-preview-errtype")
+
+	rec := doAccuracy(t, h, "GetLifecyclePolicyPreview", map[string]any{
+		"repositoryName": "no-preview-errtype",
+	})
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	out := parseAccuracy(t, rec)
+	assert.Equal(t, "LifecyclePolicyPreviewNotFoundException", out["__type"])
+	assert.NotEqual(t, "LifecyclePolicyNotFoundException", out["__type"])
+}
+
 func TestLifecyclePolicyPreview_RoundTrip(t *testing.T) {
 	t.Parallel()
 

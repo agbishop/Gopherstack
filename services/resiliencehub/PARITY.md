@@ -58,8 +58,8 @@ ops:
   DescribeResourceGroupingRecommendationTask: {wire: ok, errors: ok, state: ok, persist: ok, note: "grouping.go; real task record and status transition"}
   ImportResourcesToDraftAppVersion: {wire: ok, errors: ok, state: partial, persist: ok, note: "resources.go; records real AppInputSource bookkeeping and transitions Pending->Success, but does not discover real resources from the named sources -- narrower than ResolveAppVersionResources' cross-service resolution (bd: gopherstack-8hw8)"}
   ListAlarmRecommendations: {wire: ok, errors: ok, state: partial, persist: n/a, note: "recommendations.go; validates assessmentArn, always empty (no recommendation engine)"}
-  ListAppAssessmentComplianceDrifts: {wire: ok, errors: ok, state: partial, persist: n/a, note: "assessments.go; validates assessmentArn, always empty (no drift-detection engine)"}
-  ListAppAssessmentResourceDrifts: {wire: ok, errors: ok, state: partial, persist: n/a, note: "assessments.go; same as above"}
+  ListAppAssessmentComplianceDrifts: {wire: ok, errors: fixed, state: partial, persist: n/a, note: "assessments.go; always empty (no drift-detection engine). FIXED 2026-09-07 (gopherstack-ulsj, errtargetaudit) -- no longer gates on assessmentArn existing; the SDK's own deserializeOpErrorListAppAssessmentComplianceDrifts omits ResourceNotFoundException (confirmed against deserializers.go), unlike the sibling DescribeAppAssessment which keys on the same ARN and does declare it."}
+  ListAppAssessmentResourceDrifts: {wire: ok, errors: fixed, state: partial, persist: n/a, note: "assessments.go; same as above. FIXED 2026-09-07 (gopherstack-ulsj) -- same not-found-over-declared fix."}
   ListAppAssessments: {wire: ok, errors: ok, state: ok, persist: ok, note: "assessments.go; GET, filters + reverseOrder. gopherstack-4ly2 wrapper-key sweep: reverseOrder previously reversed the (arbitrary, key-sorted) Snapshot() order, not StartTime -- ListAppAssessmentsInput docs \"the default is to sort by ascending startTime\"; now sorts by StartTime explicitly"}
   ListAppComponentCompliances: {wire: ok, errors: ok, state: ok, persist: n/a, note: "assessments.go; real per-component entries using the documented coarse compliance rule (see complianceStatusForPolicy)"}
   ListAppComponentRecommendations: {wire: ok, errors: ok, state: partial, persist: n/a, note: "recommendations.go; always empty"}
@@ -934,3 +934,64 @@ Proven with a real `aws-sdk-go-v2/service/resiliencehub` client's
 (`handler_oversized_body_test.go`) asserts `apiErr.ErrorCode() ==
 "InternalServerException"`; confirmed it fails pre-fix with
 `*json.SyntaxError` (hand-reverted, byte-identical restore after).
+
+## gopherstack-ulsj (2026-09-07): errtargetaudit class-A findings -- both fixed
+
+`cmd/errtargetaudit` flagged 2 class-A findings for resiliencehub (63/119
+ops resolved, 58/63 with an emission found, no coverage warning -- decent
+scan coverage, not blind): `ListAppAssessmentComplianceDrifts` and
+`ListAppAssessmentResourceDrifts` both emitted `ResourceNotFoundException`
+via the shared `notFoundError`/`resolveAssessmentLocked` sentinel
+(assessments.go:291/304) for an unknown `AssessmentArn`, but neither op
+declares that code.
+
+Verified against the raw extraction (`awk
+'/deserializeOpErrorListAppAssessmentComplianceDrifts\(/,/^}/'
+deserializers.go | grep -oE '"[A-Za-z0-9]+"'`, same for
+...ResourceDrifts): both resolve to exactly `UnknownError`,
+`AccessDeniedException`, `InternalServerException`, `ThrottlingException`,
+`ValidationException` -- no `ResourceNotFoundException`. Control op
+`DescribeAppAssessment`, which keys on the identical `AssessmentArn`, DOES
+declare it (confirmed the same way), and `ListAppComponentCompliances`
+(also assessment-keyed) does too -- so this is not a service-wide gap in
+`notFoundError`'s declared-code set, just these two call sites in a shared
+sentinel reused correctly almost everywhere else (the gopherstack-hdvu
+per-call-site-fix shape, not a global one).
+
+This is the "List op filter treated as a must-exist key" shape from the
+campaign notes, with a forced remedy: both ops can only ever return an
+empty list (no drift-detection engine -- see `structural_gaps` above), so
+there is nothing to fabricate by no longer erroring. `AssessmentArn` is
+technically a required input member, not an optional filter, but the same
+"nothing to return but empty" logic applies -- confirmed this is the SDK's
+real modeling choice, not a doc/model disagreement (both fields declared
+as SDK-required, yet neither op's deserializer error switch includes
+`ResourceNotFoundException`).
+
+Fixed: both `InMemoryBackend` methods (assessments.go) dropped the
+`resolveAssessmentLocked` existence gate and now unconditionally return
+`nil`; the handler already renders both as an empty list regardless of
+what the backend returns, so the fix is a pure deletion, not a new
+"empty" branch. New test
+`TestListAppAssessmentDrifts_UnknownArnStillEmpty`
+(assessments_test.go) drives the real SDK client with an unknown
+`AssessmentArn`, asserts both ops still succeed with an empty drift list,
+and asserts `DescribeAppAssessment` still rejects the same unknown ARN --
+proving the fix is scoped to these two ops. Neutered each of the two
+line-level fixes individually (temporarily restored the old
+gate-and-error body): each neuter still built, and the new test failed at
+its own `require.NoError` line for the neutered op only (line 128 for
+ComplianceDrifts, line 134 for ResourceDrifts), confirming both are
+covered.
+
+`go test -race -count=1 ./services/resiliencehub/...` and `golangci-lint
+run services/resiliencehub/...` (0 issues) both pass. No pre-existing test
+asserted the old wrong behavior. No persisted struct fields changed
+(method bodies only), so the `pkgs/persistence` guard was not run.
+Re-running `cmd/errtargetaudit` afterward drops resiliencehub from its
+output entirely: `printServiceScan` (report.go:117) only prints a service
+that has findings or coverage warnings, and resiliencehub now has neither
+(confirmed via `go run ./cmd/errtargetaudit -dir resiliencehub -json ...`:
+0 findings, 0 warnings) -- not a tool bug, its designed silent-clean-bill
+behavior. Full-repo total dropped from 131 to 129 class-A findings
+service-tree-wide, exactly the 2 fixed here.

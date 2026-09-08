@@ -2,7 +2,6 @@ package elasticache
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"sort"
 	"time"
@@ -117,16 +116,15 @@ func (b *InMemoryBackend) AddUserInternal(u *User) {
 	b.usersStore(b.region).Put(u)
 }
 
-// DeleteUserSafe deletes a user, but returns an error if the user is still a member of any user group.
-func (b *InMemoryBackend) DeleteUserSafe(ctx context.Context, userID string) (*User, error) {
-	return b.DeleteUser(ctx, userID)
-}
-
-// ----------------------------------------
-// Update action tracking
-// ----------------------------------------
-
-// DeleteUser deletes a user by ID.
+// DeleteUser deletes a user by ID. Per api_op_DeleteUser.go's own doc ("The
+// user will be removed from all user groups and in turn removed from all
+// replication groups"), membership in a user group does NOT block the
+// delete -- it cascades. Only DeleteUser's real modeled error set
+// (DefaultUserAssociatedToUserGroup, InvalidParameterValue, InvalidUserState,
+// ServiceLinkedRoleNotFoundFault, UserNotFound -- deserializers.go's
+// awsAwsquery_deserializeOpErrorDeleteUser) has no generic "user still in a
+// group" fault; DefaultUserAssociatedToUserGroup is scoped to the special
+// "default" user, which this emulator does not model.
 func (b *InMemoryBackend) DeleteUser(ctx context.Context, userID string) (*User, error) {
 	b.mu.Lock("DeleteUser")
 	defer b.mu.Unlock()
@@ -138,13 +136,14 @@ func (b *InMemoryBackend) DeleteUser(ctx context.Context, userID string) (*User,
 		return nil, ErrUserNotFound
 	}
 
+	result := b.withUserGroupIDs(region, u)
+
 	for _, ug := range b.userGroupsStore(region).All() {
-		if slices.Contains(ug.UserIDs, userID) {
-			return nil, fmt.Errorf("user %q belongs to group %q: %w", userID, ug.UserGroupID, ErrUserNotInGroup)
+		if idx := slices.Index(ug.UserIDs, userID); idx >= 0 {
+			ug.UserIDs = slices.Delete(ug.UserIDs, idx, idx+1)
 		}
 	}
 
-	result := b.withUserGroupIDs(region, u)
 	tbl.Delete(userID)
 	b.appendEventLocked(userID, "user", "user deleted")
 

@@ -71,6 +71,37 @@ func TestCognitoIDPJanitor_SweepOnce(t *testing.T) {
 	}
 }
 
+func TestCognitoIDPJanitor_SweepOnce_EvictsExpiredAttrVerificationCode(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	pool, err := b.CreateUserPool("attr-janitor-pool")
+	require.NoError(t, err)
+
+	client, err := b.CreateUserPoolClient(pool.ID, "attr-janitor-client")
+	require.NoError(t, err)
+
+	user, err := b.SignUp(client.ClientID, "attr-janitor-user", "Password123!", map[string]string{
+		"email": "attr-janitor@example.com",
+	})
+	require.NoError(t, err)
+	require.NoError(t, b.ConfirmSignUp(client.ClientID, "attr-janitor-user", user.ConfirmCode))
+
+	result, err := b.InitiateAuth(client.ClientID, "USER_PASSWORD_AUTH", "attr-janitor-user", "Password123!")
+	require.NoError(t, err)
+
+	code, _, _, err := b.GetUserAttributeVerificationCode(result.Tokens.AccessToken, "email")
+	require.NoError(t, err)
+	require.NotEmpty(t, code)
+
+	b.ExpireAttrVerificationCodeForTest(pool.ID, "attr-janitor-user", "email")
+
+	j := cognitoidp.NewJanitor(b, time.Minute)
+	j.SweepOnce(t.Context())
+
+	assert.Empty(t, b.GetAttrVerificationCodeForTest(pool.ID, "attr-janitor-user", "email"))
+}
+
 func TestCognitoIDPHandler_StartWorker_WithJanitor(t *testing.T) {
 	t.Parallel()
 

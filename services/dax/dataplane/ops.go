@@ -513,33 +513,27 @@ func (s *Server) writeNonKeyAttributes(w *Writer, item map[string]types.Attribut
 
 // writeBackendError maps a DynamoDB backend error onto a DAX error response.
 func (s *Server) writeBackendError(w *Writer, err error) error {
-	var condFailed *types.ConditionalCheckFailedException
-	if errors.As(err, &condFailed) {
+	if _, ok := errors.AsType[*types.ConditionalCheckFailedException](err); ok {
 		return s.writeError(w, statusBadRequest, "ConditionalCheckFailedException", err.Error())
 	}
 
-	var resNotFound *types.ResourceNotFoundException
-	if errors.As(err, &resNotFound) {
+	if _, ok := errors.AsType[*types.ResourceNotFoundException](err); ok {
 		return s.writeError(w, statusBadRequest, "ResourceNotFoundException", err.Error())
 	}
 
-	var txCanceled *types.TransactionCanceledException
-	if errors.As(err, &txCanceled) {
+	if _, ok := errors.AsType[*types.TransactionCanceledException](err); ok {
 		return s.writeError(w, statusBadRequest, "TransactionCanceledException", err.Error())
 	}
 
-	var txConflict *types.TransactionConflictException
-	if errors.As(err, &txConflict) {
+	if _, ok := errors.AsType[*types.TransactionConflictException](err); ok {
 		return s.writeError(w, statusBadRequest, "TransactionConflictException", err.Error())
 	}
 
-	var throughputExceeded *types.ProvisionedThroughputExceededException
-	if errors.As(err, &throughputExceeded) {
+	if _, ok := errors.AsType[*types.ProvisionedThroughputExceededException](err); ok {
 		return s.writeError(w, statusBadRequest, "ProvisionedThroughputExceededException", err.Error())
 	}
 
-	var itemSizeExceeded *types.ItemCollectionSizeLimitExceededException
-	if errors.As(err, &itemSizeExceeded) {
+	if _, ok := errors.AsType[*types.ItemCollectionSizeLimitExceededException](err); ok {
 		return s.writeError(w, statusBadRequest, "ItemCollectionSizeLimitExceededException", err.Error())
 	}
 

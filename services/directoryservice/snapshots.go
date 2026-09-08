@@ -16,8 +16,12 @@ func (b *InMemoryBackend) CreateSnapshot(
 	b.mu.Lock("CreateSnapshot")
 	defer b.mu.Unlock()
 
-	if _, ok := b.directoryGet(region, directoryID); !ok {
+	d, ok := b.directoryGet(region, directoryID)
+	if !ok {
 		return nil, ErrDirectoryNotFound
+	}
+	if DirectoryType(d.DirType) == DirectoryTypeADConnector {
+		return nil, ErrSnapshotUnsupportedForADConnector
 	}
 
 	var count int32

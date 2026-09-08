@@ -285,3 +285,25 @@ func TestBackend_DeleteTableBucketReplication_StaleVersionToken(t *testing.T) {
 	err = b.DeleteTableBucketReplication(tb.ARN, "stale-token")
 	require.ErrorIs(t, err, s3tables.ErrTableVersionConflict)
 }
+
+// TestBackend_DeleteTableBucket_NotEmpty proves DeleteTableBucket rejects
+// deleting a bucket that still contains a namespace, per AWS docs
+// (s3-tables-buckets-delete.html): "Before you delete a table bucket, you
+// must first delete all namespaces and tables within the bucket." Once the
+// namespace (and its table) are gone, the same bucket deletes cleanly.
+func TestBackend_DeleteTableBucket_NotEmpty(t *testing.T) {
+	t.Parallel()
+
+	b := s3tables.NewInMemoryBackend("000000000000", "us-east-1")
+	tb, err := b.CreateTableBucket("del-nonempty-bucket", s3tables.CreateTableBucketOptions{})
+	require.NoError(t, err)
+
+	_, err = b.CreateNamespace(tb.ARN, []string{"ns1"})
+	require.NoError(t, err)
+
+	err = b.DeleteTableBucket(tb.ARN)
+	require.ErrorIs(t, err, s3tables.ErrTableBucketNotEmpty)
+
+	require.NoError(t, b.DeleteNamespace(tb.ARN, []string{"ns1"}))
+	require.NoError(t, b.DeleteTableBucket(tb.ARN))
+}

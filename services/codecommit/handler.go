@@ -156,27 +156,29 @@ func (h *Handler) buildOps() map[string]func([]byte) (any, error) {
 		"MergePullRequestByFastForward":                    h.handleMergePullRequestByFastForward,
 		"MergePullRequestBySquash":                         h.handleMergePullRequestBySquash,
 		"MergePullRequestByThreeWay":                       h.handleMergePullRequestByThreeWay,
-		"OverridePullRequestApprovalRules":                 h.handleOverridePullRequestApprovalRules,
-		"PostCommentForComparedCommit":                     h.handlePostCommentForComparedCommit,
-		"PostCommentForPullRequest":                        h.handlePostCommentForPullRequest,
-		"PostCommentReply":                                 h.handlePostCommentReply,
-		"PutCommentReaction":                               h.handlePutCommentReaction,
-		"PutFile":                                          h.handlePutFile,
-		"PutRepositoryTriggers":                            h.handlePutRepositoryTriggers,
-		"TestRepositoryTriggers":                           h.handleTestRepositoryTriggers,
-		"UpdateApprovalRuleTemplateContent":                h.handleUpdateApprovalRuleTemplateContent,
-		"UpdateApprovalRuleTemplateDescription":            h.handleUpdateApprovalRuleTemplateDescription,
-		"UpdateApprovalRuleTemplateName":                   h.handleUpdateApprovalRuleTemplateName,
-		"UpdateComment":                                    h.handleUpdateComment,
-		"UpdateDefaultBranch":                              h.handleUpdateDefaultBranch,
-		"UpdatePullRequestApprovalRuleContent":             h.handleUpdatePullRequestApprovalRuleContent,
-		"UpdatePullRequestApprovalState":                   h.handleUpdatePullRequestApprovalState,
-		"UpdatePullRequestDescription":                     h.handleUpdatePullRequestDescription,
-		"UpdatePullRequestStatus":                          h.handleUpdatePullRequestStatus,
-		"UpdatePullRequestTitle":                           h.handleUpdatePullRequestTitle,
-		"UpdateRepositoryDescription":                      h.handleUpdateRepositoryDescription,
-		"UpdateRepositoryEncryptionKey":                    h.handleUpdateRepositoryEncryptionKey,
-		"UpdateRepositoryName":                             h.handleUpdateRepositoryName,
+		// OverridePullRequestApprovalRules is dispatched directly from
+		// dispatch(), not through this table -- it needs ctx (see dispatch's
+		// doc comment).
+		"PostCommentForComparedCommit":          h.handlePostCommentForComparedCommit,
+		"PostCommentForPullRequest":             h.handlePostCommentForPullRequest,
+		"PostCommentReply":                      h.handlePostCommentReply,
+		"PutCommentReaction":                    h.handlePutCommentReaction,
+		"PutFile":                               h.handlePutFile,
+		"PutRepositoryTriggers":                 h.handlePutRepositoryTriggers,
+		"TestRepositoryTriggers":                h.handleTestRepositoryTriggers,
+		"UpdateApprovalRuleTemplateContent":     h.handleUpdateApprovalRuleTemplateContent,
+		"UpdateApprovalRuleTemplateDescription": h.handleUpdateApprovalRuleTemplateDescription,
+		"UpdateApprovalRuleTemplateName":        h.handleUpdateApprovalRuleTemplateName,
+		"UpdateComment":                         h.handleUpdateComment,
+		"UpdateDefaultBranch":                   h.handleUpdateDefaultBranch,
+		"UpdatePullRequestApprovalRuleContent":  h.handleUpdatePullRequestApprovalRuleContent,
+		"UpdatePullRequestApprovalState":        h.handleUpdatePullRequestApprovalState,
+		"UpdatePullRequestDescription":          h.handleUpdatePullRequestDescription,
+		"UpdatePullRequestStatus":               h.handleUpdatePullRequestStatus,
+		"UpdatePullRequestTitle":                h.handleUpdatePullRequestTitle,
+		"UpdateRepositoryDescription":           h.handleUpdateRepositoryDescription,
+		"UpdateRepositoryEncryptionKey":         h.handleUpdateRepositoryEncryptionKey,
+		"UpdateRepositoryName":                  h.handleUpdateRepositoryName,
 	}
 }
 
@@ -329,7 +331,21 @@ func (h *Handler) Handler() echo.HandlerFunc {
 }
 
 // dispatch routes the operation to the appropriate handler and marshals the response.
-func (h *Handler) dispatch(_ context.Context, action string, body []byte) ([]byte, error) {
+//
+// OverridePullRequestApprovalRules is special-cased here (rather than folded
+// into the ops table below) because it is the one op needing ctx: it records
+// the caller as the override's actor (awsmeta.CallerArn, see
+// handleOverridePullRequestApprovalRules) instead of hardcoding "".
+func (h *Handler) dispatch(ctx context.Context, action string, body []byte) ([]byte, error) {
+	if action == "OverridePullRequestApprovalRules" {
+		resp, err := h.handleOverridePullRequestApprovalRules(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+
+		return json.Marshal(resp)
+	}
+
 	fn, ok := h.ops[action]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", errUnknownAction, action)
@@ -371,6 +387,7 @@ var errCodeLookup = []errCodeEntry{
 	{sentinel: ErrBranchNotFound, code: http.StatusNotFound, errType: "BranchDoesNotExistException"},
 	{sentinel: ErrBranchAlreadyExists, code: http.StatusBadRequest, errType: "BranchNameExistsException"},
 	{sentinel: ErrCommitNotFound, code: http.StatusNotFound, errType: "CommitDoesNotExistException"},
+	{sentinel: ErrCommitIDNotFound, code: http.StatusNotFound, errType: "CommitIdDoesNotExistException"},
 	{sentinel: ErrFileNotFound, code: http.StatusNotFound, errType: "FileDoesNotExistException"},
 	{sentinel: ErrBlobNotFound, code: http.StatusNotFound, errType: "BlobIdDoesNotExistException"},
 	{sentinel: ErrCommentNotFound, code: http.StatusNotFound, errType: "CommentDoesNotExistException"},
@@ -398,12 +415,30 @@ var errCodeLookup = []errCodeEntry{
 	{sentinel: ErrParentCommitIDRequired, code: http.StatusBadRequest, errType: "ParentCommitIdRequiredException"},
 	{sentinel: ErrParentCommitIDOutdated, code: http.StatusBadRequest, errType: "ParentCommitIdOutdatedException"},
 	{sentinel: ErrSameFileContent, code: http.StatusBadRequest, errType: "SameFileContentException"},
+	{sentinel: ErrNoChange, code: http.StatusBadRequest, errType: "NoChangeException"},
 	{
 		sentinel: ErrFilePathConflicts,
 		code:     http.StatusBadRequest,
 		errType:  "FilePathConflictsWithSubmodulePathException",
 	},
+	{
+		sentinel: ErrInvalidPullRequestEventType,
+		code:     http.StatusBadRequest,
+		errType:  "InvalidPullRequestEventTypeException",
+	},
 	{sentinel: ErrValidation, code: http.StatusBadRequest, errType: "InvalidParameterException"},
+	{sentinel: ErrInvalidMergeOption, code: http.StatusBadRequest, errType: "InvalidMergeOptionException"},
+	{
+		sentinel: ErrInvalidPullRequestStatus,
+		code:     http.StatusBadRequest,
+		errType:  "InvalidPullRequestStatusException",
+	},
+	{
+		sentinel: ErrInvalidContinuationToken,
+		code:     http.StatusBadRequest,
+		errType:  "InvalidContinuationTokenException",
+	},
+	{sentinel: ErrInvalidActorArn, code: http.StatusBadRequest, errType: "InvalidActorArnException"},
 	{sentinel: errInvalidRequest, code: http.StatusBadRequest, errType: "ValidationException"},
 }
 

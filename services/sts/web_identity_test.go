@@ -212,9 +212,9 @@ func TestAssumeRoleWithWebIdentity_SessionTrackedForCallerIdentity(t *testing.T)
 	})
 	require.NoError(t, err)
 
-	accessKeyID := resp.AssumeRoleWithWebIdentityResult.Credentials.AccessKeyID
+	creds := resp.AssumeRoleWithWebIdentityResult.Credentials
 
-	ciResp, err := b.GetCallerIdentity(accessKeyID, "")
+	ciResp, err := b.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 	require.NoError(t, err)
 	assert.Contains(t, ciResp.GetCallerIdentityResult.Arn, "assumed-role")
 	assert.Contains(t, ciResp.GetCallerIdentityResult.Arn, "WebRole")
@@ -307,7 +307,7 @@ func TestAssumeRoleWithWebIdentityTagsStored(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	accessKeyID := resp.AssumeRoleWithWebIdentityResult.Credentials.AccessKeyID
+	creds := resp.AssumeRoleWithWebIdentityResult.Credentials
 
 	snap := b.Snapshot(t.Context())
 	b2 := sts.NewInMemoryBackend()
@@ -315,7 +315,7 @@ func TestAssumeRoleWithWebIdentityTagsStored(t *testing.T) {
 
 	assert.Equal(t, 1, b2.SessionCount())
 
-	ci, err := b2.GetCallerIdentity(accessKeyID, "")
+	ci, err := b2.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 	require.NoError(t, err)
 	assert.NotEmpty(t, ci.GetCallerIdentityResult.Arn)
 }

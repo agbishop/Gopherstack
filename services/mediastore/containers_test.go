@@ -19,6 +19,7 @@ func TestInMemoryBackend_CreateContainer(t *testing.T) {
 
 	tests := []struct {
 		errSentinel error
+		tags        map[string]string
 		name        string
 		container   string
 		wantErr     bool
@@ -33,6 +34,13 @@ func TestInMemoryBackend_CreateContainer(t *testing.T) {
 			wantErr:     true,
 			errSentinel: awserr.ErrAlreadyExists,
 		},
+		{
+			name:        "empty tag key is rejected",
+			container:   "tagged-container",
+			tags:        map[string]string{"": "value"},
+			wantErr:     true,
+			errSentinel: mediastore.ErrEmptyTagKey,
+		},
 	}
 
 	for _, tt := range tests {
@@ -46,7 +54,7 @@ func TestInMemoryBackend_CreateContainer(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			c, err := b.CreateContainer(context.Background(), testAccountID, tt.container, nil)
+			c, err := b.CreateContainer(context.Background(), testAccountID, tt.container, tt.tags)
 
 			if tt.wantErr {
 				require.Error(t, err)

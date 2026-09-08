@@ -416,3 +416,29 @@ func TestRestoreFromSnapshotTransitionsBackToActive(t *testing.T) {
 	ok := directoryservice.WaitForDirectoryActive(backend, dirID, 2*time.Second)
 	assert.True(t, ok, "directory should return to Active after restore")
 }
+
+// TestCreateSnapshot_ADConnectorUnsupported verifies that CreateSnapshot
+// rejects AD Connector directories: CreateSnapshot's doc comment states "You
+// cannot take snapshots of AD Connector directories" (directoryservice@v1.41.4
+// api_op_CreateSnapshot.go).
+func TestCreateSnapshot_ADConnectorUnsupported(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	connectRec := doRequest(t, h, "ConnectDirectory", map[string]any{
+		"Name":     "corp.example.com",
+		"Password": "Admin1234!",
+		"Size":     "Small",
+		"ConnectSettings": map[string]any{
+			"CustomerUserName": "Admin",
+			"VpcId":            "vpc-12345678",
+			"SubnetIds":        []string{"subnet-11111111", "subnet-22222222"},
+		},
+	})
+	require.Equal(t, http.StatusOK, connectRec.Code)
+	dirID := respBody(t, connectRec)["DirectoryId"].(string)
+
+	rec := doRequest(t, h, "CreateSnapshot", map[string]any{"DirectoryId": dirID})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "ClientException", respBody(t, rec)["__type"])
+}

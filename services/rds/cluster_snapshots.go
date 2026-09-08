@@ -215,7 +215,7 @@ func (b *InMemoryBackend) DescribeDBClusterSnapshotAttributes(
 	b.mu.RLock("DescribeDBClusterSnapshotAttributes")
 	defer b.mu.RUnlock()
 	if _, ok := b.clusterSnapshots.Get(normalizeID(snapshotID)); !ok {
-		return nil, fmt.Errorf("%w: %s", ErrSnapshotNotFound, snapshotID)
+		return nil, fmt.Errorf("%w: %s", ErrClusterSnapshotNotFound, snapshotID)
 	}
 	if attrs, ok := b.clusterSnapshotAttributes.Get(normalizeID(snapshotID)); ok {
 		cp := *attrs
@@ -239,7 +239,7 @@ func (b *InMemoryBackend) ModifyDBClusterSnapshotAttribute(
 	b.mu.Lock("ModifyDBClusterSnapshotAttribute")
 	defer b.mu.Unlock()
 	if _, ok := b.clusterSnapshots.Get(normalizeID(snapshotID)); !ok {
-		return nil, fmt.Errorf("%w: %s", ErrSnapshotNotFound, snapshotID)
+		return nil, fmt.Errorf("%w: %s", ErrClusterSnapshotNotFound, snapshotID)
 	}
 	result, ok := b.clusterSnapshotAttributes.Get(normalizeID(snapshotID))
 	if !ok {

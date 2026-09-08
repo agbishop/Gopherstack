@@ -24,10 +24,14 @@ var (
 	ErrMissingDeduplicationID   = errors.New("InvalidParameterValue.MissingDeduplicationID")
 	ErrTaskHandleInvalid        = errors.New("InvalidParameterValue.TaskHandle")
 	ErrInvalidPermissionLabel   = errors.New("InvalidParameterValue.PermissionLabel")
-	ErrMoveTaskAlreadyRunning   = errors.New("ResourceInConflict.MoveTaskAlreadyRunning")
+	// ErrMoveTaskAlreadyRunning maps to the errTypeInvalidParameterValue wire code
+	// (see handler.go's sqsPermErrorDetails): neither StartMessageMoveTask nor
+	// CancelMessageMoveTask's own deserializeOpError recognizes a Conflict-named
+	// exception -- sqs@v1.46.4 types/errors.go has none at all.
+	ErrMoveTaskAlreadyRunning = errors.New("InvalidParameterValue.MoveTaskAlreadyRunning")
 	// ErrMoveTaskNotRunning is returned by CancelMessageMoveTask when the referenced
 	// task exists but is not in RUNNING or CANCELLING status.
-	ErrMoveTaskNotRunning = errors.New("ResourceInConflict.MoveTaskNotRunning")
+	ErrMoveTaskNotRunning = errors.New("InvalidParameterValue.MoveTaskNotRunning")
 	// ErrInvalidPermissionActions is returned by AddPermission when Actions is empty.
 	ErrInvalidPermissionActions = errors.New("InvalidParameterValue.PermissionActions")
 	// ErrInvalidPermissionAccountIDs is returned by AddPermission when AWSAccountIDs is empty.

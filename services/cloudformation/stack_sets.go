@@ -140,6 +140,8 @@ func (b *InMemoryBackend) DeleteStackSet(name string) error {
 	}
 	b.stackSets.Delete(name)
 	delete(b.stackInstances, name)
+	delete(b.stackSetOperations, name)
+	delete(b.stackSetOpResults, name)
 
 	return nil
 }

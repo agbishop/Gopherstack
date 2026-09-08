@@ -110,6 +110,10 @@ func (h *Handler) handleCreateCampaign(c *echo.Context, appID string) error {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	var req createCampaignRequest
 	if jsonErr := json.Unmarshal(body, &req); jsonErr != nil {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")

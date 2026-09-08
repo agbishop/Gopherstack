@@ -179,6 +179,7 @@ func (b *InMemoryBackend) DeleteWirelessDevice(accountID, region, id string) err
 	delete(b.resourceTags, d.ARN)
 	delete(b.wirelessDeviceThings, id)
 	delete(b.queuedMessages, id)
+	delete(b.positions, id)
 
 	for _, members := range b.multicastGroupDevices {
 		delete(members, id)

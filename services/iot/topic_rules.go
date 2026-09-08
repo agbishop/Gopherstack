@@ -117,11 +117,13 @@ func (b *InMemoryBackend) DeleteTopicRule(ruleName string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if !b.rules.Has(ruleName) {
+	r, ok := b.rules.Get(ruleName)
+	if !ok {
 		return fmt.Errorf("%w: %s", ErrRuleNotFound, ruleName)
 	}
 
 	b.rules.Delete(ruleName)
+	delete(b.resourceTags, r.ARN)
 
 	return nil
 }

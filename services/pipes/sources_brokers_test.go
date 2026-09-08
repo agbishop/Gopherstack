@@ -166,6 +166,9 @@ func TestSourceParams_RabbitMQ(t *testing.T) {
 			rmqParams := map[string]any{
 				"QueueName": tt.queueName,
 				"BatchSize": tt.batchSize,
+				"Credentials": map[string]any{
+					"BasicAuth": "arn:aws:secretsmanager:us-west-2:123456789012:secret:s",
+				},
 			}
 			if tt.virtualHost != "" {
 				rmqParams["VirtualHost"] = tt.virtualHost
@@ -220,6 +223,9 @@ func TestSourceParams_ActiveMQ(t *testing.T) {
 					"ActiveMQBrokerParameters": map[string]any{
 						"QueueName": tt.queueName,
 						"BatchSize": tt.batchSize,
+						"Credentials": map[string]any{
+							"BasicAuth": "arn:aws:secretsmanager:us-west-2:123456789012:secret:s",
+						},
 					},
 				},
 			})

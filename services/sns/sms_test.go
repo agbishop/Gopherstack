@@ -888,3 +888,33 @@ func TestPublishSMSOptOutViaHandler(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "InvalidParameter")
 }
+
+// TestPublishSMSOptedOutErrorCode verifies Publish reports an opted-out
+// destination number as InvalidParameter, not OptedOut.
+//
+// awsAwsquery_deserializeOpErrorPublish (aws-sdk-go-v2/service/sns@v1.42.4
+// deserializers.go) models AuthorizationError, EndpointDisabled,
+// InternalError, InvalidParameter, InvalidSecurity, KMSAccessDenied,
+// KMSDisabled, KMSInvalidState, KMSNotFound, KMSOptInRequired, KMSThrottling,
+// NotFound, ParameterValueInvalid, PlatformApplicationDisabled and
+// ValidationException -- no OptedOut case. types.OptedOutException is real,
+// but only CreateSMSSandboxPhoneNumber's switch recognizes it, so a real SDK
+// client's errors.As(&types.OptedOutException{}) against a Publish response
+// never matches; a client checking for InvalidParameterException would.
+func TestPublishSMSOptedOutErrorCode(t *testing.T) {
+	t.Parallel()
+
+	h, b := newTestHandlerPair(t)
+	sns.AddOptedOutPhoneNumberForTest(b, "+15005550006")
+
+	rec := doTestRequest(t, h, url.Values{
+		"Action":      {"Publish"},
+		"PhoneNumber": {"+15005550006"},
+		"Message":     {"test sms"},
+		"Version":     {"2010-03-31"},
+	})
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "<Code>InvalidParameter</Code>")
+	assert.NotContains(t, rec.Body.String(), "<Code>OptedOut</Code>")
+}

@@ -13,7 +13,7 @@ var (
 	ErrAlreadyExists = awserr.New("ConflictException: resource already exists", awserr.ErrConflict)
 	// ErrJourneyActive is returned when attempting to modify an ACTIVE journey's activities.
 	ErrJourneyActive = awserr.New(
-		"BadRequestException: journey is ACTIVE and cannot be modified",
-		awserr.ErrInvalidParameter,
+		"ConflictException: journey is ACTIVE and cannot be modified",
+		awserr.ErrConflict,
 	)
 )

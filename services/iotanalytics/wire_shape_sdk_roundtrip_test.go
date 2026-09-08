@@ -206,7 +206,7 @@ func TestListSummaries_NoFabricatedARN(t *testing.T) {
 					h,
 					http.MethodPost,
 					"/pipelines",
-					map[string]any{"pipelineName": "sumpipe"},
+					map[string]any{"pipelineName": "sumpipe", "pipelineActivities": validPipelineActivitiesBody()},
 				)
 			},
 			listPath:   "/pipelines",

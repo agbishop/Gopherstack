@@ -22,9 +22,24 @@ func (b *InMemoryBackend) CancelElasticsearchServiceSoftwareUpdate(
 	return domainCopy(d), nil
 }
 
-// DeleteElasticsearchServiceRole deletes the Elasticsearch service-linked IAM role.
-// The in-memory backend has no IAM state so this is always a no-op success.
+// DeleteElasticsearchServiceRole deletes the Elasticsearch service-linked
+// IAM role. Real AWS: "Role deletion will fail if any existing VPC domains
+// use the role. You must delete any such Elasticsearch domains before
+// deleting the role." The in-memory backend has no IAM state, so this only
+// enforces that precondition against tracked domains.
 func (b *InMemoryBackend) DeleteElasticsearchServiceRole() error {
+	b.mu.RLock("DeleteElasticsearchServiceRole")
+	defer b.mu.RUnlock()
+
+	for _, d := range b.domains.All() {
+		if d.VPCOptions != nil {
+			return fmt.Errorf(
+				"%w: domain %s uses a VPC and still uses the service-linked role",
+				ErrServiceRoleInUse, d.Name,
+			)
+		}
+	}
+
 	return nil
 }
 

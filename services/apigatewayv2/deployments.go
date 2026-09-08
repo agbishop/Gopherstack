@@ -5,6 +5,29 @@ import (
 	"time"
 )
 
+// snapshotRoutingLocked copies the API's current routes and integrations for
+// pinning into a Deployment. The data plane (handleHTTPAPIProxy) matches
+// against this frozen copy for any stage pinned to the resulting deployment,
+// instead of the API's live, mutable state (gopherstack-cfr1). Caller must
+// hold b.mu.Lock.
+func (b *InMemoryBackend) snapshotRoutingLocked(apiID string) ([]Route, []Integration) {
+	liveRoutes := b.routesByAPI.Get(apiID)
+	routes := make([]Route, len(liveRoutes))
+
+	for i, r := range liveRoutes {
+		routes[i] = *r
+	}
+
+	liveIntegrations := b.integrationsByAPI.Get(apiID)
+	integrations := make([]Integration, len(liveIntegrations))
+
+	for i, integ := range liveIntegrations {
+		integrations[i] = *integ
+	}
+
+	return routes, integrations
+}
+
 // CreateDeployment creates a new deployment for an API.
 func (b *InMemoryBackend) CreateDeployment(apiID string, input CreateDeploymentInput) (*Deployment, error) {
 	b.mu.Lock("CreateDeployment")
@@ -14,6 +37,8 @@ func (b *InMemoryBackend) CreateDeployment(apiID string, input CreateDeploymentI
 		return nil, ErrAPINotFound
 	}
 
+	routes, integrations := b.snapshotRoutingLocked(apiID)
+
 	id := randomID()
 	deployment := &Deployment{
 		DeploymentID:     id,
@@ -21,6 +46,8 @@ func (b *InMemoryBackend) CreateDeployment(apiID string, input CreateDeploymentI
 		Description:      input.Description,
 		DeploymentStatus: "DEPLOYED",
 		CreatedDate:      isoTime{time.Now()},
+		Routes:           routes,
+		Integrations:     integrations,
 	}
 
 	b.deployments.Put(deployment)
@@ -46,9 +73,26 @@ func (b *InMemoryBackend) CreateDeployment(apiID string, input CreateDeploymentI
 // configuration changes on an auto-deploy-enabled stage. The caller must hold
 // b.mu.Lock.
 func (b *InMemoryBackend) autoDeployLocked(apiID string) {
-	now := isoTime{time.Now()}
+	stages := b.stagesByAPI.Get(apiID)
 
-	for _, s := range b.stagesByAPI.Get(apiID) {
+	hasAutoDeploy := false
+
+	for _, s := range stages {
+		if s.AutoDeploy {
+			hasAutoDeploy = true
+
+			break
+		}
+	}
+
+	if !hasAutoDeploy {
+		return
+	}
+
+	now := isoTime{time.Now()}
+	routes, integrations := b.snapshotRoutingLocked(apiID)
+
+	for _, s := range stages {
 		if !s.AutoDeploy {
 			continue
 		}
@@ -61,6 +105,8 @@ func (b *InMemoryBackend) autoDeployLocked(apiID string) {
 			DeploymentStatus: "DEPLOYED",
 			AutoDeployed:     true,
 			CreatedDate:      now,
+			Routes:           routes,
+			Integrations:     integrations,
 		})
 		s.DeploymentID = id
 		s.LastUpdatedDate = now

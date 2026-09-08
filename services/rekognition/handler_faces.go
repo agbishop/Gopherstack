@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	sdktypes "github.com/aws/aws-sdk-go-v2/service/rekognition/types"
+
 	"github.com/blackbirdworks/gopherstack/pkgs/service"
 )
 
@@ -201,9 +203,10 @@ func (h *Handler) handleSearchFaces(_ context.Context, req *searchFacesReq) (*se
 }
 
 type searchFacesByImageReq struct {
-	CollectionID string   `json:"CollectionId"`
-	Image        imageRef `json:"Image"`
-	MaxFaces     int32    `json:"MaxFaces"`
+	CollectionID  string   `json:"CollectionId"`
+	QualityFilter string   `json:"QualityFilter"`
+	Image         imageRef `json:"Image"`
+	MaxFaces      int32    `json:"MaxFaces"`
 }
 
 type searchFacesByImageResp struct {
@@ -211,12 +214,36 @@ type searchFacesByImageResp struct {
 	FaceMatches      []faceMatchEntry `json:"FaceMatches"`
 }
 
+// isValidQualityFilter derives its answer from types.QualityFilter.Values()
+// so it cannot drift from the real enum; "" is also valid (field omitted).
+func isValidQualityFilter(v string) bool {
+	if v == "" {
+		return true
+	}
+
+	for _, qf := range sdktypes.QualityFilter("").Values() {
+		if string(qf) == v {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (h *Handler) handleSearchFacesByImage(
-	_ context.Context,
+	ctx context.Context,
 	req *searchFacesByImageReq,
 ) (*searchFacesByImageResp, error) {
 	if req.CollectionID == "" {
 		return nil, fmt.Errorf("%w: CollectionId is required", ErrValidation)
+	}
+
+	if !isValidQualityFilter(req.QualityFilter) {
+		return nil, fmt.Errorf("%w: QualityFilter value %q is not valid", ErrValidation, req.QualityFilter)
+	}
+
+	if err := h.checkImageRef(ctx, req.Image); err != nil {
+		return nil, err
 	}
 
 	imageKey := imageRefKey(req.Image)
@@ -248,6 +275,7 @@ func (h *Handler) handleSearchFacesByImage(
 // --- Face image analysis (stateless mock results) ---
 
 type compareFacesReq struct {
+	QualityFilter       string   `json:"QualityFilter"`
 	SourceImage         imageRef `json:"SourceImage"`
 	TargetImage         imageRef `json:"TargetImage"`
 	SimilarityThreshold float64  `json:"SimilarityThreshold"`
@@ -294,7 +322,19 @@ const (
 	compareFacesDistinctSimilarity  = 92.0
 )
 
-func (h *Handler) handleCompareFaces(_ context.Context, req *compareFacesReq) (*compareFacesResp, error) {
+func (h *Handler) handleCompareFaces(ctx context.Context, req *compareFacesReq) (*compareFacesResp, error) {
+	if !isValidQualityFilter(req.QualityFilter) {
+		return nil, fmt.Errorf("%w: QualityFilter value %q is not valid", ErrValidation, req.QualityFilter)
+	}
+
+	if err := h.checkImageRef(ctx, req.SourceImage); err != nil {
+		return nil, err
+	}
+
+	if err := h.checkImageRef(ctx, req.TargetImage); err != nil {
+		return nil, err
+	}
+
 	resp := &compareFacesResp{}
 	resp.SourceImageFace.Confidence = 99.9
 	resp.SourceImageFace.BoundingBox.Height = 0.5
@@ -328,6 +368,18 @@ type detectFacesReq struct {
 	Attributes []string `json:"Attributes"`
 }
 
+// isValidFaceAttribute derives its answer from types.Attribute.Values() so it
+// cannot drift from the real enum.
+func isValidFaceAttribute(v string) bool {
+	for _, a := range sdktypes.Attribute("").Values() {
+		if string(a) == v {
+			return true
+		}
+	}
+
+	return false
+}
+
 type faceDetailEntry struct {
 	BoundingBox struct {
 		Height float32 `json:"Height"`
@@ -343,7 +395,17 @@ type detectFacesResp struct {
 	FaceDetails           []faceDetailEntry `json:"FaceDetails"`
 }
 
-func (h *Handler) handleDetectFaces(_ context.Context, _ *detectFacesReq) (*detectFacesResp, error) {
+func (h *Handler) handleDetectFaces(ctx context.Context, req *detectFacesReq) (*detectFacesResp, error) {
+	if err := h.checkImageRef(ctx, req.Image); err != nil {
+		return nil, err
+	}
+
+	for _, a := range req.Attributes {
+		if !isValidFaceAttribute(a) {
+			return nil, fmt.Errorf("%w: Attributes value %q is not valid", ErrValidation, a)
+		}
+	}
+
 	return &detectFacesResp{
 		FaceDetails:           []faceDetailEntry{},
 		OrientationCorrection: orientationRotate0,
@@ -360,8 +422,12 @@ type startFaceDetectionReq struct {
 }
 
 func (h *Handler) handleStartFaceDetection(
-	_ context.Context, req *startFaceDetectionReq,
+	ctx context.Context, req *startFaceDetectionReq,
 ) (*startJobResp, error) {
+	if err := h.checkVideoRef(ctx, req.Video); err != nil {
+		return nil, err
+	}
+
 	bucket, name, version := videoRefS3(req.Video)
 
 	jobID, err := h.Backend.StartAsyncJob(StartAsyncJobParams{
@@ -406,8 +472,12 @@ type startFaceSearchReq struct {
 }
 
 func (h *Handler) handleStartFaceSearch(
-	_ context.Context, req *startFaceSearchReq,
+	ctx context.Context, req *startFaceSearchReq,
 ) (*startJobResp, error) {
+	if err := h.checkVideoRef(ctx, req.Video); err != nil {
+		return nil, err
+	}
+
 	bucket, name, version := videoRefS3(req.Video)
 
 	jobID, err := h.Backend.StartAsyncJob(StartAsyncJobParams{

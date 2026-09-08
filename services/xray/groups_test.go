@@ -266,6 +266,66 @@ func TestInMemoryBackend_DeleteGroup(t *testing.T) {
 	}
 }
 
+func TestDeleteGroup_ClearsResourceTagsOnRecreate(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+
+	g, err := b.CreateGroup("reused-group", "")
+	require.NoError(t, err)
+	require.NoError(t, b.TagResource(g.GroupARN, map[string]string{"env": "prod"}))
+
+	require.NoError(t, b.DeleteGroup("reused-group"))
+
+	recreated, err := b.CreateGroup("reused-group", "")
+	require.NoError(t, err)
+	require.Equal(t, g.GroupARN, recreated.GroupARN)
+
+	tags, err := b.ListTagsForResource(recreated.GroupARN)
+	require.NoError(t, err)
+	assert.Empty(t, tags)
+}
+
+// DeleteGroupByARN is the path the wire handler actually calls, so it needs the
+// same cleanup as DeleteGroup.
+func TestDeleteGroupByARN_ClearsResourceTagsOnRecreate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		tagKey string
+		byARN  bool
+	}{
+		{name: "by_arn", tagKey: "env", byARN: true},
+		{name: "by_name", tagKey: "owner", byARN: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestBackend(t)
+
+			g, err := b.CreateGroup("reused-group", "")
+			require.NoError(t, err)
+			require.NoError(t, b.TagResource(g.GroupARN, map[string]string{tt.tagKey: "prod"}))
+
+			if tt.byARN {
+				require.NoError(t, b.DeleteGroupByARN("", g.GroupARN))
+			} else {
+				require.NoError(t, b.DeleteGroupByARN("reused-group", ""))
+			}
+
+			recreated, err := b.CreateGroup("reused-group", "")
+			require.NoError(t, err)
+
+			tags, err := b.ListTagsForResource(recreated.GroupARN)
+			require.NoError(t, err)
+			assert.Empty(t, tags)
+		})
+	}
+}
+
 // TestGetGroupByARN_UsesIndex verifies that GetGroupByARN works correctly
 // when groups are created with custom regions and uses the O(1) ARN index.
 func TestGetGroupByARN_UsesIndex(t *testing.T) {

@@ -148,18 +148,26 @@ func (b *InMemoryBackend) UpdatePolicyStore(
 	return clonePolicyStore(ps), nil
 }
 
-// DeletePolicyStore removes a policy store and all its policies and templates.
+// DeletePolicyStore removes a policy store and all its policies and
+// templates. Idempotent: a nonexistent policyStoreID is a no-op success,
+// matching the real SDK's documented idempotency ("This operation is
+// idempotent. If you specify a policy store that does not exist, the
+// request response will still return a successful HTTP 200 status code") --
+// ResourceNotFoundException isn't even in DeletePolicyStore's modelled
+// error set.
 func (b *InMemoryBackend) DeletePolicyStore(policyStoreID string) error {
 	b.mu.Lock("DeletePolicyStore")
 	defer b.mu.Unlock()
 
 	ps, ok := b.policyStores.Get(policyStoreID)
 	if !ok {
-		return fmt.Errorf("%w: policy store %s not found", ErrPolicyStoreNotFound, policyStoreID)
+		return nil
 	}
 
 	if ps.DeletionProtection == DeletionProtectionEnabled {
-		return fmt.Errorf("%w: policy store %s has deletion protection enabled", ErrConflict, policyStoreID)
+		return fmt.Errorf(
+			"%w: policy store %s has deletion protection enabled", ErrPolicyStoreDeletionProtected, policyStoreID,
+		)
 	}
 
 	// Remove ARN index and tag entries for all child resources, then delete

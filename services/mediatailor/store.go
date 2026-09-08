@@ -20,6 +20,11 @@ const (
 	tierBasic    = "BASIC"
 	tierStandard = "STANDARD"
 
+	logTypeAsRun = "AS_RUN"
+
+	loggingStrategyVendedLogs       = "VENDED_LOGS"
+	loggingStrategyLegacyCloudwatch = "LEGACY_CLOUDWATCH"
+
 	resourceTypePlaybackConfiguration = "playbackConfiguration"
 	resourceTypeChannel               = "channel"
 	resourceTypeSourceLocation        = "sourceLocation"

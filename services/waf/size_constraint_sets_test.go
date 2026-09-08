@@ -102,6 +102,73 @@ func TestWAF_SizeConstraintSet_CreateGetUpdateDeleteList(t *testing.T) {
 	assert.Equal(t, 0, waf.SizeConstraintSetCount(h.Backend.(*waf.InMemoryBackend)))
 }
 
+func wafCreateSizeConstraintSet(t *testing.T, h *waf.Handler, name string) string {
+	t.Helper()
+
+	token := wafGetToken(t, h)
+	rec := wafDo(t, h, "CreateSizeConstraintSet", map[string]any{"ChangeToken": token, "Name": name})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	m := resp["SizeConstraintSet"].(map[string]any)
+	id := m["SizeConstraintSetId"].(string)
+	require.NotEmpty(t, id)
+
+	return id
+}
+
+func TestWAF_SizeConstraintSet_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	constraint := map[string]any{
+		"FieldToMatch":       map[string]any{"Type": "BODY"},
+		"TextTransformation": "NONE",
+		"ComparisonOperator": "GT",
+		"Size":               8192,
+	}
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateSizeConstraintSet(t, h, "noop-insert-scs")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateSizeConstraintSet", map[string]any{
+			"ChangeToken":         token,
+			"SizeConstraintSetId": id,
+			"Updates":             []map[string]any{{"Action": "INSERT", "SizeConstraint": constraint}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateSizeConstraintSet", map[string]any{
+			"ChangeToken":         token,
+			"SizeConstraintSetId": id,
+			"Updates":             []map[string]any{{"Action": "INSERT", "SizeConstraint": constraint}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateSizeConstraintSet(t, h, "noop-delete-scs")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateSizeConstraintSet", map[string]any{
+			"ChangeToken":         token,
+			"SizeConstraintSetId": id,
+			"Updates":             []map[string]any{{"Action": "DELETE", "SizeConstraint": constraint}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestWAF_SizeConstraintSet_NotFound(t *testing.T) {
 	t.Parallel()
 

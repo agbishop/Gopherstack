@@ -30,11 +30,12 @@ const (
 	// this single-account emulator does not simulate.
 	invitationTypeInvitation = "INVITATION"
 
+	// severityInformational is the only Severity value StartInvestigation ever
+	// assigns (gopherstack-b6wo): real Detective derives Severity from the
+	// likelihood/impact of indicators found during threat-intelligence
+	// analysis this emulator does not perform, so LOW/MEDIUM/HIGH/CRITICAL
+	// are unreachable and were removed rather than kept as unused consts.
 	severityInformational = "INFORMATIONAL"
-	severityLow           = "LOW"
-	severityMedium        = "MEDIUM"
-	severityHigh          = "HIGH"
-	severityCritical      = "CRITICAL"
 
 	maxGraphsPerPage         = 200
 	maxMembersPerPage        = 200

@@ -182,7 +182,12 @@ func (b *InMemoryBackend) ListSites(f listSitesFilter, token string, limit int) 
 
 	for _, s := range all {
 		if matchesSiteFilter(s, f) {
-			filtered = append(filtered, s)
+			// Clone before returning: these are the live, backend-owned
+			// pointers, and UpdateSite/UpdateSiteAddress/
+			// UpdateSiteRackPhysicalProperties mutate them in place after
+			// this call returns and the lock is released -- see clone's
+			// doc comment.
+			filtered = append(filtered, s.clone())
 		}
 	}
 

@@ -172,16 +172,20 @@ func (b *InMemoryBackend) cleanupTimedOutRuntime(functionName string) {
 
 	select {
 	case sem <- struct{}{}:
+		go func() {
+			defer func() { <-sem }()
+			ctx, cancel := context.WithTimeout(b.ctx, containerShutdownTimeout)
+			defer cancel()
+			b.cleanupRuntime(ctx, rt)
+		}()
 	default:
-		// Already at max concurrent cleanups; skip
-		return
-	}
-	go func() {
-		defer func() { <-sem }()
+		// cleanupSem is full; run inline to avoid leaking the timed-out runtime's
+		// container/port/temp dirs (rt was already removed from b.runtimes above,
+		// so nothing else will ever revisit it for cleanup).
 		ctx, cancel := context.WithTimeout(b.ctx, containerShutdownTimeout)
 		defer cancel()
 		b.cleanupRuntime(ctx, rt)
-	}()
+	}
 }
 
 // getOrCreateRuntime returns the runtime server for a function, creating it on first use.

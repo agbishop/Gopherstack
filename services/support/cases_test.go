@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -549,4 +550,43 @@ func TestSupport_DescribeCases_Pagination(t *testing.T) {
 		"nextToken":  "",
 	})
 	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestSupport_DescribeCases_UnknownCaseID verifies that requesting a caseId
+// that doesn't exist returns CaseIdNotFound rather than silently omitting it
+// from the results: DescribeCases's only case-specific modeled exception
+// (aws-sdk-go-v2/service/support/deserializers.go
+// awsAwsjson11_deserializeOpErrorDescribeCases) is CaseIdNotFound.
+func TestSupport_DescribeCases_UnknownCaseID(t *testing.T) {
+	t.Parallel()
+
+	h := newTestSupportHandler(t)
+
+	rec := doSupportRequest(t, h, "DescribeCases", map[string]any{
+		"caseIdList": []string{"case-does-not-exist"},
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	resp := decodeSupportResponse(t, rec)
+	assert.Equal(t, "CaseIdNotFound", resp["__type"])
+}
+
+// TestSupport_DescribeCases_CaseIdListTooLarge verifies the documented
+// "maximum number of cases is 100" limit on caseIdList
+// (aws-sdk-go-v2/service/support/api_op_DescribeCases.go) is enforced.
+func TestSupport_DescribeCases_CaseIdListTooLarge(t *testing.T) {
+	t.Parallel()
+
+	h := newTestSupportHandler(t)
+
+	ids := make([]string, 101)
+	for i := range ids {
+		ids[i] = "case-" + strconv.Itoa(i)
+	}
+
+	rec := doSupportRequest(t, h, "DescribeCases", map[string]any{"caseIdList": ids})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	resp := decodeSupportResponse(t, rec)
+	assert.Equal(t, "ValidationException", resp["__type"])
 }

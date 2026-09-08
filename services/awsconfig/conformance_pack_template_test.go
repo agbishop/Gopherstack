@@ -121,6 +121,11 @@ Resources:
 // TestPutConformancePack_MultipleTemplateSourcesRejected verifies real AWS
 // Config's "specify only one of TemplateBody, TemplateS3Uri, or
 // TemplateSSMDocumentDetails" constraint is enforced (gopherstack-ag85).
+//
+// wantErr was awsconfig.ErrValidation until this pass; PutConformancePack's
+// deserializer declares InvalidParameterValueException, never
+// ValidationException (configservice@v1.68.4 deserializers.go) -- the old
+// assertion locked in the exact wire-code defect this pass fixed.
 func TestPutConformancePack_MultipleTemplateSourcesRejected(t *testing.T) {
 	t.Parallel()
 
@@ -154,7 +159,7 @@ func TestPutConformancePack_MultipleTemplateSourcesRejected(t *testing.T) {
 			b := awsconfig.NewInMemoryBackend()
 			err := b.PutConformancePack("pack1", "", "", tt.templateBody, tt.templateS3URI, tt.ssmDocName, nil)
 			require.Error(t, err)
-			assert.ErrorIs(t, err, awsconfig.ErrValidation)
+			assert.ErrorIs(t, err, awsconfig.ErrInvalidParameterValue)
 		})
 	}
 }

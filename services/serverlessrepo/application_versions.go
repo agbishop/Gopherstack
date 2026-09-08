@@ -64,7 +64,10 @@ func (b *InMemoryBackend) CreateApplicationVersionWithOptions(
 
 	app, ok := b.applications.Get(appName)
 	if !ok {
-		return nil, fmt.Errorf("%w: could not find application %q", ErrApplicationNotFound, appName)
+		// CreateApplicationVersion's modelled error set has no NotFoundException
+		// (deserializers.go awsRestjson1_deserializeOpErrorCreateApplicationVersion):
+		// an unknown ApplicationId is a BadRequestException, not a 404.
+		return nil, fmt.Errorf("%w: could not find application %q", ErrValidation, appName)
 	}
 
 	if semanticVersion == "" {

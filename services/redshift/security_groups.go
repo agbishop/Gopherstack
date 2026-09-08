@@ -2,10 +2,14 @@ package redshift
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 )
 
 // CreateClusterSecurityGroup creates a new cluster security group.
-func (b *InMemoryBackend) CreateClusterSecurityGroup(name, description string) (*ClusterSecurityGroup, error) {
+func (b *InMemoryBackend) CreateClusterSecurityGroup(
+	name, description string, tagsIn map[string]string,
+) (*ClusterSecurityGroup, error) {
 	if name == "" {
 		return nil, fmt.Errorf("%w: ClusterSecurityGroupName is required", ErrInvalidParameter)
 	}
@@ -22,16 +26,28 @@ func (b *InMemoryBackend) CreateClusterSecurityGroup(name, description string) (
 		Description:              description,
 		IPRanges:                 []IPRange{},
 		EC2SecurityGroups:        []EC2SecurityGroup{},
+		Tags:                     tagsIn,
 	}
 	b.securityGroups.Put(sg)
 
 	return cloneSecurityGroup(sg), nil
 }
 
-// DeleteClusterSecurityGroup removes a cluster security group.
+// defaultClusterSecurityGroupName is the name of the security group every
+// account has provisioned by default. Real AWS: DeleteClusterSecurityGroup's
+// own doc comment, "You cannot delete the default security group".
+const defaultClusterSecurityGroupName = "default"
+
+// DeleteClusterSecurityGroup removes a cluster security group. Real AWS:
+// "You cannot delete a security group that is associated with any
+// clusters. You cannot delete the default security group".
 func (b *InMemoryBackend) DeleteClusterSecurityGroup(name string) error {
 	if name == "" {
 		return fmt.Errorf("%w: ClusterSecurityGroupName is required", ErrInvalidParameter)
+	}
+
+	if name == defaultClusterSecurityGroupName {
+		return fmt.Errorf("%w: cannot delete the default security group", ErrSecurityGroupInvalidState)
 	}
 
 	b.mu.Lock("DeleteClusterSecurityGroup")
@@ -41,31 +57,41 @@ func (b *InMemoryBackend) DeleteClusterSecurityGroup(name string) error {
 		return fmt.Errorf("%w: security group %s not found", ErrSecurityGroupNotFound, name)
 	}
 
+	for _, c := range b.clusters.All() {
+		if slices.Contains(c.ClusterSecurityGroups, name) {
+			return fmt.Errorf(
+				"%w: security group %s is associated with cluster %s",
+				ErrSecurityGroupInvalidState, name, c.ClusterIdentifier,
+			)
+		}
+	}
+
 	b.securityGroups.Delete(name)
 
 	return nil
 }
 
-// DescribeClusterSecurityGroups returns all security groups, or a specific one if name is non-empty.
-func (b *InMemoryBackend) DescribeClusterSecurityGroups(name string) ([]ClusterSecurityGroup, error) {
+// DescribeClusterSecurityGroups returns security groups. If name is
+// non-empty, returns only that group (ignoring marker/maxRecords/tag
+// filters, matching DescribeClusters' id-lookup shortcut). Otherwise
+// tagKeys/tagValues are applied to the full set before Marker/MaxRecords
+// pagination, following the same convention as DescribeClusters (see
+// store.go).
+func (b *InMemoryBackend) DescribeClusterSecurityGroups(
+	name, marker string, maxRecords int, tagKeys, tagValues []string,
+) ([]ClusterSecurityGroup, string, error) {
 	b.mu.RLock("DescribeClusterSecurityGroups")
 	defer b.mu.RUnlock()
 
-	if name != "" {
-		sg, exists := b.securityGroups.Get(name)
-		if !exists {
-			return nil, fmt.Errorf("%w: security group %s not found", ErrSecurityGroupNotFound, name)
-		}
-
-		return []ClusterSecurityGroup{*cloneSecurityGroup(sg)}, nil
-	}
-
-	result := make([]ClusterSecurityGroup, 0, b.securityGroups.Len())
-	for _, sg := range b.securityGroups.All() {
-		result = append(result, *cloneSecurityGroup(sg))
-	}
-
-	return result, nil
+	return describeTaggedGroup(
+		b.securityGroups, name, marker, maxRecords, tagKeys, tagValues,
+		func(name string) error {
+			return fmt.Errorf("%w: security group %s not found", ErrSecurityGroupNotFound, name)
+		},
+		func(sg *ClusterSecurityGroup) ClusterSecurityGroup { return *cloneSecurityGroup(sg) },
+		func(sg *ClusterSecurityGroup) map[string]string { return sg.Tags },
+		func(sg *ClusterSecurityGroup) string { return sg.ClusterSecurityGroupName },
+	)
 }
 
 // RevokeClusterSecurityGroupIngress removes an ingress rule from a cluster security group.
@@ -209,6 +235,7 @@ func cloneSecurityGroup(sg *ClusterSecurityGroup) *ClusterSecurityGroup {
 	copy(cp.IPRanges, sg.IPRanges)
 	cp.EC2SecurityGroups = make([]EC2SecurityGroup, len(sg.EC2SecurityGroups))
 	copy(cp.EC2SecurityGroups, sg.EC2SecurityGroups)
+	cp.Tags = maps.Clone(sg.Tags)
 
 	return &cp
 }

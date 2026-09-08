@@ -38,8 +38,8 @@ func Test_PersistenceSnapshotRestore(t *testing.T) {
 					"ecs",
 					"service/my-cluster/my-svc",
 					"ecs:service:DesiredCount",
-					1,
-					10,
+					int32p(1),
+					int32p(10),
 					nil,
 					"",
 					nil,
@@ -68,7 +68,7 @@ func Test_PersistenceSnapshotRestore(t *testing.T) {
 				t.Helper()
 
 				_, err := b.RegisterScalableTarget(
-					"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+					"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 				)
 				require.NoError(t, err)
 
@@ -120,7 +120,7 @@ func Test_PersistenceSnapshotRestore(t *testing.T) {
 				t.Helper()
 
 				_, err := b.RegisterScalableTarget(
-					"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+					"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 				)
 				require.NoError(t, err)
 
@@ -172,7 +172,7 @@ func Test_PersistenceSnapshotRestore(t *testing.T) {
 				t.Helper()
 
 				_, err := b.RegisterScalableTarget(
-					"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+					"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 				)
 				require.NoError(t, err)
 
@@ -221,7 +221,7 @@ func Test_PersistenceSnapshotRestore(t *testing.T) {
 				t.Helper()
 
 				_, err := b.RegisterScalableTarget(
-					"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+					"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 				)
 				require.NoError(t, err)
 			},
@@ -278,7 +278,7 @@ func Test_PersistenceRestoreVersionMismatch(t *testing.T) {
 
 	b := applicationautoscaling.NewInMemoryBackend("123456789012", "us-east-1")
 	_, err := b.RegisterScalableTarget(
-		"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+		"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 	)
 	require.NoError(t, err)
 
@@ -327,7 +327,7 @@ func Test_PersistenceHandlerDelegates(t *testing.T) {
 	)
 
 	_, err := h.Backend.RegisterScalableTarget(
-		"dynamodb", "table/my-table", "dynamodb:table:ReadCapacityUnits", 1, 10, nil, "", nil,
+		"dynamodb", "table/my-table", "dynamodb:table:ReadCapacityUnits", int32p(1), int32p(10), nil, "", nil,
 	)
 	require.NoError(t, err)
 

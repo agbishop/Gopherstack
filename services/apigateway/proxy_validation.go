@@ -130,7 +130,7 @@ func writeValidationError(w http.ResponseWriter, message string) {
 	w.Header().Set(headerContentType, "application/json")
 	w.Header().Set("X-Amzn-Errortype", "BadRequestException")
 	w.WriteHeader(http.StatusBadRequest)
-	_ = json.NewEncoder(w).Encode(map[string]string{"message": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{jsonMessageKey: message})
 }
 
 // missingRequiredParameters returns the names of required request parameters (as

@@ -76,7 +76,8 @@ func cloneQuotaSharePolicy(qp *QuotaSharePolicy) *QuotaSharePolicy {
 	return &clone
 }
 
-// DeleteSchedulingPolicy removes a scheduling policy by ARN.
+// DeleteSchedulingPolicy removes a scheduling policy by ARN. Rejects a
+// policy still referenced by any job queue (api_op_DeleteSchedulingPolicy.go).
 func (b *InMemoryBackend) DeleteSchedulingPolicy(ctx context.Context, policyARN string) error {
 	region := getRegion(ctx, b.region)
 
@@ -85,6 +86,15 @@ func (b *InMemoryBackend) DeleteSchedulingPolicy(ctx context.Context, policyARN 
 
 	if !b.schedulingPolicies.Has(regionKey(region, policyARN)) {
 		return fmt.Errorf("%w: scheduling policy %s not found", ErrNotFound, policyARN)
+	}
+
+	for _, jq := range b.jobQueuesByRegion.Get(region) {
+		if jq.SchedulingPolicyArn == policyARN {
+			return fmt.Errorf(
+				"%w: scheduling policy %s is used by job queue %s",
+				ErrValidation, policyARN, jq.JobQueueName,
+			)
+		}
 	}
 
 	b.schedulingPolicies.Delete(regionKey(region, policyARN))

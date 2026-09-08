@@ -143,8 +143,10 @@ func validateReportConfiguration(cfg *experimentTemplateReportConfigDTO) error {
 	return nil
 }
 
-// validateStopConditions validates the stop conditions slice.
-// Source must be "none" or a CloudWatch alarm ARN.
+// validateStopConditions validates the stop conditions slice. Source must be
+// exactly "none" or "aws:cloudwatch:alarm" (CreateExperimentTemplateStopConditionInput
+// doc comment); value is required (the alarm ARN) when source is an alarm and
+// must be absent when source is "none".
 func validateStopConditions(conditions []experimentTemplateStopConditionDTO) error {
 	for i, sc := range conditions {
 		src := strings.TrimSpace(sc.Source)
@@ -152,19 +154,24 @@ func validateStopConditions(conditions []experimentTemplateStopConditionDTO) err
 			return fmt.Errorf("%w: stopConditions[%d].source is required", ErrValidation, i)
 		}
 
-		switch {
-		case src == "none":
+		switch src {
+		case "none":
 			if strings.TrimSpace(sc.Value) != "" {
 				return fmt.Errorf(
 					"%w: stopConditions[%d]: value must be empty when source is \"none\"",
 					ErrValidation, i,
 				)
 			}
-		case strings.HasPrefix(src, "aws:cloudwatch:alarm"):
-			// valid CloudWatch alarm source
+		case stopConditionSourceAlarm:
+			if strings.TrimSpace(sc.Value) == "" {
+				return fmt.Errorf(
+					"%w: stopConditions[%d].value is required when source is \"aws:cloudwatch:alarm\"",
+					ErrValidation, i,
+				)
+			}
 		default:
 			return fmt.Errorf(
-				"%w: stopConditions[%d].source must be \"none\" or a CloudWatch alarm ARN; got %q",
+				"%w: stopConditions[%d].source must be \"none\" or \"aws:cloudwatch:alarm\"; got %q",
 				ErrValidation, i, src,
 			)
 		}

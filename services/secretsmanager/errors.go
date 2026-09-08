@@ -37,4 +37,25 @@ var (
 	// doesn't already have a Lambda function ARN configured, and didn't include one as a
 	// parameter in this call.
 	ErrRotationStrategyRequired = errors.New("InvalidRequestException")
+	// ErrReplicaAlreadyExists is returned by ReplicateSecretToRegions when a replica
+	// already exists in a requested region and ForceOverwriteReplicaSecret is not set.
+	// Deliberately distinct from ErrSecretAlreadyExists/ResourceExistsException:
+	// ReplicateSecretToRegions's own deserializeOpError (secretsmanager@v1.44.4
+	// deserializers.go) recognizes InternalServiceError, InvalidParameterException,
+	// InvalidRequestException and ResourceNotFoundException, but no
+	// ResourceExistsException case -- unlike CreateSecret/PutSecretValue/UpdateSecret,
+	// which do.
+	ErrReplicaAlreadyExists = errors.New("InvalidRequestException")
+	// ErrReplicaNotWritable is returned when PutSecretValue, UpdateSecret (for
+	// anything beyond its KmsKeyId), or RotateSecret is called directly
+	// against a replica secret. "A replica secret can't be updated
+	// independently from its primary secret, except for its encryption key"
+	// (Secrets Manager User Guide, "Promote a replica secret to a standalone
+	// secret"); rotation specifically is described as configured on the
+	// primary and propagated to replicas, and the same guide says you must
+	// promote a replica to standalone "if you want to turn on rotation for
+	// the replica". All three operations model InvalidRequestException in
+	// their own deserializeOpError (aws-sdk-go-v2/service/secretsmanager@
+	// v1.44.4 deserializers.go).
+	ErrReplicaNotWritable = errors.New("InvalidRequestException")
 )

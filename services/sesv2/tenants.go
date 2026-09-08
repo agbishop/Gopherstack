@@ -121,6 +121,7 @@ func (b *InMemoryBackend) DeleteTenant(tenantName string) error {
 	defer b.mu.Unlock()
 
 	delete(b.tenants, tenantName)
+	delete(b.resourceTags, b.tenantARN(tenantName))
 
 	for _, resourceArn := range b.tenantResources[tenantName] {
 		b.resourceTenants[resourceArn] = removeString(b.resourceTenants[resourceArn], tenantName)

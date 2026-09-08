@@ -103,6 +103,10 @@ func (b *InMemoryBackend) DeleteApplication(name string) error {
 
 	app, ok := b.applications.Get(name)
 	if !ok {
+		// DeleteApplication's deserializer models no ApplicationDoesNotExistException
+		// (aws-sdk-go-v2/service/codedeploy deserializers.go) -- this code is provably
+		// wrong here, but idempotent-success vs. a different code is unconfirmed.
+		// Do NOT "fix" this by guessing; needs real evidence (gopherstack-3pz8).
 		return fmt.Errorf("%w: application %s not found", ErrNotFound, name)
 	}
 

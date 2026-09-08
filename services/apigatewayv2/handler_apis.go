@@ -382,7 +382,7 @@ func openAPIIntegrationType(t string) string {
 	case "aws", "aws_proxy":
 		return IntegrationTypeAWSProxy
 	case "mock":
-		return "MOCK"
+		return integrationTypeMock
 	case "":
 		return IntegrationTypeAWSProxy
 	default:

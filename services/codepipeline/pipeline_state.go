@@ -66,7 +66,11 @@ func (b *InMemoryBackend) DisableStageTransition(
 	return nil
 }
 
-// EnableStageTransition re-enables a stage transition.
+// EnableStageTransition re-enables a stage transition and, since real AWS
+// resumes any artifacts that were waiting on it without requiring a further
+// client call, re-drives runPipelineActions for every InProgress execution
+// of the pipeline so a run parked at this gate (see runPipelineActions in
+// action_engine.go) can proceed.
 func (b *InMemoryBackend) EnableStageTransition(
 	ctx context.Context,
 	pipelineName, stageName, transitionType string,
@@ -76,7 +80,8 @@ func (b *InMemoryBackend) EnableStageTransition(
 
 	region := getRegion(ctx, b.region)
 
-	if !b.pipelines.Has(regionKey(region, pipelineName)) {
+	p, ok := b.pipelines.Get(regionKey(region, pipelineName))
+	if !ok {
 		return fmt.Errorf("%w: pipeline %q", ErrNotFound, pipelineName)
 	}
 
@@ -85,7 +90,31 @@ func (b *InMemoryBackend) EnableStageTransition(
 	}.String())
 	b.stageTransitions.Delete(key)
 
+	now := time.Now().UTC()
+
+	for _, exec := range b.executionsStore(region)[pipelineName] {
+		if exec.Status != statusInProgress {
+			continue
+		}
+
+		b.runPipelineActions(region, p, exec)
+		exec.LastUpdateTime = now
+	}
+
 	return nil
+}
+
+// stageTransitionDisabled reports whether stageName's inbound or outbound
+// transition (per transitionType) is currently disabled. Callers must hold
+// b.mu (RLock or Lock).
+func (b *InMemoryBackend) stageTransitionDisabled(region, pipelineName, stageName, transitionType string) bool {
+	key := regionKey(region, stageTransitionKey{
+		PipelineName: pipelineName, StageName: stageName, TransitionType: transitionType,
+	}.String())
+
+	state, ok := b.stageTransitions.Get(key)
+
+	return ok && state.Disabled
 }
 
 // pipelineHasStage returns true if the pipeline contains a stage with the given name.
@@ -217,6 +246,19 @@ func (b *InMemoryBackend) RetryStageExecution(
 		return nil, fmt.Errorf("%w: stage %q not found in pipeline %q", ErrStageNotFound, stageName, pipelineName)
 	}
 
+	// gopherstack-wlab: same undeclared-code issue as OverrideStageCondition
+	// below -- PipelineExecutionNotFoundException is not in
+	// RetryStageExecution's declared error set per botocore
+	// codepipeline/2015-07-09/service-2.json (PipelineNotFoundException/
+	// StageNotFoundException/StageNotRetryableException/
+	// NotLatestPipelineExecutionException/
+	// ConcurrentPipelineExecutionsLimitExceededException/ConflictException/
+	// ValidationException only). Left unfixed: StageNotRetryableException's
+	// doc text ("stage state might have changed ... or the stage contains
+	// no failed actions") describes a stage-condition mismatch on a real
+	// execution, not a nonexistent executionID -- doesn't fit. NOTE: this
+	// does not break errors.As for a real caller -- see
+	// undeclared_error_codes_test.go.
 	exec := findExecution(b.executionsStore(region)[pipelineName], executionID)
 	if exec == nil {
 		return nil, fmt.Errorf("%w: pipeline %q execution %q", ErrExecutionNotFound, pipelineName, executionID)
@@ -419,6 +461,20 @@ func (b *InMemoryBackend) OverrideStageCondition(
 		return fmt.Errorf("%w: stage %q not found in pipeline %q", ErrStageNotFound, stageName, pipelineName)
 	}
 
+	// gopherstack-wlab: PipelineExecutionNotFoundException is not in
+	// OverrideStageCondition's declared error set per botocore
+	// codepipeline/2015-07-09/service-2.json (PipelineNotFoundException/
+	// StageNotFoundException/ConditionNotOverridableException/
+	// NotLatestPipelineExecutionException/
+	// ConcurrentPipelineExecutionsLimitExceededException/ConflictException/
+	// ValidationException only; NOTE: this does not break errors.As for a
+	// real caller -- see undeclared_error_codes_test.go). Left unfixed: no
+	// single declared code is an obvious replacement for "this executionID
+	// doesn't exist" -- NotLatestPipelineExecutionException is the closest
+	// semantic fit, but its doc text ("the pipelineExecutionId ... is out
+	// of date") describes a stale-but-once-valid ID, not a never-existed
+	// one, and this backend cannot tell the two cases apart from AWS docs
+	// alone.
 	if findExecution(b.executionsStoreRO(region)[pipelineName], executionID) == nil {
 		return fmt.Errorf("%w: pipeline %q execution %q", ErrExecutionNotFound, pipelineName, executionID)
 	}

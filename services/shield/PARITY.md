@@ -65,7 +65,7 @@ gaps:
 deferred:
   - "ALREADY COVERED BY CHAOS (verified gopherstack-kp7b): OptimisticLockException (concurrent-modification detection via a resource version/etag) is not modeled anywhere -- CreateProtectionGroup/UpdateProtectionGroup/DeleteProtectionGroup/AssociateDRTLogBucket/DisassociateDRTLogBucket/UpdateEmergencyContactSettings all declare it in their real error catalogs but gopherstack's coarse per-backend lock (lockmetrics.RWMutex) makes every mutation atomic, so the race window OptimisticLockException exists to protect against never occurs in this emulator's backend state. Concretely verified this pass: shield.Handler implements ChaosServiceName() -> \"shield\" and ChaosOperations() -> h.GetSupportedOperations() (handler.go), and pkgs/chaos.Middleware is wired globally via registry.Use(chaos.Middleware(faultStore)) in cli.go -- it matches purely on the request's SigV4 service name + X-Amz-Target operation + region and injects an arbitrary caller-specified FaultError{Code, StatusCode} without touching backend state, so a fault rule such as {\"service\":\"shield\",\"operation\":\"UpdateProtectionGroup\",\"error\":{\"code\":\"OptimisticLockException\",\"statusCode\":400}} deterministically returns that exact typed error to a real client with zero backend code changes."
   - "ALREADY COVERED BY CHAOS (verified gopherstack-kp7b): AccessDeniedException / AccessDeniedForDependencyException are never returned -- gopherstack does not model IAM permission checks for any service, Shield included, so there is no backend-state condition to trigger either from. Consistent with the rest of the codebase; not a Shield-specific gap. Same chaos mechanism as OptimisticLockException above makes both reachable on demand for a caller that wants to test its own error-handling path, with zero backend code changes."
-  - "ALREADY COVERED BY CHAOS (verified gopherstack-kp7b): InvalidResourceException (thrown by real AWS when a ResourceArn is a well-formed ARN for a supported type but the underlying resource doesn't exist / isn't accessible) is not distinguished from InvalidParameterException (used for malformed/unsupported-type ARNs) because gopherstack has no cross-service resource-existence oracle to check against. Would require wiring Shield's CreateProtection to query other services' backends (elbv2/cloudfront/route53/ec2/globalaccelerator) for resource existence -- that kind of cross-service backend reference is set up at CLI init time (cli.go), out of bounds for this pass (see applicationautoscaling's PARITY.md for the same cli.go-wiring constraint on a different service). Same chaos mechanism as above makes InvalidResourceException reachable on demand in the meantime."
+  - "ALREADY COVERED BY CHAOS (verified gopherstack-kp7b): InvalidResourceException (thrown by real AWS when a ResourceArn is a well-formed ARN for a supported type but the underlying resource doesn't exist / isn't accessible) is not distinguished from InvalidParameterException (used for malformed/unsupported-type ARNs) because gopherstack has no cross-service resource-existence oracle to check against. Would require wiring Shield's CreateProtection to query other services' backends (elbv2/cloudfront/route53/ec2/globalaccelerator) for resource existence. CORRECTED (gopherstack-osg7): that kind of cross-service backend reference is NOT set up at CLI init time in cli.go -- it's set up inside each consuming service's own provider.Init (SetAppConfig(ctx.Config) plus a narrow siblingServices type-assertion, matching pkgs/service/service.go's AppContext doc comment; seven services already do this, e.g. services/grafana/cross_service.go's validateVpcConfiguration reaching into the ec2 backend). Shield's own provider.Init could adopt the same pattern to query elbv2/cloudfront/route53/ec2/globalaccelerator's backends; not done this pass, a separate decision from whether it's architecturally possible. Same chaos mechanism as above makes InvalidResourceException reachable on demand in the meantime."
 leaks: {status: clean, note: "no goroutines/janitors in this service; all state lives in store.Table-backed maps guarded by lockmetrics.RWMutex; Snapshot/Restore round-trip verified (persistence_test.go). Fixed this sweep: DeleteProtection previously left an orphaned alarConfigs row keyed by the deleted protection's ResourceARN -- a later CreateProtection for the same ResourceARN would incorrectly inherit the stale ALAR config from the deleted protection. Now cascade-cleaned; regression test in protections_test.go (TestInMemoryBackend_DeleteProtectionCascadeCleansALARConfig)."}
 ---
 
@@ -356,3 +356,79 @@ Proven with a real `aws-sdk-go-v2/service/shield` client's
   caps (1000/1000/10000) are gopherstack-internal choices, not contradicted by any
   documented maximum (the SDK doc comments state only the default, no ceiling) --
   left unchanged.
+
+## gopherstack-g2l5 (2026-09-07): per-op declared-error-catalog mismatches, 3 confirmed bugs
+
+`cmd/errtargetaudit` flagged 4 class A findings: gopherstack emitting a wire `__type` that the
+real op's own error catalog (`deserializers.go`'s `deserializeOpError<Op>` case list, confirmed
+per-op below) never declares. Root cause in all 4: `classifyShieldError`'s `shieldErrorRules()`
+is one global sentinel -> code table shared by every op, but several sentinels are raised by
+handlers whose real declared catalog differs from the code the shared rule assigns.
+
+- `CreateProtectionGroup` (`protection_groups.go`, subscription-required check) and `TagResource`
+  (`tags.go`, subscription-required check) both raised `ErrSubscriptionRequired`, which
+  `shieldErrorRules()` maps to `InvalidOperationException` -- correct for the other 7 ops that
+  raise it (`CreateProtection`, `AssociateDRTLogBucket`, `AssociateDRTRole`,
+  `AssociateProactiveEngagementDetails`, `EnableProactiveEngagement`,
+  `DisableProactiveEngagement`, `EnableApplicationLayerAutomaticResponse`, all confirmed to
+  declare `InvalidOperationException`), but `CreateProtectionGroup`/`TagResource`'s own catalogs
+  declare no `InvalidOperationException` at all. Both catalogs do declare
+  `ResourceNotFoundException`, which is also the real Shield code for "no subscription" per
+  `DescribeSubscription`'s own catalog and gopherstack's existing `ErrSubscriptionNotFound`
+  sentinel (`subscription.go`) -- switched both sites to raise `ErrSubscriptionNotFound` instead.
+- `UpdateProtectionGroup`'s ARBITRARY-pattern member-cap check (`protection_groups.go`) raised
+  `ErrLimitExceeded` (-> `LimitsExceededException`), correct for the identical check in
+  `CreateProtectionGroup` (whose catalog does declare it) but not for `UpdateProtectionGroup`,
+  whose catalog has no `LimitsExceededException` entry. Switched to `ErrValidation` (->
+  `InvalidParameterException`, which the catalog does declare); the wire response carries only a
+  message string (no structured `Type`/`Limit` fields), so no response-shape change was needed.
+- `ListAttacks`'s `NextToken` decode error (`handler_attacks.go`) chained `decodeOffsetToken`'s
+  shared `errInvalidPaginationToken` sentinel (-> `InvalidPaginationTokenException`), correct for
+  the pagination helper's other 3 callers (`ListProtections`/`ListProtectionGroups`/
+  `ListResourcesInProtectionGroup`, all confirmed to declare it) but `ListAttacks`'s own catalog
+  has no `InvalidPaginationTokenException` entry (only `InvalidOperationException`/
+  `InvalidParameterException`). Re-classified via `errInvalidRequest` (->
+  `InvalidParameterException`) instead of forwarding the original sentinel.
+
+All 4 sites verified against the pinned `shield@v1.37.4` `deserializers.go`
+(`awk '/deserializeOpError<Op>\(/,/^}/'` extraction, raw output below) rather than guessed:
+
+```
+CreateProtectionGroup: UnknownError InternalErrorException InvalidParameterException
+  LimitsExceededException OptimisticLockException ResourceAlreadyExistsException
+  ResourceNotFoundException
+TagResource: UnknownError InternalErrorException InvalidParameterException
+  InvalidResourceException ResourceNotFoundException
+UpdateProtectionGroup: UnknownError InternalErrorException InvalidParameterException
+  OptimisticLockException ResourceNotFoundException
+ListAttacks: UnknownError InternalErrorException InvalidOperationException
+  InvalidParameterException
+```
+
+Regression tests (`errors_test.go`): `TestHandler_ErrorWireType_CreateProtectionGroupSubscriptionRequired`,
+`TestHandler_ErrorWireType_TagResourceSubscriptionRequired`,
+`TestHandler_ErrorWireType_UpdateProtectionGroupMembersLimit`,
+`TestHandler_ErrorWireType_ListAttacksInvalidPaginationToken` -- each drives the real HTTP handler,
+asserts the correct `__type`, asserts the previously-wrong `__type` is absent, and (for the two
+mutating ops) asserts the target resource was not created/mutated by the rejected request.
+`quotas_test.go`'s pre-existing `TestInMemoryBackend_UpdateProtectionGroupArbitraryMembersQuota`
+previously asserted `errors.Is(err, shield.ErrLimitExceeded)` with no note that this pinned the
+now-fixed wrong code -- updated to assert `ErrValidation`/absence of `ErrLimitExceeded` and that
+the group's members are left unmutated. All 4 fixed lines hand-reverted one at a time, confirmed
+each still compiles and its own regression test fails pre-fix, then restored.
+
+**Re-running `cmd/errtargetaudit` after the fix**: 3 of the 4 findings are gone. The
+`ListAttacks` finding still appears verbatim (`handler.go:450`/`455`, `declared correctly by:
+[ListProtectionGroups ListProtections ListResourcesInProtectionGroup]`) -- this is the tool's
+documented one-hop-callee-trace limitation, not a live bug: it still sees `ListAttacks` calling
+`decodeOffsetToken`, which contains the `errInvalidPaginationToken` literal, and cannot tell that
+the fixed call site checks `err != nil` but no longer forwards that specific sentinel into the
+returned error (it wraps `errInvalidRequest` instead). Confirmed by
+`TestHandler_ErrorWireType_ListAttacksInvalidPaginationToken`, which passes against the real HTTP
+handler and asserts the wire type is `InvalidParameterException`, not
+`InvalidPaginationTokenException`. Coverage after the fix: 36 ops resolved, 11/36 (31%) with an
+emission found (down from 13/36 pre-fix, since 3 of the fixed sites now emit via the same
+generic already-attributed codes as other ops rather than a distinct sentinel reference).
+
+Gates: `go test -race -count=1 ./services/shield/...` ok (1.5s); `golangci-lint run
+services/shield/...` 0 issues.

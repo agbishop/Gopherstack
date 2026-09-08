@@ -32,7 +32,7 @@ func (b *InMemoryBackend) ReplicateKey(
 
 	sourceRegion := getRegion(ctx, b.defaultRegion)
 
-	sourceKey, err := b.lookupKeyWrite(ctx, input.KeyID)
+	sourceKey, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +131,7 @@ func (b *InMemoryBackend) UpdatePrimaryRegion(
 	b.mu.Lock("UpdatePrimaryRegion")
 	defer b.mu.Unlock()
 
-	currentKey, err := b.lookupKeyWrite(ctx, input.KeyID)
+	currentKey, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}

@@ -132,7 +132,10 @@ func (b *InMemoryBackend) GetAPIKeys() ([]APIKey, error) {
 	return all, nil
 }
 
-// DeleteAPIKey removes an API key by ID.
+// DeleteAPIKey removes an API key by ID, cascading to every usage-plan
+// association and per-(plan,key) usage-tracker state keyed by the key's
+// identity so a deleted key stops appearing in GetUsagePlanKeys/GetUsage
+// instead of lingering as a ghost row.
 func (b *InMemoryBackend) DeleteAPIKey(id string) error {
 	b.mu.Lock("DeleteAPIKey")
 	defer b.mu.Unlock()
@@ -142,6 +145,18 @@ func (b *InMemoryBackend) DeleteAPIKey(id string) error {
 	}
 	delete(b.apiKeysByValue, key.Value)
 	b.apiKeys.Delete(id)
+	for _, overrides := range b.usageOverrides {
+		delete(overrides, id)
+	}
+	for _, upk := range b.usagePlanKeys.All() {
+		if upk.ID != id {
+			continue
+		}
+		b.usagePlanKeys.Delete(usagePlanKeyKeyFn(upk))
+		mapKey := usageKey(upk.UsagePlanID, id)
+		delete(b.usage.quota, mapKey)
+		delete(b.usage.buckets, mapKey)
+	}
 
 	return nil
 }

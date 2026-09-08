@@ -99,6 +99,7 @@ func (j *Janitor) sweepTerminatedInstances(ctx context.Context) {
 					j.Backend.recycleENIIPsLocked(eni)
 					j.Backend.networkInterfaces.Delete(eniID)
 					delete(j.Backend.tags, eniID)
+					delete(j.Backend.niIPv6Addresses, eniID)
 				}
 			}
 		}

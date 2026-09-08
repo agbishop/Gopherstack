@@ -635,6 +635,49 @@ func TestCreateJob_PriorityBound(t *testing.T) {
 	}
 }
 
+// TestUpdateJobPriority_PriorityBound verifies UpdateJobPriority rejects a
+// negative priority, mirroring CreateJob's own non-negative-Priority
+// validation (TestCreateJob_PriorityBound above) -- UpdateJobPriorityInput
+// and CreateJobInput share the same JobPriority quantity in the S3 Batch
+// Operations model, so this backend previously let UpdateJobPriority set a
+// job to a negative priority CreateJob would have rejected outright.
+func TestUpdateJobPriority_PriorityBound(t *testing.T) {
+	t.Parallel()
+
+	const role = "arn:aws:iam::000000000000:role/R"
+
+	tests := []struct {
+		name     string
+		priority int32
+		wantErr  bool
+	}{
+		{name: "zero_ok", priority: 0, wantErr: false},
+		{name: "positive_ok", priority: 100, wantErr: false},
+		{name: "negative_rejected", priority: -1, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := s3control.NewInMemoryBackend()
+			job, err := b.CreateJob("000000000000", role, 0)
+			require.NoError(t, err)
+
+			_, err = b.UpdateJobPriority("000000000000", job.JobID, tt.priority)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, s3control.ErrValidation)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestCreateJob_RequiresRoleArn(t *testing.T) {
 	t.Parallel()
 

@@ -27,7 +27,10 @@ const (
 	// errCodeInvalidParameterValue is the EC2 "InvalidParameterValue" API error code, shared by
 	// several sentinel error mappings below.
 	errCodeInvalidParameterValue = "InvalidParameterValue"
-	ec2PaginationSalt            = "ec2-opaque-pagination-v1"
+	// errCodeInvalidAssociationIDNotFound is the EC2 "InvalidAssociationID.NotFound" API error
+	// code, shared by several distinct "association not found" sentinel errors below.
+	errCodeInvalidAssociationIDNotFound = "InvalidAssociationID.NotFound"
+	ec2PaginationSalt                   = "ec2-opaque-pagination-v1"
 )
 
 // Handler is the Echo HTTP handler for EC2 operations.
@@ -679,7 +682,7 @@ var errCodeLookup = []struct {
 	{ErrRouteTableNotFound, "InvalidRouteTableID.NotFound"},
 	{ErrNatGatewayNotFound, "InvalidNatGatewayID.NotFound"},
 	{ErrRouteNotFound, "InvalidRoute.NotFound"},
-	{ErrAssociationNotFound, "InvalidAssociationID.NotFound"},
+	{ErrAssociationNotFound, errCodeInvalidAssociationIDNotFound},
 	{ErrNetworkInterfaceNotFound, "InvalidNetworkInterfaceID.NotFound"},
 	{ErrNetworkInterfaceInUse, "InvalidNetworkInterfaceID.InUse"},
 	{ErrNetworkInterfacePermissionNotFound, "InvalidPermission.NotFound"},
@@ -709,6 +712,7 @@ var errCodeLookup = []struct {
 	{ErrVpnTunnelNotFound, errCodeInvalidParameterValue},
 	{ErrVpcEndpointServiceNotFound, "InvalidVpcEndpointService.NotFound"},
 	{ErrDependencyViolation, "DependencyViolation"},
+	{ErrAddressInUse, "InvalidIPAddress.InUse"},
 	{ErrResourceAlreadyAssociated, "Resource.AlreadyAssociated"},
 	{ErrVpcClassicLinkDisabled, "VpcClassicLinkDisabled"},
 	{ErrClassicLinkInstanceNotFound, "InvalidInstanceID.NotFound"},
@@ -743,7 +747,7 @@ var errCodeLookup = []struct {
 	{ErrExportTaskNotFound, "InvalidExportTaskID.NotFound"},
 	{ErrImportTaskNotFound, errCodeInvalidParameterValue},
 	{ErrTaskNotCancellable, "IncorrectState"},
-	{ErrTrunkAssociationNotFound, "InvalidAssociationID.NotFound"},
+	{ErrTrunkAssociationNotFound, errCodeInvalidAssociationIDNotFound},
 	{ErrEnclaveCertRoleAssociationNotFound, errCodeInvalidParameterValue},
 	{ErrTooManyEnclaveCertRoles, "LimitExceeded"},
 	{ErrMacInstanceRequired, errCodeInvalidParameterValue},
@@ -767,6 +771,8 @@ var errCodeLookup = []struct {
 	{ErrOutpostArnNotFound, errCodeInvalidParameterValue},
 	{ErrInsufficientInstanceCapacity, "InsufficientInstanceCapacity"},
 	{ErrResourceCountExceeded, "ResourceCountExceeded"},
+	{ErrIAMInstanceProfileAlreadyAssociated, "IncorrectState"},
+	{ErrIAMAssociationNotFound, errCodeInvalidAssociationIDNotFound},
 }
 
 // opErrCode resolves an error to its EC2 API error code and HTTP status code.

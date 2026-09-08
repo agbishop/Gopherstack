@@ -176,6 +176,7 @@ func (b *InMemoryBackend) DeleteStream(ctx context.Context, input *DeleteStreamI
 		// Mark the stream as deleting before removing it (AWS-realistic status transition).
 		stream.Status = streamStatusDeleting
 		b.streams.Delete(streamKey(region, input.StreamName))
+		delete(b.resourcePolicies[region], stream.ARN)
 
 		handoffOK = true
 	}()

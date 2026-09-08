@@ -84,6 +84,9 @@ func (h *Handler) handleDescribeCases(
 	if err := validatePageSize(in.MaxResults); err != nil {
 		return nil, err
 	}
+	if err := validateCaseIDList(in.CaseIDList); err != nil {
+		return nil, err
+	}
 	afterValue, err := parseFilterTime(in.AfterTime)
 	if err != nil {
 		return nil, err

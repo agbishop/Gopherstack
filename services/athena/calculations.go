@@ -115,7 +115,11 @@ func (b *InMemoryBackend) GetCalculationExecutionCode(id string) (string, error)
 	return c.CodeBlock, nil
 }
 
-// StopCalculationExecution cancels a running calculation.
+// StopCalculationExecution cancels a running calculation. Per AWS's
+// documented behavior, "A StopCalculationExecution call on a calculation
+// that is already in a terminal state (for example, STOPPED, FAILED, or
+// COMPLETED) succeeds but has no effect."
+// (aws-sdk-go-v2/service/athena@v1.60.4 api_op_StopCalculationExecution.go).
 func (b *InMemoryBackend) StopCalculationExecution(id string) (string, error) {
 	b.mu.Lock("StopCalculationExecution")
 	defer b.mu.Unlock()
@@ -127,12 +131,7 @@ func (b *InMemoryBackend) StopCalculationExecution(id string) (string, error) {
 
 	switch c.Status.State {
 	case calcStateCompleted, calcStateFailed, calcStateCanceled:
-		return c.Status.State, fmt.Errorf(
-			"%w: calculation %q is in terminal state %q",
-			ErrValidation,
-			id,
-			c.Status.State,
-		)
+		return c.Status.State, nil
 	}
 
 	c.Status.State = calcStateCanceled

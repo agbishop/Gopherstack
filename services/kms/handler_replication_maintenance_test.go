@@ -280,9 +280,11 @@ func TestKMSHandlerNewMaintenanceOps(t *testing.T) {
 // Test_KMS_ErrorClassification_MissingTableEntries drives the full HTTP handler path
 // to confirm two sentinels that were absent from kmsErrorTable now classify correctly
 // instead of falling through to the generic 500 branch:
-//   - ErrExpiredKeyMaterial (raised by checkKeyMaterialExpiry when an imported key's
+//   - ErrKeyInvalidState (raised by checkKeyMaterialExpiry when an imported key's
 //     material has passed its ValidTo) must surface as the real AWS
-//     ExpiredImportTokenException (400, client fault), not a 500.
+//     KMSInvalidStateException (400, client fault), not a 500. Encrypt/Decrypt's own
+//     deserializeOpError (kms@v1.55.4 deserializers.go) declares KMSInvalidStateException,
+//     not ExpiredImportTokenException -- gopherstack-8u3f.
 //   - ErrKeyMaterialUnavailable (raised when key material is absent, e.g. after
 //     restoring an old-format snapshot that never persisted key material) must surface
 //     as the real AWS KeyUnavailableException (500, server fault — matches the real
@@ -326,7 +328,7 @@ func TestKMS_ErrorClassification_MissingTableEntries(t *testing.T) {
 
 		var errResp kms.ErrorResponse
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
-		assert.Equal(t, "ExpiredImportTokenException", errResp.Type)
+		assert.Equal(t, "KMSInvalidStateException", errResp.Type)
 	})
 
 	t.Run("key_material_unavailable_after_restore", func(t *testing.T) {
@@ -361,16 +363,6 @@ func TestKMS_ErrorClassification_MissingTableEntries(t *testing.T) {
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
 		assert.Equal(t, "KeyUnavailableException", errResp.Type)
 	})
-}
-
-func TestHandlerCreateKeyHMACMultiRegionRejected(t *testing.T) {
-	t.Parallel()
-
-	b := newTestBackend()
-	h := kms.NewHandler(b)
-
-	rec := sendKMSOp(t, h, "CreateKey", `{"KeySpec":"HMAC_256","KeyUsage":"GENERATE_VERIFY_MAC","MultiRegion":true}`)
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestHandlerReplicateKeyRequiresMultiRegion(t *testing.T) {

@@ -1,6 +1,6 @@
 ---
 service: ec2
-sdk_module: aws-sdk-go-v2/service/ec2@v1.319.1   # version audited against (go.mod pin; previously recorded as "see go.mod", never a parseable pin)
+sdk_module: aws-sdk-go-v2/service/ec2@v1.329.0   # version audited against (go.mod pin; previously recorded as "see go.mod", never a parseable pin)
 last_audit_commit:                                # unknown: pass was instructed not to commit and had no git access at write time, never backfilled -- gopherstack-33in
 last_audit_date: 2026-08-30
 overall: A   # unrecorded-Describe/List sweep, second pass (this pass, fix/wrapper-key-sweep
@@ -3715,3 +3715,340 @@ written and removed before finishing, never left in the tree). Gates:
 (clean), `go test -race -count=1 ./services/ec2/...` (pass, unchanged).
 `golangci-lint run`/snapshot-version-guard not applicable (no `.go` files
 touched). Did NOT commit, push, or run any `bd` write command.
+
+## 2026-09-03/04 -- IAM instance profile launch-time integration (gopherstack-1a5)
+
+Five-dimension audit (AWS behavior compliance, LocalStack parity, cross-
+service integration, performance, resource leaks) per gopherstack-1a5. This
+campaign's wire-shape (Describe/List filters, pagination, wrapper-key)
+surface is, by this point, extensively re-audited and largely exhausted
+(see the many passes above); went deep instead on the IAM instance profile
+association lifecycle -- named by the task's own "cross-service integration"
+dimension and never mentioned anywhere in this file before now.
+
+FOUND AND FIXED, real client-observable bug: `handleRunInstances`
+(`handler_instances_lifecycle.go`) never read `IamInstanceProfile.Arn`/
+`IamInstanceProfile.Name` at all, even though `RunInstancesInput` declares
+it (confirmed against `serializers.go:91938`,
+`awsEc2query_serializeDocumentIamInstanceProfileSpecification`) and the
+backend already has a working `AssociateIamInstanceProfile` for the
+separate post-launch call. A real client launching an instance with
+`--iam-instance-profile Name=...`/`Arn=...` -- the common launch-time path,
+distinct from the two-call Associate flow -- silently got no instance
+profile at all, no error, and no association ever created. Separately,
+`instanceItem` (both `RunInstances` and `DescribeInstances` responses)
+never rendered `iamInstanceProfile` at all, so even an instance profile
+attached via the pre-existing `AssociateIamInstanceProfile` call never
+showed up on the instance's own Describe output (confirmed against
+`types.Instance.IamInstanceProfile`, `deserializers.go:110585`, element
+`iamInstanceProfile` with sub-elements `arn`/`id` -- reused the existing
+`iamProfileSpec` wire type already used by the Associate/Disassociate/
+Replace handlers). Fixed: `handleRunInstances` now associates the launch-
+time profile with each newly created instance via the existing
+`Backend.AssociateIamInstanceProfile`; both `RunInstances` and
+`DescribeInstances` now render the instance's current "associated"
+association as `iamInstanceProfile`. New test:
+`TestRunInstances_IamInstanceProfile_RealClient`
+(`wire_field_fixes_ec2sweep44_test.go`), real `aws-sdk-go-v2` client,
+confirmed to fail pre-fix (`cp`/`git show HEAD:` revert-and-restore, not
+asserted without running) with "RunInstances response never rendered the
+launch-time instance profile". No `Backend` interface signature changed;
+no persisted struct field/type changed (XML-only response field), so no
+`ec2SnapshotVersion` bump.
+
+NOTED, NOT FIXED (real, out of scope for this pass): (1)
+`AssociateIamInstanceProfile` has no check for an instance that already has
+an active association -- real AWS's documented constraint ("You cannot
+associate more than one IAM instance profile with an instance",
+`api_op_AssociateIamInstanceProfile.go`) is entirely unenforced, so calling
+it twice on the same instance silently creates two simultaneous
+`state=associated` associations, a state real AWS cannot produce. Not
+fixed: the real error code for this case was not independently confirmed
+against the SDK (only the prose constraint is confirmed), and fabricating
+a wire error code would violate this file's own no-fabrication rule. (2)
+`TerminateInstances` never disassociates/cleans up a terminated instance's
+`IamInstanceProfileAssociation` -- the association is left in state
+`associated` forever, pointing at an instance that no longer accepts new
+associations. Not the same shape as the `tag_cleanup` leak class fixed
+earlier in this file (instance IDs are UUID-based and never reused here,
+and the instance record itself is never deleted either, only marked
+terminated -- so this doesn't cause unbounded growth via reuse), but it is
+a real, unverified divergence from AWS's actual post-termination
+association state machine (`associating`/`associated`/`disassociating`/
+`disassociated`) that this pass did not have high enough confidence in to
+fix without risking inventing behavior.
+
+RunInstances also still ignores the real `SecurityGroup.N` (group *name*,
+as opposed to `SecurityGroupId.N`) parameter entirely (confirmed on the
+wire, `serializers.go:92093`,
+`awsEc2query_serializeDocumentSecurityGroupStringList`) -- only
+`validateSecurityGroupIDs` (`handler_filters.go`) is wired, which reads
+`SecurityGroupId.N` only. Real AWS accepts group names for EC2-Classic and
+default-VPC launches. Not fixed this pass (separate bug, not IAM-related,
+and this mock has no EC2-Classic/default-VPC-name-resolution concept to
+verify the right semantics against without risking a fabricated
+implementation) -- flagged for a future pass.
+
+Dimension coverage this pass:
+1. AWS behavior compliance -- BUGS FOUND (RunInstances/IamInstanceProfile,
+   above) in the narrow IAM-instance-profile-at-launch slice; the rest of
+   the wire-protocol surface (filters/pagination/wrapper-keys/error codes)
+   is NOT RE-CHECKED this pass, relying on the extensive prior audits
+   above.
+2. LocalStack parity -- NOT CHECKED (no LocalStack instance available this
+   pass).
+3. Cross-service integration -- BUGS FOUND for the IAM instance profile
+   association lifecycle specifically (the slice this pass targeted).
+   Broader cross-service surface (security-group/VPC reference validation
+   beyond what's already fixed elsewhere in this file, ASG/ELB references,
+   S3-backed AMI/snapshot storage) is NOT CHECKED -- no ASG/ELB/S3
+   cross-service wiring was found anywhere in `services/ec2` at all
+   (grepped; only `services/outposts` is wired via `cross_service.go`), so
+   there is nothing to audit there beyond confirming its absence.
+4. Performance -- NOT CHECKED this pass.
+5. Resource leaks -- re-confirmed the existing `leaks:` entry above
+   (goroutines/tag-map) still holds; found the IAM-association-on-terminate
+   gap noted above but did not fix it (insufficient confidence in the
+   correct real-AWS post-termination state, not a growth/goroutine leak).
+
+Gates: `go build ./services/ec2/...` (clean), `go vet ./services/ec2/...`
+(clean), `GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/ec2/...`
+(pass, full suite including the new test), `gofmt -l services/ec2/` (clean),
+`GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/ec2/...` (0 issues,
+after `golines`-wrapping two over-length call sites). No banned `//nolint`s
+introduced. Did NOT commit, push, or run any `bd` write command.
+
+## 2026-09-06 -- closed the three IAM-instance-profile/security-group gaps left open above (gopherstack-2mk2, gopherstack-847g, gopherstack-hmfm)
+
+All three "NOTED, NOT FIXED" items from the 2026-09-03/04 pass above are now
+fixed, deliberately together since 847g and hmfm both touch
+`iamAssociations` state.
+
+FOUND AND FIXED: (1) `RunInstances` ignored `SecurityGroup.N` (group name)
+entirely, reading only `SecurityGroupId.N`. Real
+`RunInstancesInput.SecurityGroups` doc comment (`api_op_RunInstances.go`):
+"[Default VPC] The names of the security groups." -- a name only resolves
+for the account's default VPC; `validateSecurityGroupIDs`
+(`handler_filters.go`) now also parses `SecurityGroup.N`, resolves each name
+against the launch target's VPC (the given `SubnetId`'s VPC, or the default
+VPC), and rejects a name given for a subnet in a non-default VPC with
+`InvalidParameterCombination` ("The parameter groupName cannot be used with
+the parameter subnet"), matching real AWS. `SecurityGroupId.N` behavior is
+unchanged. (2) `AssociateIamInstanceProfile` had no check for an instance
+that already has an active association, though real AWS "cannot associate
+more than one IAM instance profile with an instance"
+(`api_op_AssociateIamInstanceProfile.go`); it now rejects a second
+association on the same instance with `IncorrectState` ("There is an
+existing association for instance ..."), consistent with this package's
+existing `IncorrectState` usage for other already-in-that-state conflicts.
+(3) `TerminateInstances` never disassociated a terminated instance's IAM
+instance profile association, so it was observable as `state=associated` in
+`DescribeIamInstanceProfileAssociations` forever, pointing at an instance
+that no longer accepts new associations. `TerminateInstances` now removes
+every `IamInstanceProfileAssociation` for the terminated instance (same
+hard-delete semantics `DisassociateIamInstanceProfile` already uses); a
+second instance's association is untouched. Association IDs are UUID-based
+and never reused, so disassociating on terminate does not introduce a
+reuse hazard.
+
+Fixing (3) exposed a latent, unrelated gap: `ErrIAMAssociationNotFound` was
+never registered in `errCodeLookup`, so `DisassociateIamInstanceProfile` (or
+`ReplaceIamInstanceProfileAssociation`) on an unknown association ID
+returned `InternalFailure`/500 instead of `InvalidAssociationID.NotFound`/
+400 -- unreachable before this pass (the association row lived forever), but
+now reachable via "terminate, then try to disassociate the same
+association". Registered it (`InvalidAssociationID.NotFound`, matching
+`ErrAssociationNotFound`'s code for the same not-found class used
+elsewhere for route-table/EIP/etc. associations). Factored the
+three-times-repeated `"InvalidAssociationID.NotFound"` literal into
+`errCodeInvalidAssociationIDNotFound` to satisfy `goconst`.
+
+No `Backend` interface signature changed; no persisted struct field/type
+changed (`IamInstanceProfileAssociation`/`SecurityGroup` shapes are
+untouched), so no `ec2SnapshotVersion` bump.
+
+New tests: `TestRunInstances_SecurityGroupNames` (name resolves in default
+VPC; name rejected for a non-default-VPC subnet; `SecurityGroupId.N` still
+works, in `run_instances_security_group_names_test.go`),
+`TestAssociateIamInstanceProfile_RejectsSecondAssociation` and
+`TestTerminateInstances_DisassociatesIamInstanceProfile`
+(`iam_instance_profile_lifecycle_test.go`) -- the latter two share one file
+given the interaction, and mutually confirm terminating one instance never
+disturbs a second instance's live association. Each guard was neutered
+individually (by line, `cp`/`git show HEAD:`-restored afterward, not `git
+checkout`) and confirmed to fail only its own test; the other two tests
+stayed green under each neuter.
+
+Gates: `go build ./services/ec2/...` and `go build ./...` (clean),
+`GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/ec2/...` (pass, full
+suite including the three new tests), `GOTOOLCHAIN=go1.26.6 golangci-lint
+run ./services/ec2/...` (0 issues). No banned `//nolint`s introduced. Did
+NOT commit, push, or run any `bd` write command.
+
+## 2026-09-06 -- gopherstack-0o97 (DeleteVpc default ACL/route table), closed NOT A BUG
+
+`api_op_DeleteVpc.go:16` (ec2@v1.319.1): "When you delete the VPC, it
+deletes the default security group, network ACL, and route table for the
+VPC." gopherstack-0o97 alleged `DeleteVpc` only cascades the default
+security group and leaves the default network ACL and main route table
+behind.
+
+Not a bug for the ACL half: the default network ACL is never stored in
+`b.networkACLs` in the first place. `DescribeNetworkAcls`
+(`deepdive_ops.go`) derives one default ACL per VPC on every call, by
+iterating `b.vpcs.All()` and synthesizing `acl-default-<vpcID>`. Deleting
+the VPC removes it from `b.vpcs`, so the derived ACL simply stops being
+produced -- the documented cascade, achieved by derivation instead of an
+explicit delete step. `vpcIndexedDependencyViolationLocked`/
+`vpcScannedDependencyViolationLocked` (`vpcs.go`) only scan `b.networkACLs`
+(stored, non-default ACLs), so this derived default ACL never spuriously
+blocks `DeleteVpc` either.
+
+Main/default route table remains a genuine, honest gap: `RouteTable`
+(`route_tables.go`) has no `Main`/`IsDefault` field, and `CreateVpc`
+(`vpcs.go`) creates only the default security group -- no route table at
+all. Nothing is created, so nothing is left behind; there's no dangling
+resource for a bug report to point at, but the model still doesn't have a
+main route table concept. Fixed the stale doc comment on `CreateVpc` that
+still claimed the default ACL was unmodeled (`vpcs.go`).
+
+If default network ACLs are ever changed to be stored (mirroring
+`StoredNetworkACL`) instead of derived, `vpcScannedDependencyViolationLocked`
+will need a default-ACL exception carved out, the same way
+`vpcIndexedDependencyViolationLocked` already special-cases the default
+security group (`sg.Name != defaultSecurityGroupName`) -- otherwise a
+stored default ACL would make every `DeleteVpc` fail with a spurious
+`DependencyViolation`.
+
+New test: `TestDescribeNetworkAcls_DefaultACLCascadesOnVpcDelete`
+(`network_acls_test.go`) -- characterization test, pins current (correct)
+behavior rather than fixing anything. Creates two VPCs, deletes one, and
+asserts its default ACL stops appearing while the other VPC's default ACL
+is unaffected. Passes against current code by construction; it exists to
+fail if a future change stores default ACLs without also handling the
+cascade.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/ec2/...` (pass,
+including the new test), `GOTOOLCHAIN=go1.26.6 golangci-lint run
+services/ec2/...` (0 issues). No banned `//nolint`s introduced. Did NOT
+commit, push, or run any `bd` write command.
+
+## 2026-09-06 -- gopherstack-y71o, VPC main route table implemented (partial)
+
+Split out of gopherstack-0o97 above. `CreateVpc` (`vpcs.go`) now also
+creates a main route table for the new VPC, mirroring the default security
+group it already created: a `RouteTable{Main: true}` with one local route
+(`Route{DestinationCIDR: cidr, GatewayID: "local"}` -- ec2@v1.319.1
+api_op_ReplaceRoute.go:77 documents `local` as the fixed target of a
+route table's local route) and one implicit VPC-wide association
+(`RouteAssociation{Main: true}`, empty `SubnetID` -- ec2@v1.319.1
+`types.RouteTableAssociation.Main` doc: "Indicates whether this is the
+main route table"; `SubnetId`'s doc: "A subnet ID is not returned for an
+implicit association"). `RouteTable` and `RouteAssociation`
+(`route_tables.go`) each gained a `Main bool` field as the discriminator.
+
+**Landmine handled**: registering the main table's ID in
+`routeTableIDsByVPC` (via the existing `indexRouteTableLocked`) would have
+made `vpcIndexedDependencyViolationLocked`'s `len(...) > 0` check block
+every `DeleteVpc` with a spurious `DependencyViolation`. That check
+(`vpcs.go`) now loops the VPC's route tables and only objects to a
+**non-main** one, mirroring the existing default-security-group carve-out
+(`sg.Name != defaultSecurityGroupName`). `DeleteVpc` itself now also
+cascade-deletes the main table, matching `api_op_DeleteVpc.go:16` ("it
+deletes the default security group, network ACL, and route table for the
+VPC"). Proven by `TestDeleteVpc_MainRouteTableCascades`
+(`main_route_table_test.go`): a VPC with nothing but its auto-created main
+table deletes cleanly in one call.
+
+Two more guards, both needed once an association can have an empty
+`SubnetID`: `DeleteRouteTable` now rejects deleting a `Main` table
+directly (`ErrDependencyViolation` -- real AWS requires reassigning main
+status first; only `DeleteVpc` removes it) and `DisassociateRouteTable`
+now rejects disassociating the implicit main association
+(`ErrInvalidParameter` -- there is nothing to fall back to). Neither
+operation's real deserializer declares a specific named error code for
+this case (`awk "/deserializeOpErrorDeleteRouteTable\(/,/^}/"
+deserializers.go` and the `DisassociateRouteTable` equivalent both show
+only the generic `"UnknownError"` fallback, no `switch` cases), so both
+reuse this file's existing generic-error sentinels rather than fabricate
+an unverified AWS code.
+
+**Real bug found and fixed while adding this**: `ReplaceRouteTableAssociation`
+(`ec2core.go`) located the old association by testing `subnetID != ""`
+as its "found" sentinel, then spliced the association out of its table
+*before* that check. Any association with an empty `SubnetID` -- which
+did not exist before this change but now does, on every main table --
+would have been destructively removed and then the call would still
+return `ErrAssociationNotFound`, leaving the main table's implicit
+association gone with no rollback. Rewritten to track `found` explicitly
+and only mutate state after all validation passes. The same fix also
+implements the deliberate scope cut below: reassigning a VPC's main route
+table via `ReplaceRouteTableAssociation` (ec2@v1.319.1
+api_op_ReplaceRouteTableAssociation.go:17: "You can also use this
+operation to change which table is the main route table in the VPC") is
+rejected with a clear `ErrInvalidParameter` rather than silently doing a
+plain subnet-style reassignment, which would have left the old table
+still flagged `Main` internally with no association to show for it.
+Proven by `TestReplaceRouteTableAssociation_MainAssociationRejected`,
+which also asserts the implicit association was NOT removed by the
+rejected call.
+
+`DescribeRouteTables`' wire response (`handler_route_tables.go`)
+now emits `<main>` on every association item (`assocItem.Main`, no
+`omitempty` -- real AWS emits it unconditionally per
+`awsEc2query_deserializeDocumentRouteTableAssociation`, deserializers.go).
+
+**What was implemented**: (1) the main route table itself, with its local
+route; (2) the implicit VPC-wide association, satisfying "implicit
+association for subnets with no explicit association" as the single
+always-present entry AWS shows for a main table (no per-subnet implicit
+record is synthesized -- see below); (3) `Main` surfaced correctly on
+`DescribeRouteTables` associations.
+
+**Deliberately left absent** (documented here per the issue's scope note,
+not silently missing):
+- `ReplaceRouteTableAssociation`'s main-table reassignment (capability 4
+  from the issue) is explicitly rejected, not implemented. Doing it
+  properly means moving `Main` from the old table to the new one and
+  regenerating the implicit association; half-implementing it risked
+  exactly the "half-wired" state the issue warned against, so it was cut
+  and documented instead.
+- No `association.main` (or any other) `DescribeRouteTables` filter reads
+  the new `Main` field -- `routeTableMatchesFilter` (`handler_filters.go`)
+  is unchanged. Real AWS supports filtering on `association.main`.
+- The backend's always-present seeded default VPC (`vpc-default`, built
+  directly by `initDefaults`/`Reset` in `store.go`, not through
+  `CreateVpc`) and `CreateDefaultVpc` (`vpcs.go`, which -- pre-existing,
+  unrelated to this issue -- doesn't even create a default security
+  group) still have no main route table. Only the `CreateVpc` codepath
+  named in the issue was changed, to keep blast radius contained; touching
+  the two seeding paths above would have altered the fixture shape of
+  hundreds of unrelated existing tests.
+- Every custom (non-main) route table still has no local route on
+  creation. Real AWS gives one to every route table, not just the main
+  one, but the issue text only asked for the main table's local route and
+  the pinned SDK's `CreateRouteTable` doc comment doesn't document this
+  either way, so it was left alone rather than guessed at.
+
+New tests, all in `main_route_table_test.go`:
+`TestCreateVpc_MainRouteTable`, `TestDeleteVpc_MainRouteTableCascades`
+(the landmine proof), `TestDeleteRouteTable_MainRouteTableRejected`,
+`TestDisassociateRouteTable_MainAssociationRejected`,
+`TestReplaceRouteTableAssociation_MainAssociationRejected`,
+`TestHandler_DescribeRouteTables_MainAssociation`. All fail to compile
+against unmodified code (they reference the new `Main` fields), confirmed
+by reverting the four production files and running them before restoring.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/ec2/...` (pass),
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/ec2/...` (0 issues).
+`GOTOOLCHAIN=go1.26.6 go test ./pkgs/persistence/ -run
+TestSnapshotVersionGuard` (read-only, no `-update`): FAILS, reporting
+`ec2: backendSnapshot fields changed without a version bump; ... this is
+bookkeeping, not a version-bump case: every old field is still present
+unchanged, so the diff is additive only and needs no bump` -- expected,
+since `RouteTable`/`RouteAssociation` gained `Main bool` fields (both
+`omitempty`, so existing snapshots with `Main` false are byte-identical).
+The same run also reports a `scheduler` failure that is NOT this change
+(no `scheduler` files were touched); left for whoever owns that package.
+Neither failure was addressed with `-update` per this task's scope limits.
+Did NOT commit, push, or run any `bd` write command.

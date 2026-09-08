@@ -200,6 +200,23 @@ func (b *InMemoryBackend) ConfigureLogsForPlaybackConfiguration(
 	enabledLoggingStrategies []string,
 	adsInteractionLog, manifestServiceInteractionLog map[string]any,
 ) (*PlaybackConfigurationLogConfiguration, error) {
+	// "Valid values: 0 - 100" -- aws-sdk-go-v2/service/mediatailor@v1.63.4
+	// api_op_ConfigureLogsForPlaybackConfiguration.go:39.
+	if percentEnabled < 0 || percentEnabled > 100 {
+		return nil, fmt.Errorf("%w: PercentEnabled must be between 0 and 100", ErrInvalidParameter)
+	}
+
+	for _, s := range enabledLoggingStrategies {
+		switch s {
+		case loggingStrategyVendedLogs, loggingStrategyLegacyCloudwatch:
+		default:
+			return nil, fmt.Errorf(
+				"%w: EnabledLoggingStrategies must be %s or %s",
+				ErrInvalidParameter, loggingStrategyVendedLogs, loggingStrategyLegacyCloudwatch,
+			)
+		}
+	}
+
 	b.mu.Lock("ConfigureLogsForPlaybackConfiguration")
 	defer b.mu.Unlock()
 

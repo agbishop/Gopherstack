@@ -72,6 +72,26 @@ func TestReset(t *testing.T) {
 	}
 }
 
+// TestReset_AccountPreferences verifies that Reset() restores account
+// preferences to the LONG_ID default, not the SHORT_ID zero value.
+func TestReset_AccountPreferences(t *testing.T) {
+	t.Parallel()
+
+	b := newTestEFSBackend()
+
+	before := b.DescribeAccountPreferences()
+	require.Equal(t, "LONG_ID", before.ResourceIDType)
+
+	_, err := b.PutAccountPreferences("SHORT_ID")
+	require.NoError(t, err)
+	require.Equal(t, "SHORT_ID", b.DescribeAccountPreferences().ResourceIDType)
+
+	b.Reset()
+
+	after := b.DescribeAccountPreferences()
+	assert.Equal(t, "LONG_ID", after.ResourceIDType, "reset must restore LONG_ID, not the zero value")
+}
+
 // TestARNIndexes verifies the ARN index is populated and enables O(1) lookup.
 func TestARNIndexes(t *testing.T) {
 	t.Parallel()

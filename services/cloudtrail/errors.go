@@ -48,4 +48,10 @@ var (
 	// ErrInsightNotEnabled is returned when GetInsightSelectors is called on a trail with no
 	// insight selectors configured. AWS returns InsightNotEnabledException in this case.
 	ErrInsightNotEnabled = awserr.New("InsightNotEnabledException", awserr.ErrInvalidParameter)
+	// ErrS3BucketNotFound is returned by CreateTrail/UpdateTrail when S3 is
+	// wired (SetS3Backend) and the named S3BucketName does not exist. Real
+	// CreateTrail/UpdateTrail both declare S3BucketDoesNotExistException
+	// (cloudtrail@v1.58.4 deserializers.go's per-op error switches); see
+	// PARITY.md for why it maps to 400 here.
+	ErrS3BucketNotFound = awserr.New("S3BucketDoesNotExistException", awserr.ErrInvalidParameter)
 )

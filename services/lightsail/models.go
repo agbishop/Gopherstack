@@ -181,33 +181,38 @@ type InstanceMetadataOptions struct {
 // 80=stopped), an UNCONFIRMED, non-SDK-sourced assumption ported from EC2's
 // own real convention, not a Lightsail-documented fact.
 type Instance struct {
-	CreatedAt            time.Time
-	Tags                 *tags.Tags
-	Location             ResourceLocation
-	BlueprintName        string
-	SSHKeyName           string
-	BundleID             string
-	PrivateIPAddress     string
-	PublicIPAddress      string
-	IPAddressType        string
-	Username             string
-	windowsPassword      string
-	StateName            string
-	BlueprintID          string
-	SupportCode          string
-	Name                 string
-	Arn                  string
-	MetadataOptions      InstanceMetadataOptions
-	IPv6Addresses        []string
-	HostKeys             []HostKeyAttributes
-	AutoSnapshots        []AutoSnapshotDetails
-	Ports                []InstancePortInfo
-	AddOns               []AddOn
-	CPUCount             int32
-	RAMSizeInGb          float32
-	DiskSizeInGb         int32
-	MonthlyTransfer      int32
-	StateCode            int32
+	CreatedAt        time.Time
+	Tags             *tags.Tags
+	Location         ResourceLocation
+	BlueprintName    string
+	SSHKeyName       string
+	BundleID         string
+	PrivateIPAddress string
+	PublicIPAddress  string
+	IPAddressType    string
+	Username         string
+	windowsPassword  string
+	StateName        string
+	BlueprintID      string
+	SupportCode      string
+	Name             string
+	Arn              string
+	MetadataOptions  InstanceMetadataOptions
+	IPv6Addresses    []string
+	HostKeys         []HostKeyAttributes
+	AutoSnapshots    []AutoSnapshotDetails
+	Ports            []InstancePortInfo
+	AddOns           []AddOn
+	CPUCount         int32
+	RAMSizeInGb      float32
+	DiskSizeInGb     int32
+	MonthlyTransfer  int32
+	StateCode        int32
+	// PublicIPGeneration counts stopped-to-running transitions that assigned
+	// a fresh dynamic public IP; it seeds publicIPForName's hash so restarts
+	// change the address deterministically instead of drawing on time.Now
+	// or crypto/rand (gopherstack-i2s6).
+	PublicIPGeneration   int32
 	IsStaticIP           bool
 	KnownHostKeysDeleted bool
 }

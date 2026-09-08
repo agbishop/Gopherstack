@@ -22,8 +22,24 @@ func newTestHandler(t *testing.T) *iotanalytics.Handler {
 	return iotanalytics.NewHandler(iotanalytics.NewInMemoryBackend())
 }
 
+// validPipelineActivitiesBody returns a minimal valid pipelineActivities raw-JSON body (one
+// channel + one datastore activity), satisfying CreatePipeline/UpdatePipeline's documented
+// "must contain both a channel and a datastore activity" requirement
+// (api_op_CreatePipeline.go).
+func validPipelineActivitiesBody() []map[string]any {
+	return []map[string]any{
+		{"channel": map[string]any{"name": "ch", "channelName": "src_channel"}},
+		{"datastore": map[string]any{"name": "ds", "datastoreName": "sink_datastore"}},
+	}
+}
+
 // doRequest performs an HTTP request against the handler.
-func doRequest(t *testing.T, h *iotanalytics.Handler, method, path string, body any) *httptest.ResponseRecorder {
+func doRequest(
+	t *testing.T,
+	h *iotanalytics.Handler,
+	method, path string,
+	body any,
+) *httptest.ResponseRecorder {
 	t.Helper()
 
 	var bodyBytes []byte
@@ -285,7 +301,10 @@ func TestHandler_AlreadyExistsErrorType(t *testing.T) {
 		{
 			name: "pipeline_conflict",
 			path: "/pipelines",
-			body: map[string]any{"pipelineName": "dup_pipe2"},
+			body: map[string]any{
+				"pipelineName":       "dup_pipe2",
+				"pipelineActivities": validPipelineActivitiesBody(),
+			},
 		},
 	}
 
@@ -447,9 +466,12 @@ func TestHandler_ResourceNameValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "pipeline_valid",
-			path:       "/pipelines",
-			body:       map[string]any{"pipelineName": "valid_pipe"},
+			name: "pipeline_valid",
+			path: "/pipelines",
+			body: map[string]any{
+				"pipelineName":       "valid_pipe",
+				"pipelineActivities": validPipelineActivitiesBody(),
+			},
 			wantStatus: http.StatusOK,
 		},
 	}
@@ -539,28 +561,53 @@ func TestHandler_Pagination(t *testing.T) {
 					listPath = "/channels"
 					summaryKey = "channelSummaries"
 					body = map[string]any{
-						"channelName": strings.ReplaceAll(t.Name(), "/", "_") + "_" + string(rune('a'+i)),
+						"channelName": strings.ReplaceAll(
+							t.Name(),
+							"/",
+							"_",
+						) + "_" + string(
+							rune('a'+i),
+						),
 					}
 				case "datastore":
 					createPath = "/datastores"
 					listPath = "/datastores"
 					summaryKey = "datastoreSummaries"
 					body = map[string]any{
-						"datastoreName": strings.ReplaceAll(t.Name(), "/", "_") + "_" + string(rune('a'+i)),
+						"datastoreName": strings.ReplaceAll(
+							t.Name(),
+							"/",
+							"_",
+						) + "_" + string(
+							rune('a'+i),
+						),
 					}
 				case "dataset":
 					createPath = "/datasets"
 					listPath = "/datasets"
 					summaryKey = "datasetSummaries"
 					body = map[string]any{
-						"datasetName": strings.ReplaceAll(t.Name(), "/", "_") + "_" + string(rune('a'+i)),
+						"datasetName": strings.ReplaceAll(
+							t.Name(),
+							"/",
+							"_",
+						) + "_" + string(
+							rune('a'+i),
+						),
 					}
 				case "pipeline":
 					createPath = "/pipelines"
 					listPath = "/pipelines"
 					summaryKey = "pipelineSummaries"
 					body = map[string]any{
-						"pipelineName": strings.ReplaceAll(t.Name(), "/", "_") + "_" + string(rune('a'+i)),
+						"pipelineName": strings.ReplaceAll(
+							t.Name(),
+							"/",
+							"_",
+						) + "_" + string(
+							rune('a'+i),
+						),
+						"pipelineActivities": validPipelineActivitiesBody(),
 					}
 				}
 
@@ -568,7 +615,13 @@ func TestHandler_Pagination(t *testing.T) {
 				require.Equal(t, http.StatusOK, rec.Code)
 			}
 
-			rec := doRequest(t, h, http.MethodGet, listPath+"?maxResults="+string(rune('0'+tt.maxResults)), nil)
+			rec := doRequest(
+				t,
+				h,
+				http.MethodGet,
+				listPath+"?maxResults="+string(rune('0'+tt.maxResults)),
+				nil,
+			)
 			assert.Equal(t, http.StatusOK, rec.Code)
 
 			var resp map[string]any
@@ -671,10 +724,14 @@ func TestHandler_UpdateHandlersAcceptBody(t *testing.T) {
 		{
 			name:       "update_pipeline_with_activities",
 			createPath: "/pipelines",
-			createBody: map[string]any{"pipelineName": "upd_pipe"},
+			createBody: map[string]any{
+				"pipelineName":       "upd_pipe",
+				"pipelineActivities": validPipelineActivitiesBody(),
+			},
 			updatePath: "/pipelines/upd_pipe",
 			updateBody: map[string]any{
 				"pipelineActivities": []map[string]any{
+					{"channel": map[string]any{"name": "ch_act", "channelName": "mych"}},
 					{"datastore": map[string]any{"name": "ds_act", "datastoreName": "myds"}},
 				},
 			},

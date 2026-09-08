@@ -226,6 +226,26 @@ func createWorkspaceImageReq(workspaceID string) map[string]any {
 	}
 }
 
+// TestDeleteWorkspaceImage_InUse verifies DeleteWorkspaceImage rejects an
+// image still referenced by a custom bundle's ImageId: "To delete an image,
+// you must first delete any bundles that are associated with the image"
+// (api_op_DeleteWorkspaceImage.go doc comment).
+func TestDeleteWorkspaceImage_InUse(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandlerWithBackend(t)
+	imageID := createImage(t, h)
+
+	rec := doTargetRequest(t, h, "CreateWorkspaceBundle", createBundleReq(imageID))
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	recDelete := doTargetRequest(t, h, "DeleteWorkspaceImage", map[string]any{
+		"ImageId": imageID,
+	})
+	assert.Equal(t, http.StatusBadRequest, recDelete.Code,
+		"deleting an image referenced by a bundle must fail: body: %s", recDelete.Body)
+}
+
 // TestCreateWorkspaceImage_WorkspaceIDValidation verifies CreateWorkspaceImage
 // rejects a WorkspaceId that doesn't reference a real workspace and accepts
 // one that does -- ResourceNotFoundException is in this operation's real

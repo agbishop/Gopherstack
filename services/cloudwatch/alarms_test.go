@@ -69,7 +69,7 @@ func TestBackend_PutMetricAlarm_TreatMissingData(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			alarms, _, _, err := b.DescribeAlarms([]string{"a"}, nil, "", "", "", 0)
+			alarms, _, _, err := b.DescribeAlarms([]string{"a"}, nil, "", "", "", 0, "", "", "")
 			require.NoError(t, err)
 			require.Len(t, alarms.Data, 1)
 			assert.Equal(t, tmd, alarms.Data[0].TreatMissingData)
@@ -113,7 +113,7 @@ func TestBackend_DescribeAlarms_ByNamePrefix(t *testing.T) {
 		}))
 	}
 
-	p, _, _, err := b.DescribeAlarms(nil, nil, "prod-", "", "", 0)
+	p, _, _, err := b.DescribeAlarms(nil, nil, "prod-", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	assert.Len(t, p.Data, 2)
 	for _, a := range p.Data {
@@ -135,7 +135,7 @@ func TestBackend_DescribeAlarms_ByState(t *testing.T) {
 	}))
 	require.NoError(t, b.SetAlarmState(t.Context(), "a1", "ALARM", "test", ""))
 
-	p, _, _, err := b.DescribeAlarms(nil, nil, "", "ALARM", "", 0)
+	p, _, _, err := b.DescribeAlarms(nil, nil, "", "ALARM", "", 0, "", "", "")
 	require.NoError(t, err)
 	assert.Len(t, p.Data, 1)
 	assert.Equal(t, "a1", p.Data[0].AlarmName)
@@ -240,7 +240,7 @@ func TestCloudWatchBackend_PutAndDescribeAlarms(t *testing.T) {
 	}
 	require.NoError(t, b.PutMetricAlarm(alarm))
 
-	alarms, _, _, err := b.DescribeAlarms(nil, nil, "", "", "", 0)
+	alarms, _, _, err := b.DescribeAlarms(nil, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, alarms.Data, 1)
 	assert.Equal(t, "high-cpu", alarms.Data[0].AlarmName)
@@ -346,7 +346,7 @@ func TestCloudWatchBackend_DescribeAlarms(t *testing.T) {
 
 			metric, composite, logAlarms, err := b.DescribeAlarms(
 				tt.alarmNames, tt.alarmTypes, "", tt.stateValue, "", 0,
-			)
+				"", "", "")
 			require.NoError(t, err)
 			gotCount := len(metric.Data) + len(composite.Data) + len(logAlarms.Data)
 			assert.Equal(t, tt.wantCount, gotCount)
@@ -429,7 +429,7 @@ func TestCloudWatchBackend_DeleteAlarms(t *testing.T) {
 
 			require.NoError(t, b.DeleteAlarms(tt.names))
 
-			metric, _, logAlarms, err := b.DescribeAlarms(nil, tt.checkAlarmTypes, "", "", "", 0)
+			metric, _, logAlarms, err := b.DescribeAlarms(nil, tt.checkAlarmTypes, "", "", "", 0, "", "", "")
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantRemaining, len(metric.Data)+len(logAlarms.Data))
 		})
@@ -450,7 +450,7 @@ func TestCloudWatchBackend_PutMetricAlarm_UpdateExisting(t *testing.T) {
 	b := cloudwatch.NewInMemoryBackendWithConfig("123456789012", "us-east-1")
 	require.NoError(t, b.PutMetricAlarm(&cloudwatch.MetricAlarm{AlarmName: "upd", Threshold: 10}))
 	require.NoError(t, b.PutMetricAlarm(&cloudwatch.MetricAlarm{AlarmName: "upd", Threshold: 20}))
-	alarms, _, _, err := b.DescribeAlarms(nil, nil, "", "", "", 0)
+	alarms, _, _, err := b.DescribeAlarms(nil, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	assert.Len(t, alarms.Data, 1)
 	assert.InDelta(t, 20.0, alarms.Data[0].Threshold, 0.01)
@@ -466,13 +466,13 @@ func TestCloudWatchBackend_EnableDisableAlarmActions(t *testing.T) {
 	)
 
 	require.NoError(t, b.DisableAlarmActions([]string{"test"}))
-	alarms, _, _, err := b.DescribeAlarms([]string{"test"}, nil, "", "", "", 0)
+	alarms, _, _, err := b.DescribeAlarms([]string{"test"}, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, alarms.Data, 1)
 	assert.False(t, alarms.Data[0].ActionsEnabled)
 
 	require.NoError(t, b.EnableAlarmActions([]string{"test"}))
-	alarms2, _, _, err2 := b.DescribeAlarms([]string{"test"}, nil, "", "", "", 0)
+	alarms2, _, _, err2 := b.DescribeAlarms([]string{"test"}, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err2)
 	require.Len(t, alarms2.Data, 1)
 	assert.True(t, alarms2.Data[0].ActionsEnabled)
@@ -520,13 +520,13 @@ func TestCloudWatchBackend_DescribeAlarms_WithComposite(t *testing.T) {
 	}))
 
 	// AlarmTypes omitted: only the metric alarm comes back.
-	metricPage, compositePage, _, err := b.DescribeAlarms(nil, nil, "", "", "", 0)
+	metricPage, compositePage, _, err := b.DescribeAlarms(nil, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	assert.Len(t, metricPage.Data, 1)
 	assert.Empty(t, compositePage.Data, "composite alarms must NOT be returned when AlarmTypes is omitted")
 
 	// AlarmTypes=["CompositeAlarm"] explicitly requested: composite alarm comes back.
-	metricPage2, compositePage2, _, err2 := b.DescribeAlarms(nil, []string{"CompositeAlarm"}, "", "", "", 0)
+	metricPage2, compositePage2, _, err2 := b.DescribeAlarms(nil, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 	require.NoError(t, err2)
 	assert.Empty(t, metricPage2.Data, "metric alarms must NOT be returned when only CompositeAlarm is requested")
 	require.Len(t, compositePage2.Data, 1)
@@ -568,7 +568,7 @@ func TestCloudWatchBackend_DescribeAlarms_StateFilter(t *testing.T) {
 		b.PutMetricAlarm(&cloudwatch.MetricAlarm{AlarmName: "a-alarm", StateValue: "ALARM"}),
 	)
 
-	p, _, _, err := b.DescribeAlarms(nil, nil, "", "OK", "", 0)
+	p, _, _, err := b.DescribeAlarms(nil, nil, "", "OK", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, p.Data, 1)
 	assert.Equal(t, "a-ok", p.Data[0].AlarmName)
@@ -587,7 +587,7 @@ func TestCloudWatchBackend_DescribeAlarms_AlarmNamePrefix(t *testing.T) {
 		}))
 	}
 
-	p, _, _, err := b.DescribeAlarms(nil, nil, "prod-", "", "", 0)
+	p, _, _, err := b.DescribeAlarms(nil, nil, "prod-", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, p.Data, 2)
 	for _, a := range p.Data {
@@ -606,7 +606,7 @@ func TestCloudWatchBackend_StateTransitionedTimestamp(t *testing.T) {
 		Period:             60,
 	}))
 
-	p, _, _, err := b.DescribeAlarms([]string{"ts-alarm"}, nil, "", "", "", 0)
+	p, _, _, err := b.DescribeAlarms([]string{"ts-alarm"}, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, p.Data, 1)
 	assert.False(
@@ -619,7 +619,7 @@ func TestCloudWatchBackend_StateTransitionedTimestamp(t *testing.T) {
 	prevTS := p.Data[0].StateTransitionedTimestamp
 	require.NoError(t, b.SetAlarmState(t.Context(), "ts-alarm", "ALARM", "manual", ""))
 
-	p2, _, _, err2 := b.DescribeAlarms([]string{"ts-alarm"}, nil, "", "", "", 0)
+	p2, _, _, err2 := b.DescribeAlarms([]string{"ts-alarm"}, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err2)
 	require.Len(t, p2.Data, 1)
 
@@ -737,7 +737,7 @@ func TestCloudWatchBackend_PutLogAlarm_CreateOrUpdate(t *testing.T) {
 	first.Threshold = 10
 	require.NoError(t, b.PutLogAlarm(first))
 
-	_, _, logAlarms, err := b.DescribeAlarms(nil, []string{"LogAlarm"}, "", "", "", 0)
+	_, _, logAlarms, err := b.DescribeAlarms(nil, []string{"LogAlarm"}, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, logAlarms.Data, 1)
 	assert.InDelta(t, 10.0, logAlarms.Data[0].Threshold, 0.01)
@@ -749,7 +749,7 @@ func TestCloudWatchBackend_PutLogAlarm_CreateOrUpdate(t *testing.T) {
 	second.Threshold = 20
 	require.NoError(t, b.PutLogAlarm(second))
 
-	_, _, logAlarms2, err2 := b.DescribeAlarms(nil, []string{"LogAlarm"}, "", "", "", 0)
+	_, _, logAlarms2, err2 := b.DescribeAlarms(nil, []string{"LogAlarm"}, "", "", "", 0, "", "", "")
 	require.NoError(t, err2)
 	require.Len(t, logAlarms2.Data, 1, "PutLogAlarm must update in place, not duplicate")
 	assert.InDelta(t, 20.0, logAlarms2.Data[0].Threshold, 0.01)
@@ -760,7 +760,7 @@ func TestCloudWatchBackend_PutLogAlarm_CreateOrUpdate(t *testing.T) {
 	assert.Contains(t, arns[0], "log-upd")
 
 	require.NoError(t, b.DeleteAlarms([]string{"log-upd"}))
-	_, _, logAlarms3, err3 := b.DescribeAlarms(nil, []string{"LogAlarm"}, "", "", "", 0)
+	_, _, logAlarms3, err3 := b.DescribeAlarms(nil, []string{"LogAlarm"}, "", "", "", 0, "", "", "")
 	require.NoError(t, err3)
 	assert.Empty(t, logAlarms3.Data)
 }

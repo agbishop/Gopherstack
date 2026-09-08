@@ -13,7 +13,7 @@ func (h *Handler) handleModifyLoadBalancerAttributes(ctx context.Context, vals u
 		return nil, fmt.Errorf("%w: LoadBalancerName is required", ErrInvalidParameter)
 	}
 
-	attrs := parseLoadBalancerAttributes(vals)
+	attrs, mask := parseLoadBalancerAttributes(vals)
 
 	const minTimeout = 1
 	const maxIdleTimeout = 3600
@@ -57,7 +57,7 @@ func (h *Handler) handleModifyLoadBalancerAttributes(ctx context.Context, vals u
 		)
 	}
 
-	result, err := h.Backend.ModifyLoadBalancerAttributes(ctx, name, attrs)
+	result, err := h.Backend.ModifyLoadBalancerAttributes(ctx, name, attrs, mask)
 	if err != nil {
 		return nil, err
 	}
@@ -92,16 +92,24 @@ func (h *Handler) handleDescribeLoadBalancerAttributes(ctx context.Context, vals
 }
 
 // parseLoadBalancerAttributes reads LoadBalancerAttributes.* form values into a
-// LoadBalancerAttributes struct. Missing values fall back to the service defaults.
-func parseLoadBalancerAttributes(vals url.Values) LoadBalancerAttributes {
+// LoadBalancerAttributes struct, plus a mask marking which independent
+// attribute groups were actually present in the request. A group's fields
+// default to the service defaults when absent, but the mask tells the caller
+// not to apply them — each group is independently settable and an absent
+// group must leave the load balancer's current value untouched.
+func parseLoadBalancerAttributes(vals url.Values) (LoadBalancerAttributes, LoadBalancerAttributesMask) {
 	attrs := defaultLBAttributes()
+
+	var mask LoadBalancerAttributesMask
 
 	if v := vals.Get("LoadBalancerAttributes.CrossZoneLoadBalancing.Enabled"); v != "" {
 		attrs.CrossZoneLoadBalancing = v == boolStrTrue
+		mask.CrossZoneLoadBalancing = true
 	}
 
 	if v := vals.Get("LoadBalancerAttributes.ConnectionDraining.Enabled"); v != "" {
 		attrs.ConnectionDraining = v == boolStrTrue
+		mask.ConnectionDraining = true
 	}
 
 	if v := vals.Get("LoadBalancerAttributes.ConnectionDraining.Timeout"); v != "" {
@@ -114,6 +122,8 @@ func parseLoadBalancerAttributes(vals url.Values) LoadBalancerAttributes {
 		if n, err := parseInt32(v); err == nil {
 			attrs.IdleTimeout = n
 		}
+
+		mask.ConnectionSettings = true
 	}
 
 	// The desync mitigation mode is passed as an AdditionalAttribute with
@@ -128,12 +138,14 @@ func parseLoadBalancerAttributes(vals url.Values) LoadBalancerAttributes {
 
 		if k == "elb.http.desyncmitigationmode" {
 			attrs.DesyncMitigationMode = v
+			mask.DesyncMitigationMode = true
 		}
 	}
 
 	// Parse AccessLog attributes.
 	if v := vals.Get("LoadBalancerAttributes.AccessLog.Enabled"); v != "" {
 		attrs.AccessLog.Enabled = v == boolStrTrue
+		mask.AccessLog = true
 	}
 
 	if v := vals.Get("LoadBalancerAttributes.AccessLog.S3BucketName"); v != "" {
@@ -150,7 +162,7 @@ func parseLoadBalancerAttributes(vals url.Values) LoadBalancerAttributes {
 		}
 	}
 
-	return attrs
+	return attrs, mask
 }
 
 // toXMLLoadBalancerAttributes converts a LoadBalancerAttributes to its XML wire representation.

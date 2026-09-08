@@ -163,3 +163,46 @@ func TestVpcConnectorDescribeDeleteList(t *testing.T) { //nolint:paralleltest //
 		})
 	}
 }
+
+// TestDeleteVpcConnector_RejectsWhenServiceUsesIt verifies DeleteVpcConnector
+// fails while a service's egress network configuration still references the
+// connector (api_op_DeleteVpcConnector.go: "You can't delete a connector
+// that's used by one or more App Runner services."), and succeeds once that
+// service no longer references it.
+func TestDeleteVpcConnector_RejectsWhenServiceUsesIt(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, "CreateVpcConnector", map[string]any{
+		"VpcConnectorName": "vc-in-use",
+		"Subnets":          []string{"subnet-1"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var vcResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &vcResp))
+	vcArn := vcResp["VpcConnector"].(map[string]any)["VpcConnectorArn"].(string)
+
+	rec = doRequest(t, h, "CreateService", map[string]any{
+		"ServiceName": "vpc-svc",
+		"SourceConfiguration": map[string]any{
+			"ImageRepository": map[string]any{"ImageIdentifier": "img", "ImageRepositoryType": "ECR_PUBLIC"},
+		},
+		"NetworkConfiguration": map[string]any{
+			"EgressConfiguration": map[string]any{"EgressType": "VPC", "VpcConnectorArn": vcArn},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var svcResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &svcResp))
+	svcArn := svcResp["Service"].(map[string]any)["ServiceArn"].(string)
+
+	rec = doRequest(t, h, "DeleteVpcConnector", map[string]any{"VpcConnectorArn": vcArn})
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "connector still referenced by vpc-svc must not be deletable")
+
+	rec = doRequest(t, h, "DeleteService", map[string]any{"ServiceArn": svcArn})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "DeleteVpcConnector", map[string]any{"VpcConnectorArn": vcArn})
+	assert.Equal(t, http.StatusOK, rec.Code, "connector must be deletable once no service references it")
+}

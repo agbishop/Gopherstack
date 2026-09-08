@@ -223,6 +223,10 @@ func (h *Handler) handleUpdateJourney(c *echo.Context, appID, journeyID string) 
 			return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", backendErr.Error())
 		}
 
+		if errors.Is(backendErr, awserr.ErrConflict) {
+			return writeErrorResponse(c, http.StatusConflict, "ConflictException", backendErr.Error())
+		}
+
 		return writeNotFoundOrInternal(c, backendErr)
 	}
 
@@ -236,6 +240,10 @@ func (h *Handler) handleUpdateJourneyState(c *echo.Context, appID, journeyID str
 	body, err := httputils.ReadBody(c.Request())
 	if err != nil {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
+	}
+
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
 	}
 
 	var req updateJourneyStateRequest

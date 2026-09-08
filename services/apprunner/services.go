@@ -465,6 +465,17 @@ func (b *InMemoryBackend) DeleteService(serviceArn string) (*Service, error) {
 		return nil, fmt.Errorf("service %s not found: %w", serviceArn, ErrNotFound)
 	}
 
+	// DeleteService doc (api_op_DeleteService.go): "Make sure that you don't
+	// have any active VPCIngressConnections associated with the service you
+	// want to delete." DeleteService's error set models InvalidStateException
+	// (deserializers.go), the same mechanism UpdateService/PauseService/
+	// ResumeService use to enforce their own state preconditions.
+	if b.hasActiveVpcIngressConnections(serviceArn) {
+		return nil, fmt.Errorf(
+			"service %s has active VPC ingress connections: %w", serviceArn, ErrInvalidState,
+		)
+	}
+
 	now := time.Now().UTC()
 	svc.Status = statusDeleted
 	svc.UpdatedAt = now

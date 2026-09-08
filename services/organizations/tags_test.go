@@ -618,7 +618,8 @@ func TestCreatePolicy_ReservedTagPrefixRejected(t *testing.T) {
 
 	policies, err := b.ListPolicies("SERVICE_CONTROL_POLICY")
 	require.NoError(t, err)
-	assert.Empty(t, policies, "policy must not be created when Tags validation fails")
+	assert.Len(t, policies, 1, "policy must not be created when Tags validation fails "+
+		"(only the default FullAWSAccess SCP remains)")
 }
 
 // TestTagResource_ReservedPrefix_ViaHandler verifies the HTTP wire error.

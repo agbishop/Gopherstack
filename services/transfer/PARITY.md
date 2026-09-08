@@ -98,7 +98,10 @@ leaks: {status: clean, note: "Shutdown(ctx) stops the backend's worker (StartSer
   trap called out in parity-principles.md #4. Before this pass only Server/Connector/Workflow
   called `initTagsStore`; Agreement/Profile/User/WebApp/Certificate/HostKey did not. Any *new*
   taggable resource type added to this service must call `initTagsStore` at creation or reintroduce
-  this bug.
+  this bug. The mirror-image delete-side bug (a `Delete*` removes the resource's own row but
+  leaves its `tagsStore[ARN]` entry behind forever) is fixed for all 8 types as of the
+  2026-09-04 pass below -- any *new* taggable resource type must also clear `tagsStore` on
+  delete, or reintroduce that bug instead.
 
 - **Access has no ARN and no Tags in real AWS.** `CreateAccessInput`/`DescribedAccess`/
   `ListedAccess` in the real SDK have no `Tags` member and Access is not independently taggable
@@ -268,3 +271,41 @@ Gates: `go build ./...` clean; `go vet ./...` clean;
 `go test -race -count=1 ./services/transfer/...` clean; `golangci-lint run
 ./services/transfer/...` 0 issues. No `nolint` directives in any file touched
 (`handler_certificates.go`, `wire_field_fixes_test.go`).
+
+## 2026-09-04: ghost tagsStore rows after delete (8 resource types, resource-leak + wire bug)
+
+`DeleteUser` was fixed (b8484292f) to clear its `tagsStore` entry so a recreated user
+doesn't inherit a dead one's tags. That fix covered only the direct `DeleteUser` call --
+every other resource type that calls `initTagsStore` at creation
+(`Agreement`/`Certificate`/`Connector`/`Profile`/`HostKey`/`Server`/`WebApp`/`Workflow`)
+had no matching cleanup on its own `Delete*` path, and `DeleteServer`'s cascade deletes
+users/agreements/host keys by manipulating their tables directly (`b.users.Delete(...)`
+etc.), bypassing `DeleteUser`/`DeleteAgreement`/`DeleteHostKey` entirely -- so even a
+correct per-resource fix would not have covered a server-cascade delete.
+
+Effect: `tagsStore` (a plain `map[string]string` keyed by ARN, separate from each
+resource's own `.Tags` field, persisted via `Snapshot()`) never shrinks as resources are
+deleted -- an unbounded map growth over the backend's lifetime (dimension 5, resource
+leaks), and a wire-correctness bug: `ListTagsForResource` and the cross-service
+`TaggedResources()` (Resource Groups Tagging API) keep reporting tags for an ARN whose
+resource no longer exists, which real AWS never does once the resource is gone.
+
+Fixed: each of `DeleteAgreement` (`agreements.go`), `DeleteCertificate`
+(`certificates.go`), `DeleteConnector` (`connectors.go`), `DeleteProfile`
+(`profiles.go`), `DeleteHostKey` (`host_keys.go`), `DeleteWebApp` (`web_apps.go`),
+`DeleteWorkflow` (`workflows.go`) now clears its own `tagsStore[ARN]` entry.
+`DeleteServer` (`servers.go`) now clears its own server ARN entry plus, inline in its
+existing cascade loops, the ARN entries for every cascaded user/agreement/host key
+(access and SSH keys have no ARN/Tags in real AWS -- confirmed already in this file's
+Notes section -- so nothing to clear there).
+
+Test: `TestDelete_ClearsTagsStore` (`delete_tags_test.go`, table-driven, one subtest per
+resource type) and `TestDeleteServer_ClearsCascadedTags` (same file, covers the cascade
+path specifically). Each of the 8 fix lines was individually neutered, confirmed to make
+its corresponding (sub)test fail with the stale tag map still present, then restored.
+
+Gates: `go build ./...` clean; `go test -race -count=1 ./services/transfer/...` clean;
+`golangci-lint run ./services/transfer/...` 0 issues. No snapshot-shape change (only a
+persisted map's contents change, not `backendSnapshot`'s fields), so no
+`TestSnapshotVersionGuard` re-run was needed -- confirmed by running
+`TestPersistence_FullStateRoundTrip` anyway, which passed unchanged.

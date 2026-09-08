@@ -37,6 +37,7 @@ type secretSnapshot struct {
 	RotationRules                  *RotationRulesType                   `json:"rotationRules,omitempty"`
 	Name                           string                               `json:"name"`
 	Region                         string                               `json:"region"`
+	PrimaryRegion                  string                               `json:"primaryRegion,omitempty"`
 	Description                    string                               `json:"description,omitempty"`
 	KmsKeyID                       string                               `json:"kmsKeyID,omitempty"`
 	RotationLambdaARN              string                               `json:"rotationLambdaARN,omitempty"`
@@ -94,6 +95,7 @@ func (b *InMemoryBackend) Snapshot(ctx context.Context) []byte {
 			ARN:                            s.ARN,
 			Name:                           s.Name,
 			Region:                         s.region,
+			PrimaryRegion:                  s.PrimaryRegion,
 			Description:                    s.Description,
 			KmsKeyID:                       s.KmsKeyID,
 			RotationLambdaARN:              s.RotationLambdaARN,
@@ -229,6 +231,7 @@ func secretFromSnapshot(ss *secretSnapshot) *Secret {
 		region:                         ss.Region,
 		ARN:                            ss.ARN,
 		Name:                           ss.Name,
+		PrimaryRegion:                  ss.PrimaryRegion,
 		Description:                    ss.Description,
 		KmsKeyID:                       ss.KmsKeyID,
 		RotationLambdaARN:              ss.RotationLambdaARN,

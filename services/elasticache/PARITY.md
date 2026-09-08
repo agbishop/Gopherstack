@@ -1,9 +1,62 @@
 ---
 service: elasticache
 sdk_module: aws-sdk-go-v2/service/elasticache@v1.56.4
-last_audit_commit: 33ef0db22
-last_audit_date: 2026-08-30
-overall: A            # 2026-08-30 (transfer/emr/elasticache Describe/List rigor pass, same wrapper-key-sweep
+last_audit_commit: 221e362fa                    # gopherstack-8haq fix commit
+last_audit_date: 2026-09-08
+overall: A            # 2026-09-08 (gopherstack-8haq, P1): xmlError/xmlResp return nil after a
+                       # successful write (handler.go), so any helper that rejects a request via
+                       # xmlError and returns that value hands nil back to a caller doing
+                       # "if err != nil { return err }" -- the check never fires and execution
+                       # falls through past the rejection. Confirmed live pre-fix with a real SDK
+                       # client: CreateCacheCluster(SnapshotName=<missing>) returned 400
+                       # InvalidParameterValueException as expected, but a follow-up
+                       # DescribeCacheClusters found the cluster anyway. Audited every xmlError call
+                       # site in the package (~171) for the broken shape -- a helper storing an
+                       # xmlError-derived result and rechecking it, not a direct "return xmlError(...)".
+                       # Found and fixed 5: applySnapshotDefaults, applyClusterSubnetGroup,
+                       # applyClusterSnapshotRetentionLimit (the three named in the issue, all in
+                       # handler_cache_clusters.go) map their own raw error at the call site now
+                       # (same "return h.xxxErrorResponse(c, err)" contract gopherstack-v5fe already
+                       # established for checkReplicationGroupExists/replicationGroupErrorResponse).
+                       # parsePaginationChecked and describeListChecked (handler.go) had the same
+                       # defect one layer deeper, fanning out to ~20 callers across nearly every
+                       # paginated Describe*/List* operation in the service -- fixed with a
+                       # errResponseWritten sentinel returned instead of xmlError's nil, translated
+                       # back to nil at the single Handler() dispatch point, so none of the ~20
+                       # existing "if err != nil { return err }" call sites needed touching. Every
+                       # fix has a regression test asserting observable post-state (resource absent,
+                       # or a later mutation -- ReplicationGroupId attach -- never ran), each
+                       # confirmed failing against the unmodified code first; two also had to detect
+                       # response-body corruption directly (a second XML document concatenated onto
+                       # the first, from echo's Response.Write having no post-commit guard) since the
+                       # SDK's XML decoder tolerated the trailing garbage and still returned the
+                       # correct typed error. No pre-existing test depended on the bug to pass; two
+                       # pre-existing tests (TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange,
+                       # Test_CreateCacheCluster_RestoreFromSnapshot's missing_snapshot_is_not_found
+                       # case) passed even under the bug because the SDK ignored the trailing
+                       # corrupted write -- they mask the defect rather than lock it, left as-is.
+                       # cloudfront/handler.go's xmlResp shares the identical nil-on-successful-write
+                       # shape (via echo's c.Blob) -- read-only spot check of its obviously-named
+                       # helper/mapper functions found them all using the safe direct
+                       # "return h.helper(...)" contract already, but cloudfront's ~421 call sites
+                       # across ~20 files were not exhaustively audited (out of scope: another agent
+                       # owns that directory) -- flagged as a follow-up, not fixed.
+                       # 2026-09-04 (gopherstack-973, parity-sweep-2026-09-03 branch): targeted pass on the two
+                       # highest-yield bug classes only (partial-update clobbering on Modify* surfaces, missing
+                       # delete preconditions), not full 86-file coverage. Two real bugs found and fixed, both with
+                       # SDK-cited regression tests verified failing pre-fix: (1) SnapshotRetentionLimit was
+                       # entirely unmodeled for standalone cache clusters (Create/Modify/Describe) despite the
+                       # identical field already being correctly wired for ReplicationGroup/ServerlessCache --
+                       # see CreateCacheCluster/ModifyCacheCluster notes. (2) DeleteUser incorrectly REJECTED
+                       # deleting a user still in a user group; api_op_DeleteUser.go's own doc describes a cascade
+                       # ("removed from all user groups and in turn removed from all replication groups"), not a
+                       # block, corroborated by DeleteUser's real modeled error set having no generic
+                       # "user in a group" fault -- see DeleteUser note. Both fixes found and removed a test that
+                       # had locked in the wrong (pre-fix) behavior. Cache-parameter-group/subnet-group/
+                       # security-group/snapshot/user-group delete preconditions were spot-checked (their modeled
+                       # sentinels are genuinely wired, not dead) but not re-derived from scratch against the SDK
+                       # this pass -- see Notes for what was and wasn't covered.
+                       # 2026-08-30 (transfer/emr/elasticache Describe/List rigor pass, same wrapper-key-sweep
                        # branch): independently re-derived this service's 21-op Describe/List surface from
                        # handler.go's dispatch table (not PARITY.md prose): 19 Describe + 2 List. Re-verified the
                        # 2026-08-29 list-filter-params sweep's four fixes (DescribeUpdateActions, DescribeUsers,
@@ -76,10 +129,10 @@ overall: A            # 2026-08-30 (transfer/emr/elasticache Describe/List rigor
                        # treats equivalent deferred items in every other service.
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 ops:
-  CreateCacheCluster: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: CacheClusterNotFound 400->404; added SnapshotName restore (was silently ignored)"}
-  DeleteCacheCluster: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed (2026-07-24): InvalidCacheClusterState guard -- rejects delete while status != available (creating/modifying/deleting), matching AWS; wire-verified via TestStateGuardRejectsMutationWhilePending"}
+  CreateCacheCluster: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: CacheClusterNotFound 400->404; added SnapshotName restore (was silently ignored); (2026-09-04, gopherstack-973) SnapshotRetentionLimit (api_op_CreateCacheCluster.go, *int32, \"Default: 0 (automatic backups disabled)\") was entirely unmodeled for standalone clusters -- accepted, stored, and echoed on ReplicationGroup/ServerlessCache but not Cluster. Added via new SetClusterSnapshotRetentionLimit (kept separate from CreateClusterWithOptions per the same rationale as SetClusterSubnetGroupName, to avoid widening its positional signature). (2026-09-08, gopherstack-v5fe) ReplicationGroupId (api_op_CreateCacheCluster.go:299-309, \"the cluster is added to the specified replication group as a read replica\") was accepted on the wire but never read by createCacheCluster -- the only place that form key was read in the whole file was the unrelated read-only listAllowedNodeTypeModifications. Wired via new SetClusterReplicationGroupID: a nonexistent ReplicationGroupId is rejected pre-create with ReplicationGroupNotFoundFault (in CreateCacheCluster's modeled error list per botocore's service-2.json), an existing one attaches the new Cluster.ReplicationGroupID. TestCreateCacheCluster_ReplicationGroupId_AttachesAndProtectsFromDelete/_NotFound (handler_cache_clusters_test.go), verified failing pre-fix. This makes DeleteCacheCluster's last-read-replica guard reachable through a real API call for the first time -- see that op's note and gaps. Deliberately NOT done this pass (separate, larger, riskier change; see gaps): CreateReplicationGroup still never materializes member Cluster rows for its own primary/initial replicas, so only clusters created via this ReplicationGroupId path are linked."}
+  DeleteCacheCluster: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed (2026-07-24): InvalidCacheClusterState guard -- rejects delete while status != available (creating/modifying/deleting), matching AWS; wire-verified via TestStateGuardRejectsMutationWhilePending. (2026-09-08, gopherstack-ccb8) audited api_op_DeleteCacheCluster.go's 7-item disallow list against the backend. 2 of 7 were already enforced and are wire-tested: not-`available` state (above) and last-read-replica-of-a-replication-group (cache_clusters.go isLastRGMemberLocked, ErrClusterInReplicationGroup -> InvalidCacheClusterState). NEW this pass: FinalSnapshotIdentifier was accepted and silently ignored -- api-2.json's SnapshotFeatureNotSupportedFault doc names \"a cluster that is running Memcached rather than Valkey or Redis OSS\" as unsupported for snapshotting; deleteCacheCluster now rejects FinalSnapshotIdentifier+Memcached with that fault (Redis/Valkey unaffected). TestDeleteCacheCluster_FinalSnapshotIdentifier (handler_cache_clusters_test.go) is a 3-case SDK round-trip test pinning both clauses of the guard (memcached+snapshot rejected; memcached-no-snapshot and redis+snapshot both allowed), verified failing pre-fix. STILL NOT enforced, and NOT fixed this pass -- structural, see gaps: the primary-node-of-a-replication-group precondition has no role concept to check against (Cluster carries only ReplicationGroupID, no primary/replica flag), and the cluster-mode-enabled/Multi-AZ-node-group preconditions have no reachable path to test since CreateReplicationGroup still never sets Cluster.ReplicationGroupID on any member it creates (see gaps for the deeper wiring gap this exposes). (2026-09-08, gopherstack-v5fe) UPDATE: the last-read-replica-of-a-replication-group guard cited above is no longer only whitebox-reachable -- CreateCacheCluster's ReplicationGroupId parameter now attaches real clusters to a replication group (see that op's note), and TestCreateCacheCluster_ReplicationGroupId_AttachesAndProtectsFromDelete proves this guard fires on a cluster created that way, not just via the AddClusterInRGInternal test helper."}
   DescribeCacheClusters: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: CacheClusterNotFound 400->404; ShowCacheNodeInfo/pagination verified ok; MaxRecords [20,100] now enforced (2026-07-24)"}
-  ModifyCacheCluster: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: CacheParameterGroupNotFound 400->404; InvalidParameterGroupFamily->InvalidParameterValue (real code doesn't exist); (2026-07-24) InvalidCacheClusterState guard added"}
+  ModifyCacheCluster: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: CacheParameterGroupNotFound 400->404; InvalidParameterGroupFamily->InvalidParameterValue (real code doesn't exist); (2026-07-24) InvalidCacheClusterState guard added; (2026-09-04, gopherstack-973) SnapshotRetentionLimit was silently dropped -- a client-supplied value never persisted and DescribeCacheClusters could never show it (same bug class as the pointer-vs-value-type partial-update clobbering found across this campaign, though here the field was never modeled at all rather than mistyped). Fixed by threading presence-checked form parsing through the same SetClusterSnapshotRetentionLimit setter used by CreateCacheCluster; 0 is honoured as AWS's documented \"backups turned off\", omission leaves the prior value untouched. TestCacheCluster_SnapshotRetentionLimit (handler_cache_clusters_test.go) is a real SDK round-trip regression test, verified failing pre-fix"}
   RebootCacheCluster: {wire: ok, errors: ok, state: ok, persist: ok, note: "(2026-07-24) InvalidCacheClusterState guard added -- cannot reboot a non-available cluster"}
   CreateReplicationGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: ReplicationGroupAlreadyExists/CacheParameterGroupNotFound status; added SnapshotName restore"}
   DeleteReplicationGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: ReplicationGroupNotFound -> ReplicationGroupNotFoundFault, 400->404; (2026-07-24) InvalidReplicationGroupState guard added"}
@@ -121,7 +174,7 @@ ops:
   ExportServerlessCacheSnapshot: {wire: ok, errors: ok, state: ok, persist: ok}
   CreateUser: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed (2026-07-24): DELETED gopherstack-invented `NoPasswordRequired` wire output field (types.User/CreateUserResult have no such field); now serializes the real Authentication{Type,PasswordCount} struct and UserGroupIds list. Handles AuthenticationMode.Type (password/no-password-required/iam, translated to output's password/no-password/iam) + AuthenticationMode.Passwords / legacy top-level Passwords (1-2, else InvalidParameterValue) + legacy NoPasswordRequired bool. New CreateUserWithAuth backend method carries the full model; CreateUser(bool) kept as a thin legacy wrapper so existing call sites are unaffected"}
   ModifyUser: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: UserNotFound 400->404; InvalidParameterValueException -> InvalidParameterValue; (2026-07-24) added AppendAccessString (was unhandled -- ModifyUserInput has both AccessString and AppendAccessString), Engine, and the same Authentication-model handling as CreateUser via new ModifyUserWithAuth"}
-  DeleteUser: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: UserNotFound 400->404; (2026-07-24) response now includes Authentication/UserGroupIds like the other User-returning ops"}
+  DeleteUser: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: UserNotFound 400->404; (2026-07-24) response now includes Authentication/UserGroupIds like the other User-returning ops. FIXED (2026-09-04, gopherstack-973): DeleteUser previously REJECTED deleting a user still in a user group (ErrUserNotInGroup -> InvalidParameterValue), a fabricated precondition. api_op_DeleteUser.go's own doc says the opposite: \"The user will be removed from all user groups and in turn removed from all replication groups\" -- a cascade, not a block. Corroborated by DeleteUser's real modeled error set (deserializers.go awsAwsquery_deserializeOpErrorDeleteUser: DefaultUserAssociatedToUserGroup/InvalidParameterValue/InvalidUserState/ServiceLinkedRoleNotFoundFault/UserNotFound) -- DefaultUserAssociatedToUserGroup is scoped to the special 'default' user, which this emulator doesn't model, and there is no generic 'user in a group' fault. Now cascades: DeleteUser removes the userID from every user group's UserIds before deleting. Also removed the now-dead DeleteUserSafe wrapper (identical to DeleteUser once the block was removed) and two tests that had locked in the wrong behavior (TestBackend_DeleteUserSafe_InGroup_Fails, TestHandler_DeleteUser_RejectsWhenInGroup/user_in_group_rejected). New regression tests: TestBackend_DeleteUser_InGroup_Cascades, TestHandler_DeleteUser_CascadesFromUserGroup (real SDK round trip), both verified failing pre-fix"}
   DescribeUsers: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: same; (2026-07-24) Authentication/UserGroupIds wire fix (see CreateUser); MaxRecords [20,100] now enforced; handler deduped via describeListChecked. FIXED (2026-08-29 list-filter-params pass) — Engine and Filters (Name=\"UserId\", the only documented Filters[].Name per api_op_DescribeUsers.go) were declared on the wire and never read by the handler at all"}
   CreateUserGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: code UserGroupAlreadyExistsFault -> UserGroupAlreadyExists; (2026-07-24) DELETED gopherstack-invented `Description` field (types.UserGroup/CreateUserGroupInput have no such field/param) from both input parsing and wire output; now wires the real ReplicationGroups field (reverse of a ReplicationGroup's UserGroupIds, computed fresh on every response -- was previously a dead, always-empty model field); (2026-08-10) now also wires the real ServerlessCaches field the same way (reverse of ServerlessCache.UserGroupId) -- see users_and_user_groups"}
   ModifyUserGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: UserGroupNotFound 400->404; (2026-07-24) ReplicationGroups wire fix (see CreateUserGroup); (2026-08-10) ServerlessCaches wire fix (see CreateUserGroup)"}
@@ -152,19 +205,20 @@ ops:
   AddTagsToResource: {wire: ok, errors: ok, state: ok, persist: ok}
   RemoveTagsFromResource: {wire: ok, errors: ok, state: ok, persist: ok}
 families:
-  cache_clusters: {status: ok, note: "engine redis/memcached/valkey, node type, num nodes, creating->available->modifying->deleting->rebooting all observable via lifecycle overlay; cache nodes list w/ endpoints; DescribeCacheClusters ShowCacheNodeInfo+pagination correct; (2026-07-24) InvalidCacheClusterState guard on Modify/Delete/Reboot"}
-  replication_groups: {status: ok, note: "primary/replica, node groups/shards, multi-AZ, automatic failover, cluster mode, IncreaseReplicaCount/DecreaseReplicaCount/TestFailover/global datastore all present and real; NodeGroups/PendingModifiedValues/UserGroupIds XML wrappers verified against api-2.json; (2026-07-24) InvalidReplicationGroupState guard on every mutating op except migration ops (see Notes); (2026-08-11, gopherstack-31dm) Durability now modeled and echoed from Create/ModifyReplicationGroupInput; EffectiveDurability/StorageEncryptionType have no input member and stay always-empty by design -- see gaps; (2026-08-13, gopherstack-9kw0) fixed 9 ops across replication_groups + global_replication_groups (IncreaseReplicaCount, DecreaseReplicaCount, ModifyReplicationGroupShardConfiguration, StartMigration, TestMigration, IncreaseNodeGroupsInGlobalReplicationGroup, DecreaseNodeGroupsInGlobalReplicationGroup, ModifyGlobalReplicationGroup, RebalanceSlotsInGlobalReplicationGroup) where ApplyImmediately/CustomerNodeEndpointList were required wire members with no backend parameter to receive them (parsed-and-discarded) -- see each op's own ops-table note above for the per-op detail on what's now genuinely honoured vs merely accepted"}
+  cache_clusters: {status: ok, note: "engine redis/memcached/valkey, node type, num nodes, creating->available->modifying->deleting->rebooting all observable via lifecycle overlay; cache nodes list w/ endpoints; DescribeCacheClusters ShowCacheNodeInfo+pagination correct; (2026-07-24) InvalidCacheClusterState guard on Modify/Delete/Reboot; (2026-09-04, gopherstack-973) SnapshotRetentionLimit now modeled end to end -- see CreateCacheCluster/ModifyCacheCluster ops-table notes"}
+  replication_groups: {status: ok, note: "CORRECTION (2026-09-08, gopherstack-ccb8): this row's long-standing \"primary/replica ... all present and real\" claim is overstated for member-cluster identity. NodeGroup.PrimaryNode/.Replicas (models.go) and their CurrentRole XML mapping (nodeGroupsToXML, handler_replication_groups.go) are correctly *shaped*, but grepped the whole package and confirmed NodeGroupNode.CacheClusterID/CurrentRole are never assigned anywhere in production code or tests -- resizeNodeGroups only ever sets NodeGroupID/Status/Slots/Replicas (nil PrimaryNode, empty-CacheClusterID replica placeholders), so DescribeReplicationGroups can report node-group *counts* and *slots* faithfully but never which real cluster is primary vs replica for a given node group. node groups/shards, multi-AZ, automatic failover, cluster mode, IncreaseReplicaCount/DecreaseReplicaCount/TestFailover/global datastore all present and real; NodeGroups/PendingModifiedValues/UserGroupIds XML wrappers verified against api-2.json; (2026-07-24) InvalidReplicationGroupState guard on every mutating op except migration ops (see Notes); (2026-08-11, gopherstack-31dm) Durability now modeled and echoed from Create/ModifyReplicationGroupInput; EffectiveDurability/StorageEncryptionType have no input member and stay always-empty by design -- see gaps; (2026-08-13, gopherstack-9kw0) fixed 9 ops across replication_groups + global_replication_groups (IncreaseReplicaCount, DecreaseReplicaCount, ModifyReplicationGroupShardConfiguration, StartMigration, TestMigration, IncreaseNodeGroupsInGlobalReplicationGroup, DecreaseNodeGroupsInGlobalReplicationGroup, ModifyGlobalReplicationGroup, RebalanceSlotsInGlobalReplicationGroup) where ApplyImmediately/CustomerNodeEndpointList were required wire members with no backend parameter to receive them (parsed-and-discarded) -- see each op's own ops-table note above for the per-op detail on what's now genuinely honoured vs merely accepted"}
   cache_parameter_groups: {status: ok, note: "Create/Modify/Delete/Describe/Reset + DescribeCacheParameters + DescribeEngineDefaultParameters all real; default-group protection (ErrParameterGroupDefaultNotModifiable -> InvalidCacheParameterGroupState) verified wired"}
   cache_subnet_groups: {status: ok, note: "(2026-08-10) CacheSubnetGroupQuotaExceeded (300/Region) and CacheSubnetQuotaExceededFault (20/group) now enforced on Create/Modify -- see ops table"}
   cache_security_groups: {status: ok}
   snapshots: {status: ok, note: "automatic vs manual source tracked (SnapshotSource field), CopySnapshot real; CreateCacheCluster/CreateReplicationGroup SnapshotName restore was a genuine gap, now fixed (a prior pass); (2026-08-11, gopherstack-31dm) Durability has no Create/CopySnapshot input member and no source-durability data on this domain model to copy from -- shape-modeled in snapshotXML but always empty by design, see gaps"}
   serverless_caches: {status: ok, note: "(2026-08-10) ServerlessCacheQuotaForCustomerExceededFault (40/Region) now enforced on Create -- see ops table. (2026-07-24) InvalidServerlessCacheStateFault guard on Modify/Delete. (2026-07-25 #1) MAJOR wire-shape fix, same bug class as 2026-07-24's users_and_user_groups fix: serverlessCacheXML only wired 5/13 real ServerlessCache fields and serverlessCacheSnapshotXML was missing CreateTime entirely, despite the domain model already storing everything needed. Verified via a real SDK-client round trip (TestHandler_ServerlessCache_WireShapeFieldsSurfaced), not just backend-struct assertions. ServerlessCache.CacheUsageLimits and ServerlessCacheSnapshot's ExpiryTime/KmsKeyId/BytesUsedForCache/ServerlessCacheConfiguration were left unmodeled (see gaps). (2026-07-25 #2) closed both gaps end to end, AND found+fixed a more severe bug while doing so: the wire-routed CreateServerlessCache/ModifyServerlessCache handlers only ever parsed 3 of the real ~12 request fields, so a real client's create/modify request lost almost all its data on the actual dispatched path even though the response-side mapping was already correct -- fixed by routing through the existing CreateServerlessCacheFull/ModifyServerlessCacheFull backend methods. gaps: now empty; see Notes and TestHandler_ServerlessCache_NestedGapFields. (2026-08-11, gopherstack-31dm) NetworkType now modeled and echoed from CreateServerlessCacheInput (create-only, no Modify member); StorageEncryptionType has no input member and stays always-empty by design -- see gaps"}
-  users_and_user_groups: {status: ok, note: "(2026-08-10, gopherstack-nojq) UserGroup.ServerlessCaches (types.UserGroup.ServerlessCaches) is now wired -- the reverse of ServerlessCache.UserGroupId, computed fresh on every response via the new userGroupServerlessCacheIDsLocked (mirrors the existing userGroupReplicationGroupIDsLocked/ReplicationGroups pattern exactly). This supersedes the 2026-07-24 note below, which left it unwired on the (at-the-time correct) grounds that no association mechanism existed yet -- ServerlessCache.UserGroupID was added later that same day and the reverse lookup was simply never added alongside it. Verified end to end with a real elasticachesdk.Client round trip (TestHandler_UserGroup_ServerlessCachesWireShape) and a Snapshot/Restore persistence test (TestBackend_Persistence_UserGroupServerlessCaches), per this campaign's 'unit tests against gopherstack's own structs are not parity proof' rule. (2026-07-24) MAJOR wire-shape fix: User's Authentication{Type,PasswordCount} + UserGroupIds were entirely absent from the wire response (a gopherstack-invented NoPasswordRequired boolean stood in their place); UserGroup's real ReplicationGroups field was unwired and a gopherstack-invented Description field was serialized instead. The prior ledger's 'RBAC access string, authentication (password/IAM/NoPasswordRequired) all real' note was WRONG -- IAM/password auth type was never distinguishable on the wire, only a boolean. Both fixed; see ops table and Notes"}
+  users_and_user_groups: {status: ok, note: "(2026-09-04, gopherstack-973) DeleteUser no longer rejects deleting a user still in a user group -- it cascades (removes the user from every group's UserIds), matching api_op_DeleteUser.go's own doc; see DeleteUser ops-table note. (2026-08-10, gopherstack-nojq) UserGroup.ServerlessCaches (types.UserGroup.ServerlessCaches) is now wired -- the reverse of ServerlessCache.UserGroupId, computed fresh on every response via the new userGroupServerlessCacheIDsLocked (mirrors the existing userGroupReplicationGroupIDsLocked/ReplicationGroups pattern exactly). This supersedes the 2026-07-24 note below, which left it unwired on the (at-the-time correct) grounds that no association mechanism existed yet -- ServerlessCache.UserGroupID was added later that same day and the reverse lookup was simply never added alongside it. Verified end to end with a real elasticachesdk.Client round trip (TestHandler_UserGroup_ServerlessCachesWireShape) and a Snapshot/Restore persistence test (TestBackend_Persistence_UserGroupServerlessCaches), per this campaign's 'unit tests against gopherstack's own structs are not parity proof' rule. (2026-07-24) MAJOR wire-shape fix: User's Authentication{Type,PasswordCount} + UserGroupIds were entirely absent from the wire response (a gopherstack-invented NoPasswordRequired boolean stood in their place); UserGroup's real ReplicationGroups field was unwired and a gopherstack-invented Description field was serialized instead. The prior ledger's 'RBAC access string, authentication (password/IAM/NoPasswordRequired) all real' note was WRONG -- IAM/password auth type was never distinguishable on the wire, only a boolean. Both fixed; see ops table and Notes"}
   reserved_nodes: {status: ok, note: "RecurringCharges list always empty -- investigated 2026-08-10 (gopherstack-nojq) and confirmed this is genuinely unreproducible live AWS Price-List state, not a modeling gap; see PurchaseReservedCacheNodesOffering note and Notes"}
   service_updates_and_events: {status: ok, note: "DescribeEvents wire shape (Event/Events/Marker) verified against api-2.json exactly"}
   tags: {status: ok, note: "Add/Remove/List via ARN; ErrResourceNotFound correctly surfaces as InvalidARN (matches AWS's own tag-op behavior for a resource ARN that doesn't resolve)"}
   timestamps: {status: ok, note: "RFC3339 ISO8601 strings used throughout -- CORRECT for this query/XML protocol; do NOT flag as an epoch-seconds bug (awstime.Epoch is for json/rest-json protocols only, not applicable here)"}
 gaps:
+  - "(2026-09-08, gopherstack-ccb8; NARROWED 2026-09-08 gopherstack-v5fe, step 1 of 3 done) STRUCTURAL, partially fixed: DeleteCacheCluster's primary-node-of-a-replication-group precondition (api_op_DeleteCacheCluster.go:25, \"A cluster that is the primary node of a replication group\") still cannot be checked because gopherstack has no primary/replica role on a Cluster record. The deeper finding that motivated a 3-step plan -- no production code path ever links a Cluster to a ReplicationGroup at all -- is now step 1 done, steps 2-3 open: (1) DONE (gopherstack-v5fe): CreateCacheCluster's ReplicationGroupId parameter now attaches the new Cluster to an existing ReplicationGroup via the new SetClusterReplicationGroupID (cache_clusters.go), rejecting a nonexistent one with ReplicationGroupNotFoundFault pre-create; see CreateCacheCluster/DeleteCacheCluster ops-table notes and TestCreateCacheCluster_ReplicationGroupId_AttachesAndProtectsFromDelete/_NotFound (handler_cache_clusters_test.go). This makes the existing last-read-replica guard (isLastRGMemberLocked) reachable through a real CreateCacheCluster->DeleteCacheCluster sequence, not just the whitebox `AddClusterInRGInternal` test helper -- but ONLY for clusters created that way. (2) STILL OPEN: CreateReplicationGroup(Full) still never creates member Cluster rows for its own primary/initial replicas (deliberately out of scope for gopherstack-v5fe: a materially larger, riskier change touching both cache_clusters and replication_groups Create paths and their store relationship -- not attempted speculatively). (3) STILL OPEN, blocked on (2): a role field (e.g. Cluster.IsPrimary or a first-class link into NodeGroup.PrimaryNode/.Replicas, matching types.NodeGroupMember.CurrentRole -- aws-sdk-go-v2/service/elasticache@v1.56.4/types/types.go:1156-1159) checked in DeleteCluster for the primary-node bullet. The Multi-AZ-node-group and cluster-mode-enabled-replication-group DeleteCacheCluster preconditions remain blocked on (2)-(3) too."
   - "(2026-08-11, gopherstack-31dm, closes the 2026-08-10 pin-correction gap below) Re-diffed types.ServerlessCache/types.ReplicationGroup/types.Snapshot at the actual pinned v1.56.4 (not v1.51.11) against models.go field-by-field; confirmed the six fields the pin-correction pass flagged are the complete list (verified by diffing v1.51.11 vs v1.56.4 struct member sets directly -- no others were added between those versions) and that FullEngineVersion (already shape-modeled-but-unset since 2026-07-25) was NOT one of them. Of the six, only two have a real Create/Modify input member to source a non-fabricated value from: ServerlessCache.NetworkType (CreateServerlessCacheInput.NetworkType, serializers.go:6709 -- create-only, no ModifyServerlessCacheInput member) and ReplicationGroup.Durability (CreateReplicationGroupInput.Durability serializers.go:6506 / ModifyReplicationGroupInput.Durability serializers.go:8171). Both are now modeled on ServerlessCache/ReplicationGroup (models.go) and echoed on the wire (deserializers.go:23264 / 21351) exactly as the caller supplied them -- never defaulted or guessed when absent. The other four -- ServerlessCache.StorageEncryptionType, ReplicationGroup.EffectiveDurability, ReplicationGroup.StorageEncryptionType, Snapshot.Durability -- have NO Create/Modify input member at all (each is either KMS-key-state-derived or engine/cluster-mode-resolved server-side, undocumented well enough to reproduce without guessing); these are now present in the wire XML structs with omitempty tags (serverlessCacheXML/replicationGroupXML/snapshotXML) but deliberately always empty, same no-fabrication precedent as FullEngineVersion. Verified with real elasticachesdk.Client + raw-body wire assertions (TestHandler_NewSDKFields_WireShape, which checks the raw XML for the two present-when-set/absent-when-unset fields AND that the four never-set fields never appear at all -- not just that the SDK-parsed value looks like its zero value, which wouldn't catch a field that serializes as an empty element instead of omitting it) and a Snapshot/Restore persistence round trip for the two real fields (TestBackend_Persistence_gopherstack31dm_NewFields). elasticacheSnapshotVersion was NOT bumped (both new fields are additive omitempty on structs that persist whole)."
   # Both gaps found 2026-07-25 are fixed as of the 2026-07-25 pass #2:
   #  - ServerlessCache.CacheUsageLimits: full DataStorage{Unit,Maximum,Minimum}/
@@ -642,3 +696,128 @@ existing convention of recording rather than fabricating a fix for a field the b
 never populates. **Zero new bugs found; nothing changed in this service.** `go build`,
 `go vet` (repo-wide, clean), `go test -race ./services/elasticache/...` all pass on the
 unmodified tree. No AWS documentation was fetched this pass.
+
+### 2026-09-08 (gopherstack-8haq, P1: xmlError's nil-on-write swallows a rejection)
+
+`xmlError` returns `xmlResp`'s result, and `xmlResp` (`handler.go`) returns `nil` after
+a successful write -- it wraps `c.Response().Write(...)`, which succeeds and returns
+`nil` unless the connection itself fails. Any helper that rejects a request by calling
+`xmlError(...)` and returning that value therefore hands `nil` back to a caller doing
+`if err != nil { return err }`: the check never fires, and execution falls through
+past the rejection. Confirmed live pre-fix with a real SDK client, exactly as the
+issue described: `CreateCacheCluster(CacheClusterId="probe-cluster", Engine=redis,
+SnapshotName="does-not-exist")` returns 400 `InvalidParameterValueException` as
+expected, but a follow-up `DescribeCacheClusters(CacheClusterId="probe-cluster")`
+then finds the cluster anyway -- the client is told the create failed while the
+resource exists.
+
+**Audit.** Every `xmlError` call site in the package (~171) was checked for the broken
+shape -- specifically, a *helper* that internally writes via `xmlError` and is called
+by storing its result and rechecking it (`x, err := helper(...); if err != nil`, or the
+inline `if err := helper(...); err != nil` form -- both are the same bug, since both
+key off `err`'s truthiness after the write already happened). The overwhelming
+majority of the 171 are `return xmlError(...)` directly inside a top-level dispatch
+handler (`createCacheCluster`, `deleteCacheCluster`, etc.) -- safe, since `Handler()`'s
+dispatch is the only caller and (after this pass) correctly distinguishes a real error
+from "already handled." A script cross-referencing every function whose body contains
+`return ... xmlError(...)` or `return ... xmlResp(...)` against `dispatchTable()`'s
+target list found exactly five non-dispatch helpers with the broken shape, all fixed
+this pass:
+
+- `applySnapshotDefaults` (`handler_cache_clusters.go`), returned at the old line 80,
+  checked at line 81 -- the path reproduced above.
+- `applyClusterSubnetGroup`, checked at the old line 121.
+- `applyClusterSnapshotRetentionLimit`, checked at the old lines 125 and 450 (two call
+  sites: `createCacheCluster` and `modifyCacheCluster`).
+- `parsePaginationChecked` (`handler.go`) -- called this way at ~13 direct sites across
+  nearly every paginated `Describe*`/`List*` handler in the package
+  (`handler_cache_clusters.go`, `handler_engine_versions.go`, `handler_events.go`,
+  `handler_parameter_groups.go` x2, `handler_snapshots.go`, `handler_reserved_nodes.go`
+  x2, `handler_service_updates.go` x2, `handler_replication_groups.go`,
+  `handler_serverless.go`), plus once more inside `describeListChecked` itself.
+- `describeListChecked` (`handler.go`) -- wraps `parsePaginationChecked` for its own
+  ~7 callers (`handler_parameter_groups.go`, `handler_global_replication_groups.go`,
+  `handler_security_groups.go`, `handler_serverless.go`, `handler_subnet_groups.go`,
+  `handler_user_groups.go`, `handler_users.go`), so it had the same defect one layer
+  removed: even when `parsePaginationChecked` is fixed underneath it, its own
+  `p, err := call(marker, maxRecords); if err != nil { return ..., xmlError(...) }`
+  branches were the identical shape at the next level up.
+
+**Fix.** Two different contracts, chosen per fan-out, both documented in-code so the
+next call site added to either family follows the right one:
+
+- The three `handler_cache_clusters.go` helpers (1-2 callers each) now return a raw,
+  unwritten error; the caller maps it via a dedicated `*ErrorResponse(c, err)` function
+  called directly as `return xxxErrorResponse(c, err)` -- never stored and rechecked.
+  This is the same contract gopherstack-v5fe already established for
+  `checkReplicationGroupExists`/`replicationGroupErrorResponse` (found and left alone
+  this pass, already correct), just extended to the three sibling helpers the same
+  issue predicted would hit the identical trap.
+- `parsePaginationChecked`/`describeListChecked` (~20 total callers) instead return a
+  new `errResponseWritten` sentinel in place of `xmlError`'s `nil`, so every existing
+  `if err != nil { return err }` call site -- all ~20 of them -- now works correctly
+  *unchanged*, because `err` is genuinely non-nil whenever a rejection was written.
+  `Handler()`'s single dispatch point (`return fn(ctx, c, vals)` -> now
+  `fnErr := fn(...); if errors.Is(fnErr, errResponseWritten) { return nil }; return
+  fnErr`) translates the sentinel back to `nil` in exactly one place, so
+  `pkgs/telemetry`'s `WrapEchoHandler` still logs these as ordinary "operation
+  completed with error status" (WARN) the same as every other `xmlError` call, not as
+  "operation failed" (ERROR) -- rewriting all ~20 call sites individually to map their
+  own error would have been far more invasive for the same outcome, and this repo's own
+  echo fork (`response.go:50-73`) already treats a second `WriteHeader` on a committed
+  response as a safe no-op, which is what makes the sentinel-sees-nil-at-the-boundary
+  design sound: nothing downstream ever attempts a second real write.
+
+**Tests.** Every fixed call site has a regression test asserting *observable state*,
+not just a status code, and every one was confirmed failing against the unmodified
+code first (exact pre-fix output captured in the PR description):
+`TestCreateCacheCluster_RejectedSnapshotRestore_DoesNotCreateCluster` (a rejected
+snapshot restore must not create the cluster at all -- the `DescribeCacheClusters`
+follow-up must itself 404, not just return zero rows),
+`TestCreateCacheCluster_SubnetGroupFailure_StopsBeforeReplicationGroupAttach` and
+`TestCreateCacheCluster_InvalidSnapshotRetentionLimit_StopsBeforeReplicationGroupAttach`
+(the base cluster row is unavoidably created before these two helpers run --
+`CreateCacheCluster` isn't transactional across its own post-create steps, a separate,
+larger concern -- so these instead prove the operation actually stopped: paired with a
+real `ReplicationGroupId`, the later attach step that runs after these two helpers in
+`createCacheCluster` must never fire),
+`TestModifyCacheCluster_InvalidSnapshotRetentionLimit_LeavesClusterUnchanged` and
+`TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange_DoesNotDoubleWrite`/
+`TestDescribeListChecked_MaxRecordsOutOfRange_DoesNotDoubleWrite` (for the call sites
+where nothing observable runs afterward, the pre-fix defect is wire corruption instead
+-- echo's `Response.Write` (`response.go:64-73`) has no post-commit guard, only
+`WriteHeader` does, so the swallowed rejection's fall-through second write appends a
+second, complete XML document onto the same HTTP response body; these tests read the
+raw body and assert the second document's root element never appears).
+
+**No pre-existing test depended on the bug to pass.** Two pre-existing tests turned out
+to *mask* the bug rather than lock in the wrong behavior, worth flagging even though
+neither needed changing: `TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange` and
+`Test_CreateCacheCluster_RestoreFromSnapshot`'s `missing_snapshot_is_not_found` case
+both only assert the SDK's typed error/status code, and the SDK's XML decoder happily
+parses the first (correct) `ErrorResponse` document off the front of a corrupted body
+and ignores everything appended after it -- so both passed pre-fix despite the
+double-write. This is exactly why the issue asked for observable-state assertions
+instead of response-shape ones.
+
+**cloudfront follow-up (read-only, not fixed -- out of scope this pass).**
+`services/cloudfront/handler.go`'s `xmlResp` shares the identical shape: it wraps
+`c.Blob(...)`, and echo's `Context.Blob` (`context.go:641-646`) also returns `nil` on
+a successful write. A read-only spot check of cloudfront's most obviously-named
+helper/mapper functions (`handleWebACLAssociationError`, `handleDomainAssociationError`,
+`handleTagAPIError`, `marshalDistributionIDList`, `marshalDistributionIDOwnerList`,
+`writeDistributionList`) found every one of their callers already using the safe direct
+`return h.helper(...)` contract -- but cloudfront has on the order of 421 `xmlResp`
+call sites across ~20 files, and only a handful of the most obviously-named helpers
+were sampled, not the exhaustive per-function audit this pass did for elasticache's 171.
+Recommend the cloudfront-owning pass run the equivalent systematic check (every
+function whose body contains `return ... xmlResp(...)`, cross-referenced against
+whether its callers use direct `return` vs. store-and-recheck) rather than trusting
+this spot check as complete.
+
+**Gates.** `golangci-lint run ./services/elasticache/...`: 0 issues.
+`go test -race ./services/elasticache/...`: pass. `go build ./...` and
+`go test ./services/...` (all 161 services, repo-wide): pass, no regressions --
+this was a handler-contract change (`Handler()`'s dispatch return, and the five
+touched helpers' signatures), so the full run was the right blast-radius check, not
+just this package.

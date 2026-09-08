@@ -183,6 +183,55 @@ func TestExecuteStatement_DDLAndDML(t *testing.T) {
 			query:     "SELECT 1",
 			wantState: "SUCCEEDED",
 		},
+		{
+			name: "execute_no_using_no_params_succeeds",
+			setup: func(b *athena.InMemoryBackend) {
+				require.NoError(t, b.CreatePreparedStatement("get_all", "", "primary", "SELECT 1"))
+			},
+			query:     "EXECUTE get_all",
+			wantState: "SUCCEEDED",
+		},
+		{
+			name:      "execute_missing_statement_fails",
+			query:     "EXECUTE ghost_stmt",
+			wantState: "FAILED",
+		},
+		{
+			name: "execute_param_count_mismatch_fails",
+			setup: func(b *athena.InMemoryBackend) {
+				require.NoError(t, b.CreatePreparedStatement(
+					"get_by_id", "", "primary", "SELECT id FROM widgets WHERE id = ?",
+				))
+			},
+			query:     "EXECUTE get_by_id USING 1, 2",
+			wantState: "FAILED",
+		},
+		{
+			name: "execute_wrong_workgroup_fails",
+			setup: func(b *athena.InMemoryBackend) {
+				require.NoError(t, b.CreateWorkGroup("secondary", "", "ENABLED", athena.WorkGroupConfiguration{}, nil))
+				require.NoError(t, b.CreatePreparedStatement("wg_stmt", "", "secondary", "SELECT 1"))
+			},
+			query:     "EXECUTE wg_stmt",
+			wantState: "FAILED",
+		},
+		{
+			name: "execute_malformed_trailing_garbage_fails",
+			setup: func(b *athena.InMemoryBackend) {
+				require.NoError(t, b.CreatePreparedStatement("get_all", "", "primary", "SELECT 1"))
+			},
+			query:     "EXECUTE get_all bogus",
+			wantState: "FAILED",
+		},
+		{
+			name: "execute_nested_execute_fails",
+			setup: func(b *athena.InMemoryBackend) {
+				require.NoError(t, b.CreatePreparedStatement("inner", "", "primary", "SELECT 1"))
+				require.NoError(t, b.CreatePreparedStatement("outer", "", "primary", "EXECUTE inner"))
+			},
+			query:     "EXECUTE outer",
+			wantState: "FAILED",
+		},
 	}
 
 	for _, tt := range tests {

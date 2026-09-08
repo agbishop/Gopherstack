@@ -93,9 +93,16 @@ func (h *Handler) handleListConnections(
 ) (*listConnectionsOutput, error) {
 	conns := h.Backend.ListConnections(ctx, in.ProviderTypeFilter, in.HostArnFilter)
 
-	// Sort for stable pagination.
+	// Sort for stable pagination. ConnectionName is not unique (CreateConnection
+	// has no ResourceAlreadyExistsException for a duplicate name, see
+	// connections.go), so ConnectionArn (always unique) breaks ties -- without
+	// it, two connections sharing a name have no total order between them.
 	sort.Slice(conns, func(i, j int) bool {
-		return conns[i].ConnectionName < conns[j].ConnectionName
+		if conns[i].ConnectionName != conns[j].ConnectionName {
+			return conns[i].ConnectionName < conns[j].ConnectionName
+		}
+
+		return conns[i].ConnectionArn < conns[j].ConnectionArn
 	})
 
 	all := make([]connectionItem, 0, len(conns))

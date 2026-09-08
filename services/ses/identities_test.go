@@ -112,6 +112,15 @@ func TestHandler_GetIdentityPolicies(t *testing.T) {
 			wantCode:     http.StatusBadRequest,
 			wantContains: "InvalidParameterValue",
 		},
+		{
+			// PolicyNames is a required member (api_op_GetIdentityPolicies.go:
+			// "This member is required"); a real SDK client refuses to even
+			// build this request, but a raw wire client can still omit it.
+			name:         "missing_policy_names_param",
+			body:         "Action=GetIdentityPolicies&Version=2010-12-01&Identity=someone@example.com",
+			wantCode:     http.StatusBadRequest,
+			wantContains: "InvalidParameterValue",
+		},
 	}
 
 	for _, tt := range tests {
@@ -481,6 +490,22 @@ func TestDeleteIdentity_NonExistent_IsIdempotent(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+func TestDeleteIdentity_ClearsPoliciesOnRecreate(t *testing.T) {
+	t.Parallel()
+
+	h := newHandler()
+	require.NoError(t, h.Backend.VerifyEmailIdentity("reused@example.com"))
+	require.NoError(t, h.Backend.PutIdentityPolicy("reused@example.com", "my-policy", `{"Version":"2012-10-17"}`))
+
+	h.Backend.DeleteIdentity("reused@example.com")
+
+	require.NoError(t, h.Backend.VerifyEmailIdentity("reused@example.com"))
+
+	names, err := h.Backend.ListIdentityPolicies("reused@example.com")
+	require.NoError(t, err)
+	assert.Empty(t, names)
+}
+
 func TestListIdentities_IdentityTypeFilter(t *testing.T) {
 	t.Parallel()
 
@@ -763,19 +788,18 @@ func TestDeleteIdentityPolicy_NonExistent_Idempotent(t *testing.T) {
 	require.NoError(t, b.DeleteIdentityPolicy("pol@example.com", "nonexistent"))
 }
 
-func TestGetIdentityPolicies_EmptyNamesList_ReturnsAll(t *testing.T) {
+// TestGetIdentityPolicies_EmptyNamesList_IsRejected proves PolicyNames is
+// enforced as required (api_op_GetIdentityPolicies.go: "This member is
+// required" -- there is no real "return everything" mode).
+func TestGetIdentityPolicies_EmptyNamesList_IsRejected(t *testing.T) {
 	t.Parallel()
 
 	b := ses.NewInMemoryBackend()
 	require.NoError(t, b.VerifyEmailIdentity("pol@example.com"))
 	require.NoError(t, b.PutIdentityPolicy("pol@example.com", "p1", `{"a":1}`))
-	require.NoError(t, b.PutIdentityPolicy("pol@example.com", "p2", `{"b":2}`))
 
-	pols, err := b.GetIdentityPolicies("pol@example.com", nil)
-	require.NoError(t, err)
-	assert.Len(t, pols, 2)
-	assert.Contains(t, pols, "p1")
-	assert.Contains(t, pols, "p2")
+	_, err := b.GetIdentityPolicies("pol@example.com", nil)
+	require.Error(t, err)
 }
 
 func TestPutIdentityPolicy_Handler(t *testing.T) {

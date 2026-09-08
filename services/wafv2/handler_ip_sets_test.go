@@ -112,24 +112,24 @@ func TestHandler_UpdateIPSet(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		setup      func(*wafv2.Handler) string
-		body       func(id string) map[string]any
+		setup      func(*wafv2.Handler) (string, string)
+		body       func(id, lockToken string) map[string]any
 		name       string
 		wantStatus int
 	}{
 		{
 			name: "existing",
-			setup: func(h *wafv2.Handler) string {
+			setup: func(h *wafv2.Handler) (string, string) {
 				s, _ := h.Backend.CreateIPSet(context.Background(), "my-ipset", "REGIONAL", "", "IPV4", nil, nil)
 
-				return s.ID
+				return s.ID, s.LockToken
 			},
-			body: func(id string) map[string]any {
+			body: func(id, lockToken string) map[string]any {
 				return map[string]any{
 					"Id":        id,
 					"Name":      "my-ipset",
 					"Scope":     "REGIONAL",
-					"LockToken": "",
+					"LockToken": lockToken,
 					"Addresses": []string{"10.0.0.0/8"},
 				}
 			},
@@ -137,15 +137,15 @@ func TestHandler_UpdateIPSet(t *testing.T) {
 		},
 		{
 			name: "not_found",
-			setup: func(_ *wafv2.Handler) string {
-				return "nonexistent"
+			setup: func(_ *wafv2.Handler) (string, string) {
+				return "nonexistent", "tok"
 			},
-			body: func(id string) map[string]any {
+			body: func(id, lockToken string) map[string]any {
 				return map[string]any{
 					"Id":        id,
 					"Name":      "x",
 					"Scope":     "REGIONAL",
-					"LockToken": "",
+					"LockToken": lockToken,
 					"Addresses": []string{},
 				}
 			},
@@ -158,8 +158,8 @@ func TestHandler_UpdateIPSet(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
-			id := tt.setup(h)
-			rec := doWafv2Request(t, h, "UpdateIPSet", tt.body(id))
+			id, lockToken := tt.setup(h)
+			rec := doWafv2Request(t, h, "UpdateIPSet", tt.body(id, lockToken))
 			assert.Equal(t, tt.wantStatus, rec.Code)
 
 			if tt.wantStatus == http.StatusOK {
@@ -175,30 +175,30 @@ func TestHandler_DeleteIPSet(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		setup      func(*wafv2.Handler) string
-		body       func(id string) map[string]any
+		setup      func(*wafv2.Handler) (string, string)
+		body       func(id, lockToken string) map[string]any
 		name       string
 		wantStatus int
 	}{
 		{
 			name: "existing",
-			setup: func(h *wafv2.Handler) string {
+			setup: func(h *wafv2.Handler) (string, string) {
 				s, _ := h.Backend.CreateIPSet(context.Background(), "my-ipset", "REGIONAL", "", "IPV4", nil, nil)
 
-				return s.ID
+				return s.ID, s.LockToken
 			},
-			body: func(id string) map[string]any {
-				return map[string]any{"Id": id, "Name": "my-ipset", "Scope": "REGIONAL", "LockToken": ""}
+			body: func(id, lockToken string) map[string]any {
+				return map[string]any{"Id": id, "Name": "my-ipset", "Scope": "REGIONAL", "LockToken": lockToken}
 			},
 			wantStatus: http.StatusOK,
 		},
 		{
 			name: "not_found",
-			setup: func(_ *wafv2.Handler) string {
-				return "nonexistent"
+			setup: func(_ *wafv2.Handler) (string, string) {
+				return "nonexistent", "tok"
 			},
-			body: func(id string) map[string]any {
-				return map[string]any{"Id": id, "Name": "x", "Scope": "REGIONAL", "LockToken": ""}
+			body: func(id, lockToken string) map[string]any {
+				return map[string]any{"Id": id, "Name": "x", "Scope": "REGIONAL", "LockToken": lockToken}
 			},
 			wantStatus: http.StatusBadRequest,
 		},
@@ -209,8 +209,8 @@ func TestHandler_DeleteIPSet(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
-			id := tt.setup(h)
-			rec := doWafv2Request(t, h, "DeleteIPSet", tt.body(id))
+			id, lockToken := tt.setup(h)
+			rec := doWafv2Request(t, h, "DeleteIPSet", tt.body(id, lockToken))
 			assert.Equal(t, tt.wantStatus, rec.Code)
 		})
 	}
@@ -411,15 +411,15 @@ func TestHandler_CreateIPSet_MissingScope(t *testing.T) {
 func createIPSetHelper2(
 	t *testing.T,
 	h *wafv2.Handler,
-	name, scope, version string,
+	name string,
 	addrs []string,
 ) (string, string) {
 	t.Helper()
 
 	body := map[string]any{
 		"Name":             name,
-		"Scope":            scope,
-		"IPAddressVersion": version,
+		"Scope":            "REGIONAL",
+		"IPAddressVersion": "IPV4",
 		"Addresses":        addrs,
 	}
 
@@ -515,13 +515,14 @@ func TestIPSetUpdateCIDRValidation(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	id, _ := createIPSetHelper2(t, h, "update-set", "REGIONAL", "IPV4", nil)
+	id, lockToken := createIPSetHelper2(t, h, "update-set", nil)
 
 	// Update with invalid CIDR.
 	recBad := doWafv2Request(t, h, "UpdateIPSet", map[string]any{
 		"Id":        id,
 		"Name":      "update-set",
 		"Scope":     "REGIONAL",
+		"LockToken": lockToken,
 		"Addresses": []string{"not-valid"},
 	})
 	assert.Equal(t, http.StatusBadRequest, recBad.Code)
@@ -531,6 +532,7 @@ func TestIPSetUpdateCIDRValidation(t *testing.T) {
 		"Id":        id,
 		"Name":      "update-set",
 		"Scope":     "REGIONAL",
+		"LockToken": lockToken,
 		"Addresses": []string{"2001:db8::/32"}, // IPv6 in IPv4 set
 	})
 	assert.Equal(t, http.StatusBadRequest, recMix.Code)
@@ -540,6 +542,7 @@ func TestIPSetUpdateCIDRValidation(t *testing.T) {
 		"Id":        id,
 		"Name":      "update-set",
 		"Scope":     "REGIONAL",
+		"LockToken": lockToken,
 		"Addresses": []string{"10.0.0.0/8"},
 	})
 	assert.Equal(t, http.StatusOK, recOK.Code)
@@ -645,7 +648,7 @@ func TestUpdateIPSet_ClearAddresses(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	id, lockToken := createIPSetHelper2(t, h, "my-ipset", "REGIONAL", "IPV4", []string{"10.0.0.0/8"})
+	id, lockToken := createIPSetHelper2(t, h, "my-ipset", []string{"10.0.0.0/8"})
 
 	// Update with empty addresses list should clear addresses (not be ignored).
 	rec := doWafv2Request(t, h, "UpdateIPSet", map[string]any{

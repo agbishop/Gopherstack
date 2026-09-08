@@ -73,7 +73,6 @@ func (b *InMemoryBackend) CreateMonitor(
 	}
 
 	b.monitors.Put(m)
-	b.regionARNIndex(region)[monARN] = name
 
 	return monitorCopy(m), nil
 }
@@ -145,12 +144,10 @@ func (b *InMemoryBackend) DeleteMonitor(ctx context.Context, name string) error 
 
 	key := regionKey(region, name)
 
-	m, exists := b.monitors.Get(key)
-	if !exists {
+	if !b.monitors.Has(key) {
 		return fmt.Errorf("%w: monitor %q not found", ErrNotFound, name)
 	}
 
-	delete(b.regionARNIndex(region), m.MonitorArn)
 	b.monitors.Delete(key)
 
 	return nil

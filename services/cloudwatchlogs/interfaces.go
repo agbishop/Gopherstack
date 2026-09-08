@@ -109,11 +109,12 @@ type StorageBackend interface {
 	) (*Delivery, error)
 	// CreateExportTask creates an asynchronous export task to S3.
 	CreateExportTask(
+		ctx context.Context,
 		taskName, logGroupName, logStreamNamePrefix, destination, destinationPrefix string,
 		from, to int64,
 	) (string, error)
 	// CreateImportTask creates an import task from a CloudTrail Lake event data store.
-	CreateImportTask(importRoleArn, importSourceArn string) (*ImportTask, error)
+	CreateImportTask(ctx context.Context, importRoleArn, importSourceArn string) (*ImportTask, error)
 	// CreateLogAnomalyDetector creates an anomaly detector for one or more log groups.
 	CreateLogAnomalyDetector(
 		logGroupArnList []string,

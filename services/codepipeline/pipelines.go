@@ -88,6 +88,15 @@ func (b *InMemoryBackend) UpdatePipeline(ctx context.Context, decl PipelineDecla
 	b.mu.Lock("UpdatePipeline")
 	defer b.mu.Unlock()
 
+	// gopherstack-wlab: PipelineNotFoundException is not in UpdatePipeline's
+	// declared error set per botocore codepipeline/2015-07-09/service-2.json
+	// (InvalidActionDeclarationException/InvalidBlockerDeclarationException/
+	// InvalidStageDeclarationException/InvalidStructureException/
+	// LimitExceededException/ValidationException only). Left unfixed:
+	// InvalidStructureException's doc text ("structure was specified in an
+	// invalid format") is about malformed input, not a missing target, so
+	// it does not fit -- no declared code does. NOTE: this does not break
+	// errors.As for a real caller -- see undeclared_error_codes_test.go.
 	p, ok := b.pipelines.Get(regionKey(getRegion(ctx, b.region), decl.Name))
 	if !ok {
 		return nil, fmt.Errorf("%w: pipeline %q", ErrNotFound, decl.Name)
@@ -102,6 +111,17 @@ func (b *InMemoryBackend) UpdatePipeline(ctx context.Context, decl PipelineDecla
 }
 
 // DeletePipeline removes the pipeline with the given name and cleans up associated state.
+//
+// gopherstack-wlab: the guard below emits PipelineNotFoundException on a
+// nonexistent name -- not in this op's declared error set per botocore
+// codepipeline/2015-07-09/service-2.json (ConcurrentModificationException/
+// ValidationException only). Left unfixed: the "HTTP 200, empty body" doc
+// sentence cited in gopherstack-3djp for an idempotent-delete fix is
+// generic Response-shape boilerplate (also appears on DisableStageTransition,
+// which DOES throw PipelineNotFoundException on a missing pipeline) --
+// not evidence either way. No declared code fits "not found". NOTE: this
+// does not break errors.As for a real caller -- see
+// undeclared_error_codes_test.go.
 func (b *InMemoryBackend) DeletePipeline(ctx context.Context, name string) error {
 	b.mu.Lock("DeletePipeline")
 	defer b.mu.Unlock()
@@ -417,5 +437,15 @@ func (b *InMemoryBackend) StopPipelineExecution(
 		return &cp, nil
 	}
 
+	// gopherstack-wlab: same undeclared-code issue as
+	// OverrideStageCondition/RetryStageExecution -- PipelineExecutionNotFoundException
+	// is not in StopPipelineExecution's declared error set per botocore
+	// codepipeline/2015-07-09/service-2.json (PipelineNotFoundException/
+	// PipelineExecutionNotStoppableException/DuplicatedStopRequestException/
+	// ConflictException/ValidationException only; PipelineNotFoundException
+	// there means the pipeline name, not the execution ID). Left unfixed: no
+	// declared code means "this executionID doesn't exist". NOTE: this does
+	// not break errors.As for a real caller -- see
+	// undeclared_error_codes_test.go.
 	return nil, fmt.Errorf("%w: pipeline %q execution %q", ErrExecutionNotFound, pipelineName, executionID)
 }

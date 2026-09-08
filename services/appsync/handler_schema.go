@@ -68,14 +68,18 @@ func (h *Handler) getSchemaCreationStatus(ctx context.Context, c *echo.Context, 
 	})
 }
 
-// getIntrospectionSchema handles GET /v1/apis/{apiId}/schema.
+// getIntrospectionSchema handles GET /v1/apis/{apiId}/schema. includeDirectives
+// defaults to true (unset or unparseable is treated as "not false"), matching
+// standard GraphQL introspection's default of including known directives.
 func (h *Handler) getIntrospectionSchema(ctx context.Context, c *echo.Context, apiID string) error {
 	format := c.Request().URL.Query().Get("format")
 	if format == "" {
 		format = "SDL"
 	}
 
-	sdl, err := h.Backend.GetIntrospectionSchema(apiID, format)
+	includeDirectives := c.Request().URL.Query().Get("includeDirectives") != "false"
+
+	sdl, err := h.Backend.GetIntrospectionSchema(apiID, format, includeDirectives)
 	if err != nil {
 		return h.handleError(ctx, c, "GetIntrospectionSchema", err)
 	}

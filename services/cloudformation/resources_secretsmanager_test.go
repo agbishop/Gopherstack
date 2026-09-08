@@ -49,7 +49,10 @@ func TestResourceCreator_SecretsManager_RotationSchedule_CreateDelete(t *testing
 			name:         "rotation_schedule",
 			logicalID:    "MyRotation",
 			resourceType: "AWS::SecretsManager::RotationSchedule",
-			props:        map[string]any{"SecretId": "my-secret"},
+			props: map[string]any{
+				"SecretId":          "my-secret",
+				"RotationLambdaARN": "arn:aws:lambda:us-east-1:000000000000:function:rotator",
+			},
 		},
 		{
 			name:         "secret_target_attachment",
@@ -69,6 +72,12 @@ func TestResourceCreator_SecretsManager_RotationSchedule_CreateDelete(t *testing
 
 			backends := newExtraServiceBackends(t)
 			rc := cloudformation.NewResourceCreator(backends)
+
+			// RotationSchedule now really calls RotateSecret, which requires the
+			// referenced secret to exist and already have a current version.
+			_, err := rc.Create(t.Context(), "MySecret", "AWS::SecretsManager::Secret",
+				map[string]any{"Name": "my-secret", "SecretString": "s3cr3t"}, nil, nil)
+			require.NoError(t, err)
 
 			physID, err := rc.Create(t.Context(), tt.logicalID, tt.resourceType, tt.props, nil, nil)
 			require.NoError(t, err)

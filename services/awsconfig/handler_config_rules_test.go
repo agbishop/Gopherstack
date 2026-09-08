@@ -404,6 +404,10 @@ func TestAWSConfigHandler_DescribeConfigRules_BackedByStorage(t *testing.T) {
 	}
 }
 
+// wantErr was awsconfig.ErrValidation until this pass; PutConfigRule's
+// deserializer declares InvalidParameterValueException, never
+// ValidationException (configservice@v1.68.4 deserializers.go) -- the old
+// assertion locked in the exact wire-code defect this pass fixed.
 func TestAWSConfigHandler_PutConfigRule_ValidationAndDescribe(t *testing.T) {
 	t.Parallel()
 
@@ -428,7 +432,7 @@ func TestAWSConfigHandler_PutConfigRule_ValidationAndDescribe(t *testing.T) {
 			ruleName := tt.body.(map[string]any)["ConfigRuleName"].(string)
 			err := h.Backend.PutConfigRule(&awsconfig.ConfigRule{ConfigRuleName: ruleName})
 			require.Error(t, err)
-			assert.ErrorIs(t, err, awsconfig.ErrValidation)
+			assert.ErrorIs(t, err, awsconfig.ErrInvalidParameterValue)
 		})
 	}
 }

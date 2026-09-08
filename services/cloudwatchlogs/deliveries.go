@@ -263,14 +263,28 @@ func (b *InMemoryBackend) DescribeDeliveryDestinations(nextToken string, limit i
 	return out[start:end], outToken
 }
 
-// DeleteDeliveryDestination removes a delivery destination by name.
+// DeleteDeliveryDestination removes a delivery destination by name. Real
+// AWS: "You can't delete a delivery destination if any current deliveries
+// are associated with it".
 func (b *InMemoryBackend) DeleteDeliveryDestination(name string) error {
 	b.mu.Lock("DeleteDeliveryDestination")
 	defer b.mu.Unlock()
 
-	if !b.deliveryDestinations.Delete(name) {
+	dest, ok := b.deliveryDestinations.Get(name)
+	if !ok {
 		return fmt.Errorf("%w: delivery destination %q not found", ErrDeliveryDestinationNotFound, name)
 	}
+
+	for _, d := range b.deliveries.All() {
+		if d.DeliveryDestinationArn == dest.Arn {
+			return fmt.Errorf(
+				"%w: delivery destination %q has associated deliveries",
+				ErrDeliveryDestinationInUse, name,
+			)
+		}
+	}
+
+	b.deliveryDestinations.Delete(name)
 
 	return nil
 }
@@ -421,14 +435,24 @@ func (b *InMemoryBackend) DescribeDeliverySources(nextToken string, limit int) (
 	return out[start:end], outToken
 }
 
-// DeleteDeliverySource removes a delivery source by name.
+// DeleteDeliverySource removes a delivery source by name. Real AWS: "You
+// can't delete a delivery source if any current deliveries are associated
+// with it".
 func (b *InMemoryBackend) DeleteDeliverySource(name string) error {
 	b.mu.Lock("DeleteDeliverySource")
 	defer b.mu.Unlock()
 
-	if !b.deliverySources.Delete(name) {
+	if !b.deliverySources.Has(name) {
 		return fmt.Errorf("%w: delivery source %q not found", ErrDeliverySourceNotFound, name)
 	}
+
+	for _, d := range b.deliveries.All() {
+		if d.DeliverySourceName == name {
+			return fmt.Errorf("%w: delivery source %q has associated deliveries", ErrDeliverySourceInUse, name)
+		}
+	}
+
+	b.deliverySources.Delete(name)
 
 	return nil
 }

@@ -5,14 +5,14 @@
 # AND check the SDK module for ops added since sdk_version. Only audit changed/new surface;
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: transcribe
-sdk_module: aws-sdk-go-v2/service/transcribe@v1.58.4   # version audited against
+sdk_module: aws-sdk-go-v2/service/transcribe@v1.64.0   # version audited against
 last_audit_commit:                                # unknown: gopherstack-6flj wrapper-key sweep pass ran without git access at write time, never backfilled -- gopherstack-33in
-last_audit_date: 2026-08-15
+last_audit_date: 2026-09-05
 overall: A            # A = genuine fixes found; B = already-accurate, proven op-by-op
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
 ops:
-  StartTranscriptionJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "added LanguageIdSettings threading; removed invented top-level OutputBucketName/OutputKey (not real TranscriptionJob fields -- output location only lives in Transcript.TranscriptFileUri)"}
+  StartTranscriptionJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "added LanguageIdSettings threading; removed invented top-level OutputBucketName/OutputKey (not real TranscriptionJob fields -- output location only lives in Transcript.TranscriptFileUri). 2026-09-05: FIXED four required-member gaps -- ContentRedaction.RedactionOutput was validated only when present, never required (real member is required, types.go ContentRedaction.RedactionOutput); Settings.ShowSpeakerLabels/MaxSpeakerLabels and ShowAlternatives/MaxAlternatives were each only bounds-checked one direction, never enforced as a required pair (types.go Settings doc: 'If you enable ShowSpeakerLabels...you must also include MaxSpeakerLabels', and the MaxSpeakerLabels-implies-ShowSpeakerLabels reverse direction, same pattern for Alternatives)."}
   GetTranscriptionJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "same fixes as Start; deferred-job polling advances QUEUED->IN_PROGRESS->COMPLETED correctly"}
   ListTranscriptionJobs: {wire: ok, errors: ok, state: ok, persist: ok, note: "added JobNameContains filter + missing TranscriptionJobSummary fields (StartTime, IdentifyLanguage, IdentifyMultipleLanguages, IdentifiedLanguageScore, ContentRedaction, ModelSettings, LanguageCodes, ToxicityDetection, OutputLocationType)"}
   DeleteTranscriptionJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "forgets resource tags"}
@@ -20,12 +20,12 @@ ops:
   GetCallAnalyticsJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-6flj: same LanguageIdSettings fix (shared Settings type)"}
   ListCallAnalyticsJobs: {wire: ok, errors: ok, state: ok, persist: ok, note: "added JobNameContains filter + missing StartTime on CallAnalyticsJobSummary. gopherstack-6flj: confirmed CallAnalyticsJobDetails/Skipped (per-summary) still a disclosed gap, see gaps:"}
   DeleteCallAnalyticsJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "forgets resource tags"}
-  CreateCallAnalyticsCategory: {wire: ok, errors: ok, state: ok, persist: ok, note: "CategoryProperties now includes CreateTime/LastUpdateTime/Tags (were silently dropped). gopherstack-6flj: all 4 Rule filter types (NonTalkTimeFilter/InterruptionFilter/TranscriptFilter/SentimentFilter) were missing AbsoluteTimeRange/RelativeTimeRange sub-parameters entirely -- added both shared types, threaded through since CallAnalyticsRule flows by reference"}
+  CreateCallAnalyticsCategory: {wire: ok, errors: ok, state: ok, persist: ok, note: "CategoryProperties now includes CreateTime/LastUpdateTime/Tags (were silently dropped). gopherstack-6flj: all 4 Rule filter types (NonTalkTimeFilter/InterruptionFilter/TranscriptFilter/SentimentFilter) were missing AbsoluteTimeRange/RelativeTimeRange sub-parameters entirely -- added both shared types, threaded through since CallAnalyticsRule flows by reference. 2026-09-05: FIXED -- Rules was entirely unvalidated: the real member is required (validators.go validateOpCreateCallAnalyticsCategoryInput, 'Rules is required'), bounded to 1-20 entries ('you must create between 1 and 20 rules', api_op_CreateCallAnalyticsCategory.go doc), and each populated TranscriptFilter/SentimentFilter had zero validation of its own required sub-fields (Targets/TranscriptFilterType, Sentiments). A client omitting Rules, sending 0 or 21+ rules, or an incomplete filter got HTTP 200 with silently accepted garbage."}
   GetCallAnalyticsCategory: {wire: ok, errors: ok, state: ok, persist: ok, note: "same CategoryProperties fix. gopherstack-6flj: same AbsoluteTimeRange/RelativeTimeRange fix"}
-  UpdateCallAnalyticsCategory: {wire: ok, errors: ok, state: ok, persist: ok, note: "same CategoryProperties fix. gopherstack-6flj: same AbsoluteTimeRange/RelativeTimeRange fix"}
+  UpdateCallAnalyticsCategory: {wire: ok, errors: ok, state: ok, persist: ok, note: "same CategoryProperties fix. gopherstack-6flj: same AbsoluteTimeRange/RelativeTimeRange fix. 2026-09-05: same Rules required/1-20/sub-field validation fix as Create (validators.go validateOpUpdateCallAnalyticsCategoryInput requires Rules identically)"}
   DeleteCallAnalyticsCategory: {wire: ok, errors: ok, state: ok, persist: ok, note: "forgets resource tags"}
   ListCallAnalyticsCategories: {wire: ok, errors: ok, state: ok, persist: ok, note: "same CategoryProperties fix. gopherstack-6flj: same AbsoluteTimeRange/RelativeTimeRange fix"}
-  CreateLanguageModel: {wire: ok, errors: ok, state: ok, persist: ok, note: "output now echoes InputDataConfig (was dropped)"}
+  CreateLanguageModel: {wire: ok, errors: ok, state: ok, persist: ok, note: "output now echoes InputDataConfig (was dropped). 2026-09-05: FIXED -- InputDataConfig itself was only validated (S3Uri/DataAccessRoleArn required) when non-nil, but the real member is required on the request (validators.go validateOpCreateLanguageModelInput: 'InputDataConfig is required'); a client omitting it entirely got HTTP 200 with no training data configured."}
   DeleteLanguageModel: {wire: ok, errors: ok, state: ok, persist: ok, note: "forgets resource tags"}
   DescribeLanguageModel: {wire: ok, errors: ok, state: ok, persist: ok, note: "added FailureReason field to LanguageModel (was missing entirely)"}
   ListLanguageModels: {wire: ok, errors: ok, state: ok, persist: ok, note: "added NameContains filter"}
@@ -44,11 +44,11 @@ ops:
   UpdateMedicalVocabulary: {wire: ok, errors: ok, state: ok, persist: ok, note: "output now includes LastModifiedTime"}
   DeleteMedicalVocabulary: {wire: ok, errors: ok, state: ok, persist: ok, note: "forgets resource tags"}
   ListMedicalVocabularies: {wire: ok, errors: ok, state: ok, persist: ok, note: "added NameContains filter + top-level Status field. gopherstack-6flj: same VocabularyInfo.LastModifiedTime fix as ListVocabularies (shared real type)"}
-  StartMedicalScribeJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "removed invented top-level OutputBucketName; added synthesized MedicalScribeOutput (ClinicalDocumentUri/TranscriptFileUri), a real field gopherstack omitted entirely. gopherstack-6flj FLAGSHIP FIX: ClinicalNoteGenerationSettings was wire-tagged at the TOP LEVEL of both the request and MedicalScribeJob response; the real StartMedicalScribeJobInput has NO top-level member of that name at all -- it exists only nested under Settings (types.MedicalScribeSettings.ClinicalNoteGenerationSettings, types/types.go:1058). Confirmed the real deserializer's default case silently skips unrecognized top-level keys (no error), so this was a true silent-empty wrapper-key bug in both directions. Moved the field into MedicalScribeSettings; the top-level field on both wire structs and the backend MedicalScribeJob struct was removed"}
+  StartMedicalScribeJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "removed invented top-level OutputBucketName; added synthesized MedicalScribeOutput (ClinicalDocumentUri/TranscriptFileUri), a real field gopherstack omitted entirely. gopherstack-6flj FLAGSHIP FIX: ClinicalNoteGenerationSettings was wire-tagged at the TOP LEVEL of both the request and MedicalScribeJob response; the real StartMedicalScribeJobInput has NO top-level member of that name at all -- it exists only nested under Settings (types.MedicalScribeSettings.ClinicalNoteGenerationSettings, types/types.go:1058). Confirmed the real deserializer's default case silently skips unrecognized top-level keys (no error), so this was a true silent-empty wrapper-key bug in both directions. Moved the field into MedicalScribeSettings; the top-level field on both wire structs and the backend MedicalScribeJob struct was removed. 2026-09-05 FLAGSHIP FIX: Settings was entirely unvalidated for its documented cross-field constraints (api_op_StartMedicalScribeJob.go doc: 'Settings...must set exactly one of ShowSpeakerLabels or ChannelIdentification to true. If ShowSpeakerLabels is true, MaxSpeakerLabels must also be set' and 'ChannelDefinitions...should be set if and only if the ChannelIdentification value of Settings is set to true') -- Settings itself wasn't even required (validators.go requires it), so a request with neither flag set, both flags set, ShowSpeakerLabels without MaxSpeakerLabels, or ChannelIdentification without matching ChannelDefinitions all got HTTP 200. Also added the missing MedicalScribeChannelDefinition.ParticipantRole required+enum check (types.go: 'This member is required', PATIENT/CLINICIAN)."}
   GetMedicalScribeJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "same fixes as Start. gopherstack-6flj: same ClinicalNoteGenerationSettings nesting fix"}
   ListMedicalScribeJobs: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (was partial): summary now trimmed to the real MedicalScribeJobSummary fields (no more Media/Settings/Tags/ChannelDefinitions leaking through) + added JobNameContains filter"}
   DeleteMedicalScribeJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "forgets resource tags"}
-  StartMedicalTranscriptionJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "removed invented top-level OutputBucketName/OutputKey. FIXED 2026-08-11 -- request field was wire-tagged MedicalContentIdentificationType (the shape's type name, not its wire field name); the real StartMedicalTranscriptionJobRequest field is ContentIdentificationType, so every real client's value was silently discarded. medicalTranscriptionJobSummary (ListMedicalTranscriptionJobs) already used the correct name"}
+  StartMedicalTranscriptionJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "removed invented top-level OutputBucketName/OutputKey. FIXED 2026-08-11 -- request field was wire-tagged MedicalContentIdentificationType (the shape's type name, not its wire field name); the real StartMedicalTranscriptionJobRequest field is ContentIdentificationType, so every real client's value was silently discarded. medicalTranscriptionJobSummary (ListMedicalTranscriptionJobs) already used the correct name. 2026-09-05: FIXED -- LanguageCode was validated against the full 75-code supportedLanguageCodes() allowlist shared with StartTranscriptionJob, but this op's doc is explicit: 'US English (en-US) is the only valid value for medical transcription jobs. Any other value you enter for language code results in a BadRequestException error' (api_op_StartMedicalTranscriptionJob.go). Any non-en-US code (e.g. fr-FR) was previously accepted."}
   GetMedicalTranscriptionJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "same fix as Start. FIXED 2026-08-11 -- response field (shared medicalTranscriptionJobOutput struct) had the same MedicalContentIdentificationType/ContentIdentificationType wire-name bug on the response side"}
   ListMedicalTranscriptionJobs: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (was partial): summary now trimmed to the real MedicalTranscriptionJobSummary fields, plus added the previously-missing OutputLocationType/ContentIdentificationType/Specialty/Type/StartTime fields + JobNameContains filter"}
   DeleteMedicalTranscriptionJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "forgets resource tags"}
@@ -336,6 +336,111 @@ Both `CallAnalyticsJobDetails`/`Skipped` and `MedicalScribeContext`/
 genuinely unimplemented this pass — not fixed, since both require modeling new
 backend-tracked concepts (skipped-analytics-feature reporting; patient-context
 input) with no existing data source, out of scope for a wire-shape sweep.
+
+### Bug found and fixed #5 (2026-09-05 required-member sweep) — six required-member and cross-field validation gaps
+
+Re-read every relevant `validateOp*`/nested `validate*` function in
+`transcribe@v1.58.4/validators.go` literally (per this pass's mandate: a
+validator testing `== nil` does not reject an empty non-nil value, and a
+required member with no corresponding gopherstack check lets a convenience
+default slip through where the real API rejects). Found six real gaps, all
+of the same class — a documented "this member is required" or "if X then Y
+is also required" constraint that gopherstack either didn't check at all or
+only checked in one direction:
+
+1. **`ContentRedaction.RedactionOutput`** is required
+   (`validateContentRedaction`, validators.go:851) but gopherstack's
+   `validateContentRedaction` (transcription_jobs.go) only validated its enum
+   value when non-empty, never rejecting an absent one. A client setting
+   `ContentRedaction.RedactionType` without `RedactionOutput` got HTTP 200.
+
+2. **`StartMedicalTranscriptionJob.LanguageCode`** must be `en-US` only
+   ("US English (en-US) is the only valid value for medical transcription
+   jobs. Any other value you enter for language code results in a
+   BadRequestException error," api_op_StartMedicalTranscriptionJob.go) —
+   gopherstack validated it against the full 75-code Transcribe language
+   allowlist shared with `StartTranscriptionJob` instead, so e.g. `fr-FR` was
+   silently accepted.
+
+3. **`CreateLanguageModel.InputDataConfig`** is a required top-level member
+   (validators.go:1102, `validateOpCreateLanguageModelInput`) but
+   gopherstack's `CreateLanguageModel` only validated `S3Uri`/
+   `DataAccessRoleArn` *inside* `InputDataConfig` when the pointer was
+   non-nil, never rejecting a request that omitted `InputDataConfig`
+   entirely.
+
+4. **`StartMedicalScribeJob.Settings`** was entirely unvalidated for its
+   documented cross-field constraints (api_op_StartMedicalScribeJob.go: "a
+   MedicalScribeSettings object that must set exactly one of
+   ShowSpeakerLabels or ChannelIdentification to true. If ShowSpeakerLabels
+   is true, MaxSpeakerLabels must also be set" and "ChannelDefinitions...
+   should be set if and only if the ChannelIdentification value of Settings
+   is set to true") — `Settings` itself wasn't even required
+   (validators.go:1520 requires it), so a request with neither flag set,
+   both flags set, `ShowSpeakerLabels` without `MaxSpeakerLabels`, or
+   `ChannelIdentification` without matching `ChannelDefinitions` all got
+   HTTP 200 with the mismatch silently ignored. This is the flagship find
+   this pass: it is the same "documented mutual-exclusivity constraint,
+   unenforced" bug class as sagemakerruntime's `Body`/`InputLocation`.
+   `MedicalScribeChannelDefinition.ParticipantRole` (required,
+   `PATIENT`/`CLINICIAN`, types.go:821) was also unvalidated.
+
+5. **`StartTranscriptionJob.Settings`**' `ShowSpeakerLabels`/
+   `MaxSpeakerLabels` and `ShowAlternatives`/`MaxAlternatives` pairs have the
+   identical bidirectional "must be set together" doc (types.go `Settings`:
+   "If you specify the MaxSpeakerLabels field, you must set the
+   ShowSpeakerLabels field to true" / "If you enable ShowSpeakerLabels in
+   your request, you must also include MaxSpeakerLabels", and the same
+   pattern for `ShowAlternatives`/`MaxAlternatives`). gopherstack only
+   bounds-checked the Max* field when both were non-zero/true, silently
+   accepting either field set alone.
+
+6. **`CreateCallAnalyticsCategory`/`UpdateCallAnalyticsCategory.Rules`** is a
+   required member (validators.go:1075,1665) bounded to 1-20 entries ("you
+   must create between 1 and 20 rules," api_op_CreateCallAnalyticsCategory.go)
+   — gopherstack validated neither presence nor count, and never checked a
+   populated `TranscriptFilter`'s (`Targets`/`TranscriptFilterType`, both
+   required, types.go:1865) or `SentimentFilter`'s (`Sentiments`, required,
+   types.go:1571) own required sub-fields.
+
+Fixed all six by adding the missing required/paired checks directly in each
+op's existing validation path (`transcription_jobs.go`,
+`medical_transcription_jobs.go`, `language_models.go`, `medical_scribe.go`,
+`call_analytics.go`); no wire-shape or persistence changes were needed since
+these are pure input-validation gaps.
+
+Regression tests (table-driven subtests, one per gap, in the existing
+per-op `_test.go` files):
+`TestContentRedaction_Validation/missing_redaction_output_rejected`,
+`TestStartMedicalTranscriptionJob_SpecialtyType/non_en_us_language_code_rejected`,
+`TestCreateLanguageModel_InputDataConfig/input_data_config_required`,
+`TestStartMedicalScribeJob_RequiredFields/{missing_settings_rejected,
+both_speaker_labels_and_channel_identification_rejected,
+neither_speaker_labels_nor_channel_identification_rejected,
+show_speaker_labels_without_max_speaker_labels_rejected,
+channel_identification_without_channel_definitions_rejected}`,
+`TestSettings_Validation/{show_speaker_labels_without_max_speaker_labels_rejected,
+max_speaker_labels_without_show_speaker_labels_rejected,
+show_alternatives_without_max_alternatives_rejected,
+max_alternatives_without_show_alternatives_rejected}`,
+`TestCreateCallAnalyticsCategory_Rules/{missing_rules_rejected,
+empty_rules_rejected,too_many_rules_rejected,
+transcript_filter_missing_targets_rejected,
+sentiment_filter_missing_sentiments_rejected}`. Each guard was neutered
+individually (fix line reverted to the pre-change content, confirmed the
+targeted subtest fails with the predicted "expected error but got nil"
+symptom, then restored byte-identical) before being trusted as a real fix.
+
+A wide set of pre-existing tests across `medical_scribe_test.go`,
+`call_analytics_test.go`, `language_models_test.go`, `handler_test.go`,
+`tags_test.go`, `persistence_test.go`, `wire_field_fixes_test.go`, and
+`wire_field_fixes_g8k9_test.go` previously exercised
+`StartMedicalScribeJob`/`CreateLanguageModel`/`CreateCallAnalyticsCategory`
+with fixtures that omitted these now-required fields (relying on the old
+convenience-default behavior incidentally, not asserting it as a documented
+contract) — all were updated to supply valid values, since their actual
+test intent (tag sync, snapshot round-trip, timestamp shape, summary
+trimming, etc.) is unrelated to the fields now being enforced.
 
 ### Looks-wrong-but-correct traps (don't re-flag)
 

@@ -113,7 +113,7 @@ type StorageBackend interface {
 	DeleteTargetGroup(tgID string) error
 	ListTargetGroups(
 		ctx context.Context,
-		tgType, serviceArn string,
+		tgType, vpcID string,
 		maxResults int32,
 		nextToken string,
 	) ([]*TargetGroupSummary, string, error)

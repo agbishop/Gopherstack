@@ -2,6 +2,7 @@ package databrew
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"time"
 
@@ -108,13 +109,56 @@ func (b *InMemoryBackend) UpdateDataset(
 	return nil
 }
 
+// datasetProjectName returns the name of a project currently referencing
+// name as its DatasetName, or "" if none does. Callers must hold at least
+// b.mu.RLock.
+func (b *InMemoryBackend) datasetProjectName(region, name string) string {
+	t := b.projectsTable(region)
+	for _, k := range snapshotKeys(t, projectKeyFn) {
+		p, ok := t.Get(k)
+		if ok && p.DatasetName == name {
+			return p.Name
+		}
+	}
+
+	return ""
+}
+
+// datasetJobName returns the name of a job currently referencing name as its
+// DatasetName, or "" if none does. Callers must hold at least b.mu.RLock.
+func (b *InMemoryBackend) datasetJobName(region, name string) string {
+	t := b.jobsTable(region)
+	for _, k := range snapshotKeys(t, jobKeyFn) {
+		j, ok := t.Get(k)
+		if ok && j.DatasetName == name {
+			return j.Name
+		}
+	}
+
+	return ""
+}
+
+// DeleteDataset rejects deleting a dataset still referenced by a project or
+// job: CreateJob's own validateJobResourceRefs already refuses to create a
+// job naming a nonexistent dataset, so allowing the reverse -- deleting a
+// dataset out from under an existing project/job -- would produce the exact
+// dangling reference that check exists to prevent. ConflictException is
+// modeled for DeleteDataset (aws-sdk-go-v2/service/databrew's
+// awsRestjson1_deserializeOpErrorDeleteDataset).
 func (b *InMemoryBackend) DeleteDataset(ctx context.Context, name string) error {
 	b.mu.Lock("DeleteDataset")
 	defer b.mu.Unlock()
 	region := getRegion(ctx, b.defaultRegion)
-	if !b.datasetsTable(region).Delete(name) {
+	if !b.datasetsTable(region).Has(name) {
 		return ErrNotFound
 	}
+	if p := b.datasetProjectName(region, name); p != "" {
+		return fmt.Errorf("%w: dataset %q is used by project %q", ErrConflict, name, p)
+	}
+	if j := b.datasetJobName(region, name); j != "" {
+		return fmt.Errorf("%w: dataset %q is used by job %q", ErrConflict, name, j)
+	}
+	b.datasetsTable(region).Delete(name)
 
 	return nil
 }

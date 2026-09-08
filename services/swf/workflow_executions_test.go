@@ -112,6 +112,25 @@ func TestStartWorkflowExecution_DeprecatedTypeRejected(t *testing.T) {
 	assert.ErrorIs(t, err, swf.ErrTypeDeprecated)
 }
 
+// TestStartWorkflowExecution_DeprecatedDomainRejected verifies ErrNotFound
+// (UnknownResourceFault) -- per DeprecateDomain's doc ("it cannot be used to
+// create new workflow executions or register new types"). StartWorkflowExecution
+// models UnknownResourceFault but no DomainDeprecatedFault.
+func TestStartWorkflowExecution_DeprecatedDomainRejected(t *testing.T) {
+	t.Parallel()
+
+	b := swf.NewInMemoryBackend()
+	require.NoError(t, b.RegisterDomain("dom", "", "NONE"))
+	require.NoError(t, b.DeprecateDomain("dom"))
+
+	_, err := b.StartWorkflowExecution(swf.StartWorkflowExecutionInput{
+		Domain:     "dom",
+		WorkflowID: "wf-1",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, swf.ErrNotFound)
+}
+
 // TestErrValidation_StartWorkflowExecution validates required fields.
 func TestErrValidation_StartWorkflowExecution(t *testing.T) {
 	t.Parallel()

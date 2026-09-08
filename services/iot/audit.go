@@ -796,6 +796,7 @@ func (b *InMemoryBackend) DeleteScheduledAudit(name string) error {
 		return fmt.Errorf("scheduled audit %q not found: %w", name, ErrResourceNotFound)
 	}
 	b.scheduledAudits.Delete(name)
+	delete(b.resourceTags, b.scheduledAuditARN(name))
 
 	return nil
 }
@@ -914,6 +915,7 @@ func (b *InMemoryBackend) DeleteMitigationAction(name string) error {
 		return fmt.Errorf("mitigation action %q not found: %w", name, ErrResourceNotFound)
 	}
 	b.mitigationActions.Delete(name)
+	delete(b.resourceTags, b.mitigationActionARN(name))
 
 	return nil
 }

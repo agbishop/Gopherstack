@@ -140,3 +140,35 @@ func TestGatewayResponses(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteRestAPI_ClearsGatewayResponses verifies that deleting a REST API
+// removes its custom gateway responses rather than leaking them in the
+// persisted snapshot under a restApiId no client can ever address again.
+func TestDeleteRestAPI_ClearsGatewayResponses(t *testing.T) {
+	t.Parallel()
+
+	b := apigateway.NewInMemoryBackend()
+
+	api, err := b.CreateRestAPI(apigateway.CreateRestAPIInput{Name: "gwr-cascade-api"})
+	require.NoError(t, err)
+
+	_, err = b.PutGatewayResponse(apigateway.PutGatewayResponseInput{
+		RestAPIID: api.ID, ResponseType: "DEFAULT_4XX", StatusCode: "400",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeleteRestAPI(api.ID))
+
+	var decoded struct {
+		Tables struct {
+			GatewayResponses []struct {
+				RestAPIID string `json:"restApiId"`
+			} `json:"gatewayResponses"`
+		} `json:"tables"`
+	}
+	require.NoError(t, json.Unmarshal(b.Snapshot(t.Context()), &decoded))
+	for _, gr := range decoded.Tables.GatewayResponses {
+		assert.NotEqual(t, api.ID, gr.RestAPIID,
+			"a deleted REST API's gateway responses must not survive in the persisted snapshot")
+	}
+}

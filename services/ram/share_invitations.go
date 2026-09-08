@@ -36,6 +36,11 @@ func (b *InMemoryBackend) AcceptResourceShareInvitation(
 		return nil, fmt.Errorf("%w: invitation %s not found", ErrInvitationNotFound, invitationARN)
 	}
 
+	now := time.Now()
+	if b.expireInvitationLocked(inv, now) {
+		return nil, fmt.Errorf("%w: invitation %s has expired", ErrInvitationExpired, invitationARN)
+	}
+
 	switch inv.Status {
 	case invitationStatusAccepted:
 		return nil, fmt.Errorf("%w: invitation %s already accepted", ErrInvitationAlreadyAccepted, invitationARN)
@@ -46,9 +51,46 @@ func (b *InMemoryBackend) AcceptResourceShareInvitation(
 	}
 
 	inv.Status = invitationStatusAccepted
-	inv.LastUpdatedTime = time.Now()
+	inv.LastUpdatedTime = now
 
 	return cloneInvitation(inv), nil
+}
+
+// expireInvitationLocked lazily transitions a still-PENDING invitation past its
+// expiry window to EXPIRED, disassociating its receiver's principal association
+// (see invitationExpiryWindow). Caller must hold the write lock. Returns true if inv
+// was transitioned by this call.
+func (b *InMemoryBackend) expireInvitationLocked(inv *ResourceShareInvitation, now time.Time) bool {
+	if inv.Status != invitationStatusPending || now.Sub(inv.CreationTime) < invitationExpiryWindow {
+		return false
+	}
+
+	inv.Status = invitationStatusExpired
+	inv.LastUpdatedTime = now
+	b.disassociateReceiverPrincipalsLocked(inv.ResourceShareARN, inv.ReceiverAccountID, now)
+
+	return true
+}
+
+// disassociateReceiverPrincipalsLocked marks any ASSOCIATED principal association on
+// shareARN belonging to receiverAcctID as DISASSOCIATED. Mirrors AWS: a principal who
+// never accepts an invitation (rejects it, or lets it expire) is disassociated. Caller
+// must hold the write lock.
+func (b *InMemoryBackend) disassociateReceiverPrincipalsLocked(shareARN, receiverAcctID string, now time.Time) {
+	for _, a := range b.associations {
+		if a.ResourceShareARN != shareARN ||
+			a.AssociationType != associationTypePrincipal ||
+			a.Status != associationStatusAssociated {
+			continue
+		}
+
+		if principalReceiverAccountID(a.AssociatedEntity) != receiverAcctID {
+			continue
+		}
+
+		a.Status = associationStatusDisassociated
+		a.LastUpdatedTime = now
+	}
 }
 
 // createInvitationLocked creates a pending invitation without acquiring a lock.
@@ -79,7 +121,7 @@ func principalReceiverAccountID(principal string) string {
 
 	// ARN format: arn:partition:service:region:account-id:...
 	parts := strings.SplitN(principal, ":", arnPartCountPrincipal)
-	if len(parts) >= arnAccountIdx+1 && parts[0] == "arn" {
+	if len(parts) >= arnAccountIdx+1 && parts[0] == arnPrefix {
 		return parts[arnAccountIdx]
 	}
 
@@ -114,12 +156,18 @@ func (b *InMemoryBackend) CreateInvitation(
 }
 
 // GetResourceShareInvitations returns invitations filtered by ARN or resource share ARN,
-// sorted by creation time (oldest first) for deterministic output.
+// sorted by creation time (oldest first) for deterministic output. Lazily expires any
+// still-PENDING invitation past invitationExpiryWindow before reading.
 func (b *InMemoryBackend) GetResourceShareInvitations(
 	invitationARNs, shareARNs []string,
 ) []*ResourceShareInvitation {
-	b.mu.RLock("GetResourceShareInvitations")
-	defer b.mu.RUnlock()
+	b.mu.Lock("GetResourceShareInvitations")
+	defer b.mu.Unlock()
+
+	now := time.Now()
+	for _, inv := range b.invitations.All() {
+		b.expireInvitationLocked(inv, now)
+	}
 
 	arnSet := make(map[string]struct{}, len(invitationARNs))
 
@@ -170,6 +218,11 @@ func (b *InMemoryBackend) RejectResourceShareInvitation(
 		return nil, fmt.Errorf("%w: invitation %s not found", ErrInvitationNotFound, invitationARN)
 	}
 
+	now := time.Now()
+	if b.expireInvitationLocked(inv, now) {
+		return nil, fmt.Errorf("%w: invitation %s has expired", ErrInvitationExpired, invitationARN)
+	}
+
 	switch inv.Status {
 	case invitationStatusAccepted:
 		return nil, fmt.Errorf("%w: invitation %s already accepted", ErrInvitationAlreadyAccepted, invitationARN)
@@ -180,7 +233,8 @@ func (b *InMemoryBackend) RejectResourceShareInvitation(
 	}
 
 	inv.Status = invitationStatusRejected
-	inv.LastUpdatedTime = time.Now()
+	inv.LastUpdatedTime = now
+	b.disassociateReceiverPrincipalsLocked(inv.ResourceShareARN, inv.ReceiverAccountID, now)
 
 	return cloneInvitation(inv), nil
 }

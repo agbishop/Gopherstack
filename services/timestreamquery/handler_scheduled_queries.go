@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/blackbirdworks/gopherstack/pkgs/collections"
 )
 
 // multiMeasureAttributeMappingInput mirrors types.MultiMeasureAttributeMapping.
@@ -357,6 +355,8 @@ func targetConfigurationView(sq *ScheduledQuery) map[string]any {
 }
 
 // scheduledQueryToView converts a ScheduledQuery to an API response map.
+// types.ScheduledQueryDescription (timestreamquery@v1.39.4 types/types.go:620)
+// has no Tags member -- do not echo sq.Tags here.
 func scheduledQueryToView(sq *ScheduledQuery) map[string]any {
 	view := map[string]any{
 		keyArn:         sq.Arn,
@@ -417,17 +417,6 @@ func scheduledQueryToView(sq *ScheduledQuery) map[string]any {
 	view["NextInvocationTime"] = epochSeconds(nextInvocationTime(sq.ScheduleExpression, now))
 	if !sq.LastRunTime.IsZero() {
 		view["PreviousInvocationTime"] = epochSeconds(sq.LastRunTime)
-	}
-
-	if len(sq.Tags) > 0 {
-		tagKeys := collections.SortedKeys(sq.Tags)
-
-		tagList := make([]map[string]string, 0, len(tagKeys))
-		for _, k := range tagKeys {
-			tagList = append(tagList, map[string]string{"Key": k, "Value": sq.Tags[k]})
-		}
-
-		view["Tags"] = tagList
 	}
 
 	return view

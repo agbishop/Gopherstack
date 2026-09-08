@@ -136,6 +136,8 @@ func (b *InMemoryBackend) ImportFindings(findings []map[string]any) (int, int, [
 			preserveCustomerManagedFields(stored, existing)
 		}
 
+		b.applyAutomationRules(stored)
+
 		b.findings[key] = stored
 		successCount++
 
@@ -300,7 +302,7 @@ func matchesFindingFilters(finding, filters map[string]any) bool {
 	// "Type" wire field in recordFindingHistory (see its nolint comment).
 	for _, fieldKey := range []string{
 		keyAwsAccountID, "GeneratorId", keyTitle, keyDescription,
-		"RecordState", "Type", "ResourceType", "ResourceId", //nolint:goconst // see comment above
+		"RecordState", "Type", "ResourceType", "ResourceId",
 	} {
 		fVal, _ := finding[fieldKey].(string)
 		if !matchesStringFilter(fVal, filters[fieldKey]) {

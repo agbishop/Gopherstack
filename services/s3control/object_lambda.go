@@ -1,9 +1,29 @@
 package s3control
 
 import (
+	"encoding/xml"
 	"fmt"
 	"sort"
+	"strings"
 )
+
+// ObjectLambdaConfigSink receives the Lambda ARN configured for an Object
+// Lambda access point's underlying bucket, resolved from
+// PutAccessPointConfigurationForObjectLambda's SupportingAccessPoint, so
+// GetObject through that bucket actually invokes the Lambda transform
+// instead of the config being accepted and never reaching S3 (gopherstack-6o0r).
+type ObjectLambdaConfigSink interface {
+	SetObjectLambdaConfig(bucket, lambdaARN string)
+}
+
+// SetObjectLambdaConfigSink wires the S3 backend that should receive
+// resolved Object Lambda configuration.
+func (b *InMemoryBackend) SetObjectLambdaConfigSink(sink ObjectLambdaConfigSink) {
+	b.mu.Lock("SetObjectLambdaConfigSink")
+	defer b.mu.Unlock()
+
+	b.objectLambdaSink = sink
+}
 
 // CreateAccessPointForObjectLambda creates an Object Lambda access point.
 func (b *InMemoryBackend) CreateAccessPointForObjectLambda(accountID, name string) *ObjectLambdaAccessPoint {
@@ -186,5 +206,65 @@ func (b *InMemoryBackend) PutAccessPointConfigurationForObjectLambda(
 	}
 	b.objectLambdaAPConfigs[key] = config
 
+	if b.objectLambdaSink != nil {
+		if bucket, lambdaARN, ok := b.resolveObjectLambdaTarget(accountID, config); ok {
+			b.objectLambdaSink.SetObjectLambdaConfig(bucket, lambdaARN)
+		}
+	}
+
 	return nil
+}
+
+// objectLambdaConfigXML mirrors the fields of types.ObjectLambdaConfiguration
+// (aws-sdk-go-v2/service/s3control@v1.73.4 types.go:1770) needed to resolve
+// the underlying bucket and Lambda ARN. It is unmarshalled from the raw inner
+// XML captured by createJobXMLCapture.
+type objectLambdaConfigXML struct {
+	SupportingAccessPoint        string `xml:"SupportingAccessPoint"`
+	TransformationConfigurations []struct {
+		ContentTransformation struct {
+			AwsLambda struct {
+				FunctionArn string `xml:"FunctionArn"`
+			} `xml:"AwsLambda"`
+		} `xml:"ContentTransformation"`
+	} `xml:"TransformationConfigurations>TransformationConfiguration"`
+}
+
+// resolveObjectLambdaTarget parses a PutAccessPointConfigurationForObjectLambda
+// config's SupportingAccessPoint and Lambda FunctionArn, then resolves the
+// supporting access point to its underlying bucket. Must be called with b.mu held.
+func (b *InMemoryBackend) resolveObjectLambdaTarget(accountID, config string) (string, string, bool) {
+	var parsed objectLambdaConfigXML
+	if err := xml.Unmarshal([]byte("<c>"+config+"</c>"), &parsed); err != nil {
+		return "", "", false
+	}
+
+	if len(parsed.TransformationConfigurations) == 0 {
+		return "", "", false
+	}
+
+	lambdaARN := parsed.TransformationConfigurations[0].ContentTransformation.AwsLambda.FunctionArn
+	if lambdaARN == "" {
+		return "", "", false
+	}
+
+	apName, ok := accessPointNameFromARN(parsed.SupportingAccessPoint)
+	if !ok {
+		return "", "", false
+	}
+
+	ap, ok := b.accessPoints.Get(accountID + ":" + apName)
+	if !ok {
+		return "", "", false
+	}
+
+	return ap.Bucket, lambdaARN, true
+}
+
+// accessPointNameFromARN extracts the name from an
+// "arn:aws:s3:region:account:accesspoint/name" ARN.
+func accessPointNameFromARN(arn string) (string, bool) {
+	_, name, found := strings.Cut(arn, "accesspoint/")
+
+	return name, found
 }

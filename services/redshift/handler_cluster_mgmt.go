@@ -17,13 +17,12 @@ type modifyClusterResponse struct {
 
 func (h *Handler) handleModifyCluster(vals url.Values) (any, error) {
 	id := vals.Get("ClusterIdentifier")
-	nodeType := vals.Get("NodeType")
-	masterUserPassword := vals.Get("MasterUserPassword")
 	numberOfNodesStr := vals.Get("NumberOfNodes")
 	applyImmediatelyStr := vals.Get("ApplyImmediately")
+	portStr := vals.Get("Port")
 
-	// Encrypted/EnhancedVpcRouting are tri-state on the wire (real
-	// ModifyClusterInput fields are *bool): only build a pointer when the
+	// Encrypted/EnhancedVpcRouting/PubliclyAccessible are tri-state on the wire
+	// (real ModifyClusterInput fields are *bool): only build a pointer when the
 	// form actually included the key, so "not specified" is distinguishable
 	// from "explicitly false" (e.g. decrypting a cluster).
 	var encrypted *bool
@@ -38,7 +37,11 @@ func (h *Handler) handleModifyCluster(vals url.Values) (any, error) {
 		enhancedVpcRouting = &b
 	}
 
-	applyImmediately := applyImmediatelyStr != "false"
+	var publiclyAccessible *bool
+	if v := vals.Get("PubliclyAccessible"); v != "" {
+		b := v == paramValueTrue
+		publiclyAccessible = &b
+	}
 
 	numberOfNodes := 0
 
@@ -51,15 +54,29 @@ func (h *Handler) handleModifyCluster(vals url.Values) (any, error) {
 		numberOfNodes = n
 	}
 
-	cluster, err := h.Backend.ModifyCluster(
-		id,
-		nodeType,
-		numberOfNodes,
-		masterUserPassword,
-		encrypted,
-		enhancedVpcRouting,
-		applyImmediately,
-	)
+	port := 0
+
+	if portStr != "" {
+		p, err := strconv.Atoi(portStr)
+		if err != nil {
+			return nil, fmt.Errorf("%w: Port must be an integer", ErrInvalidParameter)
+		}
+
+		port = p
+	}
+
+	cluster, err := h.Backend.ModifyCluster(id, ModifyClusterOptions{
+		NodeType:            vals.Get("NodeType"),
+		MasterUserPassword:  vals.Get("MasterUserPassword"),
+		ClusterVersion:      vals.Get("ClusterVersion"),
+		VpcSecurityGroupIDs: parseStringList(vals, "VpcSecurityGroupIds.VpcSecurityGroupId."),
+		NumberOfNodes:       numberOfNodes,
+		Port:                port,
+		Encrypted:           encrypted,
+		EnhancedVpcRouting:  enhancedVpcRouting,
+		PubliclyAccessible:  publiclyAccessible,
+		ApplyImmediately:    applyImmediatelyStr != "false",
+	})
 	if err != nil {
 		return nil, err
 	}

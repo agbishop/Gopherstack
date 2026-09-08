@@ -57,6 +57,11 @@ func (h *Handler) deleteRestAPIAction(b []byte) (int, any, error) {
 		return 0, nil, err
 	}
 
+	// Evict the cached routing trie -- otherwise every RestApi ID ever routed to
+	// stays in h.trieCache forever, since fresh random IDs never reuse a deleted
+	// entry's key for the cache to overwrite.
+	h.trieCache.Delete(input.RestAPIID)
+
 	return http.StatusAccepted, map[string]any{}, nil
 }
 

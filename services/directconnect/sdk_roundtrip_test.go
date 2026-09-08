@@ -106,6 +106,16 @@ func TestRoundTripLagLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int32(1), updated.MinimumLinks)
 
+	// DeleteLag rejects a LAG with active member connections
+	// (api_op_DeleteLag.go:12-13); disassociate both before deleting.
+	for _, c := range lag.Connections {
+		_, err = client.DisassociateConnectionFromLag(ctx, &directconnectsdk.DisassociateConnectionFromLagInput{
+			ConnectionId: c.ConnectionId,
+			LagId:        lag.LagId,
+		})
+		require.NoError(t, err)
+	}
+
 	deleted, err := client.DeleteLag(ctx, &directconnectsdk.DeleteLagInput{LagId: lag.LagId})
 	require.NoError(t, err)
 	require.Equal(t, types.LagStateDeleting, deleted.LagState)

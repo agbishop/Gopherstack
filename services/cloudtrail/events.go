@@ -34,6 +34,8 @@ func (b *InMemoryBackend) RecordEvent(ev Event) {
 	}
 
 	b.events = append(b.events, ev)
+
+	b.deliverLogFileLocked(ev)
 }
 
 // lookupAttrMatch reports whether an event matches a single lookup attribute.

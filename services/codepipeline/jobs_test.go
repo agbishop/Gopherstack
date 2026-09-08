@@ -467,8 +467,9 @@ func TestHandler_JobOperations(t *testing.T) {
 	require.NoError(t, err)
 
 	job := &codepipeline.Job{
-		ID:    "job-001",
-		Nonce: "nonce-001",
+		ID:       "job-001",
+		Nonce:    "nonce-001",
+		ClientID: "token",
 	}
 	h.Backend.AddJobInternal(job)
 

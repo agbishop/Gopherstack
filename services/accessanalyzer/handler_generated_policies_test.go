@@ -228,3 +228,49 @@ func TestStartPolicyGeneration_CloudTrailDetails(t *testing.T) {
 	_, hasAccessRole := ctp["accessRole"]
 	assert.False(t, hasAccessRole, "accessRole has no CloudTrailProperties counterpart")
 }
+
+// TestListPolicyGenerations_MaxResultsAndNextToken verifies
+// ListPolicyGenerationsInput's maxResults/nextToken (real wire query
+// params -- serializers.go:2571-2577 in aws-sdk-go-v2/service/accessanalyzer
+// @v1.51.4, both guarded by `!= nil`) are honored for pagination, instead of
+// always returning every job in one page with no nextToken.
+func TestListPolicyGenerations_MaxResultsAndNextToken(t *testing.T) {
+	t.Parallel()
+
+	b := accessanalyzer.NewInMemoryBackend("000000000000", "us-east-1")
+	h := accessanalyzer.NewHandler(b)
+
+	for range 3 {
+		_, err := b.StartPolicyGeneration("arn:aws:iam::000000000000:role/R", nil)
+		require.NoError(t, err)
+	}
+
+	firstRec := doRequest(t, h, http.MethodGet, "/policy/generation?maxResults=1", nil)
+	require.Equal(t, http.StatusOK, firstRec.Code)
+
+	var firstResp map[string]any
+	require.NoError(t, json.Unmarshal(firstRec.Body.Bytes(), &firstResp))
+
+	firstPage, ok := firstResp["policyGenerations"].([]any)
+	require.True(t, ok)
+	require.Len(t, firstPage, 1, "maxResults=1 must truncate the page to one job")
+
+	nextToken, ok := firstResp["nextToken"].(string)
+	require.True(t, ok && nextToken != "", "a truncated page must carry a nextToken")
+
+	secondRec := doRequest(t, h, http.MethodGet, "/policy/generation?maxResults=1&nextToken="+nextToken, nil)
+	require.Equal(t, http.StatusOK, secondRec.Code)
+
+	var secondResp map[string]any
+	require.NoError(t, json.Unmarshal(secondRec.Body.Bytes(), &secondResp))
+
+	secondPage, ok := secondResp["policyGenerations"].([]any)
+	require.True(t, ok)
+	require.Len(t, secondPage, 1)
+
+	first, ok := firstPage[0].(map[string]any)
+	require.True(t, ok)
+	second, ok := secondPage[0].(map[string]any)
+	require.True(t, ok)
+	assert.NotEqual(t, first["jobId"], second["jobId"], "the second page must not repeat the first job")
+}

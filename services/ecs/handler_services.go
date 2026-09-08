@@ -276,6 +276,7 @@ func (h *Handler) handleUpdateService(
 type deleteServiceInput struct {
 	Cluster string `json:"cluster,omitempty"`
 	Service string `json:"service"`
+	Force   bool   `json:"force,omitempty"`
 }
 
 type deleteServiceOutput struct {
@@ -286,7 +287,7 @@ func (h *Handler) handleDeleteService(
 	_ context.Context,
 	in *deleteServiceInput,
 ) (*deleteServiceOutput, error) {
-	svc, err := h.Backend.DeleteService(in.Cluster, in.Service)
+	svc, err := h.Backend.DeleteService(in.Cluster, in.Service, in.Force)
 	if err != nil {
 		return nil, err
 	}

@@ -13,6 +13,22 @@ const jobTransitionDelay = 150 * time.Millisecond // STARTING→RUNNING
 
 const jobSucceededDelay = 300 * time.Millisecond // RUNNING→SUCCEEDED
 
+const jobStopDelay = 150 * time.Millisecond // STOPPING→STOPPED
+
+// notionalRunMinutes is the real-Glue run duration that this mock's compressed
+// jobTransitionDelay+jobSucceededDelay timeline stands in for. JobRun.Timeout
+// is scaled against it, so a Timeout below this bites and anything at or above
+// it -- including Glue's 2880-minute default and ordinary values like 60 --
+// leaves a normally-completing run alone.
+const notionalRunMinutes = 10
+
+// jobRunTimeoutUnit is the compressed duration of one notional Glue minute.
+const jobRunTimeoutUnit = jobSucceededDelay / notionalRunMinutes
+
+// secondsPerMinute converts JobRun.Timeout (minutes) to JobRun.ExecutionTime
+// (seconds) for a timed-out run.
+const secondsPerMinute = 60
+
 // maxJobRetries is the maximum value for MaxRetries on a Glue job.
 const maxJobRetries = 10
 
@@ -392,6 +408,14 @@ func (b *InMemoryBackend) StartJobRunWithOptions(
 	b.jobRunReadyAt[jobName][run.ID] = now.Add(jobTransitionDelay)
 	b.jobRunDoneAt[jobName][run.ID] = now.Add(jobTransitionDelay + jobSucceededDelay)
 
+	if run.Timeout > 0 {
+		if b.jobRunTimeoutAt[jobName] == nil {
+			b.jobRunTimeoutAt[jobName] = make(map[string]time.Time)
+		}
+
+		b.jobRunTimeoutAt[jobName][run.ID] = now.Add(jobTransitionDelay + time.Duration(run.Timeout)*jobRunTimeoutUnit)
+	}
+
 	bm, ok := b.jobBookmarks.Get(jobName)
 	if !ok {
 		bm = &JobBookmark{JobName: jobName}
@@ -452,7 +476,8 @@ func (b *InMemoryBackend) BatchStopJobRun(
 	jobName string,
 	runIDs []string,
 ) ([]BatchStopJobRunSuccessfulSubmission, []BatchStopJobRunError) {
-	b.advanceStates(time.Now())
+	now := time.Now()
+	b.advanceStates(now)
 
 	b.mu.Lock("BatchStopJobRun")
 	defer b.mu.Unlock()
@@ -478,6 +503,13 @@ func (b *InMemoryBackend) BatchStopJobRun(
 				})
 			} else {
 				run.JobRunState = stateStopping
+
+				if b.jobRunStopAt[jobName] == nil {
+					b.jobRunStopAt[jobName] = make(map[string]time.Time)
+				}
+
+				b.jobRunStopAt[jobName][run.ID] = now.Add(jobStopDelay)
+
 				successes = append(successes, BatchStopJobRunSuccessfulSubmission{
 					JobName:  jobName,
 					JobRunID: id,

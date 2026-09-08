@@ -47,17 +47,22 @@ type SecretVersion struct {
 
 // Secret represents a stored secret including all versions.
 type Secret struct {
-	RotationRules                  *RotationRulesType        `json:"-"`
-	Tags                           *tags.Tags                `json:"Tags,omitempty"`
-	DeletedDate                    *float64                  `json:"DeletedDate,omitempty"`
-	ScheduledDeletionDate          *float64                  `json:"ScheduledDeletionDate,omitempty"`
-	Versions                       map[string]*SecretVersion `json:"-"`
-	LastChangedDate                *float64                  `json:"-"`
-	LastRotatedDate                *float64                  `json:"-"`
-	LastAccessedDate               *float64                  `json:"-"`
-	CreatedDate                    *float64                  `json:"-"`
-	Name                           string                    `json:"Name"`
-	region                         string
+	RotationRules         *RotationRulesType        `json:"-"`
+	Tags                  *tags.Tags                `json:"Tags,omitempty"`
+	DeletedDate           *float64                  `json:"DeletedDate,omitempty"`
+	ScheduledDeletionDate *float64                  `json:"ScheduledDeletionDate,omitempty"`
+	Versions              map[string]*SecretVersion `json:"-"`
+	LastChangedDate       *float64                  `json:"-"`
+	LastRotatedDate       *float64                  `json:"-"`
+	LastAccessedDate      *float64                  `json:"-"`
+	CreatedDate           *float64                  `json:"-"`
+	Name                  string                    `json:"Name"`
+	region                string
+	// PrimaryRegion is the origin region of a replica secret, or "" for a
+	// primary/standalone secret (whose own region is its primary region).
+	// Set by upsertReplicaSecretLocked when mirroring a primary's current
+	// version into a replica region's store.
+	PrimaryRegion                  string                               `json:"-"`
 	Description                    string                               `json:"Description,omitempty"`
 	KmsKeyID                       string                               `json:"-"`
 	RotationLambdaARN              string                               `json:"-"`

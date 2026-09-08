@@ -29,40 +29,34 @@ const (
 	nodegroupDiskSizeMax = 16384
 )
 
-// CreateNodegroup creates a new node group in a cluster.
-func (b *InMemoryBackend) CreateNodegroup(
+// resolveNodegroupVersion implements api_op_CreateNodegroup.go's Version
+// field doc: "By default, the Kubernetes version of the cluster is used,
+// and this is the only accepted specified value." An empty version defaults
+// to the cluster's; any other value must match exactly.
+func resolveNodegroupVersion(clusterName, version, clusterVersion string) (string, error) {
+	if version == "" {
+		return clusterVersion, nil
+	}
+
+	if version != clusterVersion {
+		return "", fmt.Errorf(
+			"%w: nodegroup version %s must match cluster %s's Kubernetes version %s",
+			ErrValidation, version, clusterName, clusterVersion,
+		)
+	}
+
+	return version, nil
+}
+
+// newNodegroupLocked builds a new Nodegroup value for CreateNodegroup. Must
+// be called with b.mu held.
+func (b *InMemoryBackend) newNodegroupLocked(
 	clusterName, nodegroupName, nodeRole, amiType, capacityType, version, releaseVersion string,
 	instanceTypes []string,
 	desiredSize, minSize, maxSize int32,
 	input NodegroupInput,
 	kv map[string]string,
-) (*Nodegroup, error) {
-	b.mu.Lock("CreateNodegroup")
-	defer b.mu.Unlock()
-
-	// CreateNodegroup's own deserializer (eks@v1.90.4 deserializers.go) has
-	// no ResourceNotFoundException case -- an unknown cluster here is
-	// ErrValidation (InvalidParameterException), not ErrNotFound.
-	if _, ok := b.clusters.Get(clusterName); !ok {
-		return nil, fmt.Errorf("%w: cluster %s not found", ErrValidation, clusterName)
-	}
-
-	if _, ok := b.nodegroups.Get(nodegroupKey(clusterName, nodegroupName)); ok {
-		return nil, fmt.Errorf(
-			"%w: nodegroup %s already exists in cluster %s",
-			ErrAlreadyExists,
-			nodegroupName,
-			clusterName,
-		)
-	}
-
-	if input.DiskSize != 0 && (input.DiskSize < nodegroupDiskSizeMin || input.DiskSize > nodegroupDiskSizeMax) {
-		return nil, fmt.Errorf(
-			"%w: diskSize %d is out of range [%d, %d]",
-			ErrValidation, input.DiskSize, nodegroupDiskSizeMin, nodegroupDiskSizeMax,
-		)
-	}
-
+) *Nodegroup {
 	ngARN := arn.Build(
 		"eks",
 		b.region,
@@ -89,7 +83,7 @@ func (b *InMemoryBackend) CreateNodegroup(
 		updateCfg = &uc
 	}
 
-	ng := &Nodegroup{
+	return &Nodegroup{
 		NodegroupName:  nodegroupName,
 		ClusterName:    clusterName,
 		ARN:            ngARN,
@@ -118,6 +112,52 @@ func (b *InMemoryBackend) CreateNodegroup(
 		CreatedAt: time.Now().UTC(),
 		Tags:      t,
 	}
+}
+
+// CreateNodegroup creates a new node group in a cluster.
+func (b *InMemoryBackend) CreateNodegroup(
+	clusterName, nodegroupName, nodeRole, amiType, capacityType, version, releaseVersion string,
+	instanceTypes []string,
+	desiredSize, minSize, maxSize int32,
+	input NodegroupInput,
+	kv map[string]string,
+) (*Nodegroup, error) {
+	b.mu.Lock("CreateNodegroup")
+	defer b.mu.Unlock()
+
+	// CreateNodegroup's own deserializer (eks@v1.90.4 deserializers.go) has
+	// no ResourceNotFoundException case -- an unknown cluster here is
+	// ErrValidation (InvalidParameterException), not ErrNotFound.
+	cluster, ok := b.clusters.Get(clusterName)
+	if !ok {
+		return nil, fmt.Errorf("%w: cluster %s not found", ErrValidation, clusterName)
+	}
+
+	version, err := resolveNodegroupVersion(clusterName, version, cluster.Version)
+	if err != nil {
+		return nil, err
+	}
+
+	if _, exists := b.nodegroups.Get(nodegroupKey(clusterName, nodegroupName)); exists {
+		return nil, fmt.Errorf(
+			"%w: nodegroup %s already exists in cluster %s",
+			ErrAlreadyExists,
+			nodegroupName,
+			clusterName,
+		)
+	}
+
+	if input.DiskSize != 0 && (input.DiskSize < nodegroupDiskSizeMin || input.DiskSize > nodegroupDiskSizeMax) {
+		return nil, fmt.Errorf(
+			"%w: diskSize %d is out of range [%d, %d]",
+			ErrValidation, input.DiskSize, nodegroupDiskSizeMin, nodegroupDiskSizeMax,
+		)
+	}
+
+	ng := b.newNodegroupLocked(
+		clusterName, nodegroupName, nodeRole, amiType, capacityType, version, releaseVersion,
+		instanceTypes, desiredSize, minSize, maxSize, input, kv,
+	)
 	b.nodegroups.Put(ng)
 
 	// Schedule async transition CREATING -> ACTIVE.

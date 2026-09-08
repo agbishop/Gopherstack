@@ -325,7 +325,9 @@ func (b *InMemoryBackend) ModifyVpcEndpointPayerResponsibility(
 
 // ---- EBS encryption defaults ----
 
-// DeleteVpcEndpoints deletes one or more VPC endpoints.
+// DeleteVpcEndpoints deletes the named VPC endpoints. Real AWS: "You can
+// only delete Gateway Load Balancer endpoints when the routes that are
+// associated with the endpoint are deleted".
 func (b *InMemoryBackend) DeleteVpcEndpoints(ids []string) ([]string, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("%w: at least one VpcEndpointId is required", ErrInvalidParameter)
@@ -336,14 +338,33 @@ func (b *InMemoryBackend) DeleteVpcEndpoints(ids []string) ([]string, error) {
 
 	var unsuccessful []string
 
+	var hasDependencyViolation bool
+
 	for _, id := range ids {
-		if _, ok := b.vpcEndpoints.Get(id); !ok {
+		ep, ok := b.vpcEndpoints.Get(id)
+		if !ok {
 			unsuccessful = append(unsuccessful, id)
 
 			continue
 		}
+
+		if ep.VpcEndpointType == vpcEndpointTypeGatewayLoadBalancer && len(ep.RouteTableIDs) > 0 {
+			unsuccessful = append(unsuccessful, id)
+			hasDependencyViolation = true
+
+			continue
+		}
+
 		b.vpcEndpoints.Delete(id)
 		delete(b.tags, id)
+	}
+
+	if hasDependencyViolation {
+		return unsuccessful, fmt.Errorf(
+			"%w: Gateway Load Balancer endpoints %v have routes; delete the routes first",
+			ErrDependencyViolation,
+			unsuccessful,
+		)
 	}
 
 	if len(unsuccessful) > 0 {

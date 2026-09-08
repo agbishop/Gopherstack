@@ -28,7 +28,7 @@ func TestGetJob_LastShareDetailsDecodesAsString(t *testing.T) {
 	j, err := b.CreateJob("arn:aws:iam::123456789012:role/role", "", "", nil, nil, nil, "")
 	require.NoError(t, err)
 
-	_, err = b.CreateResourceShare(j.ID)
+	_, err = b.CreateResourceShare(j.ID, "case-1234")
 	require.NoError(t, err)
 
 	out, err := client.GetJob(t.Context(), &mediaconvertsdk.GetJobInput{Id: aws.String(j.ID)})

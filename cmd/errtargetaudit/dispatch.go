@@ -17,6 +17,11 @@ import (
 
 const wrapOpFuncName = "WrapOp"
 
+// stringTypeName is the *ast.Ident.Name a plain `string`-typed field or map
+// key resolves to -- shared so identical literals across this file,
+// classifiers.go and dispatch_datamap.go don't trip goconst.
+const stringTypeName = "string"
+
 func isDispatchMapType(t ast.Expr, funcTypeNames map[string]bool) bool {
 	mt, ok := t.(*ast.MapType)
 	if !ok {
@@ -57,7 +62,7 @@ func binderFields(t ast.Expr) (string, string, bool) {
 
 		name := f.Names[0].Name
 
-		if id, isIdent := f.Type.(*ast.Ident); isIdent && id.Name == "string" {
+		if id, isIdent := f.Type.(*ast.Ident); isIdent && id.Name == stringTypeName {
 			nameField = name
 
 			continue
@@ -94,14 +99,59 @@ func collectDispatchEntries(
 	files []*ast.File,
 	pkgConsts map[string]string,
 	funcTypeNames map[string]bool,
+	funcs map[string]*ast.FuncDecl,
 ) map[string]ast.Expr {
 	out := map[string]ast.Expr{}
 
 	collectMapLiteralEntries(files, pkgConsts, funcTypeNames, out)
 	collectBinderSliceEntries(files, pkgConsts, out)
 	collectSwitchDispatchEntries(files, pkgConsts, out)
+	collectIfChainDispatchEntries(files, pkgConsts, out)
+	collectDynamicDispatchMapEntries(files, pkgConsts, funcs, out)
 
 	return out
+}
+
+// collectIfChainDispatchEntries handles forecast's shape (handler.go:131-153,
+// gopherstack-sgbw blind spot 3): `if action == "X" { return ... }` chained
+// via else-if, which collectSwitchDispatchEntries cannot see because it is
+// not a *ast.SwitchStmt. Like that collector, it does not check what the
+// comparison's other operand actually is -- only that ONE side resolves to a
+// string literal -- matching its "over-inclusive is fine" philosophy
+// (resolveOpRoots's own doc comment).
+func collectIfChainDispatchEntries(files []*ast.File, pkgConsts map[string]string, out map[string]ast.Expr) {
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			ifStmt, ok := n.(*ast.IfStmt)
+			if !ok {
+				return true
+			}
+
+			addIfChainEntry(ifStmt, pkgConsts, out)
+
+			return true
+		})
+	}
+}
+
+func addIfChainEntry(ifStmt *ast.IfStmt, pkgConsts map[string]string, out map[string]ast.Expr) {
+	bin, ok := ifStmt.Cond.(*ast.BinaryExpr)
+	if !ok || bin.Op != token.EQL {
+		return
+	}
+
+	key, resolved := resolveStringExpr(bin.Y, pkgConsts)
+	if !resolved {
+		key, resolved = resolveStringExpr(bin.X, pkgConsts)
+	}
+
+	if !resolved {
+		return
+	}
+
+	if ret := firstReturnExpr(ifStmt.Body); ret != nil {
+		out[key] = ret
+	}
 }
 
 func collectSwitchDispatchEntries(files []*ast.File, pkgConsts map[string]string, out map[string]ast.Expr) {

@@ -14,6 +14,19 @@ import (
 func TestMediaConvert_CreateResourceShare_TableTests(t *testing.T) {
 	t.Parallel()
 
+	newJob := func(h *mediaconvert.Handler) string {
+		rec := doRequest(t, h, http.MethodPost, "/2017-08-29/jobs", map[string]any{
+			"role": "arn:aws:iam::123456789012:role/MediaConvert_Role",
+		})
+		require.Equal(t, http.StatusCreated, rec.Code)
+		var resp map[string]any
+		require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+		job, _ := resp["job"].(map[string]any)
+		id, _ := job["id"].(string)
+
+		return id
+	}
+
 	tests := []struct {
 		setup      func(h *mediaconvert.Handler) string
 		body       func(jobID string) any
@@ -21,20 +34,11 @@ func TestMediaConvert_CreateResourceShare_TableTests(t *testing.T) {
 		wantStatus int
 	}{
 		{
-			name: "create_resource_share_valid_job",
-			setup: func(h *mediaconvert.Handler) string {
-				rec := doRequest(t, h, http.MethodPost, "/2017-08-29/jobs", map[string]any{
-					"role": "arn:aws:iam::123456789012:role/MediaConvert_Role",
-				})
-				require.Equal(t, http.StatusCreated, rec.Code)
-				var resp map[string]any
-				require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
-				job, _ := resp["job"].(map[string]any)
-				id, _ := job["id"].(string)
-
-				return id
+			name:  "create_resource_share_valid_job",
+			setup: newJob,
+			body: func(jobID string) any {
+				return map[string]any{"jobId": jobID, "supportCaseId": "case-1234"}
 			},
-			body:       func(jobID string) any { return map[string]any{"jobId": jobID} },
 			wantStatus: http.StatusNoContent,
 		},
 		{
@@ -44,9 +48,19 @@ func TestMediaConvert_CreateResourceShare_TableTests(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "create_resource_share_job_not_found",
-			setup:      func(_ *mediaconvert.Handler) string { return "nonexistent-job" },
-			body:       func(jobID string) any { return map[string]any{"jobId": jobID} },
+			name:  "create_resource_share_missing_support_case_id",
+			setup: newJob,
+			body: func(jobID string) any {
+				return map[string]any{"jobId": jobID}
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:  "create_resource_share_job_not_found",
+			setup: func(_ *mediaconvert.Handler) string { return "nonexistent-job" },
+			body: func(jobID string) any {
+				return map[string]any{"jobId": jobID, "supportCaseId": "case-1234"}
+			},
 			wantStatus: http.StatusNotFound,
 		},
 	}
@@ -68,7 +82,21 @@ func TestCreateResourceShare_EmptyJobID(t *testing.T) {
 	t.Parallel()
 
 	b := mediaconvert.NewInMemoryBackend(testAccountID, testRegion)
-	_, err := b.CreateResourceShare("")
+	_, err := b.CreateResourceShare("", "case-1234")
+	require.ErrorIs(t, err, mediaconvert.ErrValidation)
+}
+
+// TestCreateResourceShare_EmptySupportCaseID verifies empty supportCaseID
+// returns ErrValidation. CreateResourceShareInput.SupportCaseId is "This
+// member is required" (aws-sdk-go-v2 mediaconvert api_op_CreateResourceShare.go).
+func TestCreateResourceShare_EmptySupportCaseID(t *testing.T) {
+	t.Parallel()
+
+	b := mediaconvert.NewInMemoryBackend(testAccountID, testRegion)
+	j, err := b.CreateJob("arn:aws:iam::123:role/role", "", "", nil, nil, nil, "")
+	require.NoError(t, err)
+
+	_, err = b.CreateResourceShare(j.ID, "")
 	require.ErrorIs(t, err, mediaconvert.ErrValidation)
 }
 
@@ -81,7 +109,7 @@ func TestCreateResourceShare_SetsShareStatus(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "NOT_SHARED", j.ShareStatus)
 
-	_, err = b.CreateResourceShare(j.ID)
+	_, err = b.CreateResourceShare(j.ID, "case-1234")
 	require.NoError(t, err)
 
 	got, err := b.GetJob(j.ID)
@@ -108,7 +136,7 @@ func TestCreateResourceShare_ViaHTTP(t *testing.T) {
 	require.NoError(t, err)
 
 	rec := doRequest(t, h, http.MethodPost, "/2017-08-29/resourceShares",
-		map[string]any{"jobId": j.ID})
+		map[string]any{"jobId": j.ID, "supportCaseId": "case-1234"})
 	require.Equal(t, http.StatusNoContent, rec.Code)
 
 	got, err := b.GetJob(j.ID)

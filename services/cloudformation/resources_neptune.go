@@ -2,6 +2,7 @@ package cloudformation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -88,7 +89,13 @@ func (rc *ResourceCreator) deleteNeptuneInstance(ctx context.Context, arn string
 
 	id := resourceNameFromARN(arn)
 
-	_, err := rc.backends.Neptune.Backend.DeleteDBInstance(ctx, id)
+	// Neptune refuses to delete a cluster's only instance. During stack teardown
+	// the cluster is deleted next and cascades to its instances, so treat that
+	// rejection as satisfied rather than failing the stack.
+	if _, err := rc.backends.Neptune.Backend.DeleteDBInstance(ctx, id); err != nil &&
+		!errors.Is(err, neptune.ErrInvalidDBInstanceStateFault) {
+		return err
+	}
 
-	return err
+	return nil
 }

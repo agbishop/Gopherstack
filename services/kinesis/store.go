@@ -68,6 +68,20 @@ func streamNameFromARN(streamARN string) string {
 	return strings.TrimPrefix(parts[arnResourceIdx], "stream/")
 }
 
+// ContextAndNameFromStreamARN parses a Kinesis stream ARN
+// (arn:aws:kinesis:{region}:{account}:stream/{name}) and returns ctx with
+// the ARN's region attached alongside the plain stream name, for callers
+// outside this package that only hold the ARN -- cli.go's wireKinesisLambda
+// (gopherstack-qowd), so Kinesis-to-Lambda event source mappings resolve the
+// stream's actual region instead of always the account default.
+func ContextAndNameFromStreamARN(ctx context.Context, streamARN string) (context.Context, string) {
+	if region := regionFromARN(streamARN); region != "" {
+		ctx = contextWithRegion(ctx, region)
+	}
+
+	return ctx, streamNameFromARN(streamARN)
+}
+
 // resolveStreamNameAndRegion resolves the target stream name and per-request
 // region for an op accepting either StreamName or StreamARN. AWS documents,
 // on every op in this family (AddTagsToStream/RemoveTagsFromStream/
@@ -230,6 +244,9 @@ func (b *InMemoryBackend) Reset() {
 	b.fisThroughputFaults = make(map[string]map[string]*kinesisThrottleFault)
 	b.faultsMu.Unlock()
 	b.resourcePolicies = make(map[string]map[string]string)
+	b.minimumThroughputBillingCommitment = MinimumThroughputBillingCommitmentOutput{
+		Status: minimumThroughputBillingCommitmentDisabled,
+	}
 }
 
 // purgeStreamEntry removes s from the given region's stream map when it predates

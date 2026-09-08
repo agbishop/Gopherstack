@@ -50,6 +50,25 @@ func validateConnectionType(connectionType, connectionID string) error {
 	}
 }
 
+// validateIntegrationTypeForProtocol returns ErrBadRequest if integrationType
+// is AWS, HTTP, or MOCK on an HTTP API. Per api_op_CreateIntegration.go's
+// IntegrationType doc comment, those three are each "Supported only for
+// WebSocket APIs" -- only AWS_PROXY and HTTP_PROXY are valid on HTTP APIs.
+func validateIntegrationTypeForProtocol(integrationType, protocolType string) error {
+	if protocolType != protocolTypeHTTP {
+		return nil
+	}
+
+	switch integrationType {
+	case "AWS", integrationTypeHTTP, integrationTypeMock:
+		return fmt.Errorf(
+			"%w: integrationType %s is supported only for WebSocket APIs", ErrBadRequest, integrationType,
+		)
+	default:
+		return nil
+	}
+}
+
 // cloneIntegrationTLSConfig returns a deep copy of cfg, or nil if cfg is nil.
 func cloneIntegrationTLSConfig(cfg *IntegrationTLSConfig) *IntegrationTLSConfig {
 	if cfg == nil {
@@ -93,7 +112,7 @@ func buildIntegration(apiID, protocolType string, input CreateIntegrationInput) 
 	validTypes := map[string]bool{
 		"AWS":                    true,
 		integrationTypeHTTP:      true,
-		"MOCK":                   true,
+		integrationTypeMock:      true,
 		IntegrationTypeAWSProxy:  true,
 		integrationTypeHTTPProxy: true,
 	}
@@ -102,6 +121,10 @@ func buildIntegration(apiID, protocolType string, input CreateIntegrationInput) 
 			"%w: integrationType must be one of AWS, HTTP, MOCK, AWS_PROXY, HTTP_PROXY",
 			ErrBadRequest,
 		)
+	}
+
+	if err := validateIntegrationTypeForProtocol(input.IntegrationType, protocolType); err != nil {
+		return nil, err
 	}
 
 	// Apply AWS-realistic defaults.
@@ -312,6 +335,12 @@ func (b *InMemoryBackend) UpdateIntegration(
 	i, ok := b.integrations.Get(integrationKey(apiID, integrationID))
 	if !ok {
 		return nil, ErrIntegrationNotFound
+	}
+
+	if input.IntegrationType != "" {
+		if err := validateIntegrationTypeForProtocol(input.IntegrationType, api.ProtocolType); err != nil {
+			return nil, err
+		}
 	}
 
 	if input.TimeoutInMillis != 0 {

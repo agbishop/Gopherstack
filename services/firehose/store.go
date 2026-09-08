@@ -16,6 +16,7 @@ type InMemoryBackend struct {
 	lambda         LambdaInvoker
 	kinesisBackend KinesisReader
 	redshiftData   RedshiftDataExecutor
+	cwLogs         CWLogsBackend
 	registry       *store.Registry
 	// streams is a single flat table of every delivery stream, composite-keyed by
 	// "region|name" (see regionKey/deliveryStreamKeyFn in store_setup.go) so that
@@ -145,7 +146,14 @@ func (b *InMemoryBackend) SetRedshiftDataBackend(rd RedshiftDataExecutor) {
 	b.redshiftData = rd
 }
 
-// Reset clears all delivery streams, closing their tag registries to prevent leaks.
+// SetCWLogsBackend wires CloudWatch Logs so destinations with CloudWatchLoggingOptions
+// enabled actually deliver their error-log events, instead of only logging locally.
+func (b *InMemoryBackend) SetCWLogsBackend(cw CWLogsBackend) {
+	b.cwLogs = cw
+}
+
+// Reset clears all delivery streams, closing their tag registries and cancelling any
+// running Kinesis source pollers to prevent leaks.
 func (b *InMemoryBackend) Reset() {
 	b.mu.Lock("Reset")
 	defer b.mu.Unlock()
@@ -155,6 +163,18 @@ func (b *InMemoryBackend) Reset() {
 			s.Tags.Close()
 		}
 	}
+
+	for region, pollers := range b.pollerCancel {
+		for name, cancel := range pollers {
+			cancel()
+			delete(pollers, name)
+		}
+
+		delete(b.pollerCancel, region)
+	}
+
+	b.pendingFlush = make(map[string]map[string]struct{})
+	b.sortedNamesCache = make(map[string][]string)
 
 	b.registry.ResetAll()
 }

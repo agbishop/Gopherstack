@@ -75,12 +75,10 @@ func (b *InMemoryBackend) RotateSecret(
 	defer b.mu.Unlock()
 
 	id := resolveSecretID(input.SecretID)
-	secret, ok := b.secretGet(region, id)
-	if !ok {
-		return nil, ErrSecretNotFound
-	}
-	if secret.DeletedDate != nil {
-		return nil, ErrSecretDeleted
+
+	secret, lookupErr := b.resolvePrimaryOnlySecretLocked(region, input.SecretID, id)
+	if lookupErr != nil {
+		return nil, lookupErr
 	}
 
 	// Real AWS requires a rotation strategy -- a Lambda ARN, either already

@@ -43,8 +43,7 @@ func (h *Handler) handlePutDashboard(form url.Values, c *echo.Context) error {
 
 	messages, err := h.Backend.PutDashboard(name, body)
 	if err != nil {
-		var valErr *DashboardValidationError
-		if errors.As(err, &valErr) {
+		if valErr, ok := errors.AsType[*DashboardValidationError](err); ok {
 			return h.xmlDashboardValidationError(c, valErr.Messages)
 		}
 

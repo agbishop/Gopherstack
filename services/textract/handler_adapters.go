@@ -93,11 +93,15 @@ func (h *Handler) handleGetAdapter(
 	}, nil
 }
 
-// updateAdapterInput is the input for UpdateAdapter.
+// updateAdapterInput is the input for UpdateAdapter. AdapterName and
+// Description are *string: the real UpdateAdapterInput sends both only when
+// present (serializers.go's `!= nil` guards), so an omitted field must leave
+// the existing value unchanged while an explicit "" clears it.
 type updateAdapterInput struct {
-	AdapterID   string `json:"AdapterId"`
-	AutoUpdate  string `json:"AutoUpdate"`
-	Description string `json:"Description"`
+	AdapterName *string `json:"AdapterName"`
+	Description *string `json:"Description"`
+	AdapterID   string  `json:"AdapterId"`
+	AutoUpdate  string  `json:"AutoUpdate"`
 }
 
 // updateAdapterResponse is the response for UpdateAdapter. Real AWS's
@@ -120,7 +124,7 @@ func (h *Handler) handleUpdateAdapter(
 		return nil, fmt.Errorf("%w: AdapterId is required", errInvalidRequest)
 	}
 
-	adapter, err := h.Backend.UpdateAdapter(ctx, in.AdapterID, in.Description, in.AutoUpdate)
+	adapter, err := h.Backend.UpdateAdapter(ctx, in.AdapterID, in.AdapterName, in.Description, in.AutoUpdate)
 	if err != nil {
 		return nil, err
 	}

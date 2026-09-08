@@ -89,40 +89,40 @@ func TestHandler_DeleteRegexPatternSet(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		setup      func(*wafv2.Handler) string
-		body       func(id string) map[string]any
+		setup      func(*wafv2.Handler) (string, string)
+		body       func(id, lockToken string) map[string]any
 		name       string
 		wantStatus int
 	}{
 		{
 			name: "existing",
-			setup: func(h *wafv2.Handler) string {
+			setup: func(h *wafv2.Handler) (string, string) {
 				rps, _ := h.Backend.CreateRegexPatternSet(context.Background(), "my-regex", "REGIONAL", "", nil, nil)
 
-				return rps.ID
+				return rps.ID, rps.LockToken
 			},
-			body: func(id string) map[string]any {
-				return map[string]any{"Id": id, "Name": "my-regex", "Scope": "REGIONAL", "LockToken": ""}
+			body: func(id, lockToken string) map[string]any {
+				return map[string]any{"Id": id, "Name": "my-regex", "Scope": "REGIONAL", "LockToken": lockToken}
 			},
 			wantStatus: http.StatusOK,
 		},
 		{
 			name: "not_found",
-			setup: func(_ *wafv2.Handler) string {
-				return "nonexistent"
+			setup: func(_ *wafv2.Handler) (string, string) {
+				return "nonexistent", "tok"
 			},
-			body: func(id string) map[string]any {
-				return map[string]any{"Id": id, "Name": "x", "Scope": "REGIONAL", "LockToken": ""}
+			body: func(id, lockToken string) map[string]any {
+				return map[string]any{"Id": id, "Name": "x", "Scope": "REGIONAL", "LockToken": lockToken}
 			},
 			wantStatus: http.StatusBadRequest,
 		},
 		{
 			name: "missing_id",
-			setup: func(_ *wafv2.Handler) string {
-				return ""
+			setup: func(_ *wafv2.Handler) (string, string) {
+				return "", "tok"
 			},
-			body: func(_ string) map[string]any {
-				return map[string]any{"Name": "x", "Scope": "REGIONAL", "LockToken": ""}
+			body: func(_, lockToken string) map[string]any {
+				return map[string]any{"Name": "x", "Scope": "REGIONAL", "LockToken": lockToken}
 			},
 			wantStatus: http.StatusBadRequest,
 		},
@@ -133,8 +133,8 @@ func TestHandler_DeleteRegexPatternSet(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
-			id := tt.setup(h)
-			rec := doWafv2Request(t, h, "DeleteRegexPatternSet", tt.body(id))
+			id, lockToken := tt.setup(h)
+			rec := doWafv2Request(t, h, "DeleteRegexPatternSet", tt.body(id, lockToken))
 			assert.Equal(t, tt.wantStatus, rec.Code)
 		})
 	}
@@ -437,10 +437,18 @@ func TestHandler_UpdateRegexPatternSet(t *testing.T) {
 				id = createRegexPatternSetHelper(t, h, tt.setupName)
 			}
 
+			var lockToken string
+			if tt.name == "update_description" {
+				existing, err := h.Backend.GetRegexPatternSet(context.Background(), id)
+				require.NoError(t, err)
+				lockToken = existing.LockToken
+			}
+
 			var body any
 			if id != "" {
 				body = map[string]any{
-					"Id": id, "Name": tt.setupName, "Scope": "REGIONAL", "Description": tt.description,
+					"Id": id, "Name": tt.setupName, "Scope": "REGIONAL",
+					"Description": tt.description, "LockToken": lockToken,
 				}
 			} else {
 				body = map[string]any{}

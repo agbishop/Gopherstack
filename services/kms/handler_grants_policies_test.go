@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,6 +37,91 @@ func TestHandler_CreateGrant_WithRetiringPrincipal_ViaHTTP(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.NotEmpty(t, resp.GrantID)
 	assert.NotEmpty(t, resp.GrantToken)
+}
+
+// TestHandler_CreateGrant_NameTooLong_ViaHTTP is a regression test for
+// gopherstack-i4q8: CreateGrant declares LimitExceededException for exactly
+// this condition ("a length constraint or quota was exceeded"), not the
+// fabricated ValidationException.
+func TestHandler_CreateGrant_NameTooLong_ViaHTTP(t *testing.T) {
+	t.Parallel()
+	h := b2newHandler(t)
+	b := h.Backend.(*kms.InMemoryBackend)
+
+	out, err := b.CreateKey(context.Background(), &kms.CreateKeyInput{})
+	require.NoError(t, err)
+	keyID := out.KeyMetadata.KeyID
+
+	body, err := json.Marshal(map[string]any{
+		"KeyId":            keyID,
+		"GranteePrincipal": "arn:aws:iam::123456789012:role/grantee",
+		"Operations":       []string{"Encrypt"},
+		"Name":             strings.Repeat("x", 257),
+	})
+	require.NoError(t, err)
+
+	rec := b2postKMSOp(t, h, "CreateGrant", string(body))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp kms.ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "LimitExceededException", errResp.Type)
+	assert.NotEqual(t, "ValidationException", errResp.Type)
+
+	listBody, err := json.Marshal(map[string]string{"KeyId": keyID})
+	require.NoError(t, err)
+
+	listRec := b2postKMSOp(t, h, "ListGrants", string(listBody))
+	assert.Equal(t, http.StatusOK, listRec.Code)
+
+	var listOut kms.ListGrantsOutput
+	require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &listOut))
+	assert.Empty(t, listOut.Grants, "rejected CreateGrant must not create a grant")
+}
+
+// TestHandler_PutKeyPolicy_InvalidPolicyName_ViaHTTP is a regression test for
+// gopherstack-i4q8: PutKeyPolicy declares UnsupportedOperationException for a
+// PolicyName other than "default" ("a specified parameter is not supported"),
+// not the fabricated ValidationException.
+func TestHandler_PutKeyPolicy_InvalidPolicyName_ViaHTTP(t *testing.T) {
+	t.Parallel()
+	h := b2newHandler(t)
+	b := h.Backend.(*kms.InMemoryBackend)
+
+	out, err := b.CreateKey(context.Background(), &kms.CreateKeyInput{})
+	require.NoError(t, err)
+	keyID := out.KeyMetadata.KeyID
+
+	originalPolicy, err := b.GetKeyPolicy(context.Background(), &kms.GetKeyPolicyInput{
+		KeyID:      keyID,
+		PolicyName: "default",
+	})
+	require.NoError(t, err)
+
+	body, err := json.Marshal(map[string]string{
+		"KeyId":      keyID,
+		"PolicyName": "custom",
+		"Policy":     `{"Version":"2012-10-17","Statement":[]}`,
+	})
+	require.NoError(t, err)
+
+	rec := b2postKMSOp(t, h, "PutKeyPolicy", string(body))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp kms.ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "UnsupportedOperationException", errResp.Type)
+	assert.NotEqual(t, "ValidationException", errResp.Type)
+
+	afterPolicy, err := b.GetKeyPolicy(context.Background(), &kms.GetKeyPolicyInput{
+		KeyID:      keyID,
+		PolicyName: "default",
+	})
+	require.NoError(t, err)
+	assert.Equal(
+		t, originalPolicy.Policy, afterPolicy.Policy,
+		"rejected PutKeyPolicy must not change the stored policy",
+	)
 }
 
 // TestKMSGrantOperations verifies CreateGrant, ListGrants, RevokeGrant, and RetireGrant.

@@ -78,8 +78,27 @@ func (b *InMemoryBackend) DeleteLFTag(catalogID, tagKey string) error {
 	}
 
 	b.lfTags.Delete(k)
+	b.detachLFTagFromAllResourcesLocked(catalogID, tagKey)
 
 	return nil
+}
+
+// detachLFTagFromAllResourcesLocked removes every resourceLFTags entry for
+// (catalogID, tagKey). Tag keys are reusable, so a stale attachment would let
+// a re-created key inherit LFTagPolicy grants matched against it. Caller must
+// hold b.mu for writing.
+func (b *InMemoryBackend) detachLFTagFromAllResourcesLocked(catalogID, tagKey string) {
+	for resourceKey, pairs := range b.resourceLFTags {
+		remaining := slices.DeleteFunc(slices.Clone(pairs), func(p LFTagPair) bool {
+			return p.CatalogID == catalogID && p.TagKey == tagKey
+		})
+
+		if len(remaining) == 0 {
+			delete(b.resourceLFTags, resourceKey)
+		} else {
+			b.resourceLFTags[resourceKey] = remaining
+		}
+	}
 }
 
 // GetLFTag returns the LF tag for the given catalog and key.

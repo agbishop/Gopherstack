@@ -415,6 +415,41 @@ func TestParameterLabels_VersionSpecific(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "stable")
 	assert.Contains(t, rec.Body.String(), "latest")
 }
+func TestParameterLabels_GhostAfterDeleteAndRecreate(t *testing.T) {
+	t.Parallel()
+
+	b := ssm.NewInMemoryBackend()
+	ctx := context.Background()
+
+	_, err := b.PutParameter(ctx, &ssm.PutParameterInput{
+		Name: "/app/ghost", Value: "v1", Type: "String",
+	})
+	require.NoError(t, err)
+
+	_, err = b.LabelParameterVersion(ctx, &ssm.LabelParameterVersionInput{
+		Name:   "/app/ghost",
+		Labels: []string{"prod"},
+	})
+	require.NoError(t, err)
+
+	_, err = b.DeleteParameter(ctx, &ssm.DeleteParameterInput{Name: "/app/ghost"})
+	require.NoError(t, err)
+
+	assert.False(t, b.HasParameterLabelEntry("/app/ghost"),
+		"parameter label entry must be cleaned up after DeleteParameter")
+
+	_, err = b.PutParameter(ctx, &ssm.PutParameterInput{
+		Name: "/app/ghost", Value: "v2", Type: "String",
+	})
+	require.NoError(t, err)
+
+	// "prod" was never labeled on this new incarnation of the parameter --
+	// resolving it must fail like any other unknown label, not silently
+	// return version 1 of the recreated parameter.
+	_, err = b.GetParameter(ctx, &ssm.GetParameterInput{Name: "/app/ghost:prod"})
+	require.ErrorIs(t, err, ssm.ErrParameterNotFound)
+}
+
 func TestParameterLabels_UnlabelSpecificVersion(t *testing.T) {
 	t.Parallel()
 

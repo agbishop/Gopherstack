@@ -492,11 +492,38 @@ func (b *InMemoryBackend) precheckAuthLocked(pool *UserPool, clientID, authFlow 
 	return nil
 }
 
+// defaultTempPasswordValidityDays is real Cognito's TemporaryPasswordValidityDays default
+// when a pool's PasswordPolicy doesn't set one (0 in this backend's wire representation).
+const defaultTempPasswordValidityDays = 7
+
+// tempPasswordExpired reports whether user's temporary password has outlived pool's
+// PasswordPolicy.TemporaryPasswordValidityDays. A zero TempPasswordIssuedAt (users
+// persisted before this field existed) is treated as never-expiring.
+func tempPasswordExpired(pool *UserPool, user *User) bool {
+	if user.TempPasswordIssuedAt.IsZero() {
+		return false
+	}
+
+	days := defaultTempPasswordValidityDays
+	if pool.PasswordPolicy != nil && pool.PasswordPolicy.TemporaryPasswordValidityDays > 0 {
+		days = pool.PasswordPolicy.TemporaryPasswordValidityDays
+	}
+
+	return time.Since(user.TempPasswordIssuedAt) > time.Duration(days)*24*time.Hour
+}
+
 // postCredentialCheckLocked runs once a caller's credential (password or SRP password
 // claim) has been verified: it gates on FORCE_CHANGE_PASSWORD and pool MFA
 // configuration before finally issuing tokens. Caller must hold the write lock.
 func (b *InMemoryBackend) postCredentialCheckLocked(pool *UserPool, clientID string, user *User) (*AuthResult, error) {
 	if user.Status == UserStatusForceChangePassword {
+		if tempPasswordExpired(pool, user) {
+			return nil, fmt.Errorf(
+				"%w: temporary password has expired and must be reset by an administrator",
+				ErrNotAuthorized,
+			)
+		}
+
 		return b.newMFASession(pool, clientID, user.Username, challengeNewPasswordRequired), nil
 	}
 
@@ -735,6 +762,7 @@ func (b *InMemoryBackend) AdminResetUserPassword(userPoolID, username string) er
 
 	u.Status = UserStatusForceChangePassword
 	u.UpdatedAt = time.Now()
+	u.TempPasswordIssuedAt = u.UpdatedAt
 
 	// Revoke all existing refresh tokens for the user so active sessions are invalidated.
 	b.deleteRefreshTokensForUserLocked(userPoolID, username)
@@ -833,14 +861,16 @@ func (b *InMemoryBackend) SignUpWithValidation(
 
 	lambdaAutoConfirm, lambdaAutoVerifyEmail, lambdaAutoVerifyPhone := parsePreSignUpResponse(preSignUpResp)
 
-	// Auto-verify attributes that are configured on the pool, or that the PreSignUp
-	// trigger explicitly requested verification for.
+	// AutoVerifiedAttributes only selects which contact channel Cognito sends
+	// the confirmation code to; it does not skip confirmation itself -- a
+	// self-signed-up user always starts UNCONFIRMED unless the PreSignUp
+	// trigger's autoConfirmUser says otherwise (AWS docs, "Signing up and
+	// confirming user accounts"). Only lambdaAutoConfirm may bypass the code.
 	autoConfirmed := lambdaAutoConfirm
 
 	for _, attr := range pool.AutoVerifiedAttributes {
 		if _, hasAttr := attrs[attr]; hasAttr {
 			attrs[attr+"_verified"] = attrVerifiedTrue
-			autoConfirmed = true
 		}
 	}
 

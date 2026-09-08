@@ -22,6 +22,7 @@ const (
 	millisToSeconds  = 1000.0
 
 	dataCatalogTypeFederated = "FEDERATED"
+	dataCatalogTypeGlue      = "GLUE"
 
 	stateAuto       = "AUTO"
 	stateSucceeded  = "SUCCEEDED"
@@ -40,7 +41,7 @@ const (
 // validDataCatalogTypes is the set of accepted DataCatalog type values.
 func isValidDataCatalogType(t string) bool {
 	switch t {
-	case "LAMBDA", "GLUE", "HIVE", dataCatalogTypeFederated:
+	case "LAMBDA", dataCatalogTypeGlue, "HIVE", dataCatalogTypeFederated:
 		return true
 	default:
 		return false
@@ -55,9 +56,10 @@ func isValidDataCatalogType(t string) bool {
 // and resourceTags remain plain maps -- see the store_setup.go file doc for
 // why each is left as-is.
 type InMemoryBackend struct {
-	registry                      *store.Registry
-	workGroups                    *store.Table[WorkGroup]
-	namedQueries                  *store.Table[NamedQuery]
+	glueSource                    GlueMetadataSource
+	s3                            S3Storer
+	queryExecutions               *store.Table[QueryExecution]
+	mu                            *lockmetrics.RWMutex
 	namedQueriesByWorkGroup       *store.Index[NamedQuery]
 	dataCatalogs                  *store.Table[DataCatalog]
 	notebooks                     *store.Table[Notebook]
@@ -67,19 +69,33 @@ type InMemoryBackend struct {
 	resourceTags                  map[string]map[string]string
 	preparedStatements            *store.Table[PreparedStatement]
 	preparedStatementsByWorkGroup *store.Index[PreparedStatement]
-	queryExecutions               *store.Table[QueryExecution]
-	queryExecutionsByWorkGroup    *store.Index[QueryExecution]
-	sessions                      *store.Table[Session]
+	registry                      *store.Registry
+	namedQueries                  *store.Table[NamedQuery]
 	calculations                  *store.Table[CalculationExecution]
+	queryExecutionsByWorkGroup    *store.Index[QueryExecution]
 	capacityReservations          *store.Table[CapacityReservation]
 	capacityAssignments           *store.Table[CapacityAssignmentConfiguration]
 	databases                     *store.Table[Database]
 	databasesByCatalog            *store.Index[Database]
 	tables                        *store.Table[TableMetadata]
 	tablesByDatabase              *store.Index[TableMetadata]
-	mu                            *lockmetrics.RWMutex
-	accountID                     string
+	sessions                      *store.Table[Session]
+	workGroups                    *store.Table[WorkGroup]
 	region                        string
+	accountID                     string
+}
+
+// SetGlueMetadataSource wires a GLUE-type DataCatalog's database/table reads
+// to real Glue state instead of Athena's internal simulation.
+func (b *InMemoryBackend) SetGlueMetadataSource(src GlueMetadataSource) {
+	b.glueSource = src
+}
+
+// SetS3Backend wires S3 so a succeeded query execution's result actually
+// writes an object to ResultConfiguration.OutputLocation, instead of only
+// storing/echoing the configuration.
+func (b *InMemoryBackend) SetS3Backend(s3 S3Storer) {
+	b.s3 = s3
 }
 
 // NewInMemoryBackend creates a new InMemoryBackend and seeds the default "primary" workgroup.
@@ -121,7 +137,7 @@ func (b *InMemoryBackend) seedDefaultMetadata() {
 
 	b.dataCatalogs.Put(&DataCatalog{
 		Name:   awsDataCatalog,
-		Type:   "GLUE",
+		Type:   dataCatalogTypeGlue,
 		Status: "CREATE_COMPLETE",
 	})
 

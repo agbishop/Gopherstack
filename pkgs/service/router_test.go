@@ -177,19 +177,15 @@ func BenchmarkRouter_Dispatch(b *testing.B) {
 	for i := range 100 {
 		name := "Service_" + string(rune('A'+i))
 		_ = registry.Register(&mockBenchService{
-			mockService: mockService{
-				name:     name,
-				target:   name + ".",
-				priority: 50,
-			},
+			name:     name,
+			target:   name + ".",
+			priority: 50,
 		})
 	}
 	_ = registry.Register(&mockBenchService{
-		mockService: mockService{
-			name:     "TargetService",
-			target:   "TargetService.",
-			priority: 10,
-		},
+		name:     "TargetService",
+		target:   "TargetService.",
+		priority: 10,
 	})
 
 	router := service.NewServiceRouter(registry)

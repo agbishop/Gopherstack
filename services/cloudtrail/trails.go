@@ -1,13 +1,33 @@
 package cloudtrail
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	sdk_s3 "github.com/aws/aws-sdk-go-v2/service/s3"
+
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
 	"github.com/blackbirdworks/gopherstack/pkgs/tags"
 )
+
+// checkBucketLocked verifies bucket exists via the wired S3 backend. A no-op
+// when S3 is unwired (b.s3 == nil), matching this repo's
+// unwired-hook-stays-permissive convention. Callers must hold b.mu.
+func (b *InMemoryBackend) checkBucketLocked(bucket string) error {
+	if b.s3 == nil {
+		return nil
+	}
+
+	_, err := b.s3.HeadBucket(context.Background(), &sdk_s3.HeadBucketInput{Bucket: aws.String(bucket)})
+	if err != nil {
+		return fmt.Errorf("%w: bucket %s does not exist", ErrS3BucketNotFound, bucket)
+	}
+
+	return nil
+}
 
 // CreateTrail creates a new CloudTrail trail.
 func (b *InMemoryBackend) CreateTrail(
@@ -21,6 +41,10 @@ func (b *InMemoryBackend) CreateTrail(
 
 	if b.trails.Has(name) {
 		return nil, fmt.Errorf("%w: trail %s already exists", ErrAlreadyExists, name)
+	}
+
+	if err := b.checkBucketLocked(s3BucketName); err != nil {
+		return nil, err
 	}
 
 	trailARN := arn.Build("cloudtrail", b.region, b.accountID, "trail/"+name)
@@ -124,6 +148,10 @@ func (b *InMemoryBackend) UpdateTrail(
 	}
 
 	if s3BucketName != "" {
+		if err := b.checkBucketLocked(s3BucketName); err != nil {
+			return nil, err
+		}
+
 		t.S3BucketName = s3BucketName
 	}
 	if s3KeyPrefix != "" {
@@ -170,6 +198,8 @@ func (b *InMemoryBackend) DeleteTrail(nameOrARN string) error {
 
 	t.Tags.Close()
 	b.trails.Delete(t.Name)
+	delete(b.eventConfigs, t.TrailARN)
+	b.resourcePolicies.Delete(t.TrailARN)
 
 	return nil
 }

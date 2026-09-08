@@ -24,6 +24,43 @@ func TestMultipleResetCycle(t *testing.T) {
 	}
 }
 
+// TestReset_MinimumThroughputBillingCommitment verifies that Reset() restores
+// the account's billing commitment to DISABLED, not the zero value (empty
+// status string).
+func TestReset_MinimumThroughputBillingCommitment(t *testing.T) {
+	t.Parallel()
+
+	b := kinesis.NewInMemoryBackend()
+	ctx := context.Background()
+
+	before, err := b.DescribeAccountSettings(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "DISABLED", before.MinimumThroughputBillingCommitment.Status)
+
+	_, err = b.UpdateAccountSettings(ctx, &kinesis.UpdateAccountSettingsInput{
+		MinimumThroughputBillingCommitment: &kinesis.MinimumThroughputBillingCommitmentInput{
+			Status: "ENABLED",
+		},
+	})
+	require.NoError(t, err)
+
+	enabled, err := b.DescribeAccountSettings(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "ENABLED", enabled.MinimumThroughputBillingCommitment.Status)
+
+	b.Reset()
+
+	after, err := b.DescribeAccountSettings(ctx)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		"DISABLED",
+		after.MinimumThroughputBillingCommitment.Status,
+		"reset must restore DISABLED, not the zero value",
+	)
+	assert.True(t, after.MinimumThroughputBillingCommitment.StartedAt.IsZero())
+}
+
 // TestSeedHelper verifies AddStreamInternal works.
 func TestSeedHelper(t *testing.T) {
 	t.Parallel()

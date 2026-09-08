@@ -115,6 +115,92 @@ func TestCreateBroker_WithSecurityGroups_RoundTrip(t *testing.T) {
 	assert.Len(t, sgs, 2)
 }
 
+// TestCreateBroker_SecurityGroupsCount_Validated locks in
+// CreateBrokerInput.SecurityGroups' documented length bound ("1 minimum,
+// 125 maximum", api_op_CreateBroker.go in aws-sdk-go-v2/service/mq). The
+// field is optional (no "This member is required" doc marker), so omitting
+// it entirely must still succeed -- only an explicitly supplied
+// out-of-bounds list is rejected.
+func TestCreateBroker_SecurityGroupsCount_Validated(t *testing.T) {
+	t.Parallel()
+
+	const (
+		createMaxSecurityGroups = 125
+		createOverMax           = createMaxSecurityGroups + 1
+	)
+
+	tests := []struct {
+		name           string
+		brokerName     string
+		securityGroups []string
+		wantStatus     int
+	}{
+		{"omitted", "sg-count-omitted", nil, http.StatusOK},
+		{"within-bounds", "sg-count-within", []string{"sg-1", "sg-2"}, http.StatusOK},
+		{"explicit-empty", "sg-count-empty", []string{}, http.StatusBadRequest},
+		{"over-max", "sg-count-overmax", make([]string, createOverMax), http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			body := map[string]any{
+				"brokerName": tt.brokerName,
+				"engineType": mq.EngineTypeActiveMQ,
+			}
+			if tt.securityGroups != nil {
+				body["securityGroups"] = tt.securityGroups
+			}
+
+			rec := doRequest(t, h, http.MethodPost, "/v1/brokers", body)
+			assert.Equal(t, tt.wantStatus, rec.Code, rec.Body.String())
+		})
+	}
+}
+
+// TestUpdateBroker_SecurityGroupsCount_Validated locks in
+// UpdateBrokerInput.SecurityGroups' documented length bound ("1 minimum, 5
+// maximum", api_op_UpdateBroker.go) -- deliberately smaller than
+// CreateBroker's 125.
+func TestUpdateBroker_SecurityGroupsCount_Validated(t *testing.T) {
+	t.Parallel()
+
+	const (
+		updateMaxSecurityGroups = 5
+		updateOverMax           = updateMaxSecurityGroups + 1
+	)
+
+	tests := []struct {
+		name           string
+		securityGroups []string
+		wantStatus     int
+	}{
+		{"omitted", nil, http.StatusOK},
+		{"within-bounds", []string{"sg-1", "sg-2"}, http.StatusOK},
+		{"explicit-empty", []string{}, http.StatusBadRequest},
+		{"over-max", make([]string, updateOverMax), http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			brokerID := createTestBroker(t, h, "sg-upd-"+tt.name, mq.EngineTypeActiveMQ)
+
+			body := map[string]any{}
+			if tt.securityGroups != nil {
+				body["securityGroups"] = tt.securityGroups
+			}
+
+			rec := doRequest(t, h, http.MethodPut, "/v1/brokers/"+brokerID, body)
+			assert.Equal(t, tt.wantStatus, rec.Code, rec.Body.String())
+		})
+	}
+}
+
 func TestCreateBroker_WithSubnetIDs_RoundTrip(t *testing.T) {
 	t.Parallel()
 

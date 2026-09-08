@@ -919,3 +919,60 @@ func TestCloudWatchLogsBackend_FilterLogEvents_StaleTokenPastEnd(t *testing.T) {
 		assert.Empty(t, evts)
 	})
 }
+
+// TestCloudWatchLogsBackend_GetLogEvents_BackwardTokenReturnsPrecedingWindow
+// proves nextBackwardToken actually pages backward through history, rather
+// than re-reading forward from the same offset. Real AWS: "nextBackwardToken
+// -- The token for the next set of items in the backward direction" returns
+// the window immediately BEFORE the one it was issued from. Before this fix,
+// GetLogEvents decoded every token (forward or backward) as a plain forward
+// read offset, so feeding a nextBackwardToken back in replayed the exact same
+// page forever instead of revealing older events -- a client scrolling
+// backward through a log stream's history via GetLogEvents could never see
+// anything before the first page it received.
+func TestCloudWatchLogsBackend_GetLogEvents_BackwardTokenReturnsPrecedingWindow(t *testing.T) {
+	t.Parallel()
+
+	b := cloudwatchlogs.NewInMemoryBackendWithConfig("123456789012", "us-east-1")
+
+	_, err := b.CreateLogGroup(context.Background(), "grp", "", "")
+	require.NoError(t, err)
+	_, err = b.CreateLogStream(context.Background(), "grp", "stream")
+	require.NoError(t, err)
+
+	events := make([]cloudwatchlogs.InputLogEvent, 6)
+	for i := range events {
+		events[i] = cloudwatchlogs.InputLogEvent{Message: fmt.Sprintf("m%d", i), Timestamp: int64(1000 + i)}
+	}
+	_, err = b.PutLogEvents(context.Background(), "grp", "stream", "", events)
+	require.NoError(t, err)
+
+	// Initial call with startFromHead=false (the AWS default): the last 2 events, m4/m5.
+	page1, _, bwd1, err := b.GetLogEvents(context.Background(), "grp", "stream", nil, nil, 2, "", false)
+	require.NoError(t, err)
+	require.Len(t, page1, 2)
+	assert.Equal(t, "m4", page1[0].Message)
+	assert.Equal(t, "m5", page1[1].Message)
+
+	// Paging backward from there must return the PRECEDING window, m2/m3 --
+	// not a repeat of m4/m5.
+	page2, _, bwd2, err := b.GetLogEvents(context.Background(), "grp", "stream", nil, nil, 2, bwd1, false)
+	require.NoError(t, err)
+	require.Len(t, page2, 2)
+	assert.Equal(t, "m2", page2[0].Message)
+	assert.Equal(t, "m3", page2[1].Message)
+
+	// One more page back reaches the oldest events, m0/m1.
+	page3, _, bwd3, err := b.GetLogEvents(context.Background(), "grp", "stream", nil, nil, 2, bwd2, false)
+	require.NoError(t, err)
+	require.Len(t, page3, 2)
+	assert.Equal(t, "m0", page3[0].Message)
+	assert.Equal(t, "m1", page3[1].Message)
+
+	// At the start of the stream, backward paging is a fixed point: same
+	// token, empty page.
+	page4, _, bwd4, err := b.GetLogEvents(context.Background(), "grp", "stream", nil, nil, 2, bwd3, false)
+	require.NoError(t, err)
+	assert.Empty(t, page4)
+	assert.Equal(t, bwd3, bwd4)
+}

@@ -197,3 +197,73 @@ func TestDeleteTrainingResourceStateGuard(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteResource_BlockedByActiveInferenceJob covers
+// DeleteDocumentClassifierInput/DeleteEntityRecognizerInput's own doc
+// comments: "Only those classifiers [recognizers] that are in terminated
+// states (IN_ERROR, TRAINED) will be deleted. If an active inference job is
+// using the model, a ResourceInUseException will be returned."
+// (aws-sdk-go-v2/service/comprehend@v1.43.4/api_op_DeleteDocumentClassifier.go:13-15,
+// api_op_DeleteEntityRecognizer.go:13-15). Before this fix, DeleteResource
+// only checked the resource's OWN training status, never whether a
+// SUBMITTED/IN_PROGRESS document-classification-job/entities-detection-job
+// still referenced it via DocumentClassifierArn/EntityRecognizerArn -- such
+// a job's model could be deleted out from under it.
+func TestDeleteResource_BlockedByActiveInferenceJob(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		createBody    map[string]any
+		name          string
+		createAction  string
+		deleteAction  string
+		arnField      string
+		startJobOp    string
+		describeJobOp string
+	}{
+		{
+			name:          "document_classifier",
+			createAction:  "CreateDocumentClassifier",
+			deleteAction:  "DeleteDocumentClassifier",
+			arnField:      "DocumentClassifierArn",
+			startJobOp:    "StartDocumentClassificationJob",
+			describeJobOp: "DescribeDocumentClassificationJob",
+			createBody:    map[string]any{"DocumentClassifierName": "in-use-clf", "LanguageCode": "en"},
+		},
+		{
+			name:          "entity_recognizer",
+			createAction:  "CreateEntityRecognizer",
+			deleteAction:  "DeleteEntityRecognizer",
+			arnField:      "EntityRecognizerArn",
+			startJobOp:    "StartEntitiesDetectionJob",
+			describeJobOp: "DescribeEntitiesDetectionJob",
+			createBody:    map[string]any{"RecognizerName": "in-use-rec", "LanguageCode": "en"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHandler()
+			created := request(t, h, tc.createAction, tc.createBody)
+			modelArn := created[tc.arnField].(string)
+
+			started := request(t, h, tc.startJobOp, map[string]any{
+				"JobName": "in-use-job", tc.arnField: modelArn,
+			})
+			jobID := started["JobId"].(string)
+
+			rec := rawRequest(t, h, tc.deleteAction, toJSON(t, map[string]any{tc.arnField: modelArn}))
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			resp := decodeBody(t, rec)
+			assert.Equal(t, "ResourceInUseException", resp["__type"])
+
+			// Advance the job to a terminal state: SUBMITTED -> IN_PROGRESS -> COMPLETED.
+			request(t, h, tc.describeJobOp, map[string]any{"JobId": jobID})
+			request(t, h, tc.describeJobOp, map[string]any{"JobId": jobID})
+
+			request(t, h, tc.deleteAction, map[string]any{tc.arnField: modelArn})
+		})
+	}
+}

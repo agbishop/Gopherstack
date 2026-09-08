@@ -126,7 +126,11 @@ func deviceProfileMatchesType(dp *DeviceProfile, deviceProfileType string) bool 
 	}
 }
 
-// DeleteDeviceProfile deletes a device profile by ID.
+// DeleteDeviceProfile deletes a device profile by ID. Real AWS models
+// ConflictException on this op; the only referrer a device profile has is a
+// wireless device's LoRaWAN.DeviceProfileID/Sidewalk.DeviceProfileID, so
+// deletion is refused while any device in the account/region still
+// references it.
 func (b *InMemoryBackend) DeleteDeviceProfile(accountID, region, id string) error {
 	b.mu.Lock("DeleteDeviceProfile")
 	defer b.mu.Unlock()
@@ -136,6 +140,12 @@ func (b *InMemoryBackend) DeleteDeviceProfile(accountID, region, id string) erro
 	dp, ok := b.deviceProfiles.Get(key)
 	if !ok {
 		return ErrDeviceProfileNotFound
+	}
+
+	for _, d := range b.devices.All() {
+		if d.AccountID == accountID && d.Region == region && hasDeviceProfileID(d, id) {
+			return ErrDeviceProfileInUse
+		}
 	}
 
 	delete(b.resourceTags, dp.ARN)
@@ -236,7 +246,10 @@ func (b *InMemoryBackend) ListServiceProfiles(accountID, region string) []*Servi
 	return result
 }
 
-// DeleteServiceProfile deletes a service profile.
+// DeleteServiceProfile deletes a service profile. Real AWS models
+// ConflictException on this op; the only referrer a service profile has is
+// a LoRaWAN wireless device's LoRaWAN.ServiceProfileID, so deletion is
+// refused while any device in the account/region still references it.
 func (b *InMemoryBackend) DeleteServiceProfile(accountID, region, id string) error {
 	b.mu.Lock("DeleteServiceProfile")
 	defer b.mu.Unlock()
@@ -246,6 +259,13 @@ func (b *InMemoryBackend) DeleteServiceProfile(accountID, region, id string) err
 	sp, ok := b.serviceProfiles.Get(key)
 	if !ok {
 		return ErrServiceProfileNotFound
+	}
+
+	for _, d := range b.devices.All() {
+		if d.AccountID == accountID && d.Region == region &&
+			d.LoRaWAN != nil && d.LoRaWAN.ServiceProfileID != nil && *d.LoRaWAN.ServiceProfileID == id {
+			return ErrServiceProfileInUse
+		}
 	}
 
 	delete(b.resourceTags, sp.ARN)

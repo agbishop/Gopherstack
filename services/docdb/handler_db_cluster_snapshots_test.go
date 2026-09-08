@@ -365,6 +365,62 @@ func TestSnapshotAttributePersistence(t *testing.T) {
 	}
 }
 
+// TestDeleteDBClusterSnapshot_ClearsAttributes asserts that deleting a
+// snapshot removes its restore-attribute grants, so a later snapshot
+// recreated under the same identifier does not inherit a stale grant it was
+// never given. snapshotAttributes is keyed by "region|DBClusterSnapshotIdentifier"
+// (store_setup.go:snapshotAttributesKeyFn), independent of the clusterSnapshots
+// table's own delete -- a ghost row left behind here is an access-control
+// artefact (ModifyDBClusterSnapshotAttribute's "restore" attribute grants an
+// AWS account ID cross-account restore access to the snapshot).
+func TestDeleteDBClusterSnapshot_ClearsAttributes(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, url.Values{
+		"Action":              {"CreateDBCluster"},
+		"Version":             {"2014-10-31"},
+		"DBClusterIdentifier": {"my-cluster"},
+	})
+	doRequest(t, h, url.Values{
+		"Action":                      {"CreateDBClusterSnapshot"},
+		"Version":                     {"2014-10-31"},
+		"DBClusterSnapshotIdentifier": {"my-snap"},
+		"DBClusterIdentifier":         {"my-cluster"},
+	})
+	modResp := doRequest(t, h, url.Values{
+		"Action":                       {"ModifyDBClusterSnapshotAttribute"},
+		"Version":                      {"2014-10-31"},
+		"DBClusterSnapshotIdentifier":  {"my-snap"},
+		"AttributeName":                {"restore"},
+		"ValuesToAdd.AttributeValue.1": {"123456789012"},
+	})
+	require.Equal(t, http.StatusOK, modResp.Code)
+
+	delResp := doRequest(t, h, url.Values{
+		"Action":                      {"DeleteDBClusterSnapshot"},
+		"Version":                     {"2014-10-31"},
+		"DBClusterSnapshotIdentifier": {"my-snap"},
+	})
+	require.Equal(t, http.StatusOK, delResp.Code)
+
+	doRequest(t, h, url.Values{
+		"Action":                      {"CreateDBClusterSnapshot"},
+		"Version":                     {"2014-10-31"},
+		"DBClusterSnapshotIdentifier": {"my-snap"},
+		"DBClusterIdentifier":         {"my-cluster"},
+	})
+
+	descResp := doRequest(t, h, url.Values{
+		"Action":                      {"DescribeDBClusterSnapshotAttributes"},
+		"Version":                     {"2014-10-31"},
+		"DBClusterSnapshotIdentifier": {"my-snap"},
+	})
+	require.Equal(t, http.StatusOK, descResp.Code)
+	assert.NotContains(t, descResp.Body.String(), "123456789012",
+		"recreated snapshot must not inherit the deleted snapshot's restore grant")
+}
+
 func TestDescribeDBClusterSnapshotsByType(t *testing.T) {
 	t.Parallel()
 

@@ -335,24 +335,31 @@ func (b *InMemoryBackend) Reset() {
 	b.inventoryDeletions = make(map[string][]InventoryDeletion)
 	b.notifiedParameterPolicies = make(map[string]map[string]map[string]struct{})
 	b.opsItemEvents = nil
+	b.instancePatches = make(map[string]map[string][]PatchComplianceData)
+	b.availablePatches = make(map[string][]Patch)
 
-	// instancePatchStates/instanceProperties are deliberately NOT reallocated
-	// above -- Reset() never cleared them even before this conversion (a
-	// pre-existing gap in Reset's coverage, left as-is to avoid changing
-	// behavior). Since b.registry was just replaced with an empty one, their
-	// existing *store.Table[V] values (untouched, from before Reset) must be
-	// re-registered onto it under their original names, or a later access to
-	// an already-touched region would try to register that name a second
-	// time and panic (store.Register panics on a duplicate name).
-	for region, t := range b.instancePatchStates {
-		store.Register(b.registry, "instancePatchStates/"+region, t)
-	}
-
-	for region, t := range b.instanceProperties {
-		store.Register(b.registry, "instanceProperties/"+region, t)
-	}
+	// instancePatchStates/instanceProperties keep their existing
+	// map[string]*store.Table[V] (not reallocated) and are cleared in place
+	// via t.Reset() instead, then re-registered under their original names:
+	// b.registry was just replaced with an empty one, and only a registered
+	// table is visible to registry.SnapshotAll/RestoreAll (persistence.go) --
+	// skipping re-registration would silently drop these two resources from
+	// every snapshot taken after Reset.
+	resetAndReregister(b.registry, "instancePatchStates", b.instancePatchStates)
+	resetAndReregister(b.registry, "instanceProperties", b.instanceProperties)
 
 	b.registerDefaultDocuments(defaultRegion)
+}
+
+// resetAndReregister clears every table in m and re-registers it on registry
+// under "<name>/<region>". See Reset's comment on
+// instancePatchStates/instanceProperties for why this is needed instead of
+// just reallocating m.
+func resetAndReregister[V any](registry *store.Registry, name string, m map[string]*store.Table[V]) {
+	for region, t := range m {
+		t.Reset()
+		store.Register(registry, name+"/"+region, t)
+	}
 }
 
 const (

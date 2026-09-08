@@ -203,14 +203,23 @@ func (b *InMemoryBackend) UpdateInstance(instanceID, hostname string) error {
 	return nil
 }
 
-// DeleteInstance deletes an instance.
+// DeleteInstance deletes an instance. AWS requires the instance be stopped
+// first (api_op_DeleteInstance.go: "You must stop an instance before you
+// can delete it.").
 func (b *InMemoryBackend) DeleteInstance(instanceID string) error {
 	b.mu.Lock("DeleteInstance")
 	defer b.mu.Unlock()
 
-	if !b.instances.Delete(instanceID) {
+	i, ok := b.instances.Get(instanceID)
+	if !ok {
 		return ErrInstanceNotFound
 	}
+
+	if i.Status != instanceStatusStopped {
+		return ErrValidation
+	}
+
+	b.instances.Delete(instanceID)
 
 	return nil
 }

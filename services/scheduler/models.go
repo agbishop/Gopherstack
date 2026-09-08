@@ -179,7 +179,6 @@ type ScheduleGroup struct {
 	CreationDate         time.Time  `json:"creationDate"`
 	LastModificationDate time.Time  `json:"lastModificationDate"`
 	Tags                 *tags.Tags `json:"tags,omitempty"`
-	Description          string     `json:"description,omitempty"`
 	Name                 string     `json:"name"`
 	ARN                  string     `json:"arn"`
 	State                string     `json:"state"`

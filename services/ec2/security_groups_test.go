@@ -89,6 +89,76 @@ func TestSecurityGroupRule_SGReference(t *testing.T) {
 	assert.Equal(t, sg1.ID, sgs[0].IngressRules[0].SourceGroupID)
 }
 
+// TestDeleteSecurityGroup_DependencyViolation verifies AWS's DeleteSecurityGroup
+// guard: a group attached to an instance or referenced by another group's
+// rules in the same VPC cannot be deleted until the dependency is cleared.
+func TestDeleteSecurityGroup_DependencyViolation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("attached_to_instance", func(t *testing.T) {
+		t.Parallel()
+
+		b := newTestBackend()
+
+		sg, err := b.CreateSecurityGroup("in-use-sg", "testing", "vpc-default")
+		require.NoError(t, err)
+
+		instances, err := b.RunInstances("ami-test", "t3.micro", "", 1)
+		require.NoError(t, err)
+		require.NoError(t, b.SetInstanceLaunchConfig(instances[0].ID, "", []string{sg.ID}))
+
+		err = b.DeleteSecurityGroup(sg.ID)
+		require.ErrorIs(t, err, ec2.ErrDependencyViolation)
+		assert.NotEmpty(t, b.DescribeSecurityGroups([]string{sg.ID}),
+			"security group must survive a failed DeleteSecurityGroup")
+
+		_, err = b.TerminateInstances([]string{instances[0].ID})
+		require.NoError(t, err)
+		b.TickLifecycleForTest() // shutting-down -> terminated
+
+		require.NoError(t, b.DeleteSecurityGroup(sg.ID))
+	})
+
+	t.Run("referenced_by_other_group", func(t *testing.T) {
+		t.Parallel()
+
+		b := newTestBackend()
+
+		source, err := b.CreateSecurityGroup("source-sg", "testing", "vpc-default")
+		require.NoError(t, err)
+
+		target, err := b.CreateSecurityGroup("target-sg", "testing", "vpc-default")
+		require.NoError(t, err)
+
+		require.NoError(t, b.AuthorizeSecurityGroupIngress(target.ID, []ec2.SecurityGroupRule{
+			{Protocol: "tcp", FromPort: 80, ToPort: 80, SourceGroupID: source.ID},
+		}))
+
+		err = b.DeleteSecurityGroup(source.ID)
+		require.ErrorIs(t, err, ec2.ErrDependencyViolation)
+		assert.NotEmpty(t, b.DescribeSecurityGroups([]string{source.ID}),
+			"security group must survive a failed DeleteSecurityGroup")
+
+		_, _, err = b.RevokeSecurityGroupIngress(target.ID, []ec2.SecurityGroupRule{
+			{Protocol: "tcp", FromPort: 80, ToPort: 80, SourceGroupID: source.ID},
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, b.DeleteSecurityGroup(source.ID))
+	})
+
+	t.Run("no_dependencies", func(t *testing.T) {
+		t.Parallel()
+
+		b := newTestBackend()
+
+		sg, err := b.CreateSecurityGroup("standalone-sg", "testing", "vpc-default")
+		require.NoError(t, err)
+
+		require.NoError(t, b.DeleteSecurityGroup(sg.ID))
+	})
+}
+
 // ---- Gap 7: DryRun ----
 
 // TestHTTP_DescribeSecurityGroupRules verifies the HTTP handler.

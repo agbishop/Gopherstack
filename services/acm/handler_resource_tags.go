@@ -103,7 +103,7 @@ func (h *Handler) jsonTagResource(ctx context.Context, body []byte) (any, error)
 		kv[t.Key] = t.Value
 	}
 
-	if err := h.setTags(input.ResourceArn, kv); err != nil {
+	if err := h.setTags(input.ResourceArn, kv, ErrInvalidParameter, ErrServiceQuotaExceeded); err != nil {
 		return nil, err
 	}
 
@@ -169,7 +169,7 @@ func (h *Handler) TagResource(ctx context.Context, resourceArn string, newTags m
 		return err
 	}
 
-	return h.setTags(resourceArn, newTags)
+	return h.setTags(resourceArn, newTags, ErrInvalidParameter, ErrServiceQuotaExceeded)
 }
 
 // UntagResource is the generic cross-service untagging entry point for any

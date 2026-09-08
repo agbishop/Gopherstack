@@ -146,6 +146,69 @@ func TestDeleteStream_CleansFaultEntry(t *testing.T) {
 	assert.False(t, bk.HasFaultForTest("fault-stream"), "fault entry should be removed after delete")
 }
 
+// TestDeleteStream_ClearsResourcePolicyOnRecreate verifies that deleting a
+// stream also removes any resource policy stored under its ARN, so
+// recreating a stream with the same name does not inherit the deleted
+// stream's policy.
+func TestDeleteStream_ClearsResourcePolicyOnRecreate(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	bk := kinesis.NewInMemoryBackend()
+	require.NoError(t, bk.CreateStream(ctx, &kinesis.CreateStreamInput{StreamName: "reused-stream"}))
+
+	desc, err := bk.DescribeStream(ctx, &kinesis.DescribeStreamInput{StreamName: "reused-stream"})
+	require.NoError(t, err)
+
+	require.NoError(t, bk.PutResourcePolicy(ctx, &kinesis.PutResourcePolicyInput{
+		ResourceARN: desc.StreamARN,
+		Policy:      `{"Version":"2012-10-17"}`,
+	}))
+
+	require.NoError(t, bk.DeleteStream(ctx, &kinesis.DeleteStreamInput{StreamName: "reused-stream"}))
+	require.NoError(t, bk.CreateStream(ctx, &kinesis.CreateStreamInput{StreamName: "reused-stream"}))
+
+	recreated, err := bk.DescribeStream(ctx, &kinesis.DescribeStreamInput{StreamName: "reused-stream"})
+	require.NoError(t, err)
+	require.Equal(t, desc.StreamARN, recreated.StreamARN)
+
+	_, err = bk.GetResourcePolicy(ctx, &kinesis.GetResourcePolicyInput{ResourceARN: recreated.StreamARN})
+	require.ErrorIs(t, err, kinesis.ErrResourcePolicyNotFound)
+}
+
+func TestDeleteStream_LeavesOtherStreamResourcePolicyIntact(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	bk := kinesis.NewInMemoryBackend()
+
+	require.NoError(t, bk.CreateStream(ctx, &kinesis.CreateStreamInput{StreamName: "gone-stream"}))
+	require.NoError(t, bk.CreateStream(ctx, &kinesis.CreateStreamInput{StreamName: "kept-stream"}))
+
+	goneDesc, err := bk.DescribeStream(ctx, &kinesis.DescribeStreamInput{StreamName: "gone-stream"})
+	require.NoError(t, err)
+	keptDesc, err := bk.DescribeStream(ctx, &kinesis.DescribeStreamInput{StreamName: "kept-stream"})
+	require.NoError(t, err)
+
+	require.NoError(t, bk.PutResourcePolicy(ctx, &kinesis.PutResourcePolicyInput{
+		ResourceARN: goneDesc.StreamARN,
+		Policy:      `{"Version":"2012-10-17","Statement":"gone"}`,
+	}))
+	require.NoError(t, bk.PutResourcePolicy(ctx, &kinesis.PutResourcePolicyInput{
+		ResourceARN: keptDesc.StreamARN,
+		Policy:      `{"Version":"2012-10-17","Statement":"kept"}`,
+	}))
+
+	require.NoError(t, bk.DeleteStream(ctx, &kinesis.DeleteStreamInput{StreamName: "gone-stream"}))
+
+	_, err = bk.GetResourcePolicy(ctx, &kinesis.GetResourcePolicyInput{ResourceARN: goneDesc.StreamARN})
+	require.ErrorIs(t, err, kinesis.ErrResourcePolicyNotFound)
+
+	kept, err := bk.GetResourcePolicy(ctx, &kinesis.GetResourcePolicyInput{ResourceARN: keptDesc.StreamARN})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"Version":"2012-10-17","Statement":"kept"}`, kept.Policy)
+}
+
 // TestRingBuffer_WrapAround checks that pushing more than maxRecordsPerShard records
 // into a shard evicts the oldest entries correctly (ring buffer semantics).
 func TestRingBuffer_WrapAround(t *testing.T) {

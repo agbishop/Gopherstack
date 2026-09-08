@@ -81,7 +81,7 @@ func (h *Handler) handlePollForThirdPartyJobs(
 	// real AWS deliberately withholds at this step.
 	items := make([]map[string]any, len(jobs))
 	for i, j := range jobs {
-		items[i] = map[string]any{"jobId": j.ID}
+		items[i] = map[string]any{"jobId": j.ID, "clientId": j.ClientID}
 	}
 
 	return &pollForThirdPartyJobsOutput{Jobs: items}, nil
@@ -102,6 +102,10 @@ func (h *Handler) handleGetThirdPartyJobDetails(
 ) (*getThirdPartyJobDetailsOutput, error) {
 	if in.JobID == "" {
 		return nil, fmt.Errorf("%w: jobId is required", errInvalidRequest)
+	}
+
+	if in.ClientToken == "" {
+		return nil, fmt.Errorf("%w: clientToken is required", errInvalidRequest)
 	}
 
 	job, err := h.Backend.GetThirdPartyJobDetails(ctx, in.JobID, in.ClientToken)
@@ -127,6 +131,14 @@ func (h *Handler) handlePutThirdPartyJobSuccessResult(
 	ctx context.Context,
 	in *putThirdPartyJobSuccessResultInput,
 ) (*emptyOut, error) {
+	if in.JobID == "" {
+		return nil, fmt.Errorf("%w: jobId is required", errInvalidRequest)
+	}
+
+	if in.ClientToken == "" {
+		return nil, fmt.Errorf("%w: clientToken is required", errInvalidRequest)
+	}
+
 	return &emptyOut{}, h.Backend.PutThirdPartyJobSuccessResult(ctx, in.JobID, in.ClientToken)
 }
 
@@ -143,6 +155,14 @@ func (h *Handler) handlePutThirdPartyJobFailureResult(
 	ctx context.Context,
 	in *putThirdPartyJobFailureResultInput,
 ) (*emptyOut, error) {
+	if in.JobID == "" {
+		return nil, fmt.Errorf("%w: jobId is required", errInvalidRequest)
+	}
+
+	if in.ClientToken == "" {
+		return nil, fmt.Errorf("%w: clientToken is required", errInvalidRequest)
+	}
+
 	return &emptyOut{}, h.Backend.PutThirdPartyJobFailureResult(
 		ctx,
 		in.JobID,

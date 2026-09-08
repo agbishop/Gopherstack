@@ -225,6 +225,13 @@ func LastUsageExists(b *InMemoryBackend, region, keyID string) bool {
 	return ok
 }
 
+// ImportWrappingKeyExists reports whether an importWrappingKeys entry exists for keyID.
+func ImportWrappingKeyExists(b *InMemoryBackend, keyID string) bool {
+	_, ok := b.importWrappingKeys.Load(keyID)
+
+	return ok
+}
+
 // SetKeyCreationDateForTest backdates a key's CreationDate so that auto-rotation
 // tests can simulate an elapsed rotation period without sleeping.
 func (b *InMemoryBackend) SetKeyCreationDateForTest(keyID string, t time.Time) {

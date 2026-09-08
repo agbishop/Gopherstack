@@ -108,6 +108,73 @@ func TestMacie2_Session(t *testing.T) {
 	}
 }
 
+// TestDisableMacie_DeletesResources locks DisableMacie's own doc comment
+// ("deletes all settings and resources for a Macie account" --
+// api_op_DisableMacie.go:11): a classification job, custom data identifier
+// and allow list created while Macie is enabled must not survive disabling
+// it. A member account -- cross-account organization structure, not a
+// per-account Macie "setting or resource" -- must survive.
+func TestDisableMacie_DeletesResources(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doRequest(t, h, http.MethodPost, "/macie", nil)
+
+	jobRec := doRequest(t, h, http.MethodPost, "/jobs", map[string]any{
+		"name":    "job-to-lose",
+		"jobType": "ONE_TIME",
+		"s3JobDefinition": map[string]any{
+			"bucketDefinitions": []any{},
+		},
+	})
+	require.Equal(t, http.StatusOK, jobRec.Code)
+
+	var jobResp map[string]string
+	require.NoError(t, json.Unmarshal(jobRec.Body.Bytes(), &jobResp))
+	jobID := jobResp["jobId"]
+	require.NotEmpty(t, jobID)
+
+	cdiRec := doRequest(t, h, http.MethodPost, "/custom-data-identifiers", map[string]any{
+		"name":  "cdi-to-lose",
+		"regex": `\d{3}-\d{3}-\d{4}`,
+	})
+	require.Equal(t, http.StatusOK, cdiRec.Code)
+
+	var cdiResp map[string]string
+	require.NoError(t, json.Unmarshal(cdiRec.Body.Bytes(), &cdiResp))
+	cdiID := cdiResp["customDataIdentifierId"]
+	require.NotEmpty(t, cdiID)
+
+	allowListRec := doRequest(t, h, http.MethodPost, "/allow-lists", map[string]any{
+		"name":     "allow-list-to-lose",
+		"criteria": map[string]any{"regex": "test-\\w+"},
+	})
+	require.Equal(t, http.StatusOK, allowListRec.Code)
+
+	var allowListResp map[string]string
+	require.NoError(t, json.Unmarshal(allowListRec.Body.Bytes(), &allowListResp))
+	allowListID := allowListResp["id"]
+	require.NotEmpty(t, allowListID)
+
+	memberRec := doRequest(t, h, http.MethodPost, "/members", map[string]any{
+		"account": map[string]string{"accountId": "222222222222", "email": "survivor@example.com"},
+	})
+	require.Equal(t, http.StatusOK, memberRec.Code)
+
+	rec := doRequest(t, h, http.MethodDelete, "/macie", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Equal(t, http.StatusNotFound, doRequest(t, h, http.MethodGet, "/jobs/"+jobID, nil).Code,
+		"classification job must not survive DisableMacie")
+	assert.Equal(t, http.StatusNotFound, doRequest(t, h, http.MethodGet, "/custom-data-identifiers/"+cdiID, nil).Code,
+		"custom data identifier must not survive DisableMacie")
+	assert.Equal(t, http.StatusNotFound, doRequest(t, h, http.MethodGet, "/allow-lists/"+allowListID, nil).Code,
+		"allow list must not survive DisableMacie")
+	assert.Equal(t, http.StatusOK, doRequest(t, h, http.MethodGet, "/members/222222222222", nil).Code,
+		"member accounts are organization structure, not a Macie setting/resource, and must survive DisableMacie")
+}
+
 func TestMacie2_FrequencyValidation(t *testing.T) {
 	t.Parallel()
 

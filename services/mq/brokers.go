@@ -38,7 +38,41 @@ const (
 	ipv4OctetMask = 0xff
 	// ipv4OctetShift shifts a hash sum by one octet's width.
 	ipv4OctetShift = 8
+
+	// minSecurityGroups is the shared lower bound for an explicitly supplied
+	// securityGroups list, per both CreateBrokerInput.SecurityGroups ("1
+	// minimum, 125 maximum") and UpdateBrokerInput.SecurityGroups ("1
+	// minimum, 5 maximum") in aws-sdk-go-v2/service/mq.
+	minSecurityGroups = 1
+	// maxSecurityGroupsCreate is CreateBrokerInput.SecurityGroups' documented
+	// upper bound (api_op_CreateBroker.go).
+	maxSecurityGroupsCreate = 125
+	// maxSecurityGroupsUpdate is UpdateBrokerInput.SecurityGroups' documented
+	// upper bound (api_op_UpdateBroker.go) -- deliberately smaller than
+	// CreateBroker's.
+	maxSecurityGroupsUpdate = 5
 )
+
+// validateSecurityGroupsCount enforces the documented length bound on an
+// explicitly supplied securityGroups list. securityGroups is optional on
+// both CreateBrokerInput and UpdateBrokerInput (no "This member is
+// required" doc marker), so a nil list (the field omitted entirely) is left
+// untouched; the "1 minimum" bound applies only once the caller actually
+// supplies a list.
+func validateSecurityGroupsCount(securityGroups []string, maxCount int) error {
+	if securityGroups == nil {
+		return nil
+	}
+
+	if len(securityGroups) < minSecurityGroups || len(securityGroups) > maxCount {
+		return fmt.Errorf(
+			"%w: securityGroups must have %d-%d entries (got %d)",
+			ErrValidation, minSecurityGroups, maxCount, len(securityGroups),
+		)
+	}
+
+	return nil
+}
 
 // validateCreateBrokerInput validates the three most commonly invalid fields in
 // a CreateBroker request before acquiring the backend lock.
@@ -137,6 +171,33 @@ func validateAuthenticationStrategy(strategy string) error {
 	}
 }
 
+// validateCreateBrokerRequest runs every CreateBrokerWithOptions validation
+// that does not need the backend lock.
+func validateCreateBrokerRequest(
+	name, deploymentMode, engineType string,
+	securityGroups []string,
+	tags map[string]string,
+	opts *CreateBrokerOptions,
+) error {
+	if err := validateCreateBrokerInput(name, deploymentMode, engineType); err != nil {
+		return err
+	}
+
+	if err := validateTagsMap(tags); err != nil {
+		return err
+	}
+
+	if err := validateSecurityGroupsCount(securityGroups, maxSecurityGroupsCreate); err != nil {
+		return err
+	}
+
+	if opts != nil {
+		return validateAuthenticationStrategy(opts.AuthenticationStrategy)
+	}
+
+	return nil
+}
+
 // CreateBroker creates a new Amazon MQ broker (compatibility wrapper).
 func (b *InMemoryBackend) CreateBroker(
 	name, deploymentMode, engineType, engineVersion, hostInstanceType string,
@@ -166,18 +227,8 @@ func (b *InMemoryBackend) CreateBrokerWithOptions(
 	tags map[string]string,
 	opts *CreateBrokerOptions,
 ) (*Broker, error) {
-	if err := validateCreateBrokerInput(name, deploymentMode, engineType); err != nil {
+	if err := validateCreateBrokerRequest(name, deploymentMode, engineType, securityGroups, tags, opts); err != nil {
 		return nil, err
-	}
-
-	if err := validateTagsMap(tags); err != nil {
-		return nil, err
-	}
-
-	if opts != nil {
-		if err := validateAuthenticationStrategy(opts.AuthenticationStrategy); err != nil {
-			return nil, err
-		}
 	}
 
 	b.mu.Lock("CreateBroker")
@@ -685,6 +736,10 @@ func (b *InMemoryBackend) UpdateBrokerWithOptions(
 		if err := validateAuthenticationStrategy(opts.AuthenticationStrategy); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := validateSecurityGroupsCount(securityGroups, maxSecurityGroupsUpdate); err != nil {
+		return nil, err
 	}
 
 	b.mu.Lock("UpdateBroker")

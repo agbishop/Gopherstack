@@ -845,10 +845,10 @@ func TestRunner_CompositeKey_SameNameDifferentGroups_BothFire(t *testing.T) {
 	lambdaARN := "arn:aws:lambda:us-east-1:000000000000:function:fn"
 	backend := newRunnerTestBackend(t)
 
-	_, err := backend.CreateScheduleGroup(context.Background(), "g1", "", nil)
+	_, err := backend.CreateScheduleGroup(context.Background(), "g1", nil)
 	require.NoError(t, err)
 
-	_, err = backend.CreateScheduleGroup(context.Background(), "g2", "", nil)
+	_, err = backend.CreateScheduleGroup(context.Background(), "g2", nil)
 	require.NoError(t, err)
 
 	_, err = backend.CreateSchedule(

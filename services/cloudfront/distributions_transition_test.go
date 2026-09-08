@@ -1,6 +1,7 @@
 package cloudfront_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -83,4 +84,56 @@ func TestDistributionStatusTransition(t *testing.T) {
 			tt.run(t, b, d.ID)
 		})
 	}
+}
+
+// distSnapshotProbe decodes the subset of backendSnapshot's JSON shape needed to
+// inspect distribution-keyed side maps that DeleteDistribution must clean up.
+type distSnapshotProbe struct {
+	FuncAssocs  map[string][]cloudfront.FunctionAssociation   `json:"distributionFunctionAssociations"`
+	MonitorSubs map[string]*cloudfront.MonitoringSubscription `json:"monitoringSubscriptions"`
+}
+
+// TestDeleteDistribution_CleansUpSideMaps proves that deleting a distribution
+// removes its entries from distributionFunctionAssociations and
+// monitoringSubscriptions, not just the primary distributions table. Before this
+// fix, DeleteDistribution cleaned up distributionARNs/distributionCallerRefs/
+// invalidations/distributionAliases/distributionWebACLs/the search index, but
+// left the distribution's function associations and monitoring subscription
+// permanently orphaned in memory -- an unbounded leak for any long-running
+// process that creates and deletes many distributions, since generateID() never
+// reuses a deleted distribution's ID.
+func TestDeleteDistribution_CleansUpSideMaps(t *testing.T) {
+	t.Parallel()
+
+	b := cloudfront.NewInMemoryBackend(t.Context(), "123456789012", "us-east-1")
+
+	callerRef := "ref-delete-sidemaps"
+	d, err := b.CreateDistribution(callerRef, "orig", false, minimalDistConfig(callerRef, "orig", false))
+	require.NoError(t, err)
+
+	require.NoError(t, b.SetDistributionFunctionAssociations(d.ID, []cloudfront.FunctionAssociation{
+		{FunctionARN: "arn:aws:cloudfront::123456789012:function/f1", EventType: "viewer-request"},
+	}))
+	require.NoError(t, b.CreateMonitoringSubscription(d.ID, true))
+
+	assocs, err := b.GetDistributionFunctionAssociations(d.ID)
+	require.NoError(t, err)
+	require.Len(t, assocs, 1, "sanity check: association was recorded before delete")
+
+	_, err = b.GetMonitoringSubscription(d.ID)
+	require.NoError(t, err, "sanity check: subscription was recorded before delete")
+
+	require.NoError(t, b.DeleteDistribution(d.ID))
+
+	data := b.Snapshot(t.Context())
+	require.NotEmpty(t, data)
+
+	var probe distSnapshotProbe
+	require.NoError(t, json.Unmarshal(data, &probe))
+
+	_, leaked := probe.FuncAssocs[d.ID]
+	require.False(t, leaked, "distributionFunctionAssociations must not retain a deleted distribution's entry")
+
+	_, leaked = probe.MonitorSubs[d.ID]
+	require.False(t, leaked, "monitoringSubscriptions must not retain a deleted distribution's entry")
 }

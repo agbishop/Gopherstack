@@ -178,8 +178,11 @@ func TestGetMedicalScribeJob_TagResource_LiveSync_RealClient(t *testing.T) {
 		Media:                &sdktypes.Media{MediaFileUri: aws.String("s3://b/f.mp3")},
 		DataAccessRoleArn:    aws.String("arn:aws:iam::123456789012:role/scribe-role"),
 		OutputBucketName:     aws.String("my-output-bucket"),
-		Settings:             &sdktypes.MedicalScribeSettings{},
-		Tags:                 []sdktypes.Tag{{Key: aws.String("owner"), Value: aws.String("sre")}},
+		Settings: &sdktypes.MedicalScribeSettings{
+			ShowSpeakerLabels: aws.Bool(true),
+			MaxSpeakerLabels:  aws.Int32(2),
+		},
+		Tags: []sdktypes.Tag{{Key: aws.String("owner"), Value: aws.String("sre")}},
 	})
 	require.NoError(t, err)
 

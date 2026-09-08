@@ -49,12 +49,14 @@ type DynamoDBStreamsReader interface {
 }
 
 // KinesisReader is the interface for reading Kinesis records.
-// It is implemented by the kinesis backend.
+// It is implemented by the kinesis backend. streamARN is the full Kinesis
+// stream ARN (not just the bare name): a stream is region-scoped, and the
+// ARN is the only place the target region lives at this call boundary.
 type KinesisReader interface {
 	// GetShardIDs returns the shard IDs for the given stream.
-	GetShardIDs(streamName string) ([]string, error)
+	GetShardIDs(streamARN string) ([]string, error)
 	// GetShardIterator returns an iterator token for a shard.
-	GetShardIterator(streamName, shardID, iteratorType, startingSeqNum string) (string, error)
+	GetShardIterator(streamARN, shardID, iteratorType, startingSeqNum string) (string, error)
 	// GetRecords reads up to limit records from the given iterator, returning records and next iterator.
 	GetRecords(iteratorToken string, limit int) ([]KinesisRecord, string, error)
 }
@@ -295,12 +297,15 @@ func (p *EventSourcePoller) processOneMapping(ctx context.Context, m *EventSourc
 		return
 	}
 
-	streamName := streamNameFromARN(m.EventSourceARN)
-	if streamName == "" {
+	if streamNameFromARN(m.EventSourceARN) == "" {
 		return
 	}
 
-	p.processMapping(ctx, m, streamName)
+	// The full ARN (not just the extracted name) is threaded through to
+	// kinesisReader: real AWS streams are region-scoped, and the ARN is the
+	// only place the target region lives once StartingPosition polling
+	// begins -- see cli.go's kinesisReaderAdapter (gopherstack-qowd).
+	p.processMapping(ctx, m, m.EventSourceARN)
 }
 
 // sweepStaleIterators removes shard iterator entries for ESMs that no longer exist.
@@ -368,11 +373,11 @@ func (p *EventSourcePoller) RemoveMapping(uuid string) {
 }
 
 // processMapping reads new records from all shards and invokes Lambda.
-func (p *EventSourcePoller) processMapping(ctx context.Context, m *EventSourceMapping, streamName string) {
-	shardIDs, err := p.kinesisReader.GetShardIDs(streamName)
+func (p *EventSourcePoller) processMapping(ctx context.Context, m *EventSourceMapping, streamARN string) {
+	shardIDs, err := p.kinesisReader.GetShardIDs(streamARN)
 	if err != nil {
 		logger.Load(ctx).WarnContext(ctx, "event source poller: failed to get shard IDs",
-			"stream", streamName, "error", err)
+			"stream", streamARN, "error", err)
 
 		return
 	}
@@ -394,10 +399,10 @@ func (p *EventSourcePoller) processMapping(ctx context.Context, m *EventSourceMa
 
 		if !exists {
 			// Initialize iterator at starting position
-			it, err = p.kinesisReader.GetShardIterator(streamName, shardID, m.StartingPosition, "")
+			it, err = p.kinesisReader.GetShardIterator(streamARN, shardID, m.StartingPosition, "")
 			if err != nil {
 				logger.Load(ctx).WarnContext(ctx, "event source poller: failed to get shard iterator",
-					"stream", streamName, "shard", shardID, "error", err)
+					"stream", streamARN, "shard", shardID, "error", err)
 
 				continue
 			}
@@ -420,7 +425,7 @@ func (p *EventSourcePoller) processMapping(ctx context.Context, m *EventSourceMa
 				delete(p.shardIterators, iterKey)
 			}()
 			logger.Load(ctx).WarnContext(ctx, "event source poller: GetRecords failed, resetting iterator",
-				"stream", streamName, "shard", shardID, "error", readErr)
+				"stream", streamARN, "shard", shardID, "error", readErr)
 
 			continue
 		}
@@ -436,7 +441,7 @@ func (p *EventSourcePoller) processMapping(ctx context.Context, m *EventSourceMa
 			continue
 		}
 
-		p.invokeLambda(ctx, m, streamName, shardID, records)
+		p.invokeLambda(ctx, m, streamARN, shardID, records)
 	}
 }
 
@@ -444,7 +449,7 @@ func (p *EventSourcePoller) processMapping(ctx context.Context, m *EventSourceMa
 func (p *EventSourcePoller) invokeLambda(
 	ctx context.Context,
 	m *EventSourceMapping,
-	streamName, shardID string,
+	streamARN, shardID string,
 	records []KinesisRecord,
 ) {
 	type kinesisRecord struct {
@@ -513,7 +518,7 @@ func (p *EventSourcePoller) invokeLambda(
 	_, err = p.invokeESMFunctionEvent(ctx, fnName, qualifier, payload)
 	if err != nil {
 		logger.Load(ctx).WarnContext(ctx, "event source poller: Lambda invocation failed",
-			"function", fnName, "stream", streamName, "error", err)
+			"function", fnName, "stream", streamARN, "error", err)
 	} else {
 		logger.Load(ctx).DebugContext(ctx, "event source poller: invoked Lambda",
 			"function", fnName, "records", len(records))

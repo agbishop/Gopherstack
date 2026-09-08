@@ -215,6 +215,11 @@ type StorageBackend interface {
 	// the key is not associated with a usage plan for the stage), ErrQuotaExceeded when
 	// the period quota is exhausted, or ErrThrottled when the rate/burst limit is hit.
 	EnforceUsagePlan(apiID, stageName, keyID string) error
+	// EnforceMethodThrottle applies a stage's MethodSettings throttling for a request to
+	// resourcePath/httpMethod, independent of any usage plan or API key. It returns nil
+	// when the limit isn't configured or the request is within it, or ErrThrottled when
+	// the rate/burst limit is hit.
+	EnforceMethodThrottle(apiID, stageName, resourcePath, httpMethod string) error
 
 	// VPC Link operations.
 	CreateVpcLink(input CreateVpcLinkInput) (*VpcLink, error)
@@ -441,17 +446,23 @@ type InMemoryBackend struct {
 	mu       *lockmetrics.RWMutex
 }
 
+// defaultAccount returns the API Gateway account settings AWS assigns to a
+// fresh account, used both at construction and on Reset.
+func defaultAccount() *Account {
+	return &Account{
+		ThrottleSettings: &ThrottleSettings{
+			BurstLimit: defaultBurstLimit,
+			RateLimit:  defaultRateLimit,
+		},
+		Features:      []string{"UsagePlans"},
+		APIKeyVersion: "1",
+	}
+}
+
 // NewInMemoryBackend creates a new InMemoryBackend.
 func NewInMemoryBackend() *InMemoryBackend {
 	b := &InMemoryBackend{
-		account: &Account{
-			ThrottleSettings: &ThrottleSettings{
-				BurstLimit: defaultBurstLimit,
-				RateLimit:  defaultRateLimit,
-			},
-			Features:      []string{"UsagePlans"},
-			APIKeyVersion: "1",
-		},
+		account:          defaultAccount(),
 		registry:         store.NewRegistry(),
 		resourceVersions: make(map[string]uint64),
 		apiKeysByValue:   make(map[string]string),
@@ -508,4 +519,5 @@ func (b *InMemoryBackend) Reset() {
 	b.apiKeysByValue = make(map[string]string)
 	b.usage = newUsageTracker()
 	b.usageOverrides = make(map[string]map[string]int64)
+	b.account = defaultAccount()
 }

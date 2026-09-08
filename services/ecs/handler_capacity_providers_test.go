@@ -404,6 +404,45 @@ func TestECS_DeleteCapacityProvider(t *testing.T) {
 	}
 }
 
+// TestECS_DeleteCapacityProvider_InUse verifies AWS's DeleteCapacityProvider
+// guard: a capacity provider associated with a cluster cannot be deleted.
+func TestECS_DeleteCapacityProvider_InUse(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doECSRequest(t, h, "CreateCapacityProvider", map[string]any{
+		"name": "in-use-cp",
+		"autoScalingGroupProvider": map[string]any{
+			"autoScalingGroupArn": "arn:aws:autoscaling:us-east-1:123456789012:autoScalingGroup:x:autoScalingGroupName/asg",
+		},
+	})
+	doECSRequest(t, h, "CreateCluster", map[string]any{"clusterName": "cp-in-use-cluster"})
+
+	putResp := doECSRequest(t, h, "PutClusterCapacityProviders", map[string]any{
+		"cluster":           "cp-in-use-cluster",
+		"capacityProviders": []string{"in-use-cp"},
+	})
+	require.Equal(t, http.StatusOK, putResp.Code)
+
+	deleteResp := doECSRequest(t, h, "DeleteCapacityProvider", map[string]any{
+		"capacityProvider": "in-use-cp",
+	})
+	require.Equal(t, http.StatusBadRequest, deleteResp.Code)
+
+	// Detach it from the cluster; deletion then succeeds.
+	putResp = doECSRequest(t, h, "PutClusterCapacityProviders", map[string]any{
+		"cluster":           "cp-in-use-cluster",
+		"capacityProviders": []string{},
+	})
+	require.Equal(t, http.StatusOK, putResp.Code)
+
+	deleteResp = doECSRequest(t, h, "DeleteCapacityProvider", map[string]any{
+		"capacityProvider": "in-use-cp",
+	})
+	require.Equal(t, http.StatusOK, deleteResp.Code)
+}
+
 func TestECS_DescribeCapacityProviders(t *testing.T) {
 	t.Parallel()
 

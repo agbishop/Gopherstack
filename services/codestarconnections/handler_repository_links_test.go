@@ -509,21 +509,71 @@ func TestUpdateRepositoryLink(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		newConnArn string
-		wantStatus int
-		preCreate  bool
+		setupLinkID     func(t *testing.T, h *codestarconnections.Handler) string
+		setupNewConnArn func(t *testing.T, h *codestarconnections.Handler) string
+		name            string
+		wantStatus      int
+		wantNewConn     bool
 	}{
 		{
-			name:       "success",
-			preCreate:  true,
-			newConnArn: "arn:aws:codestar-connections:us-east-1:123:connection/new",
-			wantStatus: http.StatusOK,
+			// UpdateRepositoryLinkInput.ConnectionArn's doc comment: "The
+			// updated connection ARN must have the same providerType (such
+			// as GitHub) as the original connection ARN for the repo link."
+			name: "success_updates_connection",
+			setupLinkID: func(t *testing.T, h *codestarconnections.Handler) string {
+				t.Helper()
+				connArn := createCSCConn(t, h, "upd-link-conn", "GitHub")
+
+				return createCSCRepositoryLink(t, h, connArn, "my-repo")
+			},
+			setupNewConnArn: func(t *testing.T, h *codestarconnections.Handler) string {
+				t.Helper()
+
+				return createCSCConn(t, h, "new-conn", "GitHub")
+			},
+			wantStatus:  http.StatusOK,
+			wantNewConn: true,
 		},
 		{
-			name:       "not_found",
-			preCreate:  false,
-			newConnArn: "arn:aws:codestar-connections:us-east-1:123:connection/new",
+			name: "link_not_found",
+			setupLinkID: func(_ *testing.T, _ *codestarconnections.Handler) string {
+				return "nonexistent"
+			},
+			setupNewConnArn: func(_ *testing.T, _ *codestarconnections.Handler) string {
+				return "arn:aws:codestar-connections:us-east-1:123:connection/new"
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// Previously accepted silently: a ConnectionArn naming no real
+			// connection was written straight through with a 200.
+			name: "new_connection_does_not_exist",
+			setupLinkID: func(t *testing.T, h *codestarconnections.Handler) string {
+				t.Helper()
+				connArn := createCSCConn(t, h, "original-conn", "GitHub")
+
+				return createCSCRepositoryLink(t, h, connArn, "my-repo")
+			},
+			setupNewConnArn: func(_ *testing.T, _ *codestarconnections.Handler) string {
+				return "arn:aws:codestar-connections:us-east-1:000000000000:connection/does-not-exist"
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// Previously accepted silently: swapping in a real connection of
+			// a DIFFERENT ProviderType than the link's original connection.
+			name: "new_connection_provider_type_mismatch",
+			setupLinkID: func(t *testing.T, h *codestarconnections.Handler) string {
+				t.Helper()
+				connArn := createCSCConn(t, h, "original-conn", "GitHub")
+
+				return createCSCRepositoryLink(t, h, connArn, "my-repo")
+			},
+			setupNewConnArn: func(t *testing.T, h *codestarconnections.Handler) string {
+				t.Helper()
+
+				return createCSCConn(t, h, "new-conn", "Bitbucket")
+			},
 			wantStatus: http.StatusBadRequest,
 		},
 	}
@@ -533,24 +583,20 @@ func TestUpdateRepositoryLink(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
-			linkID := "nonexistent"
-
-			if tt.preCreate {
-				connArn := createCSCConn(t, h, "upd-link-conn", "GitHub")
-				linkID = createCSCRepositoryLink(t, h, connArn, "my-repo")
-			}
+			linkID := tt.setupLinkID(t, h)
+			newConnArn := tt.setupNewConnArn(t, h)
 
 			rec := doRequest(t, h, "UpdateRepositoryLink", map[string]any{
 				"RepositoryLinkId": linkID,
-				"ConnectionArn":    tt.newConnArn,
+				"ConnectionArn":    newConnArn,
 			})
 			assert.Equal(t, tt.wantStatus, rec.Code)
 
-			if tt.wantStatus == http.StatusOK {
+			if tt.wantNewConn {
 				resp := parseResp(t, rec)
 				info, ok := resp["RepositoryLinkInfo"].(map[string]any)
 				require.True(t, ok)
-				assert.Equal(t, tt.newConnArn, info["ConnectionArn"])
+				assert.Equal(t, newConnArn, info["ConnectionArn"])
 			}
 		})
 	}

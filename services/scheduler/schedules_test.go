@@ -3,6 +3,7 @@ package scheduler_test
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"strings"
 	"testing"
@@ -1220,7 +1221,7 @@ func TestDeleteSchedule_InCustomGroup(t *testing.T) {
 	h := newTestSchedulerHandler(t)
 	b := h.Backend.(*scheduler.InMemoryBackend)
 
-	_, err := b.CreateScheduleGroup(context.Background(), "custom", "", nil)
+	_, err := b.CreateScheduleGroup(context.Background(), "custom", nil)
 	require.NoError(t, err)
 
 	createScheduleViaHandler(t, h, "del-sched", "custom", "rate(1 minute)")
@@ -1566,6 +1567,63 @@ func TestUpdateSchedule_DoesNotBlankFields(t *testing.T) {
 	target, _ := out["Target"].(map[string]any)
 	assert.Equal(t, "arn:new", target["Arn"])
 	assert.Equal(t, "arn:role-new", target["RoleArn"])
+}
+
+// TestUpdateSchedule_ClearsOmittedOptionalFields verifies that UpdateSchedule is a
+// full replacement (api_op_UpdateSchedule.go:16-19): StartDate, EndDate, and
+// KmsKeyArn are true optional/pointer fields on the wire (unlike the State enum,
+// which is exempted -- see the UpdateSchedule backend comment), so omitting them
+// from an update must reset them, not preserve the prior value.
+func TestUpdateSchedule_ClearsOmittedOptionalFields(t *testing.T) {
+	t.Parallel()
+
+	epoch := float64(time.Now().UTC().Truncate(time.Second).Unix())
+	kmsARN := "arn:aws:kms:us-east-1:000000000000:key/12345678-abcd-ef01-2345-6789abcdef01"
+
+	tests := []struct {
+		name       string
+		createBody map[string]any
+		field      string
+	}{
+		{name: "start_date", createBody: map[string]any{"StartDate": epoch}, field: "StartDate"},
+		{name: "end_date", createBody: map[string]any{"EndDate": epoch}, field: "EndDate"},
+		{name: "kms_key_arn", createBody: map[string]any{"KmsKeyArn": kmsARN}, field: "KmsKeyArn"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestSchedulerHandler(t)
+
+			create := map[string]any{
+				"Name":               "clear-" + tc.name,
+				"ScheduleExpression": "rate(1 minute)",
+				"Target":             map[string]string{"Arn": "arn:a", "RoleArn": "arn:r"},
+				"FlexibleTimeWindow": map[string]any{"Mode": "OFF"},
+			}
+			maps.Copy(create, tc.createBody)
+
+			createRec := doSchedulerRequest(t, h, "CreateSchedule", create)
+			require.Equal(t, http.StatusOK, createRec.Code)
+
+			updateRec := doSchedulerRequest(t, h, "UpdateSchedule", map[string]any{
+				"Name":               "clear-" + tc.name,
+				"ScheduleExpression": "rate(1 minute)",
+				"Target":             map[string]string{"Arn": "arn:a", "RoleArn": "arn:r"},
+				"FlexibleTimeWindow": map[string]any{"Mode": "OFF"},
+			})
+			require.Equal(t, http.StatusOK, updateRec.Code)
+
+			getRec := doSchedulerRequest(t, h, "GetSchedule", map[string]any{"Name": "clear-" + tc.name})
+			require.Equal(t, http.StatusOK, getRec.Code)
+
+			var out map[string]any
+			require.NoError(t, json.NewDecoder(getRec.Body).Decode(&out))
+
+			assert.NotContains(t, out, tc.field, "%s should be cleared after an update that omits it", tc.field)
+		})
+	}
 }
 
 // TestUpdateSchedule_FlexibleValidation verifies that UpdateSchedule also

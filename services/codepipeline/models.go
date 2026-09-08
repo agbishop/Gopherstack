@@ -173,6 +173,15 @@ type Job struct {
 	// echoed on the wire.
 	FailureMessage string `json:"failureMessage,omitempty"`
 	FailureType    string `json:"failureType,omitempty"`
+	// ClientID is issued the first time PollForThirdPartyJobs hands this job
+	// to a worker and echoed back as ThirdPartyJob.ClientId; the four
+	// ThirdPartyJob* consumer operations require their clientToken to match
+	// it. Real AWS's SDK doc comments for ClientId and for ClientToken on
+	// each consumer are identical ("The clientToken portion of the clientId
+	// and clientToken pair..."), confirming it's the same value round-tripped
+	// -- not derived from ActionTypeId, which many jobs can share. Unused
+	// (empty) for plain (non-third-party) jobs.
+	ClientID string `json:"clientId,omitempty"`
 }
 
 // WebhookFilter represents a filter applied to incoming webhook payloads.

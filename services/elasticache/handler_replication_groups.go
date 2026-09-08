@@ -102,17 +102,16 @@ func parseCreateReplicationGroupOpts(form url.Values) ReplicationGroupCreateOpts
 		EngineVersion:         form.Get("EngineVersion"),
 		CacheNodeType:         form.Get("CacheNodeType"),
 		Durability:            form.Get("Durability"),
-	}
 
-	opts.AuthTokenEnabled = !strings.EqualFold(form.Get("AuthToken"), "") ||
-		strings.EqualFold(form.Get("AuthTokenEnabled"), "true")
-	opts.AtRestEncryptionEnabled = strings.EqualFold(form.Get("AtRestEncryptionEnabled"), "true")
-	opts.TransitEncryptionEnabled = strings.EqualFold(form.Get("TransitEncryptionEnabled"), "true")
-	opts.ClusterModeEnabled = strings.EqualFold(form.Get("ClusterModeEnabled"), "true") ||
-		strings.EqualFold(form.Get("ClusterMode"), "enabled")
-	opts.DataTieringEnabled = strings.EqualFold(form.Get("DataTieringEnabled"), "true")
-	opts.MultiAZEnabled = strings.EqualFold(form.Get("MultiAZEnabled"), "true")
-	opts.AutomaticFailoverEnabled = strings.EqualFold(form.Get("AutomaticFailoverEnabled"), "true")
+		AuthTokenEnabled: !strings.EqualFold(form.Get("AuthToken"), "") ||
+			strings.EqualFold(form.Get("AuthTokenEnabled"), "true"),
+		AtRestEncryptionEnabled:  strings.EqualFold(form.Get("AtRestEncryptionEnabled"), "true"),
+		TransitEncryptionEnabled: strings.EqualFold(form.Get("TransitEncryptionEnabled"), "true"),
+		ClusterModeEnabled: strings.EqualFold(form.Get("ClusterModeEnabled"), "true") ||
+			strings.EqualFold(form.Get("ClusterMode"), "enabled"),
+		DataTieringEnabled:       strings.EqualFold(form.Get("DataTieringEnabled"), "true"),
+		MultiAZEnabled:           strings.EqualFold(form.Get("MultiAZEnabled"), "true"),
+		AutomaticFailoverEnabled: strings.EqualFold(form.Get("AutomaticFailoverEnabled"), "true")}
 
 	if s := form.Get("SnapshotRetentionLimit"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil {

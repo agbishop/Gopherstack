@@ -64,6 +64,31 @@ func (m *mockLambdaInvoker) InvokeFunction(
 	return m.response, 200, m.err
 }
 
+// mockCWLogsBackend simulates the CloudWatch Logs backend a destination's
+// CloudWatchLoggingOptions delivers failure events to via SetCWLogsBackend.
+type mockCWLogsBackend struct {
+	ensured  []string
+	putCalls []mockCWLogsPutCall
+}
+
+type mockCWLogsPutCall struct {
+	group    string
+	stream   string
+	messages []string
+}
+
+func (m *mockCWLogsBackend) EnsureLogGroupAndStream(groupName, streamName string) error {
+	m.ensured = append(m.ensured, groupName+"|"+streamName)
+
+	return nil
+}
+
+func (m *mockCWLogsBackend) PutLogLines(groupName, streamName string, messages []string) error {
+	m.putCalls = append(m.putCalls, mockCWLogsPutCall{group: groupName, stream: streamName, messages: messages})
+
+	return nil
+}
+
 func TestS3Delivery_SizeBasedFlush(t *testing.T) {
 	t.Parallel()
 
@@ -896,4 +921,105 @@ func TestPendingFlush_Efficiency(t *testing.T) {
 	// Flushing empties the buffer → the pending entry is cleared.
 	b.FlushAll(context.Background())
 	assert.Equal(t, 0, firehose.PendingFlushCount(b))
+}
+
+// TestLambdaTransformError_DeliversCloudWatchLogEvent verifies that a delivery failure on
+// a destination with CloudWatchLoggingOptions.Enabled actually reaches the wired
+// CloudWatch Logs backend (gopherstack-pe7x), instead of only being logged locally.
+func TestLambdaTransformError_DeliversCloudWatchLogEvent(t *testing.T) {
+	t.Parallel()
+
+	s3mock := &mockS3Storer{}
+	lambdaMock := &mockLambdaInvoker{err: errLambdaUnavailable}
+	cwLogsMock := &mockCWLogsBackend{}
+
+	b := firehose.NewInMemoryBackend("000000000000", flushRegion)
+	b.SetS3Backend(s3mock)
+	b.SetLambdaBackend(lambdaMock)
+	b.SetCWLogsBackend(cwLogsMock)
+
+	_, err := b.CreateDeliveryStream(context.TODO(), firehose.CreateDeliveryStreamInput{
+		Name: "cwlog-stream",
+		S3Destination: &firehose.S3DestinationDescription{
+			BucketARN:         "arn:aws:s3:::err-bucket",
+			ErrorOutputPrefix: "errors/",
+			ProcessingConfiguration: &firehose.ProcessingConfiguration{
+				Enabled: true,
+				Processors: []firehose.Processor{
+					{
+						Type: "Lambda",
+						Parameters: []firehose.ProcessorParameter{
+							{ParameterName: "LambdaArn", ParameterValue: "my-fn"},
+						},
+					},
+				},
+			},
+			CloudWatchLoggingOptions: &firehose.CloudWatchLoggingOptions{
+				Enabled:       true,
+				LogGroupName:  "/aws/kinesisfirehose/cwlog-stream",
+				LogStreamName: "S3Delivery",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, b.PutRecord(context.TODO(), "cwlog-stream", []byte("input")))
+	b.FlushAll(t.Context())
+
+	require.Len(t, cwLogsMock.putCalls, 1,
+		"delivery failure must be delivered to the wired CloudWatch Logs backend")
+	call := cwLogsMock.putCalls[0]
+	assert.Equal(t, "/aws/kinesisfirehose/cwlog-stream", call.group)
+	assert.Equal(t, "S3Delivery", call.stream)
+	require.Len(t, call.messages, 1)
+	assert.Contains(t, call.messages[0], "cwlog-stream")
+	assert.Contains(t, call.messages[0], "lambda transform invocation failed")
+	assert.Contains(t, cwLogsMock.ensured, "/aws/kinesisfirehose/cwlog-stream|S3Delivery")
+}
+
+// TestLambdaTransformError_UnwiredCloudWatchLogsStaysPermissive verifies that a
+// destination with CloudWatchLoggingOptions.Enabled still delivers normally (records
+// routed to the error output) when CloudWatch Logs has not been wired in via
+// SetCWLogsBackend -- an unwired hook must be a silent no-op, never a rejection.
+func TestLambdaTransformError_UnwiredCloudWatchLogsStaysPermissive(t *testing.T) {
+	t.Parallel()
+
+	s3mock := &mockS3Storer{}
+	lambdaMock := &mockLambdaInvoker{err: errLambdaUnavailable}
+
+	b := firehose.NewInMemoryBackend("000000000000", flushRegion)
+	b.SetS3Backend(s3mock)
+	b.SetLambdaBackend(lambdaMock)
+
+	_, err := b.CreateDeliveryStream(context.TODO(), firehose.CreateDeliveryStreamInput{
+		Name: "cwlog-unwired-stream",
+		S3Destination: &firehose.S3DestinationDescription{
+			BucketARN:         "arn:aws:s3:::err-bucket",
+			ErrorOutputPrefix: "errors/",
+			ProcessingConfiguration: &firehose.ProcessingConfiguration{
+				Enabled: true,
+				Processors: []firehose.Processor{
+					{
+						Type: "Lambda",
+						Parameters: []firehose.ProcessorParameter{
+							{ParameterName: "LambdaArn", ParameterValue: "my-fn"},
+						},
+					},
+				},
+			},
+			CloudWatchLoggingOptions: &firehose.CloudWatchLoggingOptions{
+				Enabled:       true,
+				LogGroupName:  "/aws/kinesisfirehose/cwlog-unwired-stream",
+				LogStreamName: "S3Delivery",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, b.PutRecord(context.TODO(), "cwlog-unwired-stream", []byte("input")))
+	b.FlushAll(t.Context())
+
+	require.Len(t, s3mock.calls, 1)
+	assert.Contains(t, s3mock.calls[0].key, "errors/",
+		"delivery must still succeed and route the failed record when CloudWatch Logs is unwired")
 }

@@ -271,6 +271,13 @@ func (b *InMemoryBackend) RevokeCertificate(ctx context.Context, caARN, serial, 
 		return fmt.Errorf("%w: certificate with serial %s not found", ErrCertNotFound, serial)
 	}
 
+	// RevokeCertificate's own deserializeOpError models RequestAlreadyProcessedException
+	// ("Your request has already been completed") -- no other op in this service does,
+	// evidence a repeat revocation must be rejected rather than silently re-applied.
+	if cert.Status == certStatusRevoked {
+		return fmt.Errorf("%w: certificate with serial %s is already revoked", ErrRequestAlreadyProcessed, serial)
+	}
+
 	cert.Status = certStatusRevoked
 	now := time.Now().UTC()
 	cert.RevokedAt = &now

@@ -8,9 +8,21 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/blackbirdworks/gopherstack/services/organizations"
 )
 
 // TestHandler_CreateAccount tests the HTTP handler for CreateAccount.
+//
+// The rejection cases assert AccountCount stays unchanged, not just the
+// response status: validateCreateAccountInput used to write its rejection
+// via h.writeError and return that call's (always-nil) result, so
+// handleCreateAccount's `if err != nil` never fired and the account was
+// created anyway. A status-only assertion still shows 400 here, because
+// httptest.ResponseRecorder keeps the first WriteHeader call and ignores the
+// handler's later successful write on top of it -- that is how this bug hid
+// behind these exact cases before (gopherstack-3t96, the gopherstack-8haq
+// shape).
 func TestHandler_CreateAccount(t *testing.T) {
 	t.Parallel()
 
@@ -37,17 +49,35 @@ func TestHandler_CreateAccount(t *testing.T) {
 			body:       map[string]any{"AccountName": "test-account"},
 			wantStatus: http.StatusBadRequest,
 		},
+		{
+			name: "invalid_iam_user_access_to_billing_fails",
+			body: map[string]any{
+				"AccountName":            "test-account",
+				"Email":                  "test@example.com",
+				"IamUserAccessToBilling": "MAYBE",
+			},
+			wantStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := newTestHandler(t)
-			doRequest(t, h, "CreateOrganization", map[string]any{"FeatureSet": "ALL"})
+			b, _ := newOrgBackend(t)
+			h := organizations.NewHandler(b)
+
+			before := organizations.AccountCount(b)
 
 			rec := doRequest(t, h, "CreateAccount", tt.body)
 			assert.Equal(t, tt.wantStatus, rec.Code)
+
+			after := organizations.AccountCount(b)
+			if tt.wantStatus == http.StatusOK {
+				assert.Equal(t, before+1, after, "a successful CreateAccount must add exactly one account")
+			} else {
+				assert.Equal(t, before, after, "a rejected CreateAccount must not create an account")
+			}
 		})
 	}
 }
@@ -201,7 +231,14 @@ func TestCreateAccount_RoleName(t *testing.T) {
 	}
 }
 
-// TestCreateAccount_IamUserAccessToBilling verifies IamUserAccessToBilling validation.
+// TestCreateAccount_IamUserAccessToBilling verifies IamUserAccessToBilling
+// validation. The invalid cases assert AccountCount stays unchanged, not
+// just the response status -- see TestHandler_CreateAccount's doc comment
+// for why a status-only assertion passes even when the account is created
+// anyway (gopherstack-3t96, the gopherstack-8haq shape). This is the
+// pre-existing test that specifically covers the buggy branch (an invalid
+// IamUserAccessToBilling); strengthening it, not just adding a new one, is
+// the point -- it previously masked the bug it was meant to catch.
 func TestCreateAccount_IamUserAccessToBilling(t *testing.T) {
 	t.Parallel()
 
@@ -222,10 +259,10 @@ func TestCreateAccount_IamUserAccessToBilling(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := newTestHandler(t)
+			b, _ := newOrgBackend(t)
+			h := organizations.NewHandler(b)
 
-			rec := doRequest(t, h, "CreateOrganization", map[string]any{"FeatureSet": "ALL"})
-			require.Equal(t, http.StatusOK, rec.Code)
+			before := organizations.AccountCount(b)
 
 			body := map[string]any{
 				"AccountName": "test-account",
@@ -235,8 +272,15 @@ func TestCreateAccount_IamUserAccessToBilling(t *testing.T) {
 				body["IamUserAccessToBilling"] = tt.iamAccess
 			}
 
-			rec = doRequest(t, h, "CreateAccount", body)
+			rec := doRequest(t, h, "CreateAccount", body)
 			assert.Equal(t, tt.wantStatus, rec.Code)
+
+			after := organizations.AccountCount(b)
+			if tt.wantStatus == http.StatusOK {
+				assert.Equal(t, before+1, after, "a successful CreateAccount must add exactly one account")
+			} else {
+				assert.Equal(t, before, after, "a rejected CreateAccount must not create an account")
+			}
 
 			if tt.wantStatus == http.StatusOK && tt.wantIamAccess != "" {
 				var resp map[string]any
@@ -613,7 +657,12 @@ func TestHandler_CloseAccount(t *testing.T) {
 	}
 }
 
-// TestHandler_CreateGovCloudAccount tests the CreateGovCloudAccount operation.
+// TestHandler_CreateGovCloudAccount tests the CreateGovCloudAccount
+// operation. The rejection cases assert AccountCount stays unchanged --
+// handleCreateGovCloudAccount shares validateCreateAccountInput with
+// handleCreateAccount, so it has the same gopherstack-3t96 shape and the
+// same status-only-assertion blind spot; see TestHandler_CreateAccount's
+// doc comment.
 func TestHandler_CreateGovCloudAccount(t *testing.T) {
 	t.Parallel()
 
@@ -642,17 +691,35 @@ func TestHandler_CreateGovCloudAccount(t *testing.T) {
 			body:       map[string]any{"AccountName": "gov-test"},
 			wantStatus: http.StatusBadRequest,
 		},
+		{
+			name: "invalid_iam_user_access_to_billing_fails",
+			body: map[string]any{
+				"AccountName":            "gov-test",
+				"Email":                  "gov@example.com",
+				"IamUserAccessToBilling": "MAYBE",
+			},
+			wantStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := newTestHandler(t)
-			doRequest(t, h, "CreateOrganization", map[string]any{"FeatureSet": "ALL"})
+			b, _ := newOrgBackend(t)
+			h := organizations.NewHandler(b)
+
+			before := organizations.AccountCount(b)
 
 			rec := doRequest(t, h, "CreateGovCloudAccount", tt.body)
 			assert.Equal(t, tt.wantStatus, rec.Code)
+
+			after := organizations.AccountCount(b)
+			if tt.wantStatus == http.StatusOK {
+				assert.Equal(t, before+1, after, "a successful CreateGovCloudAccount must add exactly one account")
+			} else {
+				assert.Equal(t, before, after, "a rejected CreateGovCloudAccount must not create an account")
+			}
 
 			if tt.wantGovID {
 				var resp map[string]any

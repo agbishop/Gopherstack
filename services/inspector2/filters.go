@@ -15,6 +15,9 @@ import (
 const (
 	filterNameMinLen = 3
 	filterNameMaxLen = 64
+
+	filterActionNone     = "NONE"
+	filterActionSuppress = "SUPPRESS"
 )
 
 // onceFilterNamePattern lazily compiles the real Inspector2 filter-name
@@ -50,14 +53,65 @@ func validateFilterName(name string) error {
 // validateFilterAction returns an error if action is not a valid Inspector2 filter action.
 func validateFilterAction(action string) error {
 	validActions := map[string]bool{
-		"NONE":     true,
-		"SUPPRESS": true,
+		filterActionNone:     true,
+		filterActionSuppress: true,
 	}
 	if action == "" || validActions[action] {
 		return nil
 	}
 
 	return fmt.Errorf("%w: filter action must be NONE or SUPPRESS, got %q", ErrValidation, action)
+}
+
+// suppressMatchingFindings applies f's SUPPRESS action to every currently-
+// ACTIVE finding matching its criteria, transitioning them to SUPPRESSED.
+// Real CreateFilter's own doc comment ("When the filter action is set to
+// SUPPRESS this action creates a suppression rule") describes an ongoing
+// rule, not a one-off action -- the finding-creation-time half of that rule
+// (newly seeded findings matching an already-active SUPPRESS filter) is
+// handled by matchesSuppressFilter, called from findings.go's
+// SeedFinding/AddFinding. Reverting a finding to ACTIVE when a filter is
+// later deleted or its action changed away from SUPPRESS is not modeled:
+// neither the SDK doc comments nor the API Reference say whether real
+// Inspector2 does this, and guessing wrong would trade a disclosed gap for a
+// fabricated behavior. Caller must already hold b.mu.
+func (b *InMemoryBackend) suppressMatchingFindings(f *Filter) {
+	if f.Action != filterActionSuppress {
+		return
+	}
+
+	fc := parseFindingFilterCriteria(f.Criteria)
+
+	b.findings.Range(func(sf *storedFinding) bool {
+		if sf.Status == findingStatusActive && fc.matches(&sf.Finding) {
+			sf.Status = findingStatusSuppressed
+		}
+
+		return true
+	})
+}
+
+// matchesSuppressFilter reports whether f matches any stored SUPPRESS-action
+// filter's criteria -- see suppressMatchingFindings for the retroactive
+// half of the same rule. Caller must already hold b.mu.
+func (b *InMemoryBackend) matchesSuppressFilter(f *Finding) bool {
+	matched := false
+
+	b.filters.Range(func(filt *Filter) bool {
+		if filt.Action != filterActionSuppress {
+			return true
+		}
+
+		if parseFindingFilterCriteria(filt.Criteria).matches(f) {
+			matched = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return matched
 }
 
 func (b *InMemoryBackend) buildFilterARN() string {
@@ -119,6 +173,7 @@ func (b *InMemoryBackend) CreateFilter(
 	}
 
 	b.filters.Put(f)
+	b.suppressMatchingFindings(f)
 
 	if len(tags) > 0 {
 		b.tags[filterARN] = maps.Clone(tags)
@@ -161,6 +216,7 @@ func (b *InMemoryBackend) UpdateFilter(
 	}
 
 	f.UpdatedAt = time.Now().UTC()
+	b.suppressMatchingFindings(f)
 
 	return f, nil
 }

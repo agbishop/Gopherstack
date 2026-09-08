@@ -47,4 +47,20 @@ var (
 	// ErrRevocationIDNotFound is returned when the requested revocation ID does not exist
 	// on the trust store (GetTrustStoreRevocationContent).
 	ErrRevocationIDNotFound = awserr.New("RevocationIdNotFound", awserr.ErrNotFound)
+	// ErrCertificateNotFound is returned when a listener's CertificateArn does not
+	// resolve against ACM or IAM. Modeled on CreateListener, ModifyListener and
+	// AddListenerCertificates (CertificateNotFoundException) -- NOT on
+	// CreateLoadBalancer, which does not accept certificates.
+	ErrCertificateNotFound = awserr.New("CertificateNotFound", awserr.ErrNotFound)
+	// ErrInvalidSecurityGroup is returned when a security group passed to
+	// CreateLoadBalancer does not exist. Modeled on
+	// CreateLoadBalancer's InvalidSecurityGroupException.
+	ErrInvalidSecurityGroup = awserr.New("InvalidSecurityGroup", awserr.ErrInvalidParameter)
+	// ErrSubnetNotFound is returned when a subnet passed to CreateLoadBalancer does not
+	// exist. Modeled on CreateLoadBalancer's SubnetNotFoundException ("The specified
+	// subnet does not exist") -- NOT InvalidSubnetException, whose doc comment reads
+	// "The specified subnet is out of available addresses" (a capacity condition, not
+	// an existence check); verified in aws-sdk-go-v2/service/elasticloadbalancingv2
+	// types/errors.go.
+	ErrSubnetNotFound = awserr.New("SubnetNotFound", awserr.ErrNotFound)
 )

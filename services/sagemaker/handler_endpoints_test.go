@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -250,26 +251,27 @@ func TestHandler_ListEndpoints_Filters(t *testing.T) {
 			},
 		},
 	})
-	doSageMakerRequest(t, h, "CreateEndpoint", map[string]any{
-		"EndpointName": "list-filter-a", "EndpointConfigName": "ec-list-filters",
+	// Both endpoints' Creating -> InService transitions fire inside this
+	// bubble so StatusEquals below is not racing the async FSM transition.
+	// future/past are computed here too, against the bubble's fake clock:
+	// CreationTime/LastModifiedTime were stamped with that same fake clock,
+	// which does not track the real wall clock read outside the bubble.
+	var future, past float64
+
+	synctest.Test(t, func(t *testing.T) {
+		doSageMakerRequest(t, h, "CreateEndpoint", map[string]any{
+			"EndpointName": "list-filter-a", "EndpointConfigName": "ec-list-filters",
+		})
+		doSageMakerRequest(t, h, "CreateEndpoint", map[string]any{
+			"EndpointName": "list-filter-b", "EndpointConfigName": "ec-list-filters",
+		})
+
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		future = float64(time.Now().Add(time.Hour).Unix())
+		past = float64(time.Now().Add(-time.Hour).Unix())
 	})
-	doSageMakerRequest(t, h, "CreateEndpoint", map[string]any{
-		"EndpointName": "list-filter-b", "EndpointConfigName": "ec-list-filters",
-	})
-
-	// Wait for both to leave the transient Creating status so StatusEquals
-	// below is not racing the async FSM transition.
-	require.Eventually(t, func() bool {
-		rec := doSageMakerRequest(t, h, "ListEndpoints", map[string]any{"StatusEquals": "InService"})
-		var resp map[string]any
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-		endpoints, _ := resp["Endpoints"].([]any)
-
-		return len(endpoints) == 2
-	}, 2*time.Second, 20*time.Millisecond)
-
-	future := float64(time.Now().Add(time.Hour).Unix())
-	past := float64(time.Now().Add(-time.Hour).Unix())
 
 	tests := []struct {
 		body      map[string]any
@@ -373,21 +375,24 @@ func TestHandler_DescribeEndpoint_EventuallyInService(t *testing.T) {
 		},
 	})
 
-	doSageMakerRequest(t, h, "CreateEndpoint", map[string]any{
-		"EndpointName":       "ep2",
-		"EndpointConfigName": "ec2",
-	})
-
 	var descResp map[string]any
 
-	require.Eventually(t, func() bool {
+	synctest.Test(t, func(t *testing.T) {
+		doSageMakerRequest(t, h, "CreateEndpoint", map[string]any{
+			"EndpointName":       "ep2",
+			"EndpointConfigName": "ec2",
+		})
+
+		time.Sleep(time.Second)
+		synctest.Wait()
+
 		rec := doSageMakerRequest(t, h, "DescribeEndpoint", map[string]any{
 			"EndpointName": "ep2",
 		})
 		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+	})
 
-		return descResp["EndpointStatus"] == "InService"
-	}, 2*time.Second, 20*time.Millisecond)
+	require.Equal(t, "InService", descResp["EndpointStatus"])
 
 	variants, ok := descResp["ProductionVariants"].([]any)
 	require.True(t, ok)

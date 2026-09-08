@@ -116,6 +116,29 @@ func approvalPipeline(name string) codepipeline.PipelineDeclaration {
 	return p
 }
 
+// twoStagePipeline returns a 2-stage pipeline (Source -> Deploy) with no
+// approval gate, used by tests exercising DisableStageTransition/
+// EnableStageTransition (pipeline_state.go).
+func twoStagePipeline(name string) codepipeline.PipelineDeclaration {
+	p := samplePipeline(name)
+	p.Stages = append(p.Stages, codepipeline.Stage{
+		Name: "Deploy",
+		Actions: []codepipeline.Action{
+			{
+				Name: "DeployAction",
+				ActionTypeID: codepipeline.ActionTypeID{
+					Category: "Deploy",
+					Owner:    "AWS",
+					Provider: "S3",
+					Version:  "1",
+				},
+			},
+		},
+	})
+
+	return p
+}
+
 // approvalToken extracts the pending approval token for stageName/actionName
 // from a decoded GetPipelineState response body.
 //

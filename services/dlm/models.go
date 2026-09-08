@@ -170,6 +170,30 @@ func parseTagPairs(raw []string) []tagPair {
 	return out
 }
 
+// matchesDefaultPolicyType reports whether details satisfies the
+// defaultPolicyType query filter (GetLifecyclePoliciesInput.DefaultPolicyType,
+// aws-sdk-go-v2/service/dlm@v1.39.4/api_op_GetLifecyclePolicies.go:32-40):
+// "VOLUME" only the EBS-snapshot default policy, "INSTANCE" only the
+// EBS-backed-AMI default policy, "ALL" any default policy. An empty want
+// imposes no restriction.
+func matchesDefaultPolicyType(details map[string]any, want string) bool {
+	if want == "" {
+		return true
+	}
+
+	if !policyDetailsIsDefaultPolicy(details) {
+		return false
+	}
+
+	if strings.EqualFold(want, "ALL") {
+		return true
+	}
+
+	rt, _ := details["ResourceType"].(string)
+
+	return strings.EqualFold(rt, want)
+}
+
 // matchesResourceTypes reports whether want is empty, or any entry in want
 // case-insensitively matches an entry of details' ResourceTypes.
 func matchesResourceTypes(details map[string]any, want []string) bool {

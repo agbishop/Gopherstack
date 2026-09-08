@@ -124,6 +124,9 @@ func newFullPersistenceTestBackend(t *testing.T) *transcribe.InMemoryBackend {
 	_, err = b.CreateCallAnalyticsCategory(&transcribe.CallAnalyticsCategory{
 		CategoryName: "full-category",
 		InputType:    "POST_CALL",
+		Rules: []transcribe.CallAnalyticsRule{
+			{NonTalkTimeFilter: &transcribe.NonTalkTimeFilter{Threshold: 30000}},
+		},
 	})
 	require.NoError(t, err)
 
@@ -131,6 +134,10 @@ func newFullPersistenceTestBackend(t *testing.T) *transcribe.InMemoryBackend {
 		ModelName:     "full-model",
 		BaseModelName: "WideBand",
 		LanguageCode:  "en-US",
+		InputDataConfig: &transcribe.InputDataConfig{
+			S3Uri:             "s3://bucket/training/",
+			DataAccessRoleArn: "arn:aws:iam::123456789012:role/TranscribeRole",
+		},
 	})
 	require.NoError(t, err)
 
@@ -161,6 +168,7 @@ func newFullPersistenceTestBackend(t *testing.T) *transcribe.InMemoryBackend {
 		MedicalScribeJobName: "full-scribe-job",
 		DataAccessRoleArn:    "arn:aws:iam::123456789012:role/transcribe-role",
 		OutputBucketName:     "my-output-bucket",
+		Settings:             &transcribe.MedicalScribeSettings{ShowSpeakerLabels: true, MaxSpeakerLabels: 2},
 	})
 	require.NoError(t, err)
 

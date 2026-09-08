@@ -24,6 +24,11 @@ var (
 	// error switches (each generated Create* op only recognizes a specific
 	// exception type; anything else deserializes as an untyped
 	// smithy.GenericAPIError, breaking SDK-side `errors.As` typed matching).
+	//
+	// Also reused (via the ErrProjectHasVersions/ErrProjectVersionInUse/
+	// ErrDatasetInUse sentinels below) for Delete* preconditions that the
+	// same operations' deserializers.go error switches model as
+	// ResourceInUseException.
 	ErrNameInUse = errors.New("resource name already in use")
 	// ErrUserConflict is returned when CreateUser is called with a UserId
 	// that already exists; AWS reports this as ConflictException (not
@@ -78,4 +83,27 @@ var (
 	ErrAsyncJobNotFound = awserr.New(errResourceNotFound, awserr.ErrNotFound)
 	// ErrMediaAnalysisJobNotFound is returned when a media analysis job does not exist.
 	ErrMediaAnalysisJobNotFound = awserr.New(errResourceNotFound, awserr.ErrNotFound)
+	// ErrInvalidS3Object is returned when an Image/Video/Input references an
+	// S3Object the wired S3 backend cannot find. Real AWS reports this as
+	// InvalidS3ObjectException (rekognition@v1.54.4 types/errors.go:344):
+	// "Amazon Rekognition is unable to access the S3 object specified in the
+	// request".
+	ErrInvalidS3Object = errors.New("s3 object is not accessible")
+
+	// ErrProjectHasVersions is returned when DeleteProject is called on a
+	// project that still has project versions. DeleteProject's own doc
+	// comment (api_op_DeleteProject.go): "To delete a project you must
+	// first delete all models or adapters associated with the project.".
+	ErrProjectHasVersions = awserr.New(errResourceInUse, ErrNameInUse)
+	// ErrProjectVersionInUse is returned when DeleteProjectVersion is called
+	// on a version that is running or training. DeleteProjectVersion's own
+	// doc comment (api_op_DeleteProjectVersion.go): "You can't delete a
+	// project version if it is running or if it is training.".
+	ErrProjectVersionInUse = awserr.New(errResourceInUse, ErrNameInUse)
+	// ErrDatasetInUse is returned when DeleteDataset is called on a dataset
+	// that is creating or updating. DeleteDataset's own doc comment
+	// (api_op_DeleteDataset.go): "You can't delete a dataset while it is
+	// creating (Status = CREATE_IN_PROGRESS) or if the dataset is updating
+	// (Status = UPDATE_IN_PROGRESS).".
+	ErrDatasetInUse = awserr.New(errResourceInUse, ErrNameInUse)
 )

@@ -218,6 +218,7 @@ func putMetricDataErrorCode(err error) string {
 	case errors.Is(err, ErrValuesCountsLengthMismatch),
 		errors.Is(err, ErrTooManyValues),
 		errors.Is(err, ErrInvalidMetricValue),
+		errors.Is(err, ErrMetricTimestampOutOfRange),
 		errors.Is(err, ErrValidation):
 		return "InvalidParameterValue"
 	default:
@@ -243,6 +244,7 @@ func putMetricDataCBORErrorCode(err error) string {
 	case errors.Is(err, ErrValuesCountsLengthMismatch),
 		errors.Is(err, ErrTooManyValues),
 		errors.Is(err, ErrInvalidMetricValue),
+		errors.Is(err, ErrMetricTimestampOutOfRange),
 		errors.Is(err, ErrValidation):
 		return "InvalidParameterValueException"
 	default:

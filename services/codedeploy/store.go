@@ -173,3 +173,41 @@ func validateFileExistsBehavior(behavior string) error {
 			ErrInvalidFileExistsBehavior, behavior)
 	}
 }
+
+// ec2TagFilterType enum values. types.EC2TagFilterType Values(),
+// aws-sdk-go-v2/service/codedeploy@v1.38.4/types/enums.go:258-260.
+const (
+	ec2TagFilterTypeKeyOnly     = "KEY_ONLY"
+	ec2TagFilterTypeValueOnly   = "VALUE_ONLY"
+	ec2TagFilterTypeKeyAndValue = "KEY_AND_VALUE"
+)
+
+// validateDeploymentGroupTagFilters rejects a DeploymentGroupInput that
+// specifies both halves of the Ec2TagFilters/Ec2TagSet or
+// OnPremisesInstanceTagFilters/OnPremisesTagSet pairs (only one of each pair
+// may be used per call: types/errors.go:1579-1580 and 2122-2123 in
+// aws-sdk-go-v2/service/codedeploy@v1.38.4), and rejects an Ec2TagFilters
+// entry whose Type is set but isn't a real EC2TagFilterType value. validators.go
+// does not require EC2TagFilter.Type, so an empty Type stays legal.
+func validateDeploymentGroupTagFilters(input DeploymentGroupInput) error {
+	if len(input.Ec2TagFilters) > 0 && input.Ec2TagSet != nil {
+		return fmt.Errorf("%w: cannot specify both ec2TagFilters and ec2TagSet", ErrInvalidEC2TagCombination)
+	}
+
+	if len(input.OnPremisesInstanceTagFilters) > 0 && input.OnPremisesTagSet != nil {
+		return fmt.Errorf("%w: cannot specify both onPremisesInstanceTagFilters and onPremisesTagSet",
+			ErrInvalidOnPremisesTagCombination)
+	}
+
+	for _, f := range input.Ec2TagFilters {
+		switch f.Type {
+		case "", ec2TagFilterTypeKeyOnly, ec2TagFilterTypeValueOnly, ec2TagFilterTypeKeyAndValue:
+			continue
+		default:
+			return fmt.Errorf("%w: invalid ec2TagFilters type %q, must be KEY_ONLY, VALUE_ONLY, or KEY_AND_VALUE",
+				ErrInvalidEC2Tag, f.Type)
+		}
+	}
+
+	return nil
+}

@@ -342,7 +342,7 @@ func TestEvictExpiredAttrVerificationCodes(t *testing.T) {
 	assert.NotEmpty(t, code)
 
 	// Evict — code should still be there (not expired).
-	b.EvictExpiredAttrVerificationCodes()
+	assert.Zero(t, b.EvictExpiredAttrVerificationCodes())
 
 	// Code should still work since not expired.
 	storedCode := b.GetAttrVerificationCodeForTest(pool.ID, "evict-user", "email")

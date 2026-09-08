@@ -168,12 +168,24 @@ func createFileCache(t *testing.T, h *fsx.Handler, cacheType string) string {
 		"FileCacheTypeVersion": "2.12",
 		"SubnetIds":            []string{"subnet-1"},
 		"StorageCapacity":      1200,
+		"LustreConfiguration":  fileCacheLustreConfigBody(),
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
 
 	return out["FileCache"].(map[string]any)["FileCacheId"].(string)
+}
+
+// fileCacheLustreConfigBody builds a minimal valid CreateFileCache
+// LustreConfiguration block (fsx@v1.68.4 types/types.go:574 --
+// DeploymentType/MetadataConfiguration/PerUnitStorageThroughput required).
+func fileCacheLustreConfigBody() map[string]any {
+	return map[string]any{
+		"DeploymentType":           "CACHE_1",
+		"MetadataConfiguration":    map[string]any{"StorageCapacity": 2400},
+		"PerUnitStorageThroughput": 1000,
+	}
 }
 
 // decodeField requires a 200 response and returns the named top-level field
@@ -281,6 +293,7 @@ func Test_CreationTime_IsEpochSecondsNumber(t *testing.T) {
 						"FileCacheTypeVersion": "2.12",
 						"SubnetIds":            []string{"subnet-1"},
 						"StorageCapacity":      1200,
+						"LustreConfiguration":  fileCacheLustreConfigBody(),
 					}), "FileCache")
 			},
 		},

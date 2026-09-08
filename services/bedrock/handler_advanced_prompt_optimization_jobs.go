@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,10 +150,13 @@ type listAdvancedPromptOptimizationJobsOutput struct {
 func parseListAdvancedPromptOptimizationJobsQuery(c *echo.Context) *ListAdvancedPromptOptimizationJobsInput {
 	q := c.Request().URL.Query()
 
+	maxResults, _ := strconv.ParseInt(q.Get("maxResults"), 10, 32)
+
 	in := &ListAdvancedPromptOptimizationJobsInput{
-		SortBy:    q.Get("sortBy"),
-		SortOrder: q.Get("sortOrder"),
-		NextToken: q.Get("nextToken"),
+		SortBy:     q.Get("sortBy"),
+		SortOrder:  q.Get("sortOrder"),
+		NextToken:  q.Get("nextToken"),
+		MaxResults: int32(maxResults),
 	}
 
 	return in

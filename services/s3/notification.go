@@ -96,6 +96,9 @@ type NotificationDispatcher interface {
 	)
 	// DispatchObjectCopied sends an s3:ObjectCreated:Copy notification for a CopyObject operation.
 	DispatchObjectCopied(ctx context.Context, bucket, key, etag string, size int64, notifXML string)
+	// DispatchObjectPosted sends an s3:ObjectCreated:Post notification for a
+	// browser-style POST Object upload.
+	DispatchObjectPosted(ctx context.Context, bucket, key, etag string, size int64, notifXML string)
 	// DispatchObjectCompleted sends an s3:ObjectCreated:CompleteMultipartUpload notification.
 	DispatchObjectCompleted(
 		ctx context.Context,
@@ -332,6 +335,15 @@ func (d *inMemoryNotificationDispatcher) DispatchObjectCopied(
 	notifXML string,
 ) {
 	d.dispatch(ctx, "s3:ObjectCreated:Copy", bucket, key, etag, size, notifXML)
+}
+
+func (d *inMemoryNotificationDispatcher) DispatchObjectPosted(
+	ctx context.Context,
+	bucket, key, etag string,
+	size int64,
+	notifXML string,
+) {
+	d.dispatch(ctx, "s3:ObjectCreated:Post", bucket, key, etag, size, notifXML)
 }
 
 func (d *inMemoryNotificationDispatcher) DispatchObjectCompleted(

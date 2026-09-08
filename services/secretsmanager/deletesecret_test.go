@@ -367,6 +367,18 @@ func TestDeleteSecret_Cascade(t *testing.T) {
 	require.Equal(t, 1, secretsmanager.ResourcePolicyCount(b))
 	require.Equal(t, 1, secretsmanager.ReplicationConfigCount(b))
 
+	// Real AWS: "You can't delete a primary secret that is replicated to
+	// other Regions. You must first delete the replicas using
+	// RemoveRegionsFromReplication, and then delete the primary secret."
+	// (api_op_DeleteSecret.go doc comment). Remove the replica first, as a
+	// real client must.
+	_, err = b.RemoveRegionsFromReplication(context.Background(), &secretsmanager.RemoveRegionsFromReplicationInput{
+		SecretID:             "cascade",
+		RemoveReplicaRegions: []string{"us-west-2"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, secretsmanager.ReplicationConfigCount(b))
+
 	_, err = b.DeleteSecret(context.Background(), &secretsmanager.DeleteSecretInput{
 		SecretID:                   "cascade",
 		ForceDeleteWithoutRecovery: true,
@@ -376,6 +388,38 @@ func TestDeleteSecret_Cascade(t *testing.T) {
 	assert.Equal(t, 0, secretsmanager.SecretCount(b))
 	assert.Equal(t, 0, secretsmanager.ResourcePolicyCount(b))
 	assert.Equal(t, 0, secretsmanager.ReplicationConfigCount(b))
+}
+
+// TestDeleteSecret_RejectsWhilePrimaryHasReplicas confirms DeleteSecret
+// rejects a primary secret that is still replicated to other Regions,
+// instead of silently deleting the primary while leaving its replicas
+// orphaned (and permanently readable) in their Regions.
+func TestDeleteSecret_RejectsWhilePrimaryHasReplicas(t *testing.T) {
+	t.Parallel()
+
+	b := secretsmanager.NewInMemoryBackend()
+	_, err := b.CreateSecret(
+		context.Background(),
+		&secretsmanager.CreateSecretInput{Name: "still-replicated", SecretString: "v"},
+	)
+	require.NoError(t, err)
+
+	_, err = b.ReplicateSecretToRegions(context.Background(), &secretsmanager.ReplicateSecretToRegionsInput{
+		SecretID:          "still-replicated",
+		AddReplicaRegions: []secretsmanager.ReplicaRegion{{Region: "us-west-2"}},
+	})
+	require.NoError(t, err)
+
+	_, err = b.DeleteSecret(context.Background(), &secretsmanager.DeleteSecretInput{
+		SecretID:                   "still-replicated",
+		ForceDeleteWithoutRecovery: true,
+	})
+	require.ErrorIs(t, err, secretsmanager.ErrInvalidParameter)
+
+	// The secret and its replica must both still be there.
+	_, err = b.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretID: "still-replicated"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, secretsmanager.SecretCount(b))
 }
 
 // ---------------------------------------------------------------------------

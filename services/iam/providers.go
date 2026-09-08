@@ -251,13 +251,14 @@ func (b *InMemoryBackend) CreateLoginProfile(
 		return nil, fmt.Errorf("%w: login profile for user %q already exists", ErrLoginProfileAlreadyExists, userName)
 	}
 
-	if err := validatePasswordAgainstPolicy(password, b.passwordPolicy); err != nil {
+	if err := validatePasswordAgainstPolicy(password, b.passwordPolicy, nil); err != nil {
 		return nil, err
 	}
 
 	lp := LoginProfile{
 		UserName:              userName,
 		Password:              password,
+		PasswordHistory:       recordPasswordHistory(nil, password, reusePreventionLimit(b.passwordPolicy)),
 		CreateDate:            time.Now().UTC(),
 		PasswordResetRequired: passwordResetRequired,
 	}
@@ -282,11 +283,12 @@ func (b *InMemoryBackend) UpdateLoginProfile(
 		return fmt.Errorf("%w: login profile for user %q not found", ErrLoginProfileNotFound, userName)
 	}
 
-	if err := validatePasswordAgainstPolicy(password, b.passwordPolicy); err != nil {
+	if err := validatePasswordAgainstPolicy(password, b.passwordPolicy, lp.PasswordHistory); err != nil {
 		return err
 	}
 
 	lp.Password = password
+	lp.PasswordHistory = recordPasswordHistory(lp.PasswordHistory, password, reusePreventionLimit(b.passwordPolicy))
 	lp.PasswordResetRequired = passwordResetRequired
 	b.loginProfiles.Put(lp)
 

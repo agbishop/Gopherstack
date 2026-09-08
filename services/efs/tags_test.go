@@ -13,6 +13,12 @@ import (
 
 // TestCreateTags_Validates verifies that the legacy CreateTags operation
 // enforces the same tag constraints as TagResource.
+//
+// wantErrIs was efs.ErrValidation on every tag-validation test in this file
+// until this pass; validateTags' callers (CreateAccessPoint, CreateFileSystem,
+// TagResource, CreateTags) all declare BadRequest, never ValidationException
+// (efs@v1.44.4 deserializers.go) -- the old assertions locked in the exact
+// wire-code defect this pass fixed.
 func TestCreateTags_Validates(t *testing.T) {
 	t.Parallel()
 
@@ -31,13 +37,13 @@ func TestCreateTags_Validates(t *testing.T) {
 			name:      "empty_key_rejected",
 			tags:      map[string]string{"": "value"},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name:      "aws_prefix_rejected",
 			tags:      map[string]string{"aws:reserved": "value"},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name: "too_many_tags_rejected",
@@ -50,7 +56,7 @@ func TestCreateTags_Validates(t *testing.T) {
 				return m
 			}(),
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 	}
 
@@ -130,19 +136,19 @@ func TestTagValidation(t *testing.T) {
 			name:      "aws_prefix_key_rejected",
 			tags:      map[string]string{"aws:reserved": "value"},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name:      "empty_key_rejected",
 			tags:      map[string]string{"": "value"},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name:      "value_too_long_rejected",
 			tags:      map[string]string{"key": generateString(257)},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 	}
 
@@ -183,7 +189,7 @@ func TestTagValidation_TagResource(t *testing.T) {
 			name:      "aws_prefix_rejected",
 			tags:      map[string]string{"aws:tag": "val"},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 	}
 

@@ -57,6 +57,50 @@ func TestPutRule_UpdateExistingDoesNotCountAgainstLimit(t *testing.T) {
 	}
 }
 
+func TestPutRule_ValidatesStateEnum(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		state   string
+		wantErr bool
+	}{
+		{name: "enabled accepted", state: "ENABLED"},
+		{name: "disabled accepted", state: "DISABLED"},
+		{name: "cloudtrail managed state accepted", state: "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS"},
+		{name: "omitted defaults to enabled", state: ""},
+		{name: "unrecognized value rejected", state: "BOGUS", wantErr: true},
+		{name: "lowercase enabled rejected", state: "enabled", wantErr: true},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b := newBackend()
+
+			rule, err := b.PutRule(context.Background(), eventbridge.PutRuleInput{
+				Name:         fmt.Sprintf("state-rule-%d", i),
+				EventPattern: `{"source":["x"]}`,
+				State:        tt.state,
+			})
+
+			if tt.wantErr {
+				require.ErrorIs(t, err, eventbridge.ErrInvalidParameter)
+
+				return
+			}
+
+			require.NoError(t, err)
+
+			wantState := tt.state
+			if wantState == "" {
+				wantState = "ENABLED"
+			}
+			assert.Equal(t, wantState, rule.State)
+		})
+	}
+}
+
 func TestPutRule_InvalidScheduleExpressionRejected(t *testing.T) {
 	t.Parallel()
 

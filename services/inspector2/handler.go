@@ -63,6 +63,10 @@ const (
 	keyCreatedAt          = "createdAt"
 	keyScanConfigurations = "scanConfigurations"
 	keyLevel              = "level"
+	keyResourceID         = "resourceId"
+	keySeverityCounts     = "severityCounts"
+	keyAggregationType    = "aggregationType"
+	keyResponses          = "responses"
 )
 
 // Handler handles Inspector2 HTTP requests.

@@ -40,7 +40,7 @@ func TestConfigureLogsForChannel(t *testing.T) {
 			name: "configure logs for missing channel returns 404",
 			body: map[string]any{
 				"ChannelName": "nope",
-				"LogTypes":    []any{},
+				"LogTypes":    []any{"AS_RUN"},
 			},
 			wantCode: http.StatusNotFound,
 		},
@@ -233,6 +233,77 @@ func TestConfigureLogsForPlaybackConfiguration_PersistsToGet(t *testing.T) {
 	strategies, _ := logCfg["EnabledLoggingStrategies"].([]any)
 	require.Len(t, strategies, 1)
 	assert.Equal(t, "VENDED_LOGS", strategies[0])
+}
+
+// TestConfigureLogsForChannel_RejectsInvalidLogTypes verifies LogTypes is
+// required and constrained to the real single-value enum (AS_RUN) --
+// aws-sdk-go-v2/service/mediatailor@v1.63.4 types/enums.go:348-353.
+func TestConfigureLogsForChannel_RejectsInvalidLogTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		body map[string]any
+		name string
+	}{
+		{name: "empty log types", body: map[string]any{"ChannelName": "ch1", "LogTypes": []any{}}},
+		{name: "unknown log type", body: map[string]any{"ChannelName": "ch1", "LogTypes": []any{"FULL_MANIFEST"}}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			createTestChannel(t, h)
+
+			rec := doRequest(t, h, http.MethodPut, "/configureLogs/channel", tc.body)
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
+}
+
+// TestConfigureLogsForPlaybackConfiguration_RejectsInvalidLogSettings verifies
+// PercentEnabled's documented "Valid values: 0 - 100" range
+// (aws-sdk-go-v2/service/mediatailor@v1.63.4
+// api_op_ConfigureLogsForPlaybackConfiguration.go:39) and
+// EnabledLoggingStrategies' real 2-value enum (types/enums.go:329-335) are
+// both enforced.
+func TestConfigureLogsForPlaybackConfiguration_RejectsInvalidLogSettings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		body map[string]any
+		name string
+	}{
+		{
+			name: "percent enabled below range",
+			body: map[string]any{"PlaybackConfigurationName": "pc1", "PercentEnabled": float64(-1)},
+		},
+		{
+			name: "percent enabled above range",
+			body: map[string]any{"PlaybackConfigurationName": "pc1", "PercentEnabled": float64(101)},
+		},
+		{
+			name: "unknown logging strategy",
+			body: map[string]any{
+				"PlaybackConfigurationName": "pc1",
+				"PercentEnabled":            float64(50),
+				"EnabledLoggingStrategies":  []any{"NOT_A_STRATEGY"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			createTestPlaybackConfig(t, h, "pc1")
+
+			rec := doRequest(t, h, http.MethodPut, "/configureLogs/playbackConfiguration", tc.body)
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+		})
+	}
 }
 
 // TestConfigureLogsForPlaybackConfiguration_SurvivesRePut verifies a

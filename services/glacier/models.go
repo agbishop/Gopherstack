@@ -12,19 +12,41 @@ import "time"
 // scopes archives by vault and Archive itself carries no natural
 // cross-vault identity field to key a flat table by.
 type Vault struct {
-	Tags                 map[string]string   `json:"tags,omitempty"`
-	Archives             map[string]*Archive `json:"archives,omitempty"`
-	AccessPolicy         string              `json:"accessPolicy,omitempty"`
-	NotificationSNSTopic string              `json:"notificationSNSTopic,omitempty"`
-	VaultARN             string              `json:"vaultARN"`
-	VaultName            string              `json:"vaultName"`
-	AccountID            string              `json:"accountID"`
-	Region               string              `json:"region"`
-	CreationDate         string              `json:"creationDate"`
-	LastInventoryDate    string              `json:"lastInventoryDate,omitempty"`
-	NotificationEvents   []string            `json:"notificationEvents,omitempty"`
-	NumberOfArchives     int64               `json:"numberOfArchives"`
-	SizeInBytes          int64               `json:"sizeInBytes"`
+	Tags     map[string]string   `json:"tags,omitempty"`
+	Archives map[string]*Archive `json:"archives,omitempty"`
+	// NumberOfArchivesAtLastInventory is the archive count captured when
+	// LastInventoryDate was last set (InitiateJob for inventory-retrieval). Per
+	// api_op_DeleteVault.go's doc comment, DeleteVault checks this -- "no
+	// archives ... as of the last inventory" -- rather than live NumberOfArchives.
+	//
+	// Pointer, not int64: CreateVault always sets it (to a pointer-to-zero), so
+	// nil is reserved for a vault decoded from a pre-gopherstack-x8em snapshot,
+	// which never had this field at all. DeleteVault uses that nil to fall back
+	// to the pre-x8em live-archive-count check instead of guessing a value
+	// (gopherstack-c8sa).
+	NumberOfArchivesAtLastInventory *int64 `json:"numberOfArchivesAtLastInventory,omitempty"`
+	// SizeInBytesAtLastInventory is SizeInBytes captured at the same point as
+	// NumberOfArchivesAtLastInventory: DescribeVaultOutput.SizeInBytes carries
+	// the identical "as of the last inventory date" qualification
+	// (gopherstack-zpo5). Pointer for the same pre-x8em-snapshot reason as
+	// NumberOfArchivesAtLastInventory.
+	SizeInBytesAtLastInventory *int64 `json:"sizeInBytesAtLastInventory,omitempty"`
+	// WriteSinceLastInventory tracks DeleteVault's other documented condition,
+	// "no writes ... since the last inventory": set on any archive add/remove,
+	// cleared when LastInventoryDate is refreshed. Pointer for the same
+	// pre-x8em-snapshot reason as NumberOfArchivesAtLastInventory.
+	WriteSinceLastInventory *bool    `json:"writeSinceLastInventory,omitempty"`
+	AccessPolicy            string   `json:"accessPolicy,omitempty"`
+	NotificationSNSTopic    string   `json:"notificationSNSTopic,omitempty"`
+	VaultARN                string   `json:"vaultARN"`
+	VaultName               string   `json:"vaultName"`
+	AccountID               string   `json:"accountID"`
+	Region                  string   `json:"region"`
+	CreationDate            string   `json:"creationDate"`
+	LastInventoryDate       string   `json:"lastInventoryDate,omitempty"`
+	NotificationEvents      []string `json:"notificationEvents,omitempty"`
+	NumberOfArchives        int64    `json:"numberOfArchives"`
+	SizeInBytes             int64    `json:"sizeInBytes"`
 }
 
 // Archive stores metadata for a single archive uploaded to a vault.
@@ -134,13 +156,18 @@ type createVaultResponse struct {
 }
 
 // describeVaultResponse is the response body for DescribeVault / ListVaults item.
+//
+// NumberOfArchives and SizeInBytes are pointers: both are documented as
+// returning null until an inventory has run on the vault (gopherstack-zpo5),
+// and int64 cannot express that -- omitempty on a zero int64 would also drop
+// a genuine "inventory found zero archives" result.
 type describeVaultResponse struct {
+	NumberOfArchives  *int64 `json:"NumberOfArchives,omitempty"`
+	SizeInBytes       *int64 `json:"SizeInBytes,omitempty"`
 	VaultARN          string `json:"VaultARN"`
 	VaultName         string `json:"VaultName"`
 	CreationDate      string `json:"CreationDate"`
 	LastInventoryDate string `json:"LastInventoryDate,omitempty"`
-	NumberOfArchives  int64  `json:"NumberOfArchives"`
-	SizeInBytes       int64  `json:"SizeInBytes"`
 }
 
 // listVaultsResponse is the response body for ListVaults.

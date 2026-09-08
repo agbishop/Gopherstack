@@ -1,6 +1,7 @@
 package pipes
 
 import (
+	"fmt"
 	"maps"
 )
 
@@ -35,12 +36,60 @@ type PlacementStrategy struct {
 	Type  string `json:"Type,omitempty"`
 }
 
+// EcsEnvironmentVariable is a name/value pair overriding an ECS container's environment.
+// serializers.go/deserializers.go lowercase these keys ("name"/"value"), unlike every other
+// field in this ECS-override family -- pipes passes ECS's own RunTask override casing through.
+type EcsEnvironmentVariable struct {
+	Name  string `json:"name,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+// EcsEnvironmentFile references an S3 object containing environment variables for an ECS container.
+type EcsEnvironmentFile struct {
+	Type  string `json:"type,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+// EcsResourceRequirement is a resource type/value pair for an ECS container override.
+type EcsResourceRequirement struct {
+	Type  string `json:"type,omitempty"`
+	Value string `json:"value,omitempty"`
+}
+
+// EcsContainerOverride holds per-container override values for an ECS task execution.
+type EcsContainerOverride struct {
+	Name                 string                   `json:"Name,omitempty"`
+	Command              []string                 `json:"Command,omitempty"`
+	Environment          []EcsEnvironmentVariable `json:"Environment,omitempty"`
+	EnvironmentFiles     []EcsEnvironmentFile     `json:"EnvironmentFiles,omitempty"`
+	ResourceRequirements []EcsResourceRequirement `json:"ResourceRequirements,omitempty"`
+	CPU                  int                      `json:"Cpu,omitempty"`
+	Memory               int                      `json:"Memory,omitempty"`
+	MemoryReservation    int                      `json:"MemoryReservation,omitempty"`
+}
+
+// EcsEphemeralStorage overrides the ephemeral storage size for an ECS task.
+// SizeInGiB serializes as lowercase "sizeInGiB" (deserializers.go), the same
+// ECS-casing quirk as EcsEnvironmentVariable/EcsEnvironmentFile/EcsResourceRequirement.
+type EcsEphemeralStorage struct {
+	SizeInGiB int `json:"sizeInGiB,omitempty"`
+}
+
+// EcsInferenceAcceleratorOverride overrides an Elastic Inference accelerator for an ECS task.
+type EcsInferenceAcceleratorOverride struct {
+	DeviceName string `json:"deviceName,omitempty"`
+	DeviceType string `json:"deviceType,omitempty"`
+}
+
 // EcsTaskOverride holds override values for an ECS task execution.
 type EcsTaskOverride struct {
-	TaskRoleArn      string `json:"TaskRoleArn,omitempty"`
-	ExecutionRoleArn string `json:"ExecutionRoleArn,omitempty"`
-	CPU              string `json:"Cpu,omitempty"`
-	Memory           string `json:"Memory,omitempty"`
+	EphemeralStorage              *EcsEphemeralStorage              `json:"EphemeralStorage,omitempty"`
+	TaskRoleArn                   string                            `json:"TaskRoleArn,omitempty"`
+	ExecutionRoleArn              string                            `json:"ExecutionRoleArn,omitempty"`
+	CPU                           string                            `json:"Cpu,omitempty"`
+	Memory                        string                            `json:"Memory,omitempty"`
+	ContainerOverrides            []EcsContainerOverride            `json:"ContainerOverrides,omitempty"`
+	InferenceAcceleratorOverrides []EcsInferenceAcceleratorOverride `json:"InferenceAcceleratorOverrides,omitempty"`
 }
 
 // BatchJobDependency represents a dependency between Batch jobs.
@@ -61,11 +110,18 @@ type BatchEnvironmentVariable struct {
 	Value string `json:"Value,omitempty"`
 }
 
+// BatchResourceRequirement is a resource type/value pair for a Batch container override.
+type BatchResourceRequirement struct {
+	Type  string `json:"Type,omitempty"`
+	Value string `json:"Value,omitempty"`
+}
+
 // BatchContainerOverrides holds container override values for a Batch job.
 type BatchContainerOverrides struct {
-	Environment  []BatchEnvironmentVariable `json:"Environment,omitempty"`
-	InstanceType string                     `json:"InstanceType,omitempty"`
-	Command      []string                   `json:"Command,omitempty"`
+	InstanceType         string                     `json:"InstanceType,omitempty"`
+	Environment          []BatchEnvironmentVariable `json:"Environment,omitempty"`
+	Command              []string                   `json:"Command,omitempty"`
+	ResourceRequirements []BatchResourceRequirement `json:"ResourceRequirements,omitempty"`
 }
 
 // LambdaFunctionParameters holds Lambda-specific target configuration.
@@ -146,6 +202,12 @@ type BatchJobTargetParameters struct {
 	DependsOn          []BatchJobDependency     `json:"DependsOn,omitempty"`
 }
 
+// Tag is a key/value tag applied to an ECS RunTask call.
+type Tag struct {
+	Key   string `json:"Key,omitempty"`
+	Value string `json:"Value,omitempty"`
+}
+
 // ECSTaskTargetParameters holds ECS task target configuration.
 type ECSTaskTargetParameters struct {
 	NetworkConfiguration     *NetworkConfiguration          `json:"NetworkConfiguration,omitempty"`
@@ -154,9 +216,12 @@ type ECSTaskTargetParameters struct {
 	LaunchType               string                         `json:"LaunchType,omitempty"`
 	Group                    string                         `json:"Group,omitempty"`
 	PlatformVersion          string                         `json:"PlatformVersion,omitempty"`
+	PropagateTags            string                         `json:"PropagateTags,omitempty"`
+	ReferenceID              string                         `json:"ReferenceId,omitempty"`
 	CapacityProviderStrategy []CapacityProviderStrategyItem `json:"CapacityProviderStrategy,omitempty"`
 	PlacementConstraints     []PlacementConstraint          `json:"PlacementConstraints,omitempty"`
 	PlacementStrategy        []PlacementStrategy            `json:"PlacementStrategy,omitempty"`
+	Tags                     []Tag                          `json:"Tags,omitempty"`
 	TaskCount                int                            `json:"TaskCount,omitempty"`
 	EnableECSManagedTags     bool                           `json:"EnableECSManagedTags,omitempty"`
 	EnableExecuteCommand     bool                           `json:"EnableExecuteCommand,omitempty"`
@@ -249,7 +314,12 @@ func cloneBatchJobParameters(src *BatchJobTargetParameters) *BatchJobTargetParam
 	if v.ContainerOverrides != nil {
 		co := *v.ContainerOverrides
 		co.Command = append([]string(nil), v.ContainerOverrides.Command...)
-		co.Environment = append([]BatchEnvironmentVariable(nil), v.ContainerOverrides.Environment...)
+		co.Environment = append(
+			[]BatchEnvironmentVariable(nil),
+			v.ContainerOverrides.Environment...)
+		co.ResourceRequirements = append(
+			[]BatchResourceRequirement(nil),
+			v.ContainerOverrides.ResourceRequirements...)
 		v.ContainerOverrides = &co
 	}
 	v.DependsOn = append([]BatchJobDependency(nil), src.DependsOn...)
@@ -258,22 +328,55 @@ func cloneBatchJobParameters(src *BatchJobTargetParameters) *BatchJobTargetParam
 	return &v
 }
 
+func cloneEcsContainerOverrides(src []EcsContainerOverride) []EcsContainerOverride {
+	if src == nil {
+		return nil
+	}
+	out := make([]EcsContainerOverride, len(src))
+	for i, co := range src {
+		co.Command = append([]string(nil), co.Command...)
+		co.Environment = append([]EcsEnvironmentVariable(nil), co.Environment...)
+		co.EnvironmentFiles = append([]EcsEnvironmentFile(nil), co.EnvironmentFiles...)
+		co.ResourceRequirements = append([]EcsResourceRequirement(nil), co.ResourceRequirements...)
+		out[i] = co
+	}
+
+	return out
+}
+
+func cloneEcsTaskOverride(src *EcsTaskOverride) *EcsTaskOverride {
+	if src == nil {
+		return nil
+	}
+	ov := *src
+	if src.EphemeralStorage != nil {
+		es := *src.EphemeralStorage
+		ov.EphemeralStorage = &es
+	}
+	ov.ContainerOverrides = cloneEcsContainerOverrides(src.ContainerOverrides)
+	ov.InferenceAcceleratorOverrides = append(
+		[]EcsInferenceAcceleratorOverride(nil), src.InferenceAcceleratorOverrides...,
+	)
+
+	return &ov
+}
+
 func cloneECSTaskParameters(src *ECSTaskTargetParameters) *ECSTaskTargetParameters {
 	v := *src
 	if v.NetworkConfiguration != nil {
 		nc := *v.NetworkConfiguration
-		nc.AwsvpcConfiguration = cloneAwsVpcConfiguration(v.NetworkConfiguration.AwsvpcConfiguration)
+		nc.AwsvpcConfiguration = cloneAwsVpcConfiguration(
+			v.NetworkConfiguration.AwsvpcConfiguration,
+		)
 		v.NetworkConfiguration = &nc
 	}
-	if v.Overrides != nil {
-		ov := *v.Overrides
-		v.Overrides = &ov
-	}
+	v.Overrides = cloneEcsTaskOverride(src.Overrides)
 	v.CapacityProviderStrategy = append(
 		[]CapacityProviderStrategyItem(nil), src.CapacityProviderStrategy...,
 	)
 	v.PlacementConstraints = append([]PlacementConstraint(nil), src.PlacementConstraints...)
 	v.PlacementStrategy = append([]PlacementStrategy(nil), src.PlacementStrategy...)
+	v.Tags = append([]Tag(nil), src.Tags...)
 
 	return &v
 }
@@ -326,7 +429,9 @@ func cloneTargetParameters(src *TargetParameters) *TargetParameters {
 	}
 	if src.TimestreamParameters != nil {
 		v := *src.TimestreamParameters
-		v.DimensionMappings = append([]TimestreamDimensionMapping(nil), src.TimestreamParameters.DimensionMappings...)
+		v.DimensionMappings = append(
+			[]TimestreamDimensionMapping(nil),
+			src.TimestreamParameters.DimensionMappings...)
 		v.SingleMeasureMappings = append(
 			[]TimestreamSingleMeasureMapping(nil),
 			src.TimestreamParameters.SingleMeasureMappings...,
@@ -346,4 +451,347 @@ func cloneTargetParameters(src *TargetParameters) *TargetParameters {
 	}
 
 	return &tp
+}
+
+// validateTargetRequiredFields enforces required nested target fields, matching
+// aws-sdk-go-v2 pipes validators.go's validatePipeTargetKinesisStreamParameters
+// (PartitionKey required), validatePipeTargetEcsTaskParameters (TaskDefinitionArn
+// required, plus nested validateNetworkConfiguration/validateAwsVpcConfiguration:
+// Subnets required when AwsvpcConfiguration is set, and nested
+// validateCapacityProviderStrategyItem: CapacityProvider required per entry,
+// and nested validateEcsTaskOverride: EnvironmentFiles/ResourceRequirements
+// Type/Value required per ContainerOverrides entry, EphemeralStorage.SizeInGiB
+// required when set), validatePipeTargetBatchJobParameters (JobDefinition and
+// JobName required, plus nested validateBatchContainerOverrides:
+// ResourceRequirements Type/Value required per entry),
+// validatePipeTargetRedshiftDataParameters (Database and Sqls
+// required), validatePipeTargetSageMakerPipelineParameters's nested
+// validateSageMakerPipelineParameter (Name and Value required per list entry),
+// and validatePipeTargetTimestreamParameters (TimeValue, VersionValue, and
+// DimensionMappings required, plus its nested validateDimensionMapping:
+// DimensionName, DimensionValue, DimensionValueType required per entry;
+// validateSingleMeasureMapping: MeasureName, MeasureValue, MeasureValueType
+// required per SingleMeasureMappings entry; validateMultiMeasureMapping:
+// MultiMeasureName and MultiMeasureAttributeMappings required per
+// MultiMeasureMappings entry, plus nested
+// validateMultiMeasureAttributeMapping: MeasureValue, MeasureValueType,
+// MultiMeasureAttributeName required per attribute mapping entry).
+// Unlike source-side StartingPosition, this applies on both CreatePipe and
+// UpdatePipe: both ops route TargetParameters through the same validator.
+func validateTargetRequiredFields(tp *TargetParameters) error {
+	if tp == nil {
+		return nil
+	}
+	if kp := tp.KinesisStreamParameters; kp != nil && kp.PartitionKey == "" {
+		return fmt.Errorf("%w: KinesisStreamParameters.PartitionKey is required", ErrValidation)
+	}
+	if err := validateECSTargetRequiredFields(tp.EcsTaskParameters); err != nil {
+		return err
+	}
+	if err := validateBatchJobRequiredFields(tp.BatchJobParameters); err != nil {
+		return err
+	}
+	if err := validateRedshiftRequiredFields(tp.RedshiftDataParameters); err != nil {
+		return err
+	}
+	if err := validateSageMakerPipelineRequiredFields(tp.SageMakerPipelineParameters); err != nil {
+		return err
+	}
+	if err := validateTimestreamRequiredFields(tp.TimestreamParameters); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateECSTargetRequiredFields(ep *ECSTaskTargetParameters) error {
+	if ep == nil {
+		return nil
+	}
+	if ep.TaskDefinitionArn == "" {
+		return fmt.Errorf("%w: EcsTaskParameters.TaskDefinitionArn is required", ErrValidation)
+	}
+	if nc := ep.NetworkConfiguration; nc != nil && nc.AwsvpcConfiguration != nil &&
+		len(nc.AwsvpcConfiguration.Subnets) == 0 {
+		return fmt.Errorf(
+			"%w: EcsTaskParameters.NetworkConfiguration.AwsvpcConfiguration.Subnets is required",
+			ErrValidation,
+		)
+	}
+	for i, cps := range ep.CapacityProviderStrategy {
+		if cps.CapacityProvider == "" {
+			return fmt.Errorf(
+				"%w: EcsTaskParameters.CapacityProviderStrategy[%d].CapacityProvider is required",
+				ErrValidation,
+				i,
+			)
+		}
+	}
+
+	return validateEcsTaskOverrideRequiredFields(ep.Overrides)
+}
+
+// validateEcsTaskOverrideRequiredFields matches aws-sdk-go-v2 pipes
+// validators.go's validateEcsTaskOverride: nested validation on ContainerOverrides
+// (validateEcsContainerOverrideList/validateEcsContainerOverride, itself nested on
+// EnvironmentFiles and ResourceRequirements) and on EphemeralStorage
+// (validateEcsEphemeralStorage: SizeInGiB required).
+func validateEcsTaskOverrideRequiredFields(ov *EcsTaskOverride) error {
+	if ov == nil {
+		return nil
+	}
+	for i, co := range ov.ContainerOverrides {
+		for j, ef := range co.EnvironmentFiles {
+			if ef.Type == "" {
+				return fmt.Errorf(
+					"%w: EcsTaskParameters.Overrides.ContainerOverrides[%d].EnvironmentFiles[%d].Type is required",
+					ErrValidation,
+					i,
+					j,
+				)
+			}
+			if ef.Value == "" {
+				return fmt.Errorf(
+					"%w: EcsTaskParameters.Overrides.ContainerOverrides[%d].EnvironmentFiles[%d].Value is required",
+					ErrValidation,
+					i,
+					j,
+				)
+			}
+		}
+		for j, rr := range co.ResourceRequirements {
+			if rr.Type == "" {
+				return fmt.Errorf(
+					"%w: EcsTaskParameters.Overrides.ContainerOverrides[%d].ResourceRequirements[%d].Type is required",
+					ErrValidation,
+					i,
+					j,
+				)
+			}
+			if rr.Value == "" {
+				return fmt.Errorf(
+					"%w: EcsTaskParameters.Overrides.ContainerOverrides[%d].ResourceRequirements[%d].Value is required",
+					ErrValidation,
+					i,
+					j,
+				)
+			}
+		}
+	}
+	if ov.EphemeralStorage != nil && ov.EphemeralStorage.SizeInGiB == 0 {
+		return fmt.Errorf(
+			"%w: EcsTaskParameters.Overrides.EphemeralStorage.SizeInGiB is required",
+			ErrValidation,
+		)
+	}
+
+	return nil
+}
+
+func validateBatchJobRequiredFields(bp *BatchJobTargetParameters) error {
+	if bp == nil {
+		return nil
+	}
+	if bp.JobDefinition == "" {
+		return fmt.Errorf("%w: BatchJobParameters.JobDefinition is required", ErrValidation)
+	}
+	if bp.JobName == "" {
+		return fmt.Errorf("%w: BatchJobParameters.JobName is required", ErrValidation)
+	}
+
+	return validateBatchContainerOverridesRequiredFields(bp.ContainerOverrides)
+}
+
+// validateBatchContainerOverridesRequiredFields matches aws-sdk-go-v2 pipes
+// validators.go's validateBatchContainerOverrides: nested per-entry Type/Value
+// on ResourceRequirements (validateBatchResourceRequirementsList/validateBatchResourceRequirement).
+func validateBatchContainerOverridesRequiredFields(co *BatchContainerOverrides) error {
+	if co == nil {
+		return nil
+	}
+	for i, rr := range co.ResourceRequirements {
+		if rr.Type == "" {
+			return fmt.Errorf(
+				"%w: BatchJobParameters.ContainerOverrides.ResourceRequirements[%d].Type is required",
+				ErrValidation,
+				i,
+			)
+		}
+		if rr.Value == "" {
+			return fmt.Errorf(
+				"%w: BatchJobParameters.ContainerOverrides.ResourceRequirements[%d].Value is required",
+				ErrValidation,
+				i,
+			)
+		}
+	}
+
+	return nil
+}
+
+func validateRedshiftRequiredFields(rp *RedshiftDataTargetParameters) error {
+	if rp == nil {
+		return nil
+	}
+	if rp.Database == "" {
+		return fmt.Errorf("%w: RedshiftDataParameters.Database is required", ErrValidation)
+	}
+	if len(rp.Sqls) == 0 {
+		return fmt.Errorf("%w: RedshiftDataParameters.Sqls is required", ErrValidation)
+	}
+
+	return nil
+}
+
+func validateSageMakerPipelineRequiredFields(sp *SageMakerPipelineTargetParameters) error {
+	if sp == nil {
+		return nil
+	}
+	for i, param := range sp.PipelineParameterList {
+		if param.Name == "" {
+			return fmt.Errorf(
+				"%w: SageMakerPipelineParameters.PipelineParameterList[%d].Name is required",
+				ErrValidation,
+				i,
+			)
+		}
+		if param.Value == "" {
+			return fmt.Errorf(
+				"%w: SageMakerPipelineParameters.PipelineParameterList[%d].Value is required",
+				ErrValidation,
+				i,
+			)
+		}
+	}
+
+	return nil
+}
+
+func validateTimestreamRequiredFields(tsp *TimestreamParameters) error {
+	if tsp == nil {
+		return nil
+	}
+	if tsp.TimeValue == "" {
+		return fmt.Errorf("%w: TimestreamParameters.TimeValue is required", ErrValidation)
+	}
+	if tsp.VersionValue == "" {
+		return fmt.Errorf("%w: TimestreamParameters.VersionValue is required", ErrValidation)
+	}
+	if len(tsp.DimensionMappings) == 0 {
+		return fmt.Errorf("%w: TimestreamParameters.DimensionMappings is required", ErrValidation)
+	}
+	for i, dm := range tsp.DimensionMappings {
+		if dm.DimensionName == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.DimensionMappings[%d].DimensionName is required",
+				ErrValidation,
+				i,
+			)
+		}
+		if dm.DimensionValue == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.DimensionMappings[%d].DimensionValue is required",
+				ErrValidation,
+				i,
+			)
+		}
+		if dm.DimensionValueType == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.DimensionMappings[%d].DimensionValueType is required",
+				ErrValidation,
+				i,
+			)
+		}
+	}
+	if err := validateSingleMeasureMappingsRequiredFields(tsp.SingleMeasureMappings); err != nil {
+		return err
+	}
+
+	return validateMultiMeasureMappingsRequiredFields(tsp.MultiMeasureMappings)
+}
+
+func validateSingleMeasureMappingsRequiredFields(sms []TimestreamSingleMeasureMapping) error {
+	for i, sm := range sms {
+		if sm.MeasureName == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.SingleMeasureMappings[%d].MeasureName is required",
+				ErrValidation,
+				i,
+			)
+		}
+		if sm.MeasureValue == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.SingleMeasureMappings[%d].MeasureValue is required",
+				ErrValidation,
+				i,
+			)
+		}
+		if sm.MeasureValueType == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.SingleMeasureMappings[%d].MeasureValueType is required",
+				ErrValidation,
+				i,
+			)
+		}
+	}
+
+	return nil
+}
+
+func validateMultiMeasureMappingsRequiredFields(mms []TimestreamMultiMeasureMapping) error {
+	for i, mm := range mms {
+		if mm.MultiMeasureName == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.MultiMeasureMappings[%d].MultiMeasureName is required",
+				ErrValidation,
+				i,
+			)
+		}
+		if len(mm.MultiMeasureAttributeMappings) == 0 {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.MultiMeasureMappings[%d].MultiMeasureAttributeMappings is required",
+				ErrValidation,
+				i,
+			)
+		}
+		if err := validateMultiMeasureAttrMappingsRequiredFields(i, mm.MultiMeasureAttributeMappings); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateMultiMeasureAttrMappingsRequiredFields(
+	i int,
+	ams []TimestreamMultiMeasureAttributeMapping,
+) error {
+	for j, am := range ams {
+		if am.MeasureValue == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.MultiMeasureMappings[%d].AttributeMappings[%d].MeasureValue is required",
+				ErrValidation,
+				i,
+				j,
+			)
+		}
+		if am.MeasureValueType == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.MultiMeasureMappings[%d].AttributeMappings[%d].MeasureValueType is required",
+				ErrValidation,
+				i,
+				j,
+			)
+		}
+		if am.MultiMeasureAttributeName == "" {
+			return fmt.Errorf(
+				"%w: TimestreamParameters.MultiMeasureMappings[%d].AttributeMappings[%d].MultiMeasureAttributeName is required",
+				ErrValidation,
+				i,
+				j,
+			)
+		}
+	}
+
+	return nil
 }

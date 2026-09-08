@@ -131,6 +131,10 @@ func (h *Handler) handleUpdateEndpoint(c *echo.Context, appID, endpointID string
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
+	if !checkPayloadSize(c, body, maxEndpointRequestBytes) {
+		return nil
+	}
+
 	var req updateEndpointRequest
 	if jsonErr := json.Unmarshal(body, &req); jsonErr != nil {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")
@@ -210,6 +214,10 @@ func (h *Handler) handleUpdateEndpointsBatch(c *echo.Context, appID string) erro
 	body, err := httputils.ReadBody(c.Request())
 	if err != nil {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
+	}
+
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
 	}
 
 	var req updateEndpointsBatchRequest

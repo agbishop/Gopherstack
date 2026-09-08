@@ -354,3 +354,36 @@ func TestElasticsearchHandler_AuthorizeVpcEndpointAccessValidation(t *testing.T)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, elasticsearch.ErrValidation)
 }
+
+// TestElasticsearchHandler_DeleteDomain_ClearsVpcAccess verifies that
+// DeleteDomain clears the domain's VPC endpoint access authorizations.
+// Otherwise a new domain created with the same (user-chosen, reusable) name
+// inherits the deleted domain's authorized-account list -- an
+// access-control artefact, not merely a leak.
+func TestElasticsearchHandler_DeleteDomain_ClearsVpcAccess(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	b := elasticsearch.NewInMemoryBackend("123456789012", "us-east-1")
+
+	_, err := b.CreateDomain(ctx, elasticsearch.CreateDomainInput{Name: "reused-domain"})
+	require.NoError(t, err)
+
+	err = b.AuthorizeVpcEndpointAccess(ctx, "reused-domain", "999988887777")
+	require.NoError(t, err)
+
+	access, err := b.ListVpcEndpointAccess(ctx, "reused-domain")
+	require.NoError(t, err)
+	require.NotEmpty(t, access)
+
+	_, err = b.DeleteDomain(ctx, "reused-domain")
+	require.NoError(t, err)
+
+	_, err = b.CreateDomain(ctx, elasticsearch.CreateDomainInput{Name: "reused-domain"})
+	require.NoError(t, err)
+
+	access, err = b.ListVpcEndpointAccess(ctx, "reused-domain")
+	require.NoError(t, err)
+	assert.Empty(t, access,
+		"recreated domain must not inherit the deleted domain's VPC endpoint access authorizations")
+}

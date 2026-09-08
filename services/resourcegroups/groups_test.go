@@ -605,3 +605,65 @@ func TestAddGroupInternal(t *testing.T) {
 	assert.Equal(t, "seeded-group", g.Name)
 	assert.Equal(t, 1, resourcegroups.GroupCount(b))
 }
+
+// TestUpdateGroup_PreservesDescriptionWhenOmitted verifies that an UpdateGroup
+// call which omits Description (empty string on the wire, since
+// UpdateGroupInput.Description is optional -- api_op_UpdateGroup.go has no
+// validateOpUpdateGroupInput required-field check for it) does not clobber
+// the group's existing description while updating an unrelated field.
+func TestUpdateGroup_PreservesDescriptionWhenOmitted(t *testing.T) {
+	t.Parallel()
+
+	b := resourcegroups.NewInMemoryBackend("000000000000", "us-east-1")
+	_, err := b.CreateGroup(context.Background(), "my-group", "original desc", nil, nil, nil)
+	require.NoError(t, err)
+
+	g, err := b.UpdateGroup(context.Background(), "my-group", "", "", "team-x@example.com", 0)
+	require.NoError(t, err)
+	assert.Equal(t, "original desc", g.Description)
+	assert.Equal(t, "team-x@example.com", g.Owner)
+}
+
+// TestPutGroupConfiguration_RejectsResourceQueryGroup verifies that
+// PutGroupConfiguration rejects a group that already has a ResourceQuery,
+// per api_op_PutGroupConfiguration.go:45-46 ("A resource group can contain
+// either a Configuration or a ResourceQuery, but not both").
+func TestPutGroupConfiguration_RejectsResourceQueryGroup(t *testing.T) {
+	t.Parallel()
+
+	b := resourcegroups.NewInMemoryBackend("000000000000", "us-east-1")
+	_, err := b.CreateGroup(context.Background(), "query-group", "",
+		&resourcegroups.ResourceQuery{Type: "TAG_FILTERS_1_0", Query: `{}`}, nil, nil)
+	require.NoError(t, err)
+
+	err = b.PutGroupConfiguration(context.Background(), "query-group",
+		[]resourcegroups.GroupConfigurationItem{{Type: "AWS::EC2::CapacityReservationPool"}})
+	require.ErrorIs(t, err, resourcegroups.ErrValidation)
+	assert.Contains(t, err.Error(), "cannot have both")
+
+	items, err := b.GetGroupConfigurationItems(context.Background(), "query-group")
+	require.NoError(t, err)
+	assert.Empty(t, items)
+}
+
+// TestUpdateGroupQuery_RejectsConfigurationGroup verifies that
+// UpdateGroupQuery rejects a group that already has a Configuration, per
+// api_op_UpdateGroupQuery.go:42-43 ("A resource group can contain either a
+// Configuration or a ResourceQuery, but not both").
+func TestUpdateGroupQuery_RejectsConfigurationGroup(t *testing.T) {
+	t.Parallel()
+
+	b := resourcegroups.NewInMemoryBackend("000000000000", "us-east-1")
+	_, err := b.CreateGroup(context.Background(), "config-group", "", nil, nil,
+		[]resourcegroups.GroupConfigurationItem{{Type: "AWS::EC2::CapacityReservationPool"}})
+	require.NoError(t, err)
+
+	_, err = b.UpdateGroupQuery(context.Background(), "config-group",
+		&resourcegroups.ResourceQuery{Type: "TAG_FILTERS_1_0", Query: `{}`})
+	require.ErrorIs(t, err, resourcegroups.ErrValidation)
+	assert.Contains(t, err.Error(), "cannot have both")
+
+	g, err := b.GetGroup(context.Background(), "config-group")
+	require.NoError(t, err)
+	assert.Nil(t, g.ResourceQuery)
+}

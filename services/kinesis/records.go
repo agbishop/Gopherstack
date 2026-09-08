@@ -261,6 +261,7 @@ func (b *InMemoryBackend) GetRecords(ctx context.Context, input *GetRecordsInput
 		ShardID:    it.ShardID,
 		Region:     region,
 		Position:   actualEnd,
+		CreatedAt:  time.Now(),
 	}
 
 	nextToken, childShards, err := nextIteratorAndChildShards(stream.Shards, shard, newIt, actualEnd)

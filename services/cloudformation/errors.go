@@ -35,9 +35,16 @@ var (
 	ErrInsufficientCapabilities  = errors.New(
 		"requires capabilities: CAPABILITY_IAM or CAPABILITY_NAMED_IAM",
 	)
+	ErrCannotDeregisterDefaultVersion = errors.New(
+		"can't deregister the default version of a type while other active versions exist",
+	)
 	ErrStackRefactorNotFound = errors.New("stack refactor not found")
 	ErrStackPolicyDenied     = errors.New("update action denied by stack policy")
 	ErrHookResultNotFound    = errors.New("hook result not found")
+	// ErrCancelUpdateStackInvalidState is returned by CancelUpdateStack when
+	// the stack is not in UPDATE_IN_PROGRESS state. Real AWS: "You can
+	// cancel only stacks that are in the UPDATE_IN_PROGRESS state".
+	ErrCancelUpdateStackInvalidState = errors.New("can only cancel stacks that are in the UPDATE_IN_PROGRESS state")
 )
 
 // ErrTerminationProtectionEnabled is returned when deleting a termination-protected stack.

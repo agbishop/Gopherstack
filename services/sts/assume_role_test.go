@@ -1426,7 +1426,8 @@ func TestTransitiveTagPropagation(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, resp)
 
-			childSession := backend.LookupSession(resp.AssumeRoleResult.Credentials.AccessKeyID, "")
+			childCreds := resp.AssumeRoleResult.Credentials
+			childSession := backend.LookupSession(childCreds.AccessKeyID, childCreds.SessionToken)
 			require.NotNil(t, childSession)
 
 			got := make(map[string]string, len(childSession.Tags))

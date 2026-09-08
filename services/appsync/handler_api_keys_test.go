@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,7 +29,7 @@ func TestHandler_CreateApiKey(t *testing.T) {
 
 				return api.APIID
 			},
-			body:       map[string]any{"description": "test key", "expires": 1999999999},
+			body:       map[string]any{"description": "test key", "expires": time.Now().AddDate(0, 0, 30).Unix()},
 			wantStatus: http.StatusCreated,
 			wantKeyID:  true,
 		},

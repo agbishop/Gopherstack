@@ -255,32 +255,115 @@ func TestHandler_DomainPermissionsPolicy(t *testing.T) {
 	}
 }
 
-func TestHandler_DeleteDomainCascade(t *testing.T) {
+// TestHandler_DomainPermissionsPolicy_RevisionLocking proves PolicyRevision is
+// enforced as optimistic locking on Put/DeleteDomainPermissionsPolicy. Per
+// api_op_PutDomainPermissionsPolicy.go: "This revision is used for optimistic
+// locking, which prevents others from overwriting your changes to the
+// domain's resource policy." (DeleteDomainPermissionsPolicy's PolicyRevision
+// doc is the same, for the delete side.) Both ops model ConflictException.
+func TestHandler_DomainPermissionsPolicy_RevisionLocking(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, http.MethodPost, "/v1/domain?domain=lock-domain", nil)
+
+	putRec := doRequest(t, h, http.MethodPut, "/v1/domain/permissions/policy?domain=lock-domain", map[string]any{
+		"policyDocument": `{"Version":"2012-10-17","Statement":[]}`,
+	})
+	require.Equal(t, http.StatusOK, putRec.Code)
+	var putResp map[string]any
+	require.NoError(t, json.Unmarshal(putRec.Body.Bytes(), &putResp))
+	pol, _ := putResp["policy"].(map[string]any)
+	revision, _ := pol["revision"].(string)
+	require.NotEmpty(t, revision)
+
+	// A Put carrying a stale/wrong revision is rejected, and the stored
+	// document is untouched.
+	staleRec := doRequest(t, h, http.MethodPut, "/v1/domain/permissions/policy?domain=lock-domain", map[string]any{
+		"policyDocument": `{"Version":"2012-10-17","Statement":[{"Effect":"Deny"}]}`,
+		"policyRevision": "wrong-revision",
+	})
+	assert.Equal(t, http.StatusConflict, staleRec.Code)
+
+	getRec := doRequest(t, h, http.MethodGet, "/v1/domain/permissions/policy?domain=lock-domain", nil)
+	require.Equal(t, http.StatusOK, getRec.Code)
+	var getResp map[string]any
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &getResp))
+	getPol, _ := getResp["policy"].(map[string]any)
+	assert.NotContains(t, getPol["document"], "Deny")
+
+	// A Delete carrying a stale/wrong revision is rejected, and the policy
+	// still exists.
+	staleDeleteRec := doRequest(
+		t, h, http.MethodDelete, "/v1/domain/permissions/policy?domain=lock-domain&policy-revision=wrong-revision", nil,
+	)
+	assert.Equal(t, http.StatusConflict, staleDeleteRec.Code)
+
+	getRec2 := doRequest(t, h, http.MethodGet, "/v1/domain/permissions/policy?domain=lock-domain", nil)
+	assert.Equal(t, http.StatusOK, getRec2.Code)
+
+	// The matching revision succeeds on both Put and Delete.
+	matchPutRec := doRequest(t, h, http.MethodPut, "/v1/domain/permissions/policy?domain=lock-domain", map[string]any{
+		"policyDocument": `{"Version":"2012-10-17","Statement":[{"Effect":"Allow"}]}`,
+		"policyRevision": revision,
+	})
+	require.Equal(t, http.StatusOK, matchPutRec.Code)
+	var matchPutResp map[string]any
+	require.NoError(t, json.Unmarshal(matchPutRec.Body.Bytes(), &matchPutResp))
+	newPol, _ := matchPutResp["policy"].(map[string]any)
+	newRevision, _ := newPol["revision"].(string)
+	require.NotEmpty(t, newRevision)
+
+	matchDeleteRec := doRequest(
+		t, h, http.MethodDelete,
+		"/v1/domain/permissions/policy?domain=lock-domain&policy-revision="+newRevision, nil,
+	)
+	assert.Equal(t, http.StatusOK, matchDeleteRec.Code)
+}
+
+// TestHandler_DeleteDomain_RejectsWhenContainsRepositories proves DeleteDomain
+// returns ConflictException, leaving the domain and its repositories intact,
+// instead of cascade-deleting them. Per api_op_DeleteDomain.go: "You cannot
+// delete a domain that contains repositories. If you want to delete a domain
+// with repositories, first delete its repositories." -- DeleteDomain models
+// ConflictException for exactly this case.
+func TestHandler_DeleteDomain_RejectsWhenContainsRepositories(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
 	doRequest(t, h, http.MethodPost, "/v1/domain?domain=cascade-domain", nil)
 	doRequest(t, h, http.MethodPost, "/v1/repository?domain=cascade-domain&repository=repo1", nil)
 	doRequest(t, h, http.MethodPost, "/v1/repository?domain=cascade-domain&repository=repo2", nil)
-	doRequest(
-		t, h, http.MethodGet,
-		"/v1/package/version?domain=cascade-domain&repository=repo1&format=npm&package=pkg1&version=1.0.0",
-		nil,
-	)
-	doRequest(
-		t, h, http.MethodGet,
-		"/v1/package/version?domain=cascade-domain&repository=repo2&format=npm&package=pkg2&version=2.0.0",
-		nil,
-	)
 
 	delRec := doRequest(t, h, http.MethodDelete, "/v1/domain?domain=cascade-domain", nil)
-	assert.Equal(t, http.StatusOK, delRec.Code)
+	assert.Equal(t, http.StatusConflict, delRec.Code)
+
+	descDomainRec := doRequest(t, h, http.MethodGet, "/v1/domain?domain=cascade-domain", nil)
+	assert.Equal(t, http.StatusOK, descDomainRec.Code)
 
 	descRec1 := doRequest(t, h, http.MethodGet, "/v1/repository?domain=cascade-domain&repository=repo1", nil)
-	assert.Equal(t, http.StatusNotFound, descRec1.Code)
+	assert.Equal(t, http.StatusOK, descRec1.Code)
 
 	descRec2 := doRequest(t, h, http.MethodGet, "/v1/repository?domain=cascade-domain&repository=repo2", nil)
-	assert.Equal(t, http.StatusNotFound, descRec2.Code)
+	assert.Equal(t, http.StatusOK, descRec2.Code)
+}
+
+// TestHandler_DeleteDomain_SucceedsOnceRepositoriesRemoved proves the repository
+// precondition is the only thing blocking a delete: once repo1 is removed,
+// deleting the (now-empty) domain succeeds.
+func TestHandler_DeleteDomain_SucceedsOnceRepositoriesRemoved(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, http.MethodPost, "/v1/domain?domain=empty-domain", nil)
+	doRequest(t, h, http.MethodPost, "/v1/repository?domain=empty-domain&repository=repo1", nil)
+	doRequest(t, h, http.MethodDelete, "/v1/repository?domain=empty-domain&repository=repo1", nil)
+
+	delRec := doRequest(t, h, http.MethodDelete, "/v1/domain?domain=empty-domain", nil)
+	assert.Equal(t, http.StatusOK, delRec.Code)
+
+	descRec := doRequest(t, h, http.MethodGet, "/v1/domain?domain=empty-domain", nil)
+	assert.Equal(t, http.StatusNotFound, descRec.Code)
 }
 
 func TestHandler_RepositoryCount(t *testing.T) {

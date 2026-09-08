@@ -135,7 +135,7 @@ func (b *InMemoryBackend) ListAsyncInvokes(filter ListAsyncInvokesFilter) []*Asy
 	out := make([]*AsyncInvoke, 0, len(all))
 
 	for _, inv := range all {
-		if filter.StatusEquals != "" && inv.Status != filter.StatusEquals {
+		if !matchesAsyncInvokeFilter(inv, filter) {
 			continue
 		}
 
@@ -144,9 +144,31 @@ func (b *InMemoryBackend) ListAsyncInvokes(filter ListAsyncInvokesFilter) []*Asy
 		out = append(out, &cp)
 	}
 
+	descending := filter.SortOrder == asyncInvokeSortOrderDescending
 	sort.Slice(out, func(i, j int) bool {
+		if descending {
+			return out[i].SubmitTime.After(out[j].SubmitTime)
+		}
+
 		return out[i].SubmitTime.Before(out[j].SubmitTime)
 	})
 
 	return out
+}
+
+// matchesAsyncInvokeFilter reports whether inv satisfies filter's statusEquals,
+// submitTimeAfter and submitTimeBefore criteria (ListAsyncInvokesInput fields --
+// bedrockruntime@v1.57.1 api_op_ListAsyncInvokes.go).
+func matchesAsyncInvokeFilter(inv *AsyncInvoke, filter ListAsyncInvokesFilter) bool {
+	if filter.StatusEquals != "" && inv.Status != filter.StatusEquals {
+		return false
+	}
+	if filter.SubmitTimeAfter != nil && !inv.SubmitTime.After(*filter.SubmitTimeAfter) {
+		return false
+	}
+	if filter.SubmitTimeBefore != nil && !inv.SubmitTime.Before(*filter.SubmitTimeBefore) {
+		return false
+	}
+
+	return true
 }

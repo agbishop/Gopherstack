@@ -162,6 +162,36 @@ func TestHandler_SchedulingPolicy_Delete(t *testing.T) {
 	}
 }
 
+// TestHandler_SchedulingPolicy_Delete_RejectsInUse covers
+// api_op_DeleteSchedulingPolicy.go's documented "You can't delete a
+// scheduling policy that's used in any job queues" constraint.
+func TestHandler_SchedulingPolicy_Delete_RejectsInUse(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := post(t, h, "/v1/createschedulingpolicy", map[string]any{
+		"name": "in-use-policy",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out map[string]string
+	mustUnmarshal(t, rec, &out)
+	policyARN := out["arn"]
+
+	rec = post(t, h, "/v1/createjobqueue", map[string]any{
+		"jobQueueName":        "jq-with-policy",
+		"priority":            1,
+		"schedulingPolicyArn": policyARN,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	delRec := post(t, h, "/v1/deleteschedulingpolicy", map[string]any{
+		"arn": policyARN,
+	})
+	assert.Equal(t, http.StatusBadRequest, delRec.Code)
+}
+
 // --- ServiceEnvironment tests ---
 
 func TestBatch_DescribeSchedulingPolicies(t *testing.T) {

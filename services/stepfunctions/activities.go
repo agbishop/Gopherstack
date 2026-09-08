@@ -10,7 +10,8 @@ import (
 )
 
 // SweepTaskTokens evicts task tokens that have exceeded the TTL without a worker response,
-// signalling the blocked InvokeActivity goroutine so it is not leaked. Returns evicted count.
+// signalling the blocked InvokeActivity/WaitForTaskToken goroutine so it is not leaked.
+// Returns evicted count.
 func (b *InMemoryBackend) SweepTaskTokens() int {
 	ttl := b.settings.TaskTokenTTL
 	if ttl == 0 {
@@ -283,11 +284,19 @@ func (b *InMemoryBackend) SendTaskFailure(taskToken, errCode, cause string) erro
 	return nil
 }
 
-// SendTaskHeartbeat resets the heartbeat timer for an activity task.
+// SendTaskHeartbeat resets the heartbeat timer and renews createdAt (the
+// TaskTokenTTL janitor backstop) for an activity task. createdAt is not the
+// overall task timeout -- that's enforced by the ASL executor's own ctx
+// deadline around InvokeActivity/WaitForTaskToken (asl/executor.go
+// runTaskAttempt) -- so renewing it here only proves liveness to the leak
+// sweep, it can't extend a Task state's TimeoutSeconds.
 func (b *InMemoryBackend) SendTaskHeartbeat(taskToken string) error {
-	b.mu.RLock("SendTaskHeartbeat")
+	b.mu.Lock("SendTaskHeartbeat")
 	entry, ok := b.tasksByToken[taskToken]
-	b.mu.RUnlock()
+	if ok {
+		entry.createdAt = time.Now()
+	}
+	b.mu.Unlock()
 
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrTaskTokenNotFound, taskToken)
@@ -318,6 +327,7 @@ func (b *InMemoryBackend) WaitForTaskToken(
 	entry := &activityTaskEntry{
 		taskToken: taskToken,
 		resultCh:  make(chan activityTaskResult, 1),
+		createdAt: time.Now(),
 	}
 
 	if heartbeatSeconds > 0 {

@@ -250,3 +250,59 @@ func TestListServicesForAutoScalingConfiguration(t *testing.T) { //nolint:parall
 		})
 	}
 }
+
+// TestDeleteAutoScalingConfiguration_RejectsDefaultAndInUse verifies
+// DeleteAutoScalingConfiguration fails for the account's default
+// configuration and for one still associated with a service
+// (api_op_DeleteAutoScalingConfiguration.go: "You can't delete the default
+// auto scaling configuration or a configuration that's used by one or more
+// App Runner services."), and succeeds once neither condition holds.
+func TestDeleteAutoScalingConfiguration_RejectsDefaultAndInUse(t *testing.T) { //nolint:paralleltest // existing issue.
+	h := newTestHandler(t)
+
+	t.Run("default configuration cannot be deleted", func(t *testing.T) { //nolint:paralleltest // existing issue.
+		rec := doRequest(t, h, "ListAutoScalingConfigurations", map[string]any{})
+		require.Equal(t, http.StatusOK, rec.Code)
+		var listResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listResp))
+		list := listResp["AutoScalingConfigurationSummaryList"].([]any)
+		require.Len(t, list, 1, "only the seeded default configuration should exist yet")
+		defaultArn := list[0].(map[string]any)["AutoScalingConfigurationArn"].(string)
+
+		rec = doRequest(
+			t, h, "DeleteAutoScalingConfiguration", map[string]any{"AutoScalingConfigurationArn": defaultArn},
+		)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("configuration in use cannot be deleted", func(t *testing.T) { //nolint:paralleltest // existing issue.
+		rec := doRequest(
+			t, h, "CreateAutoScalingConfiguration", map[string]any{"AutoScalingConfigurationName": "in-use-asg"},
+		)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var createResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
+		asgArn := createResp["AutoScalingConfiguration"].(map[string]any)["AutoScalingConfigurationArn"].(string)
+
+		rec = doRequest(t, h, "CreateService", map[string]any{
+			"ServiceName": "asg-svc",
+			"SourceConfiguration": map[string]any{
+				"ImageRepository": map[string]any{"ImageIdentifier": "img", "ImageRepositoryType": "ECR_PUBLIC"},
+			},
+			"AutoScalingConfigurationArn": asgArn,
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+		var svcResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &svcResp))
+		svcArn := svcResp["Service"].(map[string]any)["ServiceArn"].(string)
+
+		rec = doRequest(t, h, "DeleteAutoScalingConfiguration", map[string]any{"AutoScalingConfigurationArn": asgArn})
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "asg still associated with asg-svc must not be deletable")
+
+		rec = doRequest(t, h, "DeleteService", map[string]any{"ServiceArn": svcArn})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		rec = doRequest(t, h, "DeleteAutoScalingConfiguration", map[string]any{"AutoScalingConfigurationArn": asgArn})
+		assert.Equal(t, http.StatusOK, rec.Code, "asg must be deletable once no service references it")
+	})
+}

@@ -244,8 +244,14 @@ func (b *InMemoryBackend) MergeBranchesByThreeWay(
 	return &cp, nil
 }
 
-// MergeBranchesByFastForward merges branches by fast-forward and creates a merge commit.
-func (b *InMemoryBackend) MergeBranchesByFastForward(repoName, sourceRef, destinationRef string) (*Commit, error) {
+// MergeBranchesByFastForward merges branches by fast-forward: the target
+// branch's tip is moved to point at the resolved source commit. Unlike
+// Squash/ThreeWay, a fast-forward never creates a new commit object — that
+// is the defining property of the strategy — so, unlike them, it returns the
+// existing source commit rather than a fabricated one.
+func (b *InMemoryBackend) MergeBranchesByFastForward(
+	repoName, sourceRef, destinationRef, targetBranch string,
+) (*Commit, error) {
 	b.mu.Lock("MergeBranchesByFastForward")
 	defer b.mu.Unlock()
 
@@ -253,26 +259,30 @@ func (b *InMemoryBackend) MergeBranchesByFastForward(repoName, sourceRef, destin
 		return nil, fmt.Errorf("%w: repository %s not found", ErrNotFound, repoName)
 	}
 
-	commitID := uuid.NewString()
-	treeID := uuid.NewString()
-	now := time.Now().UTC()
-	commit := &Commit{
-		CommitID:       commitID,
-		TreeID:         treeID,
-		Message:        fmt.Sprintf("Merge %s into %s", sourceRef, destinationRef),
-		RepositoryName: repoName,
-		CreatedAt:      now,
+	sourceCommitID, err := b.resolveCommitSpecifier(repoName, sourceRef)
+	if err != nil {
+		return nil, err
 	}
-	b.commits.Put(commit)
+	if _, destErr := b.resolveCommitSpecifier(repoName, destinationRef); destErr != nil {
+		return nil, destErr
+	}
 
-	// Update destination branch tip
+	branch := targetBranch
+	if branch == "" {
+		branch = destinationRef
+	}
 	b.branches.Put(&Branch{
-		BranchName:     destinationRef,
-		CommitID:       commitID,
+		BranchName:     branch,
+		CommitID:       sourceCommitID,
 		RepositoryName: repoName,
 	})
 
+	commit, ok := b.commits.Get(commitKey(repoName, sourceCommitID))
+	if !ok {
+		return nil, fmt.Errorf("%w: commit %s not found", ErrCommitNotFound, sourceCommitID)
+	}
 	cp := *commit
+	cp.Parents = append([]string(nil), commit.Parents...)
 
 	return &cp, nil
 }

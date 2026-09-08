@@ -250,10 +250,7 @@ func (b *InMemoryBackend) DeleteFleet(name string) error {
 
 	delete(b.tags, f.Arn)
 	b.fleets.Delete(name)
-
-	for _, stacks := range b.associations {
-		delete(stacks, name)
-	}
+	delete(b.associations, name)
 
 	return nil
 }

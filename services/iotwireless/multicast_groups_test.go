@@ -26,6 +26,27 @@ func TestInMemoryBackend_MulticastGroup_SortedList(t *testing.T) {
 	assert.Equal(t, "mg-z", groups[2].Name)
 }
 
+func TestInMemoryBackend_DeleteMulticastGroup_InUseByFuotaTask(t *testing.T) {
+	t.Parallel()
+
+	b := iotwireless.NewInMemoryBackend()
+
+	mg, err := b.CreateMulticastGroup(testAccountID, testRegion, "mg-1", "", nil, nil)
+	require.NoError(t, err)
+
+	ft, err := b.CreateFuotaTask(testAccountID, testRegion, "ft-1", "", "", "", "", 0, 0, 0, nil, nil)
+	require.NoError(t, err)
+
+	err = b.AssociateMulticastGroupWithFuotaTask(ft.ID, mg.ID)
+	require.NoError(t, err)
+
+	err = b.DeleteMulticastGroup(testAccountID, testRegion, mg.ID)
+	require.ErrorIs(t, err, iotwireless.ErrMulticastGroupInUse)
+
+	_, err = b.GetMulticastGroup(testAccountID, testRegion, mg.ID)
+	require.NoError(t, err, "multicast group must still exist after the refused delete")
+}
+
 func TestInMemoryBackend_Reset_ClearsMulticastGroups(t *testing.T) {
 	t.Parallel()
 

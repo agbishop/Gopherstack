@@ -305,8 +305,9 @@ func (h *Handler) handleDescribeThing(c *echo.Context) error {
 
 func (h *Handler) handleDeleteThing(c *echo.Context) error {
 	thingName := strings.TrimPrefix(c.Request().URL.Path, "/things/")
+	expectedVersion := parseExpectedVersionQueryParam(c)
 
-	if err := h.Backend.DeleteThing(thingName); err != nil {
+	if err := h.Backend.DeleteThing(thingName, expectedVersion); err != nil {
 		// DeleteThing's own deserializeOpError switch declares no
 		// DeleteConflictException case -- InvalidRequestException is the
 		// real type. Its ResourceNotFoundException case IS declared, so
@@ -355,7 +356,7 @@ func (h *Handler) handleAcceptCertificateTransfer(c *echo.Context) error {
 func (h *Handler) handleAttachThingPrincipal(c *echo.Context) error {
 	// Path: /things/{thingName}/principals
 	after := strings.TrimPrefix(c.Request().URL.Path, "/things/")
-	thingName := strings.SplitN(after, "/", maxPathSegments)[0]
+	thingName, _, _ := strings.Cut(after, "/")
 	principal := c.Request().Header.Get(headerIoTPrincipal)
 
 	if err := h.Backend.AttachThingPrincipal(&AttachThingPrincipalInput{

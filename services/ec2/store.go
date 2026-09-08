@@ -79,16 +79,17 @@ const (
 	// and other resources that are not currently in use.
 	stateAvailable = "available"
 
-	stateInUse               = "in-use"
-	stateCancelled           = "cancelled"
-	vpcEndpointTypeInterface = "Interface"
-	resourceTypeVPC          = "vpc"
-	resourceTypeSnapshot     = "snapshot"
-	resourceTypeENI          = "network-interface"
-	vpcDefaultName           = "vpc-default"
-	archX8664                = "x86_64"
-	resourceTypeFISInstance  = "aws:ec2:instance"
-	ec2BooleanFalse          = "false"
+	stateInUse                         = "in-use"
+	stateCancelled                     = "cancelled"
+	vpcEndpointTypeInterface           = "Interface"
+	vpcEndpointTypeGatewayLoadBalancer = "GatewayLoadBalancer"
+	resourceTypeVPC                    = "vpc"
+	resourceTypeSnapshot               = "snapshot"
+	resourceTypeENI                    = "network-interface"
+	vpcDefaultName                     = "vpc-default"
+	archX8664                          = "x86_64"
+	resourceTypeFISInstance            = "aws:ec2:instance"
+	ec2BooleanFalse                    = "false"
 
 	// stateActive is the "active" state string used by peering connections,
 	// capacity reservations, and spot instance requests.
@@ -137,6 +138,7 @@ type Instance struct {
 	PublicDNSName           string                     `json:"publicDNSName,omitempty"`
 	MetadataOptionsTokens   string                     `json:"metadataOptionsTokens,omitempty"`
 	MetadataOptionsState    string                     `json:"metadataOptionsState,omitempty"`
+	MonitoringState         string                     `json:"monitoringState,omitempty"`
 	VPCID                   string                     `json:"vpcID,omitempty"`
 	ID                      string                     `json:"id,omitempty"`
 	PrivateIP               string                     `json:"privateIP,omitempty"`
@@ -370,9 +372,7 @@ type InMemoryBackend struct {
 	vpcPeeringOptions        map[string]*PeeringConnectionOptions
 	subnetCIDRAssociations   map[string][]*SubnetCIDRAssociation
 	addressAttributes        *store.Table[AddressAttribute]
-	instanceMonitoring       map[string]string
 	instanceCreditSpecs      map[string]string
-	instanceIMDSOptions      map[string]*IMDSOptions
 	instanceMetadataDefaults *InstanceMetadataDefaults
 	instanceEventNotifAttrs  *InstanceEventNotificationAttributes
 	niPermissions            *store.Table[NetworkInterfacePermission]
@@ -610,9 +610,7 @@ func initCoreExtraMaps(b *InMemoryBackend) {
 	b.vpcTenancy = make(map[string]string)
 	b.vpcPeeringOptions = make(map[string]*PeeringConnectionOptions)
 	b.subnetCIDRAssociations = make(map[string][]*SubnetCIDRAssociation)
-	b.instanceMonitoring = make(map[string]string)
 	b.instanceCreditSpecs = make(map[string]string)
-	b.instanceIMDSOptions = make(map[string]*IMDSOptions)
 	b.niIPv6Addresses = make(map[string][]string)
 	b.idFormatSettings = make(map[string]bool)
 	b.vpcEndpointServicePermissions = make(map[string][]string)
@@ -705,6 +703,20 @@ func (b *InMemoryBackend) Reset() {
 	b.nextPrivateIPIndex = 0
 	b.nextElasticIPIndex = 0
 
+	// Reset account-level default settings set via Enable/Disable/Modify*
+	// operations. These aren't store.Table-backed and, unlike the maps below,
+	// were never re-initialised by any init*Maps helper -- only their Go zero
+	// value at construction made them look reset.
+	b.instanceMetadataDefaults = nil
+	b.instanceEventNotifAttrs = nil
+	b.spotDatafeed = nil
+	b.snapshotBlockPublicAccess = ""
+	b.ebsDefaultKmsKeyID = ""
+	b.imageBlockPublicAccess = ""
+	b.defaultCreditSpec = ""
+	b.ebsEncryptionByDefault = false
+	b.serialConsoleAccess = false
+
 	b.resetNewOpsMapsLocked()
 
 	// Re-populate defaults (must be called without the lock held since it acquires its own).
@@ -736,6 +748,8 @@ func (b *InMemoryBackend) Reset() {
 func (b *InMemoryBackend) resetNewOpsMapsLocked() {
 	b.addressTransfers = make(map[string]*AddressTransfer)
 	b.vpcCidrAssociations = make(map[string]*VpcCidrBlockAssociation)
+	initCoreExtraMaps(b)
+	initBatch6Maps(b)
 	b.resetAdvancedNetworkingMapsLocked()
 	b.resetIpamDiscoveryMapsLocked()
 	b.resetIpamPolicyMapsLocked()

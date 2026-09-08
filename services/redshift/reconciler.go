@@ -98,6 +98,7 @@ func (b *InMemoryBackend) applyDueTransitionsLocked(now time.Time) {
 		if tr.remove {
 			c.Tags.Close()
 			b.clusters.Delete(id)
+			delete(b.loggingStatuses, id)
 
 			if b.dnsRegistrar != nil {
 				b.dnsRegistrar.Deregister(c.Endpoint)

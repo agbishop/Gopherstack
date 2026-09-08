@@ -28,6 +28,13 @@ const (
 	invitationStatusRejected = "REJECTED"
 	// invitationStatusExpired is the expired status for an invitation.
 	invitationStatusExpired = "EXPIRED"
+	// invitationExpiryWindow is how long a PENDING invitation stays acceptable before
+	// it lazily transitions to EXPIRED. AWS RAM user guide: "For shared resource types
+	// not on the [7-day] list... After 12 hours, the invitation expires and the end
+	// user principal in the resource share is disassociated." Most resource types get
+	// this 12h default; the 7-day carve-out for a specific resource-type allowlist
+	// (EC2 capacity reservations, VPC subnets, etc.) is not modeled.
+	invitationExpiryWindow = 12 * time.Hour
 	// permissionTypeCustomer is the customer managed permission type.
 	permissionTypeCustomer = "CUSTOMER_MANAGED"
 	// permissionTypeAWSManaged is the AWS-managed permission type.
@@ -58,6 +65,12 @@ const (
 	arnPartCountPrincipal = 6
 	// arnAccountIdx is the index of the account field in a colon-split ARN.
 	arnAccountIdx = 4
+	// arnServiceIdx is the index of the service field in a colon-split ARN.
+	arnServiceIdx = 2
+	// arnServiceIAM is the ARN service segment for IAM role/user principals.
+	arnServiceIAM = "iam"
+	// arnPrefix is the first colon-split field of every AWS ARN.
+	arnPrefix = "arn"
 
 	// Resource type strings shared between backend and built-in permission seeds.
 	resourceTypeEC2Subnet         = "ec2:Subnet"

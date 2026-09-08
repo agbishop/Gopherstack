@@ -593,9 +593,14 @@ func TestResourceGroupsHandler_ListGroupingStatuses(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:     "not_found",
-			group:    "nonexistent",
-			wantCode: http.StatusNotFound,
+			// ListGroupingStatusesInput's declared error set (deserializers.go)
+			// has no NotFoundException, unlike sibling ListGroupResources -- a
+			// nonexistent group must return an empty result, not 404
+			// (gopherstack-m4k0).
+			name:         "nonexistent_group_returns_empty",
+			group:        "nonexistent",
+			wantCode:     http.StatusOK,
+			wantContains: []string{`"GroupingStatuses":[]`},
 		},
 	}
 

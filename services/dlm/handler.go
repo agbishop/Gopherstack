@@ -273,11 +273,12 @@ func (h *Handler) handleGetLifecyclePolicies(c *echo.Context) error {
 	q := c.Request().URL.Query()
 
 	filter := PolicyFilter{
-		PolicyIDs:     q["policyIds"],
-		State:         q.Get("state"),
-		ResourceTypes: q["resourceTypes"],
-		TargetTags:    q["targetTags"],
-		TagsToAdd:     q["tagsToAdd"],
+		PolicyIDs:         q["policyIds"],
+		State:             q.Get("state"),
+		ResourceTypes:     q["resourceTypes"],
+		TargetTags:        q["targetTags"],
+		TagsToAdd:         q["tagsToAdd"],
+		DefaultPolicyType: q.Get("defaultPolicyType"),
 	}
 
 	summaries, err := h.Backend.GetLifecyclePolicies(filter)

@@ -218,7 +218,9 @@ func (h *Handler) handleDeleteTable(ctx context.Context, r *http.Request, _ []by
 	nsName := segs[2]
 	name := segs[3]
 
-	if err := h.Backend.DeleteTable(bucketARN, splitNamespace(nsName), name); err != nil {
+	versionToken := r.URL.Query().Get(keyVersionToken)
+
+	if err := h.Backend.DeleteTable(bucketARN, splitNamespace(nsName), name, versionToken); err != nil {
 		return nil, err
 	}
 

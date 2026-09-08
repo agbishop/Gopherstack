@@ -24,10 +24,20 @@ func tagsFromInput(data map[string]any) map[string]string {
 	return tags
 }
 
+// maxTagsPerResource is documentation-sourced, not SDK-verified: real Amazon
+// Forecast has no per-op tag-count field to check against, only
+// https://docs.aws.amazon.com/forecast/latest/dg/limits.html, "Maximum
+// number of tags you can add to a resource | 50 | No".
+const maxTagsPerResource = 50
+
 // TagResource adds tags to a resource. Real Amazon Forecast returns
 // ResourceNotFoundException when resourceARN does not identify an existing
 // resource -- TagResource does not silently create tag state for ARNs no
 // resource ever owned.
+//
+// The limit applies to the resource's resulting tag set, not the incoming
+// request: re-tagging an existing key updates its value without counting as
+// a new tag, so a resource already at 50 tags can still have a tag updated.
 func (b *InMemoryBackend) TagResource(resourceARN string, tags map[string]string) error {
 	b.mu.Lock("TagResource")
 	defer b.mu.Unlock()
@@ -36,10 +46,15 @@ func (b *InMemoryBackend) TagResource(resourceARN string, tags map[string]string
 		return fmt.Errorf("%w: resource %q", ErrNotFound, resourceARN)
 	}
 
-	if b.tags[resourceARN] == nil {
-		b.tags[resourceARN] = make(map[string]string)
+	merged := make(map[string]string, len(b.tags[resourceARN])+len(tags))
+	maps.Copy(merged, b.tags[resourceARN])
+	maps.Copy(merged, tags)
+	if len(merged) > maxTagsPerResource {
+		return fmt.Errorf("%w: resource %q would have %d tags, limit is %d",
+			ErrTagLimitExceeded, resourceARN, len(merged), maxTagsPerResource)
 	}
-	maps.Copy(b.tags[resourceARN], tags)
+
+	b.tags[resourceARN] = merged
 
 	return nil
 }

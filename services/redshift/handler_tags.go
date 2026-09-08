@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/blackbirdworks/gopherstack/pkgs/store"
 	svcTags "github.com/blackbirdworks/gopherstack/pkgs/tags"
 )
 
@@ -186,6 +187,74 @@ func anyTagMatchesFilter(tags map[string]string, tagKeys, tagValues []string) bo
 	}
 
 	return false
+}
+
+// describeTaggedGroup implements the shared shape of DescribeClusterSubnetGroups
+// and DescribeClusterSecurityGroups: an exact-name lookup that bypasses
+// marker/maxRecords/tag filters (matching DescribeClusters' id-lookup
+// shortcut in store.go), otherwise the TagKeys/TagValues-then-Marker/
+// MaxRecords convention via paginateTaggedByName.
+func describeTaggedGroup[V any](
+	table *store.Table[V], name, marker string, maxRecords int, tagKeys, tagValues []string,
+	notFound func(name string) error, clone func(*V) V,
+	tagsOf func(*V) map[string]string, nameOf func(*V) string,
+) ([]V, string, error) {
+	if name != "" {
+		v, exists := table.Get(name)
+		if !exists {
+			return nil, "", notFound(name)
+		}
+
+		return []V{clone(v)}, "", nil
+	}
+
+	sorted, nextMarker := paginateTaggedByName(table.Snapshot(), marker, maxRecords, tagKeys, tagValues, tagsOf, nameOf)
+
+	result := make([]V, 0, len(sorted))
+	for _, v := range sorted {
+		result = append(result, clone(v))
+	}
+
+	return result, nextMarker, nil
+}
+
+// paginateTaggedByName applies the TagKeys/TagValues-then-Marker/MaxRecords
+// convention shared by DescribeClusterSubnetGroups and
+// DescribeClusterSecurityGroups (see DescribeClusters in store.go for the
+// canonical version of this convention, which this mirrors generically).
+// tagsOf and nameOf extract each item's tag map and sort/marker key.
+func paginateTaggedByName[V any](
+	sorted []*V, marker string, maxRecords int, tagKeys, tagValues []string,
+	tagsOf func(*V) map[string]string, nameOf func(*V) string,
+) ([]*V, string) {
+	if len(tagKeys) > 0 || len(tagValues) > 0 {
+		filtered := make([]*V, 0, len(sorted))
+
+		for _, v := range sorted {
+			if anyTagMatchesFilter(tagsOf(v), tagKeys, tagValues) {
+				filtered = append(filtered, v)
+			}
+		}
+
+		sorted = filtered
+	}
+
+	if marker != "" {
+		cut := 0
+		for cut < len(sorted) && nameOf(sorted[cut]) <= marker {
+			cut++
+		}
+
+		sorted = sorted[cut:]
+	}
+
+	nextMarker := ""
+	if maxRecords > 0 && len(sorted) > maxRecords {
+		sorted = sorted[:maxRecords]
+		nextMarker = nameOf(sorted[len(sorted)-1])
+	}
+
+	return sorted, nextMarker
 }
 
 // tagMapToKVList converts a resource's stored tag map into the sorted []svcTags.KV

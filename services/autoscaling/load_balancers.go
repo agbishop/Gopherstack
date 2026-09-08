@@ -48,11 +48,18 @@ func (b *InMemoryBackend) AttachLoadBalancers(groupName string, loadBalancerName
 		existing[lb] = true
 	}
 
+	added := make([]string, 0, len(loadBalancerNames))
+
 	for _, lb := range loadBalancerNames {
 		if !existing[lb] {
 			g.LoadBalancerNames = append(g.LoadBalancerNames, lb)
+			added = append(added, lb)
 		}
 	}
+
+	// Newly attached load balancers pick up every instance currently in the
+	// group, mirroring real AWS registering existing members immediately on attach.
+	b.registerELBInstances(instanceIDsOf(g.Instances), added)
 
 	return nil
 }
@@ -144,13 +151,21 @@ func (b *InMemoryBackend) DetachLoadBalancers(groupName string, lbNames []string
 	}
 
 	newLBs := make([]string, 0, len(g.LoadBalancerNames))
+	removedLBs := make([]string, 0, len(lbNames))
+
 	for _, lb := range g.LoadBalancerNames {
-		if !removeSet[lb] {
-			newLBs = append(newLBs, lb)
+		if removeSet[lb] {
+			removedLBs = append(removedLBs, lb)
+
+			continue
 		}
+
+		newLBs = append(newLBs, lb)
 	}
 
 	g.LoadBalancerNames = newLBs
+
+	b.deregisterELBInstances(instanceIDsOf(g.Instances), removedLBs)
 
 	return nil
 }

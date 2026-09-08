@@ -152,8 +152,15 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// --- stage transitions: disabled only in east.
-	require.NoError(t, original.DisableStageTransition(ctxEast, sharedPipeline, stageNameSource, "Inbound", "paused"))
+	// --- stage transitions: disabled only in east. Outbound (not Inbound):
+	// sharedPipeline's only stage is Source, and runPipelineActions now
+	// actually enforces DisableStageTransition (see action_engine.go), so
+	// disabling Source's Inbound transition here would prevent the
+	// StartPipelineExecution/PutActionRevision calls below from ever
+	// recording an action execution at all. Outbound has no next stage to
+	// gate on a single-stage pipeline, so it stays a pure persistence
+	// fixture here, which is this test's actual point.
+	require.NoError(t, original.DisableStageTransition(ctxEast, sharedPipeline, stageNameSource, "Outbound", "paused"))
 
 	// --- jobs: AddJobInternal always seeds the backend's own default region (us-east-1).
 	original.AddJobInternal(&Job{ID: "job-1", Status: "Queued"})
@@ -240,12 +247,12 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 
 	// stageTransitions: byPipeline index and region scoping intact.
 	assert.Equal(t, 1, fresh.StageTransitionCount())
-	east := fresh.GetStageTransitionState(ctxEast, sharedPipeline, stageNameSource, "Inbound")
+	east := fresh.GetStageTransitionState(ctxEast, sharedPipeline, stageNameSource, "Outbound")
 	require.NotNil(t, east)
 	assert.True(t, east.Disabled)
 	assert.Equal(t, "paused", east.Reason)
 
-	west := fresh.GetStageTransitionState(ctxWest, sharedPipeline, stageNameSource, "Inbound")
+	west := fresh.GetStageTransitionState(ctxWest, sharedPipeline, stageNameSource, "Outbound")
 	assert.Nil(t, west, "west must not see the east-only disabled transition")
 
 	// jobs: survives restore.

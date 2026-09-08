@@ -232,6 +232,7 @@ func (b *InMemoryBackend) GetAPIs() ([]API, error) {
 func (b *InMemoryBackend) deleteAPIChildrenLocked(apiID string) {
 	for _, s := range slices.Clone(b.stagesByAPI.Get(apiID)) {
 		b.stages.Delete(stageKey(apiID, s.StageName))
+		b.clearStageThrottleBuckets(apiID, s.StageName)
 	}
 
 	for _, r := range slices.Clone(b.routesByAPI.Get(apiID)) {

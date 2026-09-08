@@ -715,3 +715,65 @@ func TestCreateDescribeDeleteDBParameterGroup(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, rr.Code)
 }
+
+// TestHandler_DeleteDBParameterGroup_InUse asserts DeleteDBParameterGroup
+// rejects a parameter group still associated with a DB instance
+// (api_op_DeleteDBParameterGroup.go: "The DBParameterGroup to be deleted
+// can't be associated with any DB instances.").
+func TestHandler_DeleteDBParameterGroup_InUse(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doRequest(t, h, url.Values{
+		"Action":                 {"CreateDBParameterGroup"},
+		"Version":                {"2014-10-31"},
+		"DBParameterGroupName":   {"used-pg"},
+		"DBParameterGroupFamily": {"neptune1.3"},
+		"Description":            {"in use"},
+	})
+	doRequest(t, h, url.Values{
+		"Action":              {"CreateDBCluster"},
+		"Version":             {"2014-10-31"},
+		"DBClusterIdentifier": {"pg-user-cluster"},
+	})
+	doRequest(t, h, url.Values{
+		"Action":               {"CreateDBInstance"},
+		"Version":              {"2014-10-31"},
+		"DBInstanceIdentifier": {"pg-user-instance"},
+		"DBClusterIdentifier":  {"pg-user-cluster"},
+		"DBInstanceClass":      {"db.r5.large"},
+		"DBParameterGroupName": {"used-pg"},
+	})
+	// A second cluster member so deleting pg-user-instance below doesn't trip
+	// the "can't delete the only instance in a cluster" guard.
+	doRequest(t, h, url.Values{
+		"Action":               {"CreateDBInstance"},
+		"Version":              {"2014-10-31"},
+		"DBInstanceIdentifier": {"pg-user-instance-sibling"},
+		"DBClusterIdentifier":  {"pg-user-cluster"},
+		"DBInstanceClass":      {"db.r5.large"},
+	})
+
+	recEarly := doRequest(t, h, url.Values{
+		"Action":               {"DeleteDBParameterGroup"},
+		"Version":              {"2014-10-31"},
+		"DBParameterGroupName": {"used-pg"},
+	})
+	assert.Equal(t, http.StatusBadRequest, recEarly.Code)
+	assert.Contains(t, recEarly.Body.String(), "InvalidDBParameterGroupState")
+
+	recDeleteInstance := doRequest(t, h, url.Values{
+		"Action":               {"DeleteDBInstance"},
+		"Version":              {"2014-10-31"},
+		"DBInstanceIdentifier": {"pg-user-instance"},
+	})
+	require.Equal(t, http.StatusOK, recDeleteInstance.Code)
+
+	recDelete := doRequest(t, h, url.Values{
+		"Action":               {"DeleteDBParameterGroup"},
+		"Version":              {"2014-10-31"},
+		"DBParameterGroupName": {"used-pg"},
+	})
+	assert.Equal(t, http.StatusOK, recDelete.Code)
+}

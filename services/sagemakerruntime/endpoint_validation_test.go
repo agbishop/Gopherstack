@@ -80,7 +80,10 @@ func TestHandler_EndpointValidation(t *testing.T) {
 					want = p.wantStatus
 				}
 
-				rec := doRequest(t, h, http.MethodPost, "/endpoints/"+tt.endpointName+p.suffix)
+				rec := doRequestWithHeaders(
+					t, h, http.MethodPost, "/endpoints/"+tt.endpointName+p.suffix,
+					map[string]any{"data": "x"}, nil,
+				)
 				require.Equal(t, want, rec.Code)
 
 				if want == http.StatusBadRequest {

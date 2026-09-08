@@ -23,7 +23,7 @@ last_audit_date: 2026-08-13
 overall: A
 ops:
   CreateDatasetGroup: {wire: fixed, errors: ok, state: fixed, persist: ok, note: 'added domain enum validation (ECOMMERCE/VIDEO_ON_DEMAND, or empty for a Custom group) -- an unrecognized value previously succeeded silently'}
-  DescribeDatasetGroup: {wire: ok, errors: ok, state: ok, persist: ok}
+  DescribeDatasetGroup: {wire: fixed, errors: ok, state: ok, persist: ok, note: 'gopherstack-7z3p (2026-09-06): datasetGroupToMap omitted failureReason unconditionally even though the SDK deserializer reads it and the sibling ListDatasetGroups summary already emitted it conditionally -- now matches (see the 2026-09-06 entry below)'}
   DeleteDatasetGroup: {wire: ok, errors: ok, state: ok, persist: ok}
   ListDatasetGroups: {wire: fixed, errors: ok, state: ok, persist: ok, note: 'gopherstack-sm02: now emits types.DatasetGroupSummary (datasetGroupArn/name/domain/status/creationDateTime/lastUpdatedDateTime/failureReason) via a dedicated datasetGroupSummaryToMap instead of reusing datasetGroupToMap unscoped -- dropped kmsKeyArn/roleArn, and added failureReason (a real Summary member the backend model already carried but no converter emitted)'}
   CreateDataset: {wire: fixed, errors: ok, state: fixed, persist: ok, note: 'added FK validation on datasetGroupArn/schemaArn (ResourceNotFoundException for a dangling reference) and datasetType enum validation (case-insensitive INTERACTIONS/ITEMS/USERS/ACTIONS/ACTION_INTERACTIONS) -- both previously unvalidated'}
@@ -482,3 +482,96 @@ No new bug found; no source or test changes this pass.
 Gates: `go build ./services/personalize/...`, `go vet ./services/personalize/...` (no changes,
 nothing to verify beyond confirming the tree is unchanged). Work left uncommitted per this pass's
 instructions.
+
+## 2026-09-06: status-constant reachability audit (gopherstack-h3th) + DatasetGroup.FailureReason Describe-shape fix (gopherstack-7z3p)
+
+Both issues were filed title-only with no description; both re-derived from the pinned SDK
+(`aws-sdk-go-v2/service/personalize@v1.50.4`) and this codebase.
+
+**gopherstack-h3th** ("seven declared status constants are never assigned"): confirmed exactly
+seven of `store.go`'s status constants were declared but never assigned anywhere in
+`services/personalize/` (`statusActive` and `statusSolutionVersionStopped` are the two that ARE
+assigned). Reachability table, verdict per constant, checked against every Status-bearing type's
+doc comment in the pinned SDK's `types/types.go`:
+
+| constant | value | real Personalize wire value? | verdict |
+|---|---|---|---|
+| `statusCreatePending` | `CREATE PENDING` | yes (every resource's Status doc) | unreachable-by-construction: every `Create*` op here is synchronous, so there is no provisioning phase for a resource to be pending in |
+| `statusCreateProgress` | `CREATE IN_PROGRESS` | yes | unreachable-by-construction, same reason |
+| `statusDeletePending` | `DELETE PENDING` | yes (`Dataset`/`Campaign`/`EventTracker`/etc.) | unreachable-by-construction: every `Delete*` op removes the resource from its `store.Table` synchronously and atomically (e.g. `DeleteDatasetGroup`, `dataset_groups.go`) -- no window where the object still exists in a pending-delete state |
+| `statusCreateFailed` | `CREATE FAILED` | yes | unreachable-by-construction: no op in this backend has an async provisioning phase that can fail independently of the synchronous `Create*` call itself; a genuine validation failure (bad domain, dangling FK, etc.) is rejected synchronously with an error and no resource is created at all, matching real AWS's synchronous input validation -- there is no honest slot for a persisted object to land in `CREATE FAILED`. Checked every `Create*` op in the service for a fabricatable failure trigger (batch job `jobInput`/`jobOutput` shape, KMS/role combinations, etc.); none exists without inventing behavior this backend does not otherwise model, which the no-stub/no-fabrication rule forbids |
+| `statusStopPending` | `STOP PENDING` | yes, but Recommender-only (`types.Recommender`'s doc comment: `STOP PENDING > STOP IN_PROGRESS > INACTIVE > START PENDING > START IN_PROGRESS > ACTIVE`) | unreachable-by-construction, and already consistent with an existing precedent: `StopRecommender`/`StartRecommender` (`recommenders.go`) already jump directly between `ACTIVE` and `INACTIVE`, skipping `STOP PENDING`/`STOP IN_PROGRESS`/`START PENDING`/`START IN_PROGRESS`, the same way `StopSolutionVersionCreation` jumps straight to `CREATE STOPPED` (this file's existing "Status-string trap" note, above) |
+| `statusUpdatePending` | `UPDATE PENDING` | **no** | not a real Personalize wire value for any resource -- grepped every `Status *string` doc comment across all ~34 Status-bearing types in `types/types.go` (`DatasetGroup`, `Dataset`, `Campaign`, `CampaignUpdateSummary`, `Recommender`, `RecommenderUpdateSummary`, `SolutionVersion`, `SolutionUpdateSummary`, `DatasetUpdateSummary`, `Filter`, `EventTracker`, `Solution`); none documents `UPDATE PENDING`/`UPDATE IN_PROGRESS` anywhere. **Removed** rather than left as "unreachable" -- an unused, wire-invalid literal sitting in the same file that already contains one prior "landed on an invalid enum string" bug (`StopSolutionVersionCreation`'s old `"STOPPED"` vs `"CREATE STOPPED"`, see above) is exactly the trap that class of bug came from; keeping it around risks a future op assigning it and reintroducing that bug class |
+| `statusUpdateProgress` | `UPDATE IN_PROGRESS` | **no** | same as `statusUpdatePending` -- removed |
+
+Per this file's own pre-existing "Status-string trap" note (added a prior pass): skipping straight
+to `ACTIVE` on every synchronous `Create*` op is a **deliberate, codebase-wide simplification, not
+a bug** -- this pass re-confirms that verdict rather than re-opening it, and extends the same
+reasoning to `CREATE FAILED`/`DELETE PENDING`/`STOP PENDING`: a synchronous emulator with no
+provisioning-worker/job-queue model has no honest slot for any intermediate or async-failure
+state. Building a fake `CREATE PENDING -> CREATE IN_PROGRESS -> ACTIVE` ticker was considered and
+rejected -- it would fabricate AWS behavior this backend does not have and make tests slow/flaky
+(the repo's own ban on `time.Sleep` in tests exists for exactly this reason). Five constants stay
+declared, now with a `store.go` comment recording the reachability verdict and citing this table;
+two (`statusUpdatePending`/`statusUpdateProgress`) were deleted as fabricated values with no wire
+basis. No source or test change follows from this half of the pass beyond the `store.go` comment
+and constant removal -- there is no runtime behavior for a regression test to lock, since nothing
+was ever wired to the deleted constants.
+
+**gopherstack-7z3p** ("DatasetGroup.FailureReason is omitted from the Describe shape though the
+SDK deserializes it"): confirmed. `awsAwsjson11_deserializeDocumentDatasetGroup`
+(`deserializers.go:10968`, `case "failureReason":` at `deserializers.go:11024`) reads a
+`failureReason` key into `types.DatasetGroup.FailureReason` for `DescribeDatasetGroupOutput`. This
+service's `datasetGroupToMap` (`handler_dataset_groups.go`, the `DescribeDatasetGroup` response
+builder) omitted `failureReason` unconditionally, even though `DatasetGroup.FailureReason` was
+already modeled on the backend struct (`models.go`) and its sibling `datasetGroupSummaryToMap`
+(`ListDatasetGroups`) already emitted it conditionally when non-empty. Fixed `datasetGroupToMap` to
+match: `if dg.FailureReason != "" { m["failureReason"] = dg.FailureReason }`, the same pattern
+already used by `datasetGroupSummaryToMap` and by `solutionVersionToMap`/
+`solutionVersionSummaryToMap` (`handler_solutions.go`) for `SolutionVersion.FailureReason`.
+
+Other personalize types carrying a real `FailureReason` member (grepped `types/types.go`):
+`BatchInferenceJob(Summary)`, `BatchSegmentJob(Summary)`, `Campaign(Summary)`,
+`CampaignUpdateSummary`, `DataDeletionJob(Summary)`, `DatasetExportJob(Summary)`,
+`DatasetGroup(Summary)`, `DatasetImportJob(Summary)`, `DatasetUpdateSummary`, `Filter(Summary)`,
+`MetricAttribution(Summary)`, `RecommenderUpdateSummary`, `SolutionUpdateSummary`,
+`SolutionVersion(Summary)`. Of these, only `DatasetGroup` and `SolutionVersion` have a
+`FailureReason` field on their backend model (`models.go`) at all -- the rest have no backend
+source for the field, which is already correctly recorded per-op above ("`failureReason` is a real
+Summary member but the backend model has no source for it, so it stays absent rather than
+fabricated"), not a gap this pass reopens. `SolutionVersion.FailureReason` was already wired
+symmetrically into both its Describe and Summary shapes (a prior pass); `DatasetGroup` was the one
+asymmetric case, now fixed.
+
+Given the h3th verdict above (`CREATE FAILED` is unreachable-by-construction, no live path sets
+`DatasetGroup.FailureReason`), this fix does not make `failureReason` observable through the live
+API today -- it makes the Describe response shape *correct* for the case where the field is set
+(directly on the backend struct, e.g. by a future feature or a test), matching the same
+modeled-but-never-populated status already accepted for `SolutionVersion.FailureReason` (this
+file's 2026-08-13 entry: "modeled but never populated ... correctly omitted, not a fabricated empty
+string"). This is the intersection the two issues predicted: h3th explains why 7z3p's field is
+unobservable, and neither issue's honest fix requires inventing an observation path.
+
+**Files changed**: `store.go` (removed two fabricated status constants, added reachability
+comment), `handler_dataset_groups.go` (`datasetGroupToMap` now includes `failureReason`
+conditionally), `whitebox_test.go` (new, in-package -- `TestDatasetGroupToMap_FailureReason`, table
+cases `present`/`absent`; there is no live HTTP path that sets `DatasetGroup.FailureReason`, so this
+constructs the struct directly rather than driving it through the SDK client, per the exact
+`whitebox_test.go` in-package-testpackage-exemption convention already used elsewhere in this repo,
+e.g. `services/medialive/whitebox_test.go`).
+
+**Regression proof**: reverted `datasetGroupToMap` to the pre-fix unconditional-omit shape, kept
+the new test, and reran -- `TestDatasetGroupToMap_FailureReason/present` fails
+(`expected: string("boom"), actual: <nil>(<nil>)`); `/absent` still passes. Restored the fix; both
+subtests pass. No regression test accompanies the h3th constant removal -- there is no observable
+behavior change to lock (the two removed constants were never assigned to anything).
+
+**Gates**: `go build ./services/personalize/...`, `go vet ./services/personalize/...`,
+`go test -race ./services/personalize/...` all pass; `golangci-lint run
+./services/personalize/...` reports `0 issues.` (note: an early draft of the `store.go` doc comment
+put a dedicated inline comment directly above `statusStopPending`'s own line, which caused
+`unused` (bundled in `golangci-lint`) to newly flag it despite `statusSolutionVersionStopped`
+immediately above being assigned -- apparently contiguous, comment-free `ValueSpec` runs in the
+same `const (...)` block are what keeps an unused sibling from being flagged next to a used one.
+Folding that comment into the single block-level doc comment above `const (` instead restored the
+clean `0 issues.` result without changing which constants are declared).

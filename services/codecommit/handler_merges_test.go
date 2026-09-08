@@ -217,18 +217,56 @@ func TestHandler_MergeBranchesByFastForward(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	doRequest(t, h, "CreateRepository", map[string]any{"repositoryName": "branch-merge-repo"})
+	setupRepoAndBranch(t, h, "branch-merge-repo")
+	createBranchFromMain(t, h, "branch-merge-repo", "feature")
+	sourceTip := mustBranchTip(t, h, "branch-merge-repo", "feature")
 
 	rec := doRequest(t, h, "MergeBranchesByFastForward", map[string]any{
 		"repositoryName":             "branch-merge-repo",
 		"sourceCommitSpecifier":      "feature",
 		"destinationCommitSpecifier": "main",
 	})
-	assert.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.NotEmpty(t, resp["commitId"])
+	assert.Equal(t, sourceTip, resp["commitId"],
+		"fast-forward moves the pointer to the existing source commit; it never fabricates a new one")
+	assert.Equal(t, sourceTip, mustBranchTip(t, h, "branch-merge-repo", "main"),
+		"destination branch tip must move to the source commit")
+}
+
+func TestHandler_MergeBranchesByFastForward_UnknownSpecifier(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	setupRepoAndBranch(t, h, "ff-unknown-repo")
+
+	tests := []struct {
+		name        string
+		source      string
+		destination string
+	}{
+		{name: "unknown_source", source: "does-not-exist", destination: "main"},
+		{name: "unknown_destination", source: "main", destination: "does-not-exist"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := doRequest(t, h, "MergeBranchesByFastForward", map[string]any{
+				"repositoryName":             "ff-unknown-repo",
+				"sourceCommitSpecifier":      tt.source,
+				"destinationCommitSpecifier": tt.destination,
+			})
+			assert.Equal(t, http.StatusNotFound, rec.Code)
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			assert.Equal(t, "CommitDoesNotExistException", resp["__type"])
+		})
+	}
 }
 
 func TestHandler_MergeBranchesBySquash(t *testing.T) {

@@ -189,6 +189,101 @@ func TestECS_DeleteCluster(t *testing.T) {
 	}
 }
 
+// TestECS_DeleteCluster_DependencyViolation verifies AWS's DeleteCluster
+// guard: a cluster still holding services, active tasks, or registered
+// container instances can't be deleted -- it does not cascade.
+func TestECS_DeleteCluster_DependencyViolation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("has_service", func(t *testing.T) {
+		t.Parallel()
+
+		backend := ecs.NewInMemoryBackend(testAccountID, testRegion, ecs.NewNoopRunner())
+
+		td, err := backend.RegisterTaskDefinition(ecs.RegisterTaskDefinitionInput{
+			Family:               "dcg-svc-td",
+			ContainerDefinitions: []ecs.ContainerDefinition{{Name: "app", Image: "nginx"}},
+		})
+		require.NoError(t, err)
+
+		_, err = backend.CreateCluster(ecs.CreateClusterInput{ClusterName: "dcg-svc-cluster"})
+		require.NoError(t, err)
+
+		_, err = backend.CreateService(ecs.CreateServiceInput{
+			Cluster:        "dcg-svc-cluster",
+			ServiceName:    "dcg-svc",
+			TaskDefinition: td.TaskDefinitionArn,
+			DesiredCount:   0,
+		})
+		require.NoError(t, err)
+
+		_, err = backend.DeleteCluster("dcg-svc-cluster")
+		require.Error(t, err, "DeleteCluster must fail while the cluster has a service")
+
+		clusters, _, err := backend.DescribeClusters([]string{"dcg-svc-cluster"})
+		require.NoError(t, err)
+		require.Len(t, clusters, 1, "cluster must survive a failed DeleteCluster")
+
+		_, err = backend.DeleteService("dcg-svc-cluster", "dcg-svc")
+		require.NoError(t, err)
+
+		_, err = backend.DeleteCluster("dcg-svc-cluster")
+		require.NoError(t, err, "DeleteCluster must succeed once the service is gone")
+	})
+
+	t.Run("has_active_task", func(t *testing.T) {
+		t.Parallel()
+
+		backend := ecs.NewInMemoryBackend(testAccountID, testRegion, ecs.NewNoopRunner())
+
+		td, err := backend.RegisterTaskDefinition(ecs.RegisterTaskDefinitionInput{
+			Family:               "dcg-task-td",
+			ContainerDefinitions: []ecs.ContainerDefinition{{Name: "app", Image: "nginx"}},
+		})
+		require.NoError(t, err)
+
+		_, err = backend.CreateCluster(ecs.CreateClusterInput{ClusterName: "dcg-task-cluster"})
+		require.NoError(t, err)
+
+		tasks, err := backend.RunTask(ecs.RunTaskInput{
+			Cluster:        "dcg-task-cluster",
+			TaskDefinition: td.TaskDefinitionArn,
+		})
+		require.NoError(t, err)
+		require.Len(t, tasks, 1)
+
+		_, err = backend.DeleteCluster("dcg-task-cluster")
+		require.Error(t, err, "DeleteCluster must fail while the cluster has an active task")
+
+		_, err = backend.StopTask("dcg-task-cluster", tasks[0].TaskArn, "test cleanup")
+		require.NoError(t, err)
+
+		_, err = backend.DeleteCluster("dcg-task-cluster")
+		require.NoError(t, err, "DeleteCluster must succeed once the task is stopped")
+	})
+
+	t.Run("has_container_instance", func(t *testing.T) {
+		t.Parallel()
+
+		backend := ecs.NewInMemoryBackend(testAccountID, testRegion, ecs.NewNoopRunner())
+
+		_, err := backend.CreateCluster(ecs.CreateClusterInput{ClusterName: "dcg-ci-cluster"})
+		require.NoError(t, err)
+
+		ci, err := backend.RegisterContainerInstance("dcg-ci-cluster", "i-dcgci123")
+		require.NoError(t, err)
+
+		_, err = backend.DeleteCluster("dcg-ci-cluster")
+		require.Error(t, err, "DeleteCluster must fail while the cluster has a registered container instance")
+
+		_, err = backend.DeregisterContainerInstance("dcg-ci-cluster", ci.ContainerInstanceArn, true)
+		require.NoError(t, err)
+
+		_, err = backend.DeleteCluster("dcg-ci-cluster")
+		require.NoError(t, err, "DeleteCluster must succeed once the container instance is deregistered")
+	})
+}
+
 func TestECS_Backend_DefaultClusterAutoCreated(t *testing.T) {
 	t.Parallel()
 
@@ -494,7 +589,13 @@ func TestECS_DeleteCluster_CleansUpTaskSets(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Delete the cluster — should clean up the task set too.
+	// DeleteCluster now refuses while the cluster still has a service, so
+	// delete the service first (force bypasses the desiredCount guard --
+	// irrelevant to what this test covers) -- this is also what cleans up
+	// the task set (see deleteTaskSetsForServiceLocked in DeleteService).
+	_, err = backend.DeleteService("cleanup-cluster", "cleanup-svc", true)
+	require.NoError(t, err)
+
 	_, err = backend.DeleteCluster("cleanup-cluster")
 	require.NoError(t, err)
 

@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/blackbirdworks/gopherstack/services/cognitoidp"
 )
 
 func TestDomain_CreateDescribeDelete(t *testing.T) {
@@ -360,6 +362,55 @@ func TestUserPoolDomain_Backend_Direct(t *testing.T) {
 	require.NoError(t, b.DeleteUserPoolDomain(pool.ID, "auth.example.com"))
 	d3 := b.FindUserPoolDomain("auth.example.com")
 	assert.Nil(t, d3)
+}
+
+// TestDeleteUserPoolDomain_RecoversOrphanedDomain covers gopherstack-tq5q's
+// recovery path: a domain whose recorded UserPoolID no longer resolves to a
+// live pool (data from before DeleteUserPool started refusing to delete pools
+// with an attached domain) must still be cleanable, keyed off the domain's
+// own recorded UserPoolID -- otherwise the domain name is blocked forever.
+func TestDeleteUserPoolDomain_RecoversOrphanedDomain(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	const orphanPoolID = "us-east-1_gone"
+
+	b.AddUserPoolDomainInternal(&cognitoidp.UserPoolDomain{
+		Domain:     "orphaned-domain",
+		UserPoolID: orphanPoolID,
+		Status:     "ACTIVE",
+	})
+	require.NotNil(t, b.FindUserPoolDomain("orphaned-domain"))
+
+	require.NoError(t, b.DeleteUserPoolDomain(orphanPoolID, "orphaned-domain"))
+	assert.Nil(t, b.FindUserPoolDomain("orphaned-domain"))
+
+	// Recovery: the domain name is immediately usable again by a brand new pool.
+	newPool, err := b.CreateUserPool("recovery-pool")
+	require.NoError(t, err)
+	_, err = b.CreateUserPoolDomain(newPool.ID, "orphaned-domain")
+	require.NoError(t, err)
+}
+
+// TestDeleteUserPoolDomain_MismatchedOrphanClaimStillRejected proves the
+// relaxed pool-existence guard only recovers a domain for the UserPoolID it
+// was actually created under -- an arbitrary nonexistent pool ID cannot claim
+// (and delete) a domain that belongs to a different orphaned pool.
+func TestDeleteUserPoolDomain_MismatchedOrphanClaimStillRejected(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	b.AddUserPoolDomainInternal(&cognitoidp.UserPoolDomain{
+		Domain:     "orphaned-domain-2",
+		UserPoolID: "us-east-1_real-owner",
+		Status:     "ACTIVE",
+	})
+
+	err := b.DeleteUserPoolDomain("us-east-1_someone-else", "orphaned-domain-2")
+	require.ErrorIs(t, err, cognitoidp.ErrUserPoolNotFound)
+	assert.NotNil(t, b.FindUserPoolDomain("orphaned-domain-2"))
 }
 
 func TestDomain_FullCRUDLifecycle(t *testing.T) {

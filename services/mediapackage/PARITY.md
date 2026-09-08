@@ -579,3 +579,58 @@ fail with the other channel's job leaking through, then restored the file
 byte-identical (`diff` empty, `git status --short` clean before/after).
 `list all jobs returns all` updated from 3 to 4 to account for the new
 seed job; assertion count otherwise unchanged. No production code changed.
+
+### 2026-09-04 audit: ghost-tags-after-delete (already fixed on branch), a hot-path O(n) tag lookup fixed
+
+Full re-run of the campaign's two cheap high-yield checks plus the yield-order
+list: never-returned sentinels (all three of `ErrNotFound`/`ErrConflict`/
+`ErrInvalidParameter` are reachable, `errors.go` vs `git grep`, no gap);
+parsed-then-dropped fields (`PackagingConfig`'s five blocks all round-trip
+Create->Describe, re-confirmed against `handler_origin_endpoints.go`); Delete
+preconditions (`DeleteChannel`/`DeleteOriginEndpoint` doc comments in
+`api_op_Delete{Channel,OriginEndpoint}.go` state no "must first" constraint,
+so the existing cascade-delete is a legitimate simplification, not a missing
+guard -- confirmed, not just assumed); `UpdateOriginEndpoint`/`UpdateChannel`
+partial-update direction (no field-level "replaces the entire configuration"
+sentence in `api_op_Update{OriginEndpoint,Channel}.go`, so the existing
+leave-unspecified-fields-unchanged semantics is not contradicted by any
+doc text); ghost rows after delete; fabricated error codes; unreachable enum
+values -- all reconfirmed clean, per PARITY.md's own recent history.
+
+**Ghost tags after DeleteChannel/DeleteOriginEndpoint**: already fixed on
+this branch immediately prior to this pass (`b8484292f`, this repo's commit
+`b8484292f`) -- `channels.go`/`origin_endpoints.go` now `delete(b.tags, ...)`
+on both delete paths, with `TestBackend_DeleteChannel_ClearsTagsOnRecreate`
+proving it fail-before/pass-after. No further action needed; noted here so
+this file's own audit trail records it was independently re-checked, not
+missed.
+
+**Performance bug found and fixed**: `TagResource`/`UntagResource`
+(`tags.go`) called `findChannelByARN`/`findOriginEndpointByARN` on every
+single call, each doing a full `store.Table.Range` scan (O(n) over every
+channel, then every origin endpoint) under the coarse write lock, to find
+the one row matching a resource ARN the caller already supplied -- the
+`store` package doc (`pkgs/store/table.go`) states `Get` is the O(1) primary
+lookup and `Range`/`All` are for genuine full scans, so this was the "clone
+whole map to read one entry" class flagged in this audit's brief. Since
+MediaPackage ARNs are built as `arn:<partition>:mediapackage:<region>:
+<account>:<resourceType>/<id>` (`buildChannelARN`/`buildOriginEndpointARN`,
+`store.go`), the ID can be read directly out of the ARN's trailing segment
+and looked up with `Table.Get` (O(1)) instead of scanning. Fixed:
+`splitMediaPackageResourceARN` extracts `(resourceType, id)` from the ARN;
+`findChannelByARN`/`findOriginEndpointByARN` now do a direct `Get(id)` plus
+an ARN-equality check (preserving the old behavior of refusing a same-ID,
+different-account/region ARN collision) instead of a linear `Range`.
+
+Proof: `TestTags_TagResourceTargetsCorrectResourceAmongMany`
+(`handler_tags_test.go`) creates two channels and two origin endpoints,
+tags one of each by ARN, and asserts only that resource's `Tags` field
+changed. Neutered `findChannelByARN` in place (looked up `b.channels.Get
+(resourceType)` -- the wrong key -- instead of `Get(id)`), reran: failed with
+`Not equal: expected: string("team-a") actual: <nil>(<nil>)` at
+`handler_tags_test.go:253` (the tagged channel's own `Tags` field never
+synced). Restored `tags.go` from a `cp` copy, confirmed byte-identical, reran
+-- passes. Gates: `go build`, `go test -race -count=1`, `golangci-lint run`
+all clean on `services/mediapackage/...` (HEAD `4d7407a11`).
+
+No other bugs found this pass.

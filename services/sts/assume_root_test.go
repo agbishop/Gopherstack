@@ -112,9 +112,9 @@ func TestAssumeRoot_SessionTrackedForCallerIdentity(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	accessKeyID := resp.AssumeRootResult.Credentials.AccessKeyID
+	creds := resp.AssumeRootResult.Credentials
 
-	ciResp, err := b.GetCallerIdentity(accessKeyID, "")
+	ciResp, err := b.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 	require.NoError(t, err)
 	assert.Contains(t, ciResp.GetCallerIdentityResult.Arn, "assumed-root")
 	assert.Equal(t, 1, b.SessionCount())
@@ -289,12 +289,12 @@ func TestAssumeRootDerivedAccount(t *testing.T) {
 			require.NotEmpty(t, resp.AssumeRootResult.Credentials.AccessKeyID)
 
 			// The account in the session should be derived from TargetPrincipal.
-			accessKeyID := resp.AssumeRootResult.Credentials.AccessKeyID
+			creds := resp.AssumeRootResult.Credentials
 			snap := b.Snapshot(t.Context())
 			b2 := sts.NewInMemoryBackend()
 			require.NoError(t, b2.Restore(t.Context(), snap))
 
-			ci, err := b2.GetCallerIdentity(accessKeyID, "")
+			ci, err := b2.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantAccount, ci.GetCallerIdentityResult.Account)
 		})
@@ -472,7 +472,8 @@ func TestAssumeRoot_SourceIdentityPersistsFromCallerSession(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "alice", resp.AssumeRootResult.SourceIdentity)
 
-		rootSession := b.LookupSession(resp.AssumeRootResult.Credentials.AccessKeyID, "")
+		rootCreds := resp.AssumeRootResult.Credentials
+		rootSession := b.LookupSession(rootCreds.AccessKeyID, rootCreds.SessionToken)
 		require.NotNil(t, rootSession)
 		assert.Equal(t, "alice", rootSession.SourceIdentity)
 	})

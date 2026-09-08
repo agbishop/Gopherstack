@@ -67,7 +67,7 @@ func (b *InMemoryBackend) StartQueryExecution(
 	// its own locks: an RLock for SELECT projection and a write-lock for DDL/DML
 	// catalog mutations. It returns the (possibly nil) result set plus an outcome
 	// describing catalog effects or a failure reason.
-	result, outcome := b.executeStatement(query, ctx)
+	result, outcome := b.executeStatement(query, workGroup, ctx)
 
 	b.mu.Lock("StartQueryExecution-storeResult")
 	b.finalizeExecution(id, result, outcome)
@@ -194,6 +194,8 @@ func (b *InMemoryBackend) finalizeExecution(id string, result *sqlResult, outcom
 	}
 
 	b.queryResults[id] = result
+
+	b.writeResultObject(id, qe.ResultConfiguration, result)
 }
 
 // inferStatementType returns the Athena StatementType for a query string.

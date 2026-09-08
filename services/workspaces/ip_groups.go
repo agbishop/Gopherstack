@@ -68,7 +68,8 @@ func (b *InMemoryBackend) DescribeIpGroups( //nolint:revive,staticcheck // exist
 	return pg.Data, pg.Next, nil
 }
 
-// DeleteIPGroup removes an IP group by ID.
+// DeleteIPGroup removes an IP group by ID. Real AWS: "You cannot delete an
+// IP access control group that is associated with a directory".
 func (b *InMemoryBackend) DeleteIPGroup(
 	groupID string,
 ) error {
@@ -77,6 +78,12 @@ func (b *InMemoryBackend) DeleteIPGroup(
 
 	if !b.ipGroups.Has(groupID) {
 		return errIpGroupNotFound
+	}
+
+	for directoryID := range b.directoryIpGroups {
+		if _, ok := b.directoryIpGroups[directoryID][groupID]; ok {
+			return errIPGroupAssociatedWithDirectory
+		}
 	}
 
 	b.ipGroups.Delete(groupID)

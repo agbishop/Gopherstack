@@ -49,11 +49,21 @@ func (b *InMemoryBackend) AddJobInternal(job *Job) {
 	b.jobs.Put(&cp)
 }
 
-// PollForJobs returns available queued jobs matching the given ActionTypeID.
-func (b *InMemoryBackend) PollForJobs(ctx context.Context, category, owner, provider, version string) ([]*Job, error) {
-	b.mu.RLock("PollForJobs")
-	defer b.mu.RUnlock()
+// getJobLocked looks up a job by ID. Callers must already hold b.mu.
+func (b *InMemoryBackend) getJobLocked(ctx context.Context, jobID string) (*Job, error) {
+	job, ok := b.jobs.Get(regionKey(getRegion(ctx, b.region), jobID))
+	if !ok {
+		return nil, fmt.Errorf("%w: job %q", ErrJobNotFound, jobID)
+	}
 
+	return job, nil
+}
+
+// pollForJobsLocked returns the live (unsorted-copy) queued jobs matching the
+// given ActionTypeID, in ID order. Callers must already hold b.mu (either
+// side): the returned pointers alias the store, so a caller wanting to
+// mutate them (e.g. to lazily issue a ClientID) must hold the write lock.
+func (b *InMemoryBackend) pollForJobsLocked(ctx context.Context, category, owner, provider, version string) []*Job {
 	entries := b.jobsByRegion.Get(getRegion(ctx, b.region))
 
 	result := make([]*Job, 0, len(entries))
@@ -72,13 +82,28 @@ func (b *InMemoryBackend) PollForJobs(ctx context.Context, category, owner, prov
 			continue
 		}
 
-		cp := *job
-		result = append(result, &cp)
+		result = append(result, job)
 	}
 
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].ID < result[j].ID
 	})
+
+	return result
+}
+
+// PollForJobs returns available queued jobs matching the given ActionTypeID.
+func (b *InMemoryBackend) PollForJobs(ctx context.Context, category, owner, provider, version string) ([]*Job, error) {
+	b.mu.RLock("PollForJobs")
+	defer b.mu.RUnlock()
+
+	jobs := b.pollForJobsLocked(ctx, category, owner, provider, version)
+
+	result := make([]*Job, len(jobs))
+	for i, j := range jobs {
+		cp := *j
+		result[i] = &cp
+	}
 
 	return result, nil
 }
@@ -88,9 +113,9 @@ func (b *InMemoryBackend) PutJobSuccessResult(ctx context.Context, jobID string)
 	b.mu.Lock("PutJobSuccessResult")
 	defer b.mu.Unlock()
 
-	job, ok := b.jobs.Get(regionKey(getRegion(ctx, b.region), jobID))
-	if !ok {
-		return ErrJobNotFound
+	job, err := b.getJobLocked(ctx, jobID)
+	if err != nil {
+		return err
 	}
 
 	job.Status = "Succeeded"
@@ -103,9 +128,9 @@ func (b *InMemoryBackend) PutJobFailureResult(ctx context.Context, jobID, messag
 	b.mu.Lock("PutJobFailureResult")
 	defer b.mu.Unlock()
 
-	job, ok := b.jobs.Get(regionKey(getRegion(ctx, b.region), jobID))
-	if !ok {
-		return ErrJobNotFound
+	job, err := b.getJobLocked(ctx, jobID)
+	if err != nil {
+		return err
 	}
 
 	job.Status = "Failed"

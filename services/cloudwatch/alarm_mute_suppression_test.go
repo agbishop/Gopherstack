@@ -58,7 +58,7 @@ func TestSetAlarmState_MutedAlarm_SuppressesActions(t *testing.T) {
 
 			require.NoError(t, b.SetAlarmState(t.Context(), "cpu-alarm", "ALARM", "test", ""))
 
-			alarms, _, _, err := b.DescribeAlarms([]string{"cpu-alarm"}, nil, "", "", "", 0)
+			alarms, _, _, err := b.DescribeAlarms([]string{"cpu-alarm"}, nil, "", "", "", 0, "", "", "")
 			require.NoError(t, err)
 			require.Len(t, alarms.Data, 1)
 			assert.Equal(t, "ALARM", alarms.Data[0].StateValue, "state transition must apply regardless of muting")
@@ -163,7 +163,7 @@ func TestQueryProtocol_SetAlarmState_MutedAlarm_SuppressesActions(t *testing.T) 
 	}.Encode())
 	require.Equal(t, 200, setRec.Code, setRec.Body.String())
 
-	alarms, _, _, err := backend.DescribeAlarms([]string{"query-cpu-alarm"}, nil, "", "", "", 0)
+	alarms, _, _, err := backend.DescribeAlarms([]string{"query-cpu-alarm"}, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, alarms.Data, 1)
 	assert.Equal(t, "ALARM", alarms.Data[0].StateValue, "state transition must apply regardless of muting")

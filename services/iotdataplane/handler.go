@@ -61,6 +61,12 @@ const (
 	defaultPageSize = 25
 	// maxPageSize is the maximum number of items returned per page (AWS cap).
 	maxPageSize = 100
+	// defaultSubscriptionsPageSize is ListSubscriptions' own documented
+	// default, distinct from defaultPageSize: "The maximum number of
+	// subscriptions to return in a single request. By default, this is set
+	// to 20." (aws-sdk-go-v2/service/iotdataplane@v1.35.4's
+	// ListSubscriptionsInput.MaxResults doc comment).
+	defaultSubscriptionsPageSize = 20
 
 	keyError   = "error"
 	keyMessage = "message"
@@ -472,8 +478,8 @@ func (h *Handler) Handler() echo.HandlerFunc {
 
 // parsePageSize extracts the pagination page size from query params.
 // pageSize is the primary parameter (AWS convention); maxResults is accepted as an alias.
-// Returns the effective page size clamped to [1, maxPageSize], or defaultPageSize when absent.
-func parsePageSize(q interface{ Get(string) string }) int {
+// Returns the effective page size clamped to [1, maxPageSize], or defaultSize when absent.
+func parsePageSize(q interface{ Get(string) string }, defaultSize int) int {
 	// pageSize takes precedence over maxResults (AWS convention).
 	raw := q.Get("pageSize")
 	if raw == "" {
@@ -490,7 +496,7 @@ func parsePageSize(q interface{ Get(string) string }) int {
 		}
 	}
 
-	return defaultPageSize
+	return defaultSize
 }
 
 // findCursorIndex returns the start index for the given nextToken cursor in items.

@@ -109,32 +109,58 @@ func extractRoleNameFromArn(arn string) string {
 	return roleName
 }
 
-func resolveAssumedRoleIdentityPolicies(
+// userArnResourcePrefix is the ARN path segment identifying an IAM user resource.
+const userArnResourcePrefix = ":user/"
+
+// extractUserNameFromArn returns the IAM user name embedded in an
+// "arn:...:user/NAME" ARN, or "" if arn does not reference a user resource.
+func extractUserNameFromArn(arn string) string {
+	idx := strings.LastIndex(arn, userArnResourcePrefix)
+	if idx < 0 {
+		return ""
+	}
+
+	return arn[idx+len(userArnResourcePrefix):]
+}
+
+// permissionsBoundaryLookup is an optional capability an EnforcementBackend may
+// implement to expose permission boundaries to the enforcement middleware. It is
+// deliberately kept separate from EnforcementBackend (rather than adding methods
+// to that required interface) because dozens of per-service test mocks implement
+// EnforcementBackend directly; a backend that doesn't implement this capability
+// is simply enforced without boundary support.
+type permissionsBoundaryLookup interface {
+	PermissionsBoundaryDocForUser(userName string) string
+	PermissionsBoundaryDocForRole(roleName string) string
+}
+
+func boundaryDocForUser(backend EnforcementBackend, userName string) string {
+	if pb, ok := backend.(permissionsBoundaryLookup); ok {
+		return pb.PermissionsBoundaryDocForUser(userName)
+	}
+
+	return ""
+}
+
+func boundaryDocForRole(backend EnforcementBackend, roleName string) string {
+	if pb, ok := backend.(permissionsBoundaryLookup); ok {
+		return pb.PermissionsBoundaryDocForRole(roleName)
+	}
+
+	return ""
+}
+
+func buildPrincipalConditionContext(
 	ctx context.Context,
 	r *http.Request,
 	principal *awsmeta.Principal,
-	backend EnforcementBackend,
-) ([]string, ConditionContext, string, bool) {
-	if principal == nil || principal.Kind != awsmeta.PrincipalKindAssumedRole {
-		return nil, ConditionContext{}, "", false
-	}
-
-	roleName := extractRoleNameFromArn(principal.Arn)
-	if roleName == "" {
-		return nil, ConditionContext{}, "", false
-	}
-
-	docs, err := backend.GetPoliciesForRole(roleName)
-	if err != nil {
-		return nil, ConditionContext{}, "", false
-	}
-
+) ConditionContext {
 	region := awsmeta.Region(ctx)
 	if region == "" {
 		region = httputils.ExtractRegionFromRequest(r, "us-east-1")
 	}
 
-	condCtx := ConditionContext{
+	return ConditionContext{
 		PrincipalARN:     principal.Arn,
 		PrincipalAccount: principal.AccountID,
 		RequestedRegion:  region,
@@ -142,36 +168,152 @@ func resolveAssumedRoleIdentityPolicies(
 		UserID:           principal.UserID,
 		SourceIP:         extractClientIP(r),
 	}
+}
 
-	return docs, condCtx, roleName, true
+func resolveAssumedRoleIdentityPolicies(
+	ctx context.Context,
+	r *http.Request,
+	principal *awsmeta.Principal,
+	backend EnforcementBackend,
+) ([]string, string, ConditionContext, string, bool) {
+	if principal == nil || principal.Kind != awsmeta.PrincipalKindAssumedRole {
+		return nil, "", ConditionContext{}, "", false
+	}
+
+	roleName := extractRoleNameFromArn(principal.Arn)
+	if roleName == "" {
+		return nil, "", ConditionContext{}, "", false
+	}
+
+	docs, err := backend.GetPoliciesForRole(roleName)
+	if err != nil {
+		return nil, "", ConditionContext{}, "", false
+	}
+
+	return docs, boundaryDocForRole(backend, roleName),
+		buildPrincipalConditionContext(ctx, r, principal), roleName, true
+}
+
+// resolveSTSUserIdentityPolicies handles a caller whose access key ID was not
+// found in IAM's own user table but whom principalMiddleware already resolved
+// to a Kind=User principal via STS's ResolvePrincipal -- i.e. an ASIA session
+// minted by GetSessionToken, GetFederationToken, or GetDelegatedAccessToken,
+// which keep the caller's own (non-role) identity rather than assuming a role
+// (see sts.SessionInfo.IsAssumedRole). Without this, such a session falls
+// through resolveCallerIdentityPolicies entirely and enforceIAMPolicy treats
+// it as an unrecognized/dummy key, allowing every request through unchecked
+// (gopherstack-s982).
+//
+// The account root user has no identity policy to evaluate, and AWS grants it
+// access absent an explicit resource-policy/SCP deny that this middleware does
+// not model; root is therefore left for the caller's existing unenforced
+// fallback by returning ok=false here rather than manufacturing a policy set.
+//
+// A federated-user ARN (GetFederationToken) or any other STS-user ARN this
+// emulator cannot map to a real IAM user has no identity-policy record at all.
+// Rather than skip enforcement, this returns an enforced result with zero
+// policies so EvaluatePolicies below yields an implicit deny. This mirrors
+// GetFederationToken's documented rule that a call which passes no policy
+// leaves the resulting temporary credentials with no effective permissions.
+func resolveSTSUserIdentityPolicies(
+	ctx context.Context,
+	r *http.Request,
+	principal *awsmeta.Principal,
+	backend EnforcementBackend,
+) ([]string, string, ConditionContext, string, bool) {
+	if principal == nil || principal.Kind != awsmeta.PrincipalKindUser || principal.UserName != "" {
+		return nil, "", ConditionContext{}, "", false
+	}
+
+	if strings.HasSuffix(principal.Arn, ":root") {
+		return nil, "", ConditionContext{}, "", false
+	}
+
+	condCtx := buildPrincipalConditionContext(ctx, r, principal)
+
+	if userName := extractUserNameFromArn(principal.Arn); userName != "" {
+		if docs, err := backend.GetPoliciesForUser(userName); err == nil {
+			return docs, boundaryDocForUser(backend, userName), condCtx, userName, true
+		}
+	}
+
+	return nil, "", condCtx, principal.Arn, true
 }
 
 func resolveCallerIdentityPolicies(
 	ctx context.Context,
 	r *http.Request,
 	backend EnforcementBackend,
-) ([]string, ConditionContext, string, bool) {
+) ([]string, string, ConditionContext, string, bool) {
 	principal := awsmeta.GetPrincipal(ctx)
-	if docs, condCtx, roleName, ok := resolveAssumedRoleIdentityPolicies(ctx, r, principal, backend); ok {
-		return docs, condCtx, roleName, true
+	if docs, boundaryDoc, condCtx, roleName, ok := resolveAssumedRoleIdentityPolicies(ctx, r, principal, backend); ok {
+		return docs, boundaryDoc, condCtx, roleName, true
 	}
 
 	accessKeyID := ExtractAccessKeyID(r)
 	if accessKeyID == "" {
-		return nil, ConditionContext{}, "", false
+		return nil, "", ConditionContext{}, "", false
 	}
 
-	user, err := backend.GetUserByAccessKeyID(accessKeyID)
-	if err != nil {
-		return nil, ConditionContext{}, "", false
+	user, userErr := backend.GetUserByAccessKeyID(accessKeyID)
+	if userErr == nil {
+		docs, err := backend.GetPoliciesForUser(user.UserName)
+		if err != nil {
+			return nil, "", ConditionContext{}, "", false
+		}
+
+		return docs, boundaryDocForUser(backend, user.UserName), buildConditionContext(r, user), user.UserName, true
 	}
 
-	docs, err := backend.GetPoliciesForUser(user.UserName)
-	if err != nil {
-		return nil, ConditionContext{}, "", false
+	// accessKeyID isn't a registered IAM user key. It may still be a valid
+	// STS-issued non-assumed-role session that principalMiddleware resolved.
+	if docs, boundaryDoc, condCtx, name, ok := resolveSTSUserIdentityPolicies(ctx, r, principal, backend); ok {
+		return docs, boundaryDoc, condCtx, name, true
 	}
 
-	return docs, buildConditionContext(r, user), user.UserName, true
+	return nil, "", ConditionContext{}, "", false
+}
+
+// applyPermissionsBoundary evaluates the caller's permission boundary (if any)
+// against the request and returns the possibly-downgraded identity-policy
+// result, whether the boundary explicitly denies the request outright, and
+// whether the boundary itself evaluated to Allow.
+//
+// AWS's IAM User Guide, "Permissions boundaries for IAM entities", states
+// that an entity's permissions boundary lets it act only within what both its
+// identity-based policies and its permissions boundary allow. An explicit
+// deny in the boundary denies outright, like any other policy type. An
+// implicit deny downgrades an identity-policy Allow to implicit deny, but per
+// the same page a resource-based policy that separately grants an IAM user
+// ARN access is not limited by an implicit deny in an identity-based policy
+// or permissions boundary, so this does not touch the resource-policy check
+// that follows in enforceIAMPolicy.
+//
+// boundaryDocs holds one or more policy documents evaluated together as the
+// boundary (a real IAM principal has at most one attached, but
+// SimulateCustomPolicy's PermissionsBoundaryPolicyInputList accepts several).
+func applyPermissionsBoundary(
+	boundaryDocs []string, action, resource string,
+	condCtx ConditionContext,
+	idResult EvaluationResult,
+) (EvaluationResult, bool, bool) {
+	if len(boundaryDocs) == 0 {
+		return idResult, false, false
+	}
+
+	boundaryResult := EvaluatePolicies(boundaryDocs, action, resource, condCtx)
+
+	switch boundaryResult {
+	case EvalExplicitDeny:
+		return idResult, true, false
+	case EvalImplicitDeny:
+		if idResult == EvalAllow {
+			idResult = EvalImplicitDeny
+		}
+	case EvalAllow:
+	}
+
+	return idResult, false, boundaryResult == EvalAllow
 }
 
 // enforceIAMPolicy evaluates IAM policies for the request and either allows or denies it.
@@ -180,7 +322,7 @@ func enforceIAMPolicy(c *echo.Context, next echo.HandlerFunc, backend Enforcemen
 	ctx := r.Context()
 	log := logger.Load(ctx)
 
-	policyDocs, condCtx, callerName, enforced := resolveCallerIdentityPolicies(ctx, r, backend)
+	policyDocs, boundaryDoc, condCtx, callerName, enforced := resolveCallerIdentityPolicies(ctx, r, backend)
 	if !enforced {
 		// Unknown key (test/dummy) — pass through without enforcement.
 		return next(c)
@@ -220,6 +362,19 @@ func enforceIAMPolicy(c *echo.Context, next echo.HandlerFunc, backend Enforcemen
 
 	// Identity-based policies.
 	idResult := EvaluatePolicies(policyDocs, action, matchResource, condCtx)
+
+	var boundaryDocs []string
+	if boundaryDoc != "" {
+		boundaryDocs = []string{boundaryDoc}
+	}
+
+	idResult, boundaryDenied, _ := applyPermissionsBoundary(boundaryDocs, action, matchResource, condCtx, idResult)
+	if boundaryDenied {
+		log.InfoContext(ctx, "IAM enforcement: access denied (permission boundary)",
+			"caller", callerName, "action", action, "resource", matchResource)
+
+		return writeAccessDenied(c, action, matchResource)
+	}
 
 	// Explicit Deny from identity policy always wins.
 	if idResult == EvalExplicitDeny {

@@ -101,6 +101,12 @@ func (b *InMemoryBackend) UpdateClusterConfig(clusterName string, upd ClusterCon
 		c.VpcConfig.SubnetIDs = cloneStrings(upd.SubnetIDs)
 	}
 
+	// types.UpdateAccessConfigRequest (eks@v1.90.4 types/types.go:2727) has
+	// only AuthenticationMode -- no BootstrapClusterCreatorAdminPermissions
+	// member exists on this op's wire shape, so it must never be written
+	// here (a real client cannot even send it, and unconditionally copying
+	// upd.AccessConfig's zero value clobbered a true bootstrap flag set at
+	// CreateCluster back to false on every AuthenticationMode-only update).
 	if upd.AccessConfig != nil {
 		if c.AccessConfig == nil {
 			c.AccessConfig = &AccessConfig{}
@@ -109,8 +115,6 @@ func (b *InMemoryBackend) UpdateClusterConfig(clusterName string, upd ClusterCon
 		if upd.AccessConfig.AuthenticationMode != "" {
 			c.AccessConfig.AuthenticationMode = upd.AccessConfig.AuthenticationMode
 		}
-
-		c.AccessConfig.BootstrapClusterCreatorAdminPermissions = upd.AccessConfig.BootstrapClusterCreatorAdminPermissions
 	}
 
 	if upd.ComputeConfig != nil {

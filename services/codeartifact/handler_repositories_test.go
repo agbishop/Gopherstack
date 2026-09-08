@@ -329,6 +329,69 @@ func TestHandler_RepositoryPermissionsPolicy(t *testing.T) {
 	)
 }
 
+// TestHandler_RepositoryPermissionsPolicy_RevisionLocking proves PolicyRevision
+// is enforced as optimistic locking on Put/DeleteRepositoryPermissionsPolicy.
+// Per api_op_PutRepositoryPermissionsPolicy.go: "Sets the revision of the
+// resource policy ... This revision is used for optimistic locking, which
+// prevents others from overwriting your changes to the repository's resource
+// policy." Both ops model ConflictException.
+func TestHandler_RepositoryPermissionsPolicy_RevisionLocking(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, http.MethodPost, "/v1/domain?domain=rplock-domain", nil)
+	doRequest(t, h, http.MethodPost, "/v1/repository?domain=rplock-domain&repository=rplock-repo", nil)
+
+	putRec := doRequest(
+		t, h, http.MethodPut,
+		"/v1/repository/permissions/policy?domain=rplock-domain&repository=rplock-repo",
+		map[string]any{"policyDocument": `{"Version":"2012-10-17","Statement":[]}`},
+	)
+	require.Equal(t, http.StatusOK, putRec.Code)
+	var putResp map[string]any
+	require.NoError(t, json.Unmarshal(putRec.Body.Bytes(), &putResp))
+	pol, _ := putResp["policy"].(map[string]any)
+	revision, _ := pol["revision"].(string)
+	require.NotEmpty(t, revision)
+
+	staleRec := doRequest(
+		t, h, http.MethodPut,
+		"/v1/repository/permissions/policy?domain=rplock-domain&repository=rplock-repo",
+		map[string]any{
+			"policyDocument": `{"Version":"2012-10-17","Statement":[{"Effect":"Deny"}]}`,
+			"policyRevision": "wrong-revision",
+		},
+	)
+	assert.Equal(t, http.StatusConflict, staleRec.Code)
+
+	staleDeleteRec := doRequest(
+		t,
+		h,
+		http.MethodDelete,
+		"/v1/repository/permissions/policies?domain=rplock-domain&repository=rplock-repo&policy-revision=wrong-revision",
+		nil,
+	)
+	assert.Equal(t, http.StatusConflict, staleDeleteRec.Code)
+
+	getRec := doRequest(
+		t, h, http.MethodGet,
+		"/v1/repository/permissions/policy?domain=rplock-domain&repository=rplock-repo",
+		nil,
+	)
+	require.Equal(t, http.StatusOK, getRec.Code)
+	var getResp map[string]any
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &getResp))
+	getPol, _ := getResp["policy"].(map[string]any)
+	assert.NotContains(t, getPol["document"], "Deny")
+
+	matchDeleteRec := doRequest(
+		t, h, http.MethodDelete,
+		"/v1/repository/permissions/policies?domain=rplock-domain&repository=rplock-repo&policy-revision="+revision,
+		nil,
+	)
+	assert.Equal(t, http.StatusOK, matchDeleteRec.Code)
+}
+
 func TestHandler_DeleteRepositoryCascade(t *testing.T) {
 	t.Parallel()
 

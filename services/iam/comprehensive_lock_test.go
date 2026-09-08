@@ -47,7 +47,7 @@ func TestComprehensiveBackend_NoDataRace(t *testing.T) {
 			assert.NoError(t, err)
 
 			_ = b.GetMFADeviceOwner(dev.SerialNumber)
-			_, err = b.ListMFADevicesForUser(userName)
+			_, err = b.ListMFADevicesForUser(userName, "", 0)
 			assert.NoError(t, err)
 
 			_ = b.GenerateServiceLastAccessedDetailsForEntity("arn:aws:iam::123456789012:user/" + userName)

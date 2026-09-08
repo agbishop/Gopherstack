@@ -120,6 +120,11 @@ func (b *InMemoryBackend) ListAcmeAccounts(
 }
 
 // RevokeAcmeAccount revokes an ACME account by endpoint + AccountUrl.
+// RevokeAcmeAccount's deserializer declares ConflictException, not
+// InvalidStateException, for an already-revoked account -- gopherstack-ftkd.
+// The AcmeAccount table is always empty (see the type's doc comment), so
+// this branch is unreachable through any real client flow today; the
+// sentinel is still corrected for when a real ACME front-end populates it.
 func (b *InMemoryBackend) RevokeAcmeAccount(ctx context.Context, epARN, accountURL string) error {
 	if err := validateAcmeEndpointArn(epARN); err != nil {
 		return err
@@ -145,7 +150,7 @@ func (b *InMemoryBackend) RevokeAcmeAccount(ctx context.Context, epARN, accountU
 	}
 
 	if acct.Status == acmeAccountStatusRevoked {
-		return fmt.Errorf("%w: ACME account %s is already revoked", ErrAlreadyRevoked, accountURL)
+		return fmt.Errorf("%w: ACME account %s is already revoked", ErrConflict, accountURL)
 	}
 
 	acct.Status = acmeAccountStatusRevoked

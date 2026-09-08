@@ -26,7 +26,7 @@ type StorageBackend interface {
 	// Agent version operations.
 	CreateAgentVersion(ctx context.Context, agentID, description string) (*AgentVersion, error)
 	GetAgentVersion(ctx context.Context, agentID, agentVersion string) (*AgentVersion, error)
-	DeleteAgentVersion(ctx context.Context, agentID, agentVersion string) error
+	DeleteAgentVersion(ctx context.Context, agentID, agentVersion string, skipResourceInUseCheck bool) error
 	ListAgentVersions(
 		ctx context.Context, agentID string, maxResults int, nextToken string,
 	) ([]*AgentVersionSummary, string, error)
@@ -128,7 +128,7 @@ type StorageBackend interface {
 	// Flow version operations.
 	CreateFlowVersion(ctx context.Context, flowID, description string) (*FlowVersion, error)
 	GetFlowVersion(ctx context.Context, flowID, flowVersion string) (*FlowVersion, error)
-	DeleteFlowVersion(ctx context.Context, flowID, flowVersion string) error
+	DeleteFlowVersion(ctx context.Context, flowID, flowVersion string, skipResourceInUseCheck bool) error
 	ListFlowVersions(
 		ctx context.Context, flowID string, maxResults int, nextToken string,
 	) ([]*FlowVersionSummary, string, error)

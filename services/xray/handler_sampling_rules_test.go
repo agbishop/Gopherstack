@@ -679,6 +679,64 @@ func TestSamplingRule_FixedRateValidation(t *testing.T) {
 	}
 }
 
+// TestSamplingRule_UpdateValidation verifies UpdateSamplingRule enforces the same
+// Priority/FixedRate/ReservoirSize constraints CreateSamplingRule does: these are
+// properties of the sampling rule resource, not create-time-only, so a client must
+// not be able to use UpdateSamplingRule to push a rule out of range.
+func TestSamplingRule_UpdateValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		update     map[string]any
+		name       string
+		wantStatus int
+	}{
+		{name: "priority too low rejected", update: map[string]any{"Priority": 0}, wantStatus: http.StatusBadRequest},
+		{
+			name:       "priority too high rejected",
+			update:     map[string]any{"Priority": 10000},
+			wantStatus: http.StatusBadRequest,
+		},
+		{name: "priority in range accepted", update: map[string]any{"Priority": 500}, wantStatus: http.StatusOK},
+		{
+			name:       "fixed rate above 1.0 rejected",
+			update:     map[string]any{"FixedRate": 5.0},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "fixed rate negative rejected",
+			update:     map[string]any{"FixedRate": -0.1},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "reservoir size negative rejected",
+			update:     map[string]any{"ReservoirSize": -999},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "reservoir size non-negative accepted",
+			update:     map[string]any{"ReservoirSize": 0},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h, b := newTestHandlerWithBackend(t)
+			b.AddSamplingRuleInternal(
+				xray.SamplingRule{RuleName: "update-validation-rule", FixedRate: 0.5, Priority: 100, ReservoirSize: 10},
+			)
+
+			tt.update["RuleName"] = "update-validation-rule"
+
+			rec := doXrayRequest(t, h, "/UpdateSamplingRule", map[string]any{"SamplingRuleUpdate": tt.update})
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}
+
 // TestSamplingRule_SamplingRateBoostRoundTrips verifies the SamplingRateBoost field
 // (a newer AWS X-Ray feature previously entirely absent from gopherstack) is accepted
 // on create, applied on update, and echoed back on Create/Update/Get.

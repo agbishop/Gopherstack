@@ -51,6 +51,26 @@ func TestBackend_DeleteSubnetGroup_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, elasticache.ErrSubnetGroupNotFound)
 }
 
+func TestBackend_DeleteSubnetGroup_InUseByCluster(t *testing.T) {
+	t.Parallel()
+
+	b := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
+	ctx := context.Background()
+
+	_, err := b.CreateSubnetGroup(ctx, "used-sng", "in use", []string{"subnet-1"})
+	require.NoError(t, err)
+
+	_, err = b.CreateCluster(ctx, "sng-client", "redis", "cache.t3.micro", 0)
+	require.NoError(t, err)
+	require.NoError(t, b.SetClusterSubnetGroupName(ctx, "sng-client", "used-sng"))
+
+	err = b.DeleteSubnetGroup(ctx, "used-sng")
+	require.ErrorIs(t, err, elasticache.ErrSubnetGroupInUse)
+
+	require.NoError(t, b.DeleteCluster(ctx, "sng-client"))
+	require.NoError(t, b.DeleteSubnetGroup(ctx, "used-sng"))
+}
+
 // ----------------------------------------
 // Snapshot CRUD + ExportServerlessCacheSnapshot (issue)
 // ----------------------------------------

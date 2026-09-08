@@ -72,12 +72,21 @@ func (b *InMemoryBackend) DescribeLaunchConfigurations(names []string) ([]Launch
 }
 
 // DeleteLaunchConfiguration removes a launch configuration by name.
+// api_op_DeleteLaunchConfiguration.go: "The launch configuration must not be
+// attached to an Auto Scaling group".
 func (b *InMemoryBackend) DeleteLaunchConfiguration(name string) error {
 	b.mu.Lock("DeleteLaunchConfiguration")
 	defer b.mu.Unlock()
 
 	if !b.launchConfigurations.Has(name) {
 		return fmt.Errorf("%w: %q", ErrLaunchConfigurationNotFound, name)
+	}
+
+	for _, g := range b.groups.All() {
+		if g.LaunchConfigurationName == name {
+			return fmt.Errorf("%w: launch configuration %q is still attached to Auto Scaling group %q",
+				ErrLaunchConfigurationInUse, name, g.AutoScalingGroupName)
+		}
 	}
 
 	b.launchConfigurations.Delete(name)

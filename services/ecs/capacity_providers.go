@@ -2,6 +2,7 @@ package ecs
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -81,6 +82,15 @@ func (b *InMemoryBackend) DeleteCapacityProvider(nameOrArn string) (*CapacityPro
 	key, cp := b.findCapacityProviderLocked(nameOrArn)
 	if cp == nil {
 		return nil, fmt.Errorf("%w: capacity provider %s not found", ErrInvalidParameter, nameOrArn)
+	}
+
+	for _, cluster := range b.clusters.All() {
+		if slices.Contains(cluster.CapacityProviders, cp.Name) {
+			return nil, fmt.Errorf(
+				"%w: capacity provider %s is associated with cluster %s",
+				ErrCapacityProviderInUse, cp.Name, cluster.ClusterName,
+			)
+		}
 	}
 
 	b.capacityProviders.Delete(key)

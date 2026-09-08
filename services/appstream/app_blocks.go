@@ -104,7 +104,10 @@ func (b *InMemoryBackend) CreateAppBlock(name, description string, tags map[stri
 	return ab.toAppBlock(), nil
 }
 
-// DeleteAppBlock removes an app block.
+// DeleteAppBlock removes an app block. Returns ErrResourceInUse if any
+// application still references it via AppBlockArn (DeleteAppBlock models
+// ResourceInUseException; CreateApplication's AppBlockArn is the only real
+// reference to an app block this backend tracks).
 func (b *InMemoryBackend) DeleteAppBlock(name string) error {
 	b.mu.Lock("DeleteAppBlock")
 	defer b.mu.Unlock()
@@ -112,6 +115,12 @@ func (b *InMemoryBackend) DeleteAppBlock(name string) error {
 	ab, ok := b.appBlocks.Get(name)
 	if !ok {
 		return ErrNotFound
+	}
+
+	for _, app := range b.applications.All() {
+		if app.AppBlockArn == ab.Arn {
+			return ErrResourceInUse
+		}
 	}
 
 	delete(b.tags, ab.Arn)

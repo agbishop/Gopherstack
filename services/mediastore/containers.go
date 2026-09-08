@@ -45,6 +45,12 @@ func (b *InMemoryBackend) CreateContainer(
 		return nil, err
 	}
 
+	for k := range tags {
+		if k == "" {
+			return nil, ErrEmptyTagKey
+		}
+	}
+
 	region := regionFromContext(ctx)
 
 	// Advance any due transitions before creating, so a container name that

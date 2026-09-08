@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -16,104 +17,113 @@ import (
 func TestHandler_InferenceRecommendationsJobLifecycle(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateInferenceRecommendationsJob schedules its own
+	// IN_PROGRESS->COMPLETED transition immediately, so the whole body
+	// stays in one bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	// Create
-	rec := doSageMakerRequest(t, h, "CreateInferenceRecommendationsJob", map[string]any{
-		"JobName":        "my-rec-job",
-		"JobType":        "Default",
-		"JobDescription": "Test recommendation job",
-		"RoleArn":        "arn:aws:iam::000000000000:role/TestRole",
-		"InputConfig":    map[string]any{"ModelName": "my-model"},
-	})
-	assert.Equal(t, http.StatusOK, rec.Code)
+		// Create
+		rec := doSageMakerRequest(t, h, "CreateInferenceRecommendationsJob", map[string]any{
+			"JobName":        "my-rec-job",
+			"JobType":        "Default",
+			"JobDescription": "Test recommendation job",
+			"RoleArn":        "arn:aws:iam::000000000000:role/TestRole",
+			"InputConfig":    map[string]any{"ModelName": "my-model"},
+		})
+		assert.Equal(t, http.StatusOK, rec.Code)
 
-	var createResp map[string]string
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
-	assert.Contains(t, createResp["JobArn"], "my-rec-job")
+		var createResp map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
+		assert.Contains(t, createResp["JobArn"], "my-rec-job")
 
-	// Describe
-	rec = doSageMakerRequest(t, h, "DescribeInferenceRecommendationsJob", map[string]any{
-		"JobName": "my-rec-job",
-	})
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var descResp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
-	assert.Equal(t, "my-rec-job", descResp["JobName"])
-	assert.Equal(t, "IN_PROGRESS", descResp["Status"])
-	assert.Equal(t, "Default", descResp["JobType"])
-	recs := descResp["InferenceRecommendations"].([]any)
-	assert.Empty(t, recs)
-
-	// List
-	rec = doSageMakerRequest(t, h, "ListInferenceRecommendationsJobs", map[string]any{})
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var listResp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listResp))
-	summaries := listResp["InferenceRecommendationsJobs"].([]any)
-	assert.Len(t, summaries, 1)
-
-	// List steps (always empty)
-	rec = doSageMakerRequest(t, h, "ListInferenceRecommendationsJobSteps", map[string]any{
-		"JobName": "my-rec-job",
-	})
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var stepsResp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &stepsResp))
-	steps := stepsResp["Steps"].([]any)
-	assert.Empty(t, steps)
-
-	// Stop
-	rec = doSageMakerRequest(t, h, "StopInferenceRecommendationsJob", map[string]any{
-		"JobName": "my-rec-job",
-	})
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	rec = doSageMakerRequest(t, h, "DescribeInferenceRecommendationsJob", map[string]any{
-		"JobName": "my-rec-job",
-	})
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
-	assert.Equal(t, "STOPPING", descResp["Status"])
-
-	// Correct immediately after Stop, but an assertion that only checks this
-	// moment cannot catch a machine that never advances -- confirm it
-	// actually reaches STOPPED.
-	require.Eventually(t, func() bool {
-		descRec := doSageMakerRequest(t, h, "DescribeInferenceRecommendationsJob", map[string]any{
+		// Describe
+		rec = doSageMakerRequest(t, h, "DescribeInferenceRecommendationsJob", map[string]any{
 			"JobName": "my-rec-job",
 		})
-		var out map[string]any
-		require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &out))
+		assert.Equal(t, http.StatusOK, rec.Code)
 
-		return out["Status"] == "STOPPED"
-	}, 2*time.Second, 10*time.Millisecond)
+		var descResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "my-rec-job", descResp["JobName"])
+		assert.Equal(t, "IN_PROGRESS", descResp["Status"])
+		assert.Equal(t, "Default", descResp["JobType"])
+		recs := descResp["InferenceRecommendations"].([]any)
+		assert.Empty(t, recs)
+
+		// List
+		rec = doSageMakerRequest(t, h, "ListInferenceRecommendationsJobs", map[string]any{})
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		var listResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listResp))
+		summaries := listResp["InferenceRecommendationsJobs"].([]any)
+		assert.Len(t, summaries, 1)
+
+		// List steps (always empty)
+		rec = doSageMakerRequest(t, h, "ListInferenceRecommendationsJobSteps", map[string]any{
+			"JobName": "my-rec-job",
+		})
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		var stepsResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &stepsResp))
+		steps := stepsResp["Steps"].([]any)
+		assert.Empty(t, steps)
+
+		// Stop
+		rec = doSageMakerRequest(t, h, "StopInferenceRecommendationsJob", map[string]any{
+			"JobName": "my-rec-job",
+		})
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		rec = doSageMakerRequest(t, h, "DescribeInferenceRecommendationsJob", map[string]any{
+			"JobName": "my-rec-job",
+		})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "STOPPING", descResp["Status"])
+
+		// Correct immediately after Stop, but an assertion that only checks this
+		// moment cannot catch a machine that never advances -- confirm it
+		// actually reaches STOPPED.
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		rec = doSageMakerRequest(t, h, "DescribeInferenceRecommendationsJob", map[string]any{
+			"JobName": "my-rec-job",
+		})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "STOPPED", descResp["Status"])
+	})
 }
 
 func TestHandler_InferenceRecommendationsJob_ReachesCompleted(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateInferenceRecommendationsJob schedules its own
+	// IN_PROGRESS->COMPLETED transition immediately, so the whole body
+	// stays in one bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	rec := doSageMakerRequest(t, h, "CreateInferenceRecommendationsJob", map[string]any{
-		"JobName":     "rec-job-completes",
-		"JobType":     "Default",
-		"RoleArn":     "arn:aws:iam::000000000000:role/TestRole",
-		"InputConfig": map[string]any{"ModelName": "my-model"},
-	})
-	require.Equal(t, http.StatusOK, rec.Code)
+		rec := doSageMakerRequest(t, h, "CreateInferenceRecommendationsJob", map[string]any{
+			"JobName":     "rec-job-completes",
+			"JobType":     "Default",
+			"RoleArn":     "arn:aws:iam::000000000000:role/TestRole",
+			"InputConfig": map[string]any{"ModelName": "my-model"},
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
 
-	require.Eventually(t, func() bool {
+		time.Sleep(time.Second)
+		synctest.Wait()
+
 		descRec := doSageMakerRequest(t, h, "DescribeInferenceRecommendationsJob", map[string]any{
 			"JobName": "rec-job-completes",
 		})
 		var out map[string]any
 		require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &out))
-
-		return out["Status"] == "COMPLETED"
-	}, 2*time.Second, 10*time.Millisecond)
+		assert.Equal(t, "COMPLETED", out["Status"])
+	})
 }
 
 func TestHandler_CreateInferenceRecommendationsJob_InputConfigRoundTrip(t *testing.T) {

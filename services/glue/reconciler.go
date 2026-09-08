@@ -2,31 +2,92 @@ package glue
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
-// advanceJobRunState applies STARTING→RUNNING and RUNNING→SUCCEEDED transitions for a
-// single run, consulting the readyMap and doneMap timing tables. Must be called with b.mu held.
-func advanceJobRunState(run *JobRun, readyMap, doneMap map[string]time.Time, now time.Time) {
-	if readyMap != nil {
-		if t, ok := readyMap[run.ID]; ok && now.After(t) {
-			if run.JobRunState == stateStarting {
-				run.JobRunState = stateRunning
-			}
-			delete(readyMap, run.ID)
-		}
+// advanceJobRunState applies STARTING→RUNNING, RUNNING→SUCCEEDED or TIMEOUT,
+// and STOPPING→STOPPED transitions for a single run, consulting the
+// readyMap, doneMap, timeoutMap, and stopMap timing tables. Must be called
+// with b.mu held.
+func advanceJobRunState(run *JobRun, readyMap, doneMap, timeoutMap, stopMap map[string]time.Time, now time.Time) {
+	advanceJobRunTimer(run, readyMap, now, stateStarting, func() {
+		run.JobRunState = stateRunning
+	})
+
+	advanceRunningJobRun(run, doneMap, timeoutMap, now)
+
+	advanceJobRunTimer(run, stopMap, now, stateStopping, func() {
+		run.JobRunState = stateStopped
+		run.CompletedOn = float64(now.Unix())
+	})
+}
+
+// advanceRunningJobRun resolves a RUNNING run's eventual SUCCEEDED or TIMEOUT
+// transition. A run only reaches TIMEOUT if its JobRun.Timeout deadline
+// (timeoutMap) falls before its natural completion (doneMap) and has passed
+// -- matching real Glue, where TIMEOUT only fires for a run still executing
+// once its configured timeout elapses; a run that finishes first succeeds
+// normally regardless of Timeout. Clears whichever timer entries applied so a
+// terminal run is never re-evaluated. Must be called with b.mu held.
+func advanceRunningJobRun(run *JobRun, doneMap, timeoutMap map[string]time.Time, now time.Time) {
+	if run.JobRunState != stateRunning {
+		delete(doneMap, run.ID)
+		delete(timeoutMap, run.ID)
+
+		return
 	}
 
-	if doneMap != nil {
-		if t, ok := doneMap[run.ID]; ok && now.After(t) {
-			if run.JobRunState == stateRunning {
-				run.JobRunState = stateSucceeded
-				run.CompletedOn = float64(now.Unix())
-				run.ExecutionTime = int(jobSucceededDelay.Seconds())
-			}
-			delete(doneMap, run.ID)
-		}
+	doneAt, hasDone := doneMap[run.ID]
+	timeoutAt, hasTimeout := timeoutMap[run.ID]
+
+	timesOut := hasTimeout && (!hasDone || timeoutAt.Before(doneAt)) && now.After(timeoutAt)
+	succeeds := !timesOut && hasDone && now.After(doneAt)
+
+	switch {
+	case timesOut:
+		run.JobRunState = stateTimeout
+		run.CompletedOn = float64(now.Unix())
+		run.ExecutionTime = run.Timeout * secondsPerMinute
+		run.ErrorMessage = fmt.Sprintf(
+			"Job run timed out after exceeding the configured Timeout of %d minutes", run.Timeout,
+		)
+	case succeeds:
+		run.JobRunState = stateSucceeded
+		run.CompletedOn = float64(now.Unix())
+		run.ExecutionTime = int(jobSucceededDelay.Seconds())
+	default:
+		return
 	}
+
+	delete(doneMap, run.ID)
+	delete(timeoutMap, run.ID)
+}
+
+// advanceJobRunTimer applies apply to run if its timer in timers is due and
+// run is still in fromState, then clears the timer either way. Must be
+// called with b.mu held.
+func advanceJobRunTimer(
+	run *JobRun,
+	timers map[string]time.Time,
+	now time.Time,
+	fromState string,
+	apply func(),
+) {
+	if timers == nil {
+		return
+	}
+
+	t, ok := timers[run.ID]
+	if !ok || !now.After(t) {
+		return
+	}
+
+	if run.JobRunState == fromState {
+		apply()
+	}
+
+	delete(timers, run.ID)
 }
 
 // reconcileLocked applies pending lifecycle transitions as of now. Must be called
@@ -34,13 +95,15 @@ func advanceJobRunState(run *JobRun, readyMap, doneMap map[string]time.Time, now
 // keeps the due-scan and the application consistent and makes advancement
 // deterministically testable.
 func (b *InMemoryBackend) reconcileLocked(now time.Time) {
-	// Job run transitions: STARTING→RUNNING, RUNNING→SUCCEEDED.
+	// Job run transitions: STARTING→RUNNING, RUNNING→SUCCEEDED/TIMEOUT, STOPPING→STOPPED.
 	for jobName, runs := range b.jobRuns {
 		readyMap := b.jobRunReadyAt[jobName]
 		doneMap := b.jobRunDoneAt[jobName]
+		timeoutMap := b.jobRunTimeoutAt[jobName]
+		stopMap := b.jobRunStopAt[jobName]
 
 		for _, run := range runs {
-			advanceJobRunState(run, readyMap, doneMap, now)
+			advanceJobRunState(run, readyMap, doneMap, timeoutMap, stopMap, now)
 		}
 	}
 
@@ -94,6 +157,14 @@ func (b *InMemoryBackend) pruneOrphanJobRunTimersLocked() {
 	for jobName, timers := range b.jobRunDoneAt {
 		b.pruneJobTimerMapLocked(jobName, timers, b.jobRunDoneAt)
 	}
+
+	for jobName, timers := range b.jobRunTimeoutAt {
+		b.pruneJobTimerMapLocked(jobName, timers, b.jobRunTimeoutAt)
+	}
+
+	for jobName, timers := range b.jobRunStopAt {
+		b.pruneJobTimerMapLocked(jobName, timers, b.jobRunStopAt)
+	}
 }
 
 // pruneJobTimerMapLocked drops entries in a single job's timer sub-map for runs that
@@ -131,30 +202,29 @@ const defaultReconcileInterval = jobTransitionDelay / reconcilerTickDivisor
 // reconciler (and lazy read-path advancement) skip taking the global write lock
 // on the overwhelmingly common tick where nothing has come due yet.
 func (b *InMemoryBackend) pendingDueLocked(now time.Time) bool {
-	for _, timers := range b.jobRunReadyAt {
-		for _, t := range timers {
-			if now.After(t) {
-				return true
-			}
-		}
-	}
+	return nestedTimerDue(b.jobRunReadyAt, now) ||
+		nestedTimerDue(b.jobRunDoneAt, now) ||
+		nestedTimerDue(b.jobRunTimeoutAt, now) ||
+		nestedTimerDue(b.jobRunStopAt, now) ||
+		flatTimerDue(b.crawlerReadyAt, now) ||
+		flatTimerDue(b.integrationReadyAt, now)
+}
 
-	for _, timers := range b.jobRunDoneAt {
-		for _, t := range timers {
-			if now.After(t) {
-				return true
-			}
-		}
-	}
-
-	for _, readyAt := range b.crawlerReadyAt {
-		if now.After(readyAt) {
+// nestedTimerDue reports whether any timer in a jobName→runID→time map is due at now.
+func nestedTimerDue(timers map[string]map[string]time.Time, now time.Time) bool {
+	for _, sub := range timers {
+		if flatTimerDue(sub, now) {
 			return true
 		}
 	}
 
-	for _, readyAt := range b.integrationReadyAt {
-		if now.After(readyAt) {
+	return false
+}
+
+// flatTimerDue reports whether any timer in a name→time map is due at now.
+func flatTimerDue(timers map[string]time.Time, now time.Time) bool {
+	for _, t := range timers {
+		if now.After(t) {
 			return true
 		}
 	}

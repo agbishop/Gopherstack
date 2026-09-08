@@ -111,6 +111,63 @@ func TestGetFindingStatistics_FindingCriteriaHonoured(t *testing.T) {
 	assert.Equal(t, "Policy:IAMUser/TypeA", stats.CountsByGroup[0]["groupKey"])
 }
 
+// TestFindingsFilter_ArchiveActionHonoured proves an ARCHIVE-action findings filter is
+// applied to matching findings created by CreateSampleFindings, mirroring guardduty's
+// identical fix for its own filter Action (b.findingsFilters was previously stored and
+// echoed back but never consulted by any finding-creation path).
+func TestFindingsFilter_ArchiveActionHonoured(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newBucketHandlerAndBackend(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/findingsfilters", map[string]any{
+		"name":   "archive-type-a",
+		"action": "ARCHIVE",
+		"findingCriteria": map[string]any{
+			"criterion": map[string]any{
+				"type": map[string]any{"eq": []any{"Policy:IAMUser/TypeA"}},
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec2 := doRequest(t, h, http.MethodPost, "/findings/sample", map[string]any{
+		"findingTypes": []string{"Policy:IAMUser/TypeA", "Policy:IAMUser/TypeB"},
+	})
+	require.Equal(t, http.StatusOK, rec2.Code)
+
+	rec3 := doRequest(t, h, http.MethodPost, "/findings", map[string]any{})
+	require.Equal(t, http.StatusOK, rec3.Code)
+
+	var listResp struct {
+		FindingIDs []string `json:"findingIds"`
+	}
+	require.NoError(t, json.Unmarshal(rec3.Body.Bytes(), &listResp))
+	require.Len(t, listResp.FindingIDs, 2)
+
+	rec4 := doRequest(t, h, http.MethodPost, "/findings/describe", map[string]any{
+		"findingIds": listResp.FindingIDs,
+	})
+	require.Equal(t, http.StatusOK, rec4.Code)
+
+	var describeResp struct {
+		Findings []map[string]any `json:"findings"`
+	}
+	require.NoError(t, json.Unmarshal(rec4.Body.Bytes(), &describeResp))
+	require.Len(t, describeResp.Findings, 2)
+
+	for _, f := range describeResp.Findings {
+		switch f["type"] {
+		case "Policy:IAMUser/TypeA":
+			assert.Equal(t, true, f["archived"], "TypeA matches the ARCHIVE filter and must be archived")
+		case "Policy:IAMUser/TypeB":
+			assert.Equal(t, false, f["archived"], "TypeB does not match the filter and must not be archived")
+		default:
+			t.Fatalf("unexpected finding type %v", f["type"])
+		}
+	}
+}
+
 // TestListFindings_SortCriteriaHonoured proves ListFindings applies its
 // SortCriteria parameter, which was parsed but never passed to the backend
 // before the fix (findings always came back in ID order).

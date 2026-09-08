@@ -210,10 +210,15 @@ func (b *InMemoryBackend) ListFindings(
 	return findings, "", nil
 }
 
-// UpdateFindings archives or marks active the specified findings.
+// UpdateFindings archives or marks active the specified findings, selected
+// by findingIDs when non-empty, otherwise by resourceArn (both are
+// independent optional UpdateFindingsInput members -- serializers.go:
+// 3305-3315 guards each with its own `!= nil` check). When both are
+// supplied, resourceArn further narrows the findingIDs selection.
 func (b *InMemoryBackend) UpdateFindings(
 	analyzerName string,
 	findingIDs []string,
+	resourceArn string,
 	status FindingStatus,
 ) error {
 	b.mu.Lock("UpdateFindings")
@@ -225,11 +230,35 @@ func (b *InMemoryBackend) UpdateFindings(
 
 	now := time.Now().UTC()
 
-	for _, id := range findingIDs {
-		if f, exists := b.findings.Get(id); exists && findingAnalyzerIndexKeyFn(f) == analyzerName {
+	if len(findingIDs) > 0 {
+		for _, id := range findingIDs {
+			f, exists := b.findings.Get(id)
+			if !exists || findingAnalyzerIndexKeyFn(f) != analyzerName {
+				continue
+			}
+
+			if resourceArn != "" && f.ResourceArn != resourceArn {
+				continue
+			}
+
 			f.Status = status
 			f.UpdatedAt = now
 		}
+
+		return nil
+	}
+
+	if resourceArn == "" {
+		return nil
+	}
+
+	for _, f := range b.findingsByAnalyzer.Get(analyzerName) {
+		if f.ResourceArn != resourceArn {
+			continue
+		}
+
+		f.Status = status
+		f.UpdatedAt = now
 	}
 
 	return nil

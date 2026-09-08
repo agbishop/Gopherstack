@@ -218,5 +218,60 @@ func TestLastUsageLeak_PurgeKeyWithAlias(t *testing.T) {
 	}
 }
 
+// TestReset_LastUsageCleared verifies that Reset() clears the lastUsage
+// sync.Map, mirroring clearResolutionCache's O(1) swap for the sibling
+// keyIDResolutionCache in the same Reset() call.
+func TestReset_LastUsageCleared(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	b := kms.NewInMemoryBackend()
+
+	out, err := b.CreateKey(ctx, &kms.CreateKeyInput{Description: "reset-test"})
+	require.NoError(t, err)
+	keyID := out.KeyMetadata.KeyID
+
+	_, err = b.Encrypt(ctx, &kms.EncryptInput{KeyID: keyID, Plaintext: []byte("hello")})
+	require.NoError(t, err)
+
+	require.True(t, kms.LastUsageExists(b, kms.MockRegion, keyID), "sanity: usage should be recorded")
+
+	b.Reset()
+
+	assert.False(t, kms.LastUsageExists(b, kms.MockRegion, keyID),
+		"lastUsage must not survive Reset")
+}
+
+// TestReset_ImportWrappingKeysCleared verifies that Reset() clears the
+// importWrappingKeys sync.Map, mirroring clearResolutionCache's O(1) swap for
+// the sibling keyIDResolutionCache in the same Reset() call.
+func TestReset_ImportWrappingKeysCleared(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	b := kms.NewInMemoryBackend()
+
+	out, err := b.CreateKey(ctx, &kms.CreateKeyInput{
+		Description: "reset-test",
+		Origin:      kms.KeyOriginExternal,
+	})
+	require.NoError(t, err)
+	keyID := out.KeyMetadata.KeyID
+
+	_, err = b.GetParametersForImport(ctx, &kms.GetParametersForImportInput{
+		KeyID:             keyID,
+		WrappingAlgorithm: "RSAES_OAEP_SHA_256",
+		WrappingKeySpec:   "RSA_2048",
+	})
+	require.NoError(t, err)
+
+	require.True(t, kms.ImportWrappingKeyExists(b, keyID), "sanity: wrapping key should be stored")
+
+	b.Reset()
+
+	assert.False(t, kms.ImportWrappingKeyExists(b, keyID),
+		"importWrappingKeys must not survive Reset")
+}
+
 // TestTagsLeak_PurgeKey lives in whitebox_test.go: it needs direct access to
 // the unexported Handler.tags map and janitor sweep.

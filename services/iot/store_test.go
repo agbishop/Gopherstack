@@ -202,6 +202,35 @@ func TestReset(t *testing.T) {
 	}
 }
 
+// TestReset_ShadowsCleared verifies that Reset() clears device shadow state.
+// Shadow lookups are gated on the owning thing existing, so the test re-creates
+// a thing under the same name after Reset to prove a stale shadow doesn't
+// silently reattach to it.
+func TestReset_ShadowsCleared(t *testing.T) {
+	t.Parallel()
+
+	b := newRefBackend()
+
+	_, err := b.CreateThing(&iot.CreateThingInput{ThingName: "t1"})
+	require.NoError(t, err)
+
+	_, err = b.UpdateThingShadow("t1", "", map[string]any{"reported": map[string]any{"on": true}})
+	require.NoError(t, err)
+
+	shadow, err := b.GetThingShadow("t1", "")
+	require.NoError(t, err)
+	require.NotNil(t, shadow)
+
+	b.Reset()
+
+	_, err = b.CreateThing(&iot.CreateThingInput{ThingName: "t1"})
+	require.NoError(t, err)
+
+	_, err = b.GetThingShadow("t1", "")
+	assert.ErrorIs(t, err, iot.ErrShadowNotFound,
+		"shadow must not survive Reset, even after the owning thing is re-created")
+}
+
 // TestMultipleResetCycle verifies Reset can be called multiple times.
 func TestMultipleResetCycle(t *testing.T) {
 	t.Parallel()

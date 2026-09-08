@@ -274,6 +274,42 @@ func TestCleanupTimedOutRuntime_StopsContainer(t *testing.T) {
 	}
 }
 
+// TestCleanupTimedOutRuntime_SemSaturated_StillCleansUp verifies that a timed-out
+// runtime's container is still stopped when b.cleanupSem is saturated. cleanupTimedOutRuntime
+// removes the runtime from b.runtimes unconditionally, so a dropped cleanup on the
+// semaphore-full branch permanently leaks the container, port, and temp dirs: nothing
+// else ever revisits that runtime again. lookupOrRegisterRuntime's LRU eviction and
+// UpdateFunction's runtime eviction both fall back to an inline cleanupRuntime call when
+// the semaphore is full; cleanupTimedOutRuntime must do the same.
+func TestCleanupTimedOutRuntime_SemSaturated_StillCleansUp(t *testing.T) {
+	t.Parallel()
+
+	api := &trackingDockerAPI{}
+	dc := newTrackingDockerClient(api)
+
+	b := lambda.NewInMemoryBackend(dc, nil, lambda.DefaultSettings(), "000000000000", "us-east-1")
+	closeBackend(t, b)
+
+	fn := &lambda.FunctionConfiguration{
+		FunctionName: "sem-saturated-fn",
+		PackageType:  lambda.PackageTypeImage,
+		ImageURI:     "test:latest",
+		Timeout:      1,
+	}
+	require.NoError(t, b.CreateFunction(fn))
+
+	lambda.InjectRuntimeEntryWithContainer(b, "sem-saturated-fn", "", "leaked-container", nil, 0)
+
+	drain := lambda.FillCleanupSem(b)
+	defer drain()
+
+	lambda.CleanupTimedOutRuntimeForTest(b, "sem-saturated-fn")
+
+	assert.Equal(t, 0, lambda.RuntimesLen(b), "runtime entry must still be removed from the map")
+	assert.Contains(t, api.StopCalls(), "leaked-container",
+		"container must still be stopped when cleanupSem is saturated (inline fallback)")
+}
+
 // TestLRUEviction verifies that when the number of active runtimes exceeds MaxRuntimes,
 // the least-recently-used runtime is evicted.
 func TestLRUEviction(t *testing.T) {

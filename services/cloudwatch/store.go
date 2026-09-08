@@ -83,27 +83,33 @@ const (
 // Every other resource field is registered on registry -- see
 // registerAllTables in store_setup.go.
 type InMemoryBackend struct {
-	metrics          map[string]map[string]*metricRecord
-	alarmHistory     map[string][]AlarmHistoryItem
-	alarms           *store.Table[MetricAlarm]
-	compositeAlarms  *store.Table[CompositeAlarm]
+	snsPublisher     SNSPublisher
+	firehosePutter   FirehosePutter
+	asgExecutor      AutoScalingPolicyExecutor
+	ec2Actioner      EC2InstanceActioner
+	lambdaInvoker    LambdaInvoker
+	registry         *store.Registry
 	logAlarms        *store.Table[LogAlarm]
-	dashboards       *store.Table[dashboardRecord]
-	anomalyDetectors *store.Table[AnomalyDetector]
 	insightRules     *store.Table[InsightRule]
 	metricStreams    *store.Table[MetricStream]
 	alarmMuteRules   *store.Table[AlarmMuteRule]
 	datasets         *store.Table[Dataset]
 	otelEnrichment   *store.Table[OTelEnrichmentState]
-	registry         *store.Registry
-	snsPublisher     SNSPublisher
-	lambdaInvoker    LambdaInvoker
-	ec2Actioner      EC2InstanceActioner
-	asgExecutor      AutoScalingPolicyExecutor
-	firehosePutter   FirehosePutter
+	metrics          map[string]map[string]*metricRecord
+	dashboards       *store.Table[dashboardRecord]
+	anomalyDetectors *store.Table[AnomalyDetector]
+	compositeAlarms  *store.Table[CompositeAlarm]
+	alarms           *store.Table[MetricAlarm]
+	alarmHistory     map[string][]AlarmHistoryItem
 	mu               *lockmetrics.RWMutex
-	accountID        string
-	region           string
+	// alarmStateSubscribers holds the generic "notify me when alarm X changes
+	// state" hooks registered via SubscribeAlarmStateChange, keyed by AlarmArn
+	// then by a subscription id -- distinct from AlarmActions/OKActions/
+	// InsufficientDataActions, which only fire ARNs the alarm's own owner
+	// configured (gopherstack-x842, gopherstack-9939).
+	alarmStateSubscribers map[string]map[uint64]func(newState string)
+	region                string
+	accountID             string
 	// totalMetrics is the running count of distinct metric series across all
 	// namespaces, maintained on insert/delete to avoid O(namespaces) walks (#60).
 	totalMetrics int
@@ -114,6 +120,9 @@ type InMemoryBackend struct {
 	// unique sort key -- DescribeAlarmHistory's pagination would otherwise drop
 	// or duplicate records at a page boundary across two calls.
 	alarmHistorySeq uint64
+	// alarmSubSeq is a monotonic id assigned to each SubscribeAlarmStateChange
+	// registration so its unsubscribe func can find its own entry.
+	alarmSubSeq uint64
 }
 
 // NewInMemoryBackend creates a new InMemoryBackend with default configuration.
@@ -191,5 +200,6 @@ func (b *InMemoryBackend) Reset() {
 	b.metrics = make(map[string]map[string]*metricRecord)
 	b.alarmHistory = make(map[string][]AlarmHistoryItem)
 	b.alarmHistorySeq = 0
+	b.totalMetrics = 0
 	b.registry.ResetAll()
 }

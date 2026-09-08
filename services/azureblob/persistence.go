@@ -3,6 +3,7 @@ package azureblob
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/logger"
 	"github.com/blackbirdworks/gopherstack/pkgs/persistence"
@@ -48,6 +49,11 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 
 	b.mu.Lock("Restore")
 	defer b.mu.Unlock()
+
+	// etagSeq is process-local, not part of backendSnapshot. Left at zero it
+	// restarts at 1, so an identical-content overwrite after a restore
+	// reproduces the pre-restart ETag.
+	b.etagSeq = uint64(time.Now().UnixNano())
 
 	if snap.Version != azureBlobSnapshotVersion {
 		// An incompatible (older/newer/absent) snapshot version must never be

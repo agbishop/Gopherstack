@@ -19,13 +19,21 @@ import (
 // RSA specs (RSA_*) are valid for SIGN_VERIFY or ENCRYPT_DECRYPT (RSA-OAEP);
 // ECC specs (ECC_*) are valid for SIGN_VERIFY or KEY_AGREEMENT;
 // HMAC specs (HMAC_*) are only valid for GENERATE_VERIFY_MAC.
+//
+// CreateKey declares no key-usage-shaped error (kms@v1.55.4 deserializeOpErrorCreateKey),
+// so this raises ErrUnsupportedParameter rather than ErrInvalidKeyUsage: real AWS uses
+// UnsupportedOperationException for a KeySpec-related CreateKey rejection (developerguide
+// hmac-create-key.html -- an HMAC KeySpec unsupported in a Region), while
+// InvalidKeyUsageException's own doc (docs-2.json) is about an existing key's KeyUsage
+// being wrong for the API operation invoked, not this creation-time pairing
+// (gopherstack-5rjn).
 func validateKeySpecUsage(keySpec, keyUsage string) error {
 	switch keySpec {
 	case keySpecSymmetric:
 		if keyUsage != "" && keyUsage != KeyUsageEncryptDecrypt {
 			return fmt.Errorf(
 				"%w: key spec %q is not compatible with key usage %q; symmetric keys require ENCRYPT_DECRYPT",
-				ErrInvalidKeyUsage,
+				ErrUnsupportedParameter,
 				keySpec,
 				keyUsage,
 			)
@@ -34,14 +42,14 @@ func validateKeySpecUsage(keySpec, keyUsage string) error {
 		if keyUsage != "" && keyUsage != KeyUsageSignVerify && keyUsage != KeyUsageEncryptDecrypt {
 			return fmt.Errorf(
 				"%w: key spec %q supports KeyUsage=%s or KeyUsage=%s only",
-				ErrInvalidKeyUsage, keySpec, KeyUsageSignVerify, KeyUsageEncryptDecrypt,
+				ErrUnsupportedParameter, keySpec, KeyUsageSignVerify, KeyUsageEncryptDecrypt,
 			)
 		}
 	case keySpecECCP256, keySpecECCP384, keySpecECCP521:
 		if keyUsage != "" && keyUsage != KeyUsageSignVerify && keyUsage != KeyUsageKeyAgreement {
 			return fmt.Errorf(
 				"%w: key spec %q is not compatible with key usage %q; ECC keys require SIGN_VERIFY or KEY_AGREEMENT",
-				ErrInvalidKeyUsage,
+				ErrUnsupportedParameter,
 				keySpec,
 				keyUsage,
 			)
@@ -50,11 +58,52 @@ func validateKeySpecUsage(keySpec, keyUsage string) error {
 		if keyUsage != "" && keyUsage != KeyUsageGenerateMac {
 			return fmt.Errorf(
 				"%w: key spec %q is not compatible with key usage %q; HMAC keys require GENERATE_VERIFY_MAC",
-				ErrInvalidKeyUsage,
+				ErrUnsupportedParameter,
 				keySpec,
 				keyUsage,
 			)
 		}
+	}
+
+	return nil
+}
+
+// validateCustomKeyStoreLink checks a CreateKeyInput.CustomKeyStoreId reference against its
+// doc comment (aws-sdk-go-v2/service/kms@v1.55.4 api_op_CreateKey.go:207): the store must
+// exist and be CONNECTED, and it is valid only for single-Region symmetric encryption KMS
+// keys. External key stores need XksKeyId, which gopherstack does not implement (see
+// PARITY.md).
+func (b *InMemoryBackend) validateCustomKeyStoreLink(
+	region, storeID, keySpec, keyUsage string, multiRegion bool,
+) error {
+	if storeID == "" {
+		return nil
+	}
+
+	ks, ok := b.customKeyStoresStore(region).Get(storeID)
+	if !ok {
+		return fmt.Errorf("%w: custom key store %q not found", ErrCustomKeyStoreNotFound, storeID)
+	}
+
+	if ks.ConnectionState != ConnectionStateConnected {
+		return fmt.Errorf(
+			"%w: custom key store %q is not connected (state: %s)",
+			ErrCustomKeyStoreInvalidState, storeID, ks.ConnectionState,
+		)
+	}
+
+	if ks.CustomKeyStoreType == "EXTERNAL_KEY_STORE" {
+		return fmt.Errorf(
+			"%w: creating a KMS key in an external key store requires XksKeyId, which gopherstack does not implement",
+			ErrUnsupportedParameter,
+		)
+	}
+
+	if keySpec != keySpecSymmetric || keyUsage != KeyUsageEncryptDecrypt || multiRegion {
+		return fmt.Errorf(
+			"%w: custom key stores support only single-Region symmetric encryption KMS keys",
+			ErrUnsupportedParameter,
+		)
 	}
 
 	return nil
@@ -93,23 +142,35 @@ func deriveKeySpecUsage(keySpec, keyUsage string) (string, string) {
 	return keySpec, keyUsage
 }
 
+// validateCreateKeyLimits checks CreateKeyInput's Description and Tags length limits.
+func validateCreateKeyLimits(input *CreateKeyInput) error {
+	// LimitExceededException's doc (kms@v1.55.4 types/errors.go): "a length
+	// constraint or quota was exceeded" -- CreateKey declares it, and this is a
+	// length constraint (gopherstack-i4q8).
+	if len(input.Description) > maxDescriptionLength {
+		return fmt.Errorf(
+			"%w: Description exceeds maximum length of %d characters",
+			ErrLimitExceeded, maxDescriptionLength,
+		)
+	}
+
+	if len(input.Tags) > maxTagsPerKey {
+		return fmt.Errorf(
+			"%w: number of tags (%d) exceeds the maximum of %d",
+			ErrLimitExceeded, len(input.Tags), maxTagsPerKey,
+		)
+	}
+
+	return nil
+}
+
 // CreateKey creates a new KMS key and stores it in the backend.
 func (b *InMemoryBackend) CreateKey(
 	ctx context.Context,
 	input *CreateKeyInput,
 ) (*CreateKeyOutput, error) {
-	if len(input.Description) > maxDescriptionLength {
-		return nil, fmt.Errorf(
-			"%w: Description exceeds maximum length of %d characters",
-			ErrValidation, maxDescriptionLength,
-		)
-	}
-
-	if len(input.Tags) > maxTagsPerKey {
-		return nil, fmt.Errorf(
-			"%w: number of tags (%d) exceeds the maximum of %d",
-			ErrValidation, len(input.Tags), maxTagsPerKey,
-		)
+	if err := validateCreateKeyLimits(input); err != nil {
+		return nil, err
 	}
 
 	b.mu.Lock("CreateKey")
@@ -129,22 +190,23 @@ func (b *InMemoryBackend) CreateKey(
 	keyUsage := input.KeyUsage
 	keySpec := input.KeySpec
 
-	// Validate that KeySpec and KeyUsage are compatible when both are specified.
+	// Validate that KeySpec and KeyUsage are compatible when both are specified
+	// (gopherstack-5rjn: see validateKeySpecUsage's doc for the error-code reasoning).
 	if err := validateKeySpecUsage(keySpec, keyUsage); err != nil {
 		return nil, err
 	}
 
 	keySpec, keyUsage = deriveKeySpecUsage(keySpec, keyUsage)
 
-	// HMAC keys do not support MultiRegion.
-	if input.MultiRegion {
-		switch keySpec {
-		case keySpecHMAC256, keySpecHMAC384, keySpecHMAC512:
-			return nil, fmt.Errorf(
-				"%w: HMAC keys (spec %q) do not support MultiRegion",
-				ErrInvalidKeyUsage, keySpec,
-			)
-		}
+	// HMAC keys DO support MultiRegion: kms@v1.55.4's own api_op_CreateKey.go doc is
+	// explicit -- "You can create multi-Region KMS keys for all supported KMS key
+	// types: symmetric encryption KMS keys, HMAC KMS keys, asymmetric encryption KMS
+	// keys, and asymmetric signing KMS keys." No rejection belongs here (gopherstack-5rjn).
+
+	if err := b.validateCustomKeyStoreLink(
+		region, input.CustomKeyStoreID, keySpec, keyUsage, input.MultiRegion,
+	); err != nil {
+		return nil, err
 	}
 
 	// Resolve origin: EXTERNAL keys require the caller to import key material later.
@@ -162,17 +224,18 @@ func (b *InMemoryBackend) CreateKey(
 	}
 
 	key := &Key{
-		KeyID:         keyID,
-		Arn:           keyARN,
-		Description:   input.Description,
-		KeyState:      keyState,
-		KeyUsage:      keyUsage,
-		KeySpec:       keySpec,
-		Origin:        origin,
-		PrimaryRegion: region,
-		CreationDate:  UnixTimeFloat(time.Now()),
-		Enabled:       keyState == KeyStateEnabled,
-		MultiRegion:   input.MultiRegion,
+		KeyID:            keyID,
+		Arn:              keyARN,
+		Description:      input.Description,
+		KeyState:         keyState,
+		KeyUsage:         keyUsage,
+		KeySpec:          keySpec,
+		Origin:           origin,
+		PrimaryRegion:    region,
+		CustomKeyStoreID: input.CustomKeyStoreID,
+		CreationDate:     UnixTimeFloat(time.Now()),
+		Enabled:          keyState == KeyStateEnabled,
+		MultiRegion:      input.MultiRegion,
 	}
 
 	if origin != KeyOriginExternal {
@@ -208,19 +271,15 @@ func (b *InMemoryBackend) DescribeKey(
 	b.mu.RLock("DescribeKey")
 	defer b.mu.RUnlock()
 
-	key, err := b.lookupKey(ctx, input.KeyID)
+	key, err := b.lookupKey(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
 
-	// DescribeKey is a grant operation with no encryption context, so validate
-	// grant-token presence only (existence + TTL) -- consistent with Sign/Verify/
-	// GetPublicKey/DeriveSharedSecret. Empty GrantTokens is a no-op, which is the
-	// only case Terraform ever exercises.
-	if err = b.validateGrantTokenPresence(input.GrantTokens); err != nil {
-		return nil, err
-	}
-
+	// GrantTokens is a real DescribeKeyInput field (round-tripped for wire parity) but,
+	// unlike Sign/Verify/GetPublicKey/GenerateMac/VerifyMac/DeriveSharedSecret, DescribeKey
+	// does not declare InvalidGrantTokenException (kms@v1.54.0 and v1.55.4 deserializers.go
+	// agree) -- not validated (gopherstack-k3ww).
 	meta := b.keyToMetadata(key)
 	meta.MultiRegionConfiguration = b.buildMultiRegionConfig(ctx, key)
 
@@ -282,19 +341,20 @@ func (b *InMemoryBackend) ListKeys(
 }
 
 // DisableKey disables the specified key.
-// AWS raises KMSInvalidStateException for keys in PendingDeletion or PendingImport states.
+// AWS raises KMSInvalidStateException for keys pending deletion or import.
 func (b *InMemoryBackend) DisableKey(ctx context.Context, input *DisableKeyInput) error {
 	b.mu.Lock("DisableKey")
 	defer b.mu.Unlock()
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}
 
-	if key.KeyState == KeyStatePendingDeletion || key.KeyState == KeyStatePendingImport {
+	if key.KeyState == KeyStatePendingDeletion || key.KeyState == KeyStatePendingImport ||
+		key.KeyState == KeyStatePendingReplicaDeletion {
 		return keyStateError(key)
 	}
 
@@ -306,17 +366,18 @@ func (b *InMemoryBackend) DisableKey(ctx context.Context, input *DisableKeyInput
 }
 
 // EnableKey enables the specified key.
-// AWS raises KMSInvalidStateException for keys in PendingDeletion or PendingImport states.
+// AWS raises KMSInvalidStateException for keys pending deletion or import.
 func (b *InMemoryBackend) EnableKey(ctx context.Context, input *EnableKeyInput) error {
 	b.mu.Lock("EnableKey")
 	defer b.mu.Unlock()
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}
 
-	if key.KeyState == KeyStatePendingDeletion || key.KeyState == KeyStatePendingImport {
+	if key.KeyState == KeyStatePendingDeletion || key.KeyState == KeyStatePendingImport ||
+		key.KeyState == KeyStatePendingReplicaDeletion {
 		return keyStateError(key)
 	}
 
@@ -339,7 +400,7 @@ func (b *InMemoryBackend) ScheduleKeyDeletion(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
@@ -360,11 +421,28 @@ func (b *InMemoryBackend) ScheduleKeyDeletion(
 		)
 	}
 
+	key.Enabled = false
+	key.PendingWindowInDays = days
+
+	// KMS will not delete a multi-Region primary key with existing replica
+	// keys: it moves to the non-final PendingReplicaDeletion state instead,
+	// with no DeletionDate yet -- the waiting period only starts once the
+	// last replica is actually deleted (see the janitor's promotion logic).
+	if b.isMultiRegionPrimaryWithReplicasLocked(key) {
+		key.KeyState = KeyStatePendingReplicaDeletion
+		key.DeletionDate = 0
+		b.evictAliasesFromCache(region, key.KeyID)
+
+		return &ScheduleKeyDeletionOutput{
+			KeyID:               key.KeyID,
+			KeyState:            key.KeyState,
+			PendingWindowInDays: days,
+		}, nil
+	}
+
 	deletionDate := time.Now().UTC().AddDate(0, 0, days)
 	key.KeyState = KeyStatePendingDeletion
-	key.Enabled = false
 	key.DeletionDate = UnixTimeFloat(deletionDate)
-	key.PendingWindowInDays = days
 	b.evictAliasesFromCache(region, key.KeyID)
 
 	return &ScheduleKeyDeletionOutput{
@@ -375,8 +453,30 @@ func (b *InMemoryBackend) ScheduleKeyDeletion(
 	}, nil
 }
 
+// isMultiRegionPrimaryWithReplicasLocked reports whether key is a multi-Region
+// primary key that still has at least one replica key in existence. Must be
+// called with the backend write lock held.
+func (b *InMemoryBackend) isMultiRegionPrimaryWithReplicasLocked(key *Key) bool {
+	if !key.MultiRegion {
+		return false
+	}
+
+	if key.PrimaryRegion != "" && key.PrimaryRegion != extractRegionFromARN(key.Arn) {
+		return false // key is a replica, not a primary
+	}
+
+	for _, replicaID := range key.ReplicaKeyIDs {
+		if b.findKeyInAnyRegion(replicaID) != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
 // CancelKeyDeletion cancels a pending key deletion and sets the key to Disabled.
-// AWS raises KMSInvalidStateException if the key is not in PendingDeletion state.
+// AWS raises KMSInvalidStateException if the key is not pending deletion
+// (KeyStatePendingDeletion or KeyStatePendingReplicaDeletion).
 func (b *InMemoryBackend) CancelKeyDeletion(
 	ctx context.Context,
 	input *CancelKeyDeletionInput,
@@ -384,13 +484,13 @@ func (b *InMemoryBackend) CancelKeyDeletion(
 	b.mu.Lock("CancelKeyDeletion")
 	defer b.mu.Unlock()
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
 
-	if key.KeyState != KeyStatePendingDeletion {
-		return nil, keyStateError(key)
+	if key.KeyState != KeyStatePendingDeletion && key.KeyState != KeyStatePendingReplicaDeletion {
+		return nil, fmt.Errorf("%w: key %q is not pending deletion", ErrKeyInvalidState, key.KeyID)
 	}
 
 	key.KeyState = KeyStateDisabled
@@ -421,6 +521,7 @@ func (b *InMemoryBackend) keyToMetadata(k *Key) KeyMetadata {
 		Origin:                origin,
 		MultiRegion:           k.MultiRegion,
 		PrimaryRegion:         k.PrimaryRegion,
+		CustomKeyStoreID:      k.CustomKeyStoreID,
 		Enabled:               k.Enabled,
 	}
 
@@ -557,6 +658,39 @@ func (b *InMemoryBackend) findKeyInAnyRegion(keyID string) *Key {
 	return nil
 }
 
+// promoteMultiRegionPrimaryAfterReplicaPurgeLocked checks whether purgedKey was the
+// last surviving replica of a primary key in KeyStatePendingReplicaDeletion, and if
+// so, moves that primary to KeyStatePendingDeletion and starts its waiting period
+// now, using the PendingWindowInDays recorded by its original ScheduleKeyDeletion
+// call. Matches real AWS: "When the last of its replicas keys is deleted (not just
+// scheduled), the key state of the primary key changes to PendingDeletion and its
+// waiting period begins." Must be called with the backend write lock held, just
+// before purgedKey is removed from its store.
+func (b *InMemoryBackend) promoteMultiRegionPrimaryAfterReplicaPurgeLocked(purgedKey *Key) {
+	if !purgedKey.MultiRegion || purgedKey.PrimaryRegion == "" {
+		return
+	}
+
+	primary := b.findPrimaryKeyForReplica(purgedKey)
+	if primary == nil || primary.KeyState != KeyStatePendingReplicaDeletion {
+		return
+	}
+
+	for _, replicaID := range primary.ReplicaKeyIDs {
+		if replicaID == purgedKey.KeyID {
+			continue
+		}
+
+		if b.findKeyInAnyRegion(replicaID) != nil {
+			return // another replica still exists
+		}
+	}
+
+	deletionDate := time.Now().UTC().AddDate(0, 0, primary.PendingWindowInDays)
+	primary.KeyState = KeyStatePendingDeletion
+	primary.DeletionDate = UnixTimeFloat(deletionDate)
+}
+
 // findPrimaryKeyForReplica locates the primary key that lists replicaKey.KeyID in its
 // ReplicaKeyIDs. Must be called with at least a read lock held.
 func (b *InMemoryBackend) findPrimaryKeyForReplica(replicaKey *Key) *Key {
@@ -619,7 +753,7 @@ func (b *InMemoryBackend) UpdateKeyDescription(
 	b.mu.Lock("UpdateKeyDescription")
 	defer b.mu.Unlock()
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}
@@ -652,9 +786,12 @@ func (b *InMemoryBackend) GetKeyLastUsage(
 	input *GetKeyLastUsageInput,
 ) (*GetKeyLastUsageOutput, error) {
 	if isAliasKeyID(input.KeyID) {
+		// GetKeyLastUsage's own deserializeOpError recognizes NotFoundException,
+		// not ValidationException -- an alias name is a KeyId shape this op
+		// doesn't resolve, so it is classified the same as an unresolvable KeyId.
 		return nil, fmt.Errorf(
 			"%w: GetKeyLastUsage does not support alias names; specify a key ID or key ARN",
-			ErrValidation,
+			ErrKeyNotFound,
 		)
 	}
 
@@ -663,7 +800,7 @@ func (b *InMemoryBackend) GetKeyLastUsage(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKey(ctx, input.KeyID)
+	key, err := b.lookupKey(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}

@@ -29,10 +29,13 @@ func TestHandler_CreateApplicationVersion(t *testing.T) {
 			wantCode: http.StatusCreated,
 		},
 		{
-			name:     "app not found returns 404",
+			// CreateApplicationVersion models no NotFoundException (deserializers.go
+			// awsRestjson1_deserializeOpErrorCreateApplicationVersion): an unknown
+			// ApplicationId is a BadRequestException, not a 404.
+			name:     "app not found returns bad request",
 			path:     "/applications/not-found/versions/1.0.0",
 			body:     map[string]any{"sourceCodeUrl": "https://example.com"},
-			wantCode: http.StatusNotFound,
+			wantCode: http.StatusBadRequest,
 		},
 		{
 			name:     "duplicate version returns conflict",

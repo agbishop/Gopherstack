@@ -682,6 +682,69 @@ func TestVpcSecurityGroupsPersisted(t *testing.T) {
 	assert.Equal(t, "active", resp.Result.DBInstance.VpcSecurityGroups.Members[0].Status)
 }
 
+// TestDBSecurityGroupsPersisted verifies DBSecurityGroups (the classic,
+// non-VPC association) is stored and returned. CreateDBInstanceInput.
+// DBSecurityGroups is a real, documented field (rds@v1.124.1
+// api_op_CreateDBInstance.go) that the backend previously had no field to
+// store at all.
+func TestDBSecurityGroupsPersisted(t *testing.T) {
+	t.Parallel()
+
+	h := newAccuracyRDSHandler()
+
+	rec := doAccuracyRDS(t, h, url.Values{
+		"Action":                     {"CreateDBSecurityGroup"},
+		"Version":                    {"2014-10-31"},
+		"DBSecurityGroupName":        {"dbsg-test"},
+		"DBSecurityGroupDescription": {"test group"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doAccuracyRDS(t, h, url.Values{
+		"Action":                                 {"CreateDBInstance"},
+		"Version":                                {"2014-10-31"},
+		"DBInstanceIdentifier":                   {"dbsg-inst"},
+		"DBInstanceClass":                        {"db.t3.micro"},
+		"Engine":                                 {"postgres"},
+		"MasterUsername":                         {"admin"},
+		"AllocatedStorage":                       {"20"},
+		"DBSecurityGroups.DBSecurityGroupName.1": {"dbsg-test"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Result struct {
+			DBInstance struct {
+				DBSecurityGroups struct {
+					Members []struct {
+						DBSecurityGroupName string `xml:"DBSecurityGroupName"`
+						Status              string `xml:"Status"`
+					} `xml:"DBSecurityGroup"`
+				} `xml:"DBSecurityGroups"`
+			} `xml:"DBInstance"`
+		} `xml:"CreateDBInstanceResult"`
+	}
+	require.NoError(t, xml.Unmarshal(rec.Body.Bytes(), &resp))
+	require.Len(t, resp.Result.DBInstance.DBSecurityGroups.Members, 1)
+	assert.Equal(t, "dbsg-test", resp.Result.DBInstance.DBSecurityGroups.Members[0].DBSecurityGroupName)
+	assert.Equal(t, "active", resp.Result.DBInstance.DBSecurityGroups.Members[0].Status)
+
+	// Real AWS: CreateDBInstance's own declared error switch includes
+	// DBSecurityGroupNotFound for a group that doesn't exist.
+	rec = doAccuracyRDS(t, h, url.Values{
+		"Action":                                 {"CreateDBInstance"},
+		"Version":                                {"2014-10-31"},
+		"DBInstanceIdentifier":                   {"dbsg-inst-2"},
+		"DBInstanceClass":                        {"db.t3.micro"},
+		"Engine":                                 {"postgres"},
+		"MasterUsername":                         {"admin"},
+		"AllocatedStorage":                       {"20"},
+		"DBSecurityGroups.DBSecurityGroupName.1": {"no-such-group"},
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "DBSecurityGroupNotFound")
+}
+
 // TestLicenseModelPersisted verifies LicenseModel is stored and returned.
 func TestLicenseModelPersisted(t *testing.T) {
 	t.Parallel()

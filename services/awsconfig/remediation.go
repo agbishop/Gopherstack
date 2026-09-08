@@ -123,6 +123,8 @@ func (b *InMemoryBackend) DeleteRemediationConfiguration(ruleName string) error 
 		b.remediationExecutions.Delete(remediationExecutionKeyFn(e))
 	}
 
+	delete(b.remediationExceptions, ruleName)
+
 	return nil
 }
 
@@ -182,7 +184,7 @@ const remediationExecutionStepName = "ExecuteAutomation"
 // deserializer).
 func (b *InMemoryBackend) StartRemediationExecution(ruleName string, keys []ResourceKey) error {
 	if ruleName == "" {
-		return fmt.Errorf("%w: ConfigRuleName is required", ErrValidation)
+		return fmt.Errorf("%w: ConfigRuleName is required", ErrInvalidParameterValue)
 	}
 
 	b.mu.Lock("StartRemediationExecution")

@@ -9,6 +9,7 @@ import (
 type InMemoryBackend struct {
 	mu       *lockmetrics.RWMutex
 	registry *store.Registry
+	s3       S3Backend
 
 	collections       *store.Table[storedCollection]
 	faces             *store.Table[storedFace]
@@ -55,6 +56,12 @@ func NewInMemoryBackend(accountID, region string) *InMemoryBackend {
 	registerAllTables(b)
 
 	return b
+}
+
+// SetS3Backend wires S3 so an Image/Video/Input S3Object is validated
+// against real S3 state instead of only being stored/echoed.
+func (b *InMemoryBackend) SetS3Backend(s3 S3Backend) {
+	b.s3 = s3
 }
 
 // AccountID returns the account ID.

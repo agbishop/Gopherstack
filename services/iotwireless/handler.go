@@ -991,6 +991,15 @@ func isNotFound(err error) bool {
 		errors.Is(err, ErrMulticastGroupSessionNotFound)
 }
 
+// isConflict reports whether err is one of the delete-precondition sentinel
+// errors (a resource still referenced by another resource).
+func isConflict(err error) bool {
+	return errors.Is(err, ErrDeviceProfileInUse) ||
+		errors.Is(err, ErrServiceProfileInUse) ||
+		errors.Is(err, ErrDestinationInUse) ||
+		errors.Is(err, ErrMulticastGroupInUse)
+}
+
 // handleError writes an appropriate HTTP error response for a backend error.
 func handleError(c *echo.Context, err error) error {
 	if isNotFound(err) {
@@ -999,6 +1008,10 @@ func handleError(c *echo.Context, err error) error {
 
 	if errors.Is(err, ErrValidation) {
 		return writeError(c, http.StatusBadRequest, err.Error())
+	}
+
+	if isConflict(err) {
+		return writeError(c, http.StatusConflict, err.Error())
 	}
 
 	return writeError(c, http.StatusInternalServerError, err.Error())

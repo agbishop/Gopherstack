@@ -106,11 +106,7 @@ func TestBackend_DescribeUsers_FilterByID(t *testing.T) {
 	assert.Equal(t, "filter-user", p.Data[0].UserID)
 }
 
-// ----------------------------------------
-// UserGroup CRUD (issue)
-// ----------------------------------------
-
-func TestBackend_DeleteUserSafe_NotInGroup(t *testing.T) {
+func TestBackend_DeleteUser_NotInGroup(t *testing.T) {
 	t.Parallel()
 
 	b := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
@@ -118,12 +114,20 @@ func TestBackend_DeleteUserSafe_NotInGroup(t *testing.T) {
 	_, err := b.CreateUser(context.Background(), "safe-del", "safe-del", "on ~* +@all", "redis", true)
 	require.NoError(t, err)
 
-	u, err := b.DeleteUserSafe(context.Background(), "safe-del")
+	u, err := b.DeleteUser(context.Background(), "safe-del")
 	require.NoError(t, err)
 	assert.Equal(t, "safe-del", u.UserID)
 }
 
-func TestBackend_DeleteUserSafe_InGroup_Fails(t *testing.T) {
+// TestBackend_DeleteUser_InGroup_Cascades locks AWS's real DeleteUser
+// behavior (api_op_DeleteUser.go: "The user will be removed from all user
+// groups and in turn removed from all replication groups") -- a prior
+// revision of this backend rejected deleting a user still in a group
+// (ErrUserNotInGroup), which no real fault in DeleteUser's modeled error set
+// (deserializers.go's awsAwsquery_deserializeOpErrorDeleteUser: only
+// DefaultUserAssociatedToUserGroup, scoped to the special "default" user)
+// actually describes.
+func TestBackend_DeleteUser_InGroup_Cascades(t *testing.T) {
 	t.Parallel()
 
 	b := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
@@ -133,17 +137,13 @@ func TestBackend_DeleteUserSafe_InGroup_Fails(t *testing.T) {
 	_, err = b.CreateUserGroup(context.Background(), "owns-member", "redis", []string{"grp-member"})
 	require.NoError(t, err)
 
-	_, err = b.DeleteUserSafe(context.Background(), "grp-member")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, elasticache.ErrUserNotInGroup)
-}
+	deleted, err := b.DeleteUser(context.Background(), "grp-member")
+	require.NoError(t, err)
+	assert.Equal(t, "grp-member", deleted.UserID)
 
-func TestBackend_DeleteUserSafe_NotFound(t *testing.T) {
-	t.Parallel()
-
-	b := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
-
-	_, err := b.DeleteUserSafe(context.Background(), "no-such-user")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, elasticache.ErrUserNotFound)
+	p, err := b.DescribeUserGroups(context.Background(), "owns-member", "", 0)
+	require.NoError(t, err)
+	require.Len(t, p.Data, 1)
+	assert.NotContains(t, p.Data[0].UserIDs, "grp-member",
+		"deleted user must be cascade-removed from every user group it belonged to")
 }

@@ -6,8 +6,8 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: rdsdata
 sdk_module: aws-sdk-go-v2/service/rdsdata@v1.35.4   # version audited against
-last_audit_commit: 914e8b59                          # HEAD when this pass started (working tree, uncommitted)
-last_audit_date: 2026-08-20
+last_audit_commit: deb6c42f                          # HEAD when this pass started (working tree, uncommitted)
+last_audit_date: 2026-09-04
 overall: A            # every op/family field-diffed against the real SDK source this pass
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
@@ -60,7 +60,20 @@ families:
   transaction_lifecycle: {status: ok, note: >
     Verified id allocation, isolation across regions (isolation_test.go),
     commit/rollback removing the id from the active set so reuse 400s, and
-    snapshot/restore round-tripping open transactions + the txCounter.}
+    snapshot/restore round-tripping open transactions + the txCounter.
+    gopherstack-02w (fixed this pass): BeginTransaction's doc comment
+    (rdsdata@v1.35.4 api_op_BeginTransaction.go) states "A transaction can
+    run for a maximum of 24 hours. A transaction is terminated and rolled
+    back automatically after 24 hours" and "A transaction times out if no
+    calls use its transaction ID in three minutes" -- neither was
+    implemented, so a caller that began a transaction and never committed or
+    rolled it back leaked it (and its engine-side *sql.Tx) forever. Fixed via
+    janitor.go's Janitor: Transaction now carries CreatedAt/LastActivityAt
+    (statements.go's touchTransactionLocked refreshes the latter on every
+    ExecuteStatement/BatchExecuteStatement against that id), and a
+    worker.Group-based sweep (wired through Handler.WithJanitor/StartWorker,
+    provider.go) rolls back and evicts anything past either threshold. See
+    janitor_test.go.}
   error_codes: {status: ok, note: >
     TransactionNotFoundException (400) and BadRequestException (400, via
     ErrValidation/errIsValidation) cover every error path this mock can
@@ -117,12 +130,18 @@ gaps:                     # known divergences NOT fixed
 leaks: {status: clean, note: >
   sqlEngine.reset() rolls back every open *sql.Tx and closes every resourceDB
   (including its keep-alive conn) before clearing the maps; Handler.Reset()
-  delegates to Backend.Reset() which calls engine.reset(). No goroutines,
-  tickers, or other background work are spawned by this package -- including
-  the new hasRowIDAliasColumn PRAGMA lookup added this pass, which runs
-  synchronously on the same querier (already-held connection/tx) as the
-  triggering statement, under the existing sqlEngine.mu, and is closed via
-  `defer rows.Close()`.}
+  delegates to Backend.Reset() which calls engine.reset(). The
+  hasRowIDAliasColumn PRAGMA lookup runs synchronously on the same querier
+  (already-held connection/tx) as the triggering statement, under the
+  existing sqlEngine.mu, and is closed via `defer rows.Close()`.
+  gopherstack-02w (fixed this pass): the prior "no goroutines, tickers, or
+  other background work" framing missed the actual leak -- an unbounded
+  `map[string]*Transaction` growing forever from transactions a caller began
+  and never committed/rolled back, with no expiry. See transaction_lifecycle
+  above; janitor.go now runs a background Janitor (a goroutine, started via
+  Handler.StartWorker) that reaps them, matching the ticker-based pattern
+  services/codebuild's janitor.go already uses -- this package is no longer
+  goroutine-free, and that's the fix, not a regression.}
 ---
 
 ## Notes

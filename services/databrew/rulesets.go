@@ -88,6 +88,10 @@ func (b *InMemoryBackend) ListRulesets(
 	return out, next
 }
 
+// UpdateRuleset overwrites Rules unconditionally (UpdateRulesetInput marks
+// it "This member is required") but only overwrites Description when
+// non-empty: Description has no such marker, so a caller updating just
+// Rules must not have their existing Description clobbered.
 func (b *InMemoryBackend) UpdateRuleset(
 	ctx context.Context,
 	name, description string,
@@ -100,7 +104,9 @@ func (b *InMemoryBackend) UpdateRuleset(
 	if !ok {
 		return ErrNotFound
 	}
-	rs.Description = description
+	if description != "" {
+		rs.Description = description
+	}
 	rs.Rules = rules
 	rs.RuleCount = len(rules)
 	rs.LastModifiedDate = float64(time.Now().Unix())

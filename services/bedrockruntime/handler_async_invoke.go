@@ -99,9 +99,29 @@ const defaultListAsyncInvokesMaxResults = 10
 // handleListAsyncInvokes handles GET /async-invoke.
 // Supports query parameters: statusEquals (InProgress|Completed|Failed), maxResults,
 // nextToken (both httpQuery-bound in ListAsyncInvokesInput -- serializers.go:1120-1126).
+// parseListAsyncInvokesFilter reads the query bindings ListAsyncInvokes
+// serializes: statusEquals, submitTimeAfter, submitTimeBefore and sortOrder
+// (serializers.go:1129-1145). An unparseable timestamp is ignored rather than
+// rejected -- the op models no validation error.
+func parseListAsyncInvokesFilter(c *echo.Context) ListAsyncInvokesFilter {
+	filter := ListAsyncInvokesFilter{
+		StatusEquals: c.QueryParam("statusEquals"),
+		SortOrder:    c.QueryParam("sortOrder"),
+	}
+
+	if t, err := time.Parse(time.RFC3339, c.QueryParam("submitTimeAfter")); err == nil {
+		filter.SubmitTimeAfter = &t
+	}
+
+	if t, err := time.Parse(time.RFC3339, c.QueryParam("submitTimeBefore")); err == nil {
+		filter.SubmitTimeBefore = &t
+	}
+
+	return filter
+}
+
 func (h *Handler) handleListAsyncInvokes(c *echo.Context) error {
-	statusFilter := c.QueryParam("statusEquals")
-	invocations := h.Backend.ListAsyncInvokes(ListAsyncInvokesFilter{StatusEquals: statusFilter})
+	invocations := h.Backend.ListAsyncInvokes(parseListAsyncInvokesFilter(c))
 
 	maxResults := defaultListAsyncInvokesMaxResults
 	if s := c.QueryParam("maxResults"); s != "" {

@@ -31,7 +31,7 @@ func (b *InMemoryBackend) CancelReplay(ctx context.Context, replayName string) (
 		)
 	}
 
-	replay.State = "CANCELLING"
+	replay.State = replayStateCancelling
 
 	cp := *replay
 
@@ -288,8 +288,17 @@ func (b *InMemoryBackend) scheduleReplayWorker(plan replayDeliveryPlan, region, 
 		b.mu.Lock("StartReplay-complete")
 		defer b.mu.Unlock()
 
-		if r, ok := b.replaysTable(region).Get(replayName); ok && r.State == replayStateStarting {
-			r.State = "COMPLETED"
+		r, ok := b.replaysTable(region).Get(replayName)
+		if !ok {
+			return
+		}
+
+		switch r.State {
+		case replayStateStarting:
+			r.State = replayStateCompleted
+			r.ReplayEndTime = time.Now()
+		case replayStateCancelling:
+			r.State = replayStateCancelled
 			r.ReplayEndTime = time.Now()
 		}
 	})

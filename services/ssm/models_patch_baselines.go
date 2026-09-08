@@ -18,12 +18,18 @@ type PatchFilter struct {
 	Values []string `json:"Values"`
 }
 
-// Patch represents a patch in the available patches catalog.
+// Patch represents a patch in the available patches catalog. ReleaseDate is
+// epoch seconds, not an RFC3339 string -- confirmed against
+// aws-sdk-go-v2/service/ssm@v1.73.4's deserializers.go
+// (awsAwsjson11_deserializeDocumentPatch, case "ReleaseDate":
+// smithytime.ParseEpochSeconds(f64)), matching every other timestamp this
+// awsjson1.1 service emits.
 type Patch struct {
-	Name           string `json:"Name"`
-	Product        string `json:"Product"`
-	Classification string `json:"Classification"`
-	Severity       string `json:"Severity"`
+	Name           string  `json:"Name"`
+	Product        string  `json:"Product"`
+	Classification string  `json:"Classification"`
+	Severity       string  `json:"Severity"`
+	ReleaseDate    float64 `json:"ReleaseDate,omitempty"`
 }
 
 // DescribeAvailablePatchesInput is the request for DescribeAvailablePatches.

@@ -124,7 +124,7 @@ func validRevocationReason(r string) bool {
 
 // RevokeCertificate marks the certificate as REVOKED with the given reason.
 // Returns ErrAlreadyRevoked if the certificate is already revoked.
-// Only ISSUED certificates can be revoked; PENDING_VALIDATION certs return ErrInvalidParameter.
+// Only ISSUED certificates can be revoked; PENDING_VALIDATION certs return ErrConflict.
 func (b *InMemoryBackend) RevokeCertificate(ctx context.Context, certARN, revocationReason string) error {
 	if certARN == "" {
 		return fmt.Errorf("%w: CertificateArn is required", ErrInvalidParameter)
@@ -149,13 +149,25 @@ func (b *InMemoryBackend) RevokeCertificate(ctx context.Context, certARN, revoca
 	}
 
 	if cert.Status == statusRevoked {
+		// RevokeCertificate's real error set (InvalidArnException/AccessDeniedException/
+		// ConflictException/ResourceInUseException/ResourceNotFoundException/
+		// ThrottlingException/ValidationException, deserializers.go, acm@v1.43.4) has no
+		// InvalidStateException, and no declared code's doc text fits "already revoked"
+		// (a terminal, one-time state) the way ConflictException fits PENDING_VALIDATION
+		// below -- landmined rather than guessed; see gopherstack-bzyl.
 		return fmt.Errorf("%w: certificate %s is already revoked", ErrAlreadyRevoked, certARN)
 	}
 
 	if cert.Status == statusPendingValidation {
+		// ConflictException: "You are trying to update a resource or configuration that
+		// is already being created or updated. Wait for the previous operation to finish
+		// and try again." (types/errors.go, acm@v1.43.4) -- a certificate still in
+		// PENDING_VALIDATION has an unfinished RequestCertificate/RenewCertificate
+		// validation in progress, matching this doc word for word. RevokeCertificate does
+		// not declare InvalidStateException at all; gopherstack-bzyl.
 		return fmt.Errorf(
 			"%w: certificate %s is in PENDING_VALIDATION and cannot be revoked",
-			ErrInvalidState, certARN,
+			ErrConflict, certARN,
 		)
 	}
 

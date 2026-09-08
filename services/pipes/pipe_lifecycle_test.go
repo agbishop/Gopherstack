@@ -1138,3 +1138,73 @@ func TestLogConfiguration(t *testing.T) {
 		})
 	}
 }
+
+// TestLogConfigurationLevelRequired verifies CreatePipe and UpdatePipe reject
+// a LogConfiguration with no Level, matching aws-sdk-go-v2 pipes
+// validators.go's validatePipeLogConfigurationParameters. Reached from both
+// validateOpCreatePipeInput and validateOpUpdatePipeInput.
+func TestLogConfigurationLevelRequired(t *testing.T) {
+	t.Parallel()
+
+	t.Run("create_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+		b := auditNewBackend()
+		_, err := b.CreatePipe(context.Background(), pipes.CreatePipeInput{
+			Name:             "log-create-missing",
+			RoleARN:          "arn:aws:iam::123456789012:role/r",
+			Source:           "arn:aws:sqs:us-west-2:123456789012:q",
+			Target:           "arn:aws:lambda:us-west-2:123456789012:function:fn",
+			DesiredState:     "RUNNING",
+			LogConfiguration: &pipes.LogConfiguration{},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, pipes.ErrValidation)
+	})
+
+	t.Run("create_present_accepted", func(t *testing.T) {
+		t.Parallel()
+		b := auditNewBackend()
+		_, err := b.CreatePipe(context.Background(), pipes.CreatePipeInput{
+			Name:             "log-create-present",
+			RoleARN:          "arn:aws:iam::123456789012:role/r",
+			Source:           "arn:aws:sqs:us-west-2:123456789012:q",
+			Target:           "arn:aws:lambda:us-west-2:123456789012:function:fn",
+			DesiredState:     "RUNNING",
+			LogConfiguration: &pipes.LogConfiguration{Level: "ERROR"},
+		})
+		assert.NoError(t, err)
+	})
+
+	t.Run("create_absent_accepted", func(t *testing.T) {
+		t.Parallel()
+		b := auditNewBackend()
+		_, err := b.CreatePipe(context.Background(), pipes.CreatePipeInput{
+			Name:         "log-create-absent",
+			RoleARN:      "arn:aws:iam::123456789012:role/r",
+			Source:       "arn:aws:sqs:us-west-2:123456789012:q",
+			Target:       "arn:aws:lambda:us-west-2:123456789012:function:fn",
+			DesiredState: "RUNNING",
+		})
+		assert.NoError(t, err)
+	})
+
+	t.Run("update_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+		b := auditNewBackend()
+		_, err := b.CreatePipe(context.Background(), pipes.CreatePipeInput{
+			Name:         "log-update-missing",
+			RoleARN:      "arn:aws:iam::123456789012:role/r",
+			Source:       "arn:aws:sqs:us-west-2:123456789012:q",
+			Target:       "arn:aws:lambda:us-west-2:123456789012:function:fn",
+			DesiredState: "RUNNING",
+		})
+		require.NoError(t, err)
+
+		_, err = b.UpdatePipe(context.Background(), "log-update-missing", pipes.UpdatePipeInput{
+			RoleARN:          "arn:aws:iam::123456789012:role/r",
+			LogConfiguration: &pipes.LogConfiguration{},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, pipes.ErrValidation)
+	})
+}

@@ -413,3 +413,37 @@ func TestBackend_DeleteInsight(t *testing.T) {
 		})
 	}
 }
+
+// gopherstack-1qf: GetInsightResults always returned empty ResultValues
+// ("no real aggregation in mock") regardless of the insight's
+// GroupByAttribute/Filters or how many findings were imported.
+func TestBackend_GetInsightResults_AggregatesFindings(t *testing.T) {
+	t.Parallel()
+
+	b := securityhub.NewInMemoryBackend("000000000000", "us-east-1")
+	require.NoError(t, b.EnableHub(false, nil))
+
+	_, failed, failedFindings := b.ImportFindings([]map[string]any{
+		securityhub.ValidFinding(map[string]any{"Id": "f1", "Severity": map[string]any{"Label": "HIGH"}}),
+		securityhub.ValidFinding(map[string]any{"Id": "f2", "Severity": map[string]any{"Label": "HIGH"}}),
+		securityhub.ValidFinding(map[string]any{"Id": "f3", "Severity": map[string]any{"Label": "LOW"}}),
+	})
+	require.Zero(t, failed, "%v", failedFindings)
+
+	insightArn, err := b.CreateInsight("by-severity", "SeverityLabel", map[string]any{})
+	require.NoError(t, err)
+
+	result, err := b.GetInsightResults(insightArn)
+	require.NoError(t, err)
+
+	counts := make(map[string]int)
+
+	for _, rv := range result.ResultValues {
+		val, _ := rv["GroupByAttributeValue"].(string)
+		count, _ := rv["Count"].(int)
+		counts[val] = count
+	}
+
+	assert.Equal(t, 2, counts["HIGH"])
+	assert.Equal(t, 1, counts["LOW"])
+}

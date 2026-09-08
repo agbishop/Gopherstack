@@ -15,6 +15,13 @@ import (
 // call effectively requests the default page).
 const defaultTrailsPageSize = 1000
 
+// maxS3KeyPrefixLength is CreateTrailInput.S3KeyPrefix's documented bound
+// (cloudtrail@v1.58.4 types/types.go:912-914: "The maximum length is 200
+// characters.").
+const maxS3KeyPrefixLength = 200
+
+const s3KeyPrefixTooLongMsg = "S3KeyPrefix exceeds maximum length of 200 characters"
+
 // --- CreateTrail ---
 
 type createTrailBody struct {
@@ -45,6 +52,9 @@ func (h *Handler) handleCreateTrail(c *echo.Context, body []byte) error {
 	}
 	if in.S3BucketName == "" {
 		return c.JSON(http.StatusBadRequest, errResp("InvalidS3BucketNameException", "S3BucketName is required"))
+	}
+	if len(in.S3KeyPrefix) > maxS3KeyPrefixLength {
+		return c.JSON(http.StatusBadRequest, errResp("InvalidS3PrefixException", s3KeyPrefixTooLongMsg))
 	}
 
 	kv := make(map[string]string, len(in.TagsList))
@@ -137,6 +147,9 @@ func (h *Handler) handleUpdateTrail(c *echo.Context, body []byte) error {
 
 	if in.Name == "" {
 		return c.JSON(http.StatusBadRequest, errResp("InvalidParameterCombinationException", "Name is required"))
+	}
+	if len(in.S3KeyPrefix) > maxS3KeyPrefixLength {
+		return c.JSON(http.StatusBadRequest, errResp("InvalidS3PrefixException", s3KeyPrefixTooLongMsg))
 	}
 
 	t, err := h.Backend.UpdateTrail(

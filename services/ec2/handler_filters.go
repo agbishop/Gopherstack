@@ -726,23 +726,75 @@ func parseRunInstancesCounts(vals url.Values) (int, int, error) {
 	return minCnt, maxCnt, nil
 }
 
-// validateSecurityGroupIDs parses SecurityGroupId.N from vals and verifies each exists.
-// Returns an error if any ID is not found.
-
-// validateSecurityGroupIDs parses SecurityGroupId.N from vals and verifies each exists.
-// Returns an error if any ID is not found.
+// validateSecurityGroupIDs parses RunInstances' SecurityGroupId.N (IDs, any
+// VPC) and SecurityGroup.N (names) from vals and resolves both to security
+// group IDs. Real RunInstancesInput.SecurityGroups is documented "[Default
+// VPC] The names of the security groups" (ec2@v1.319.1 api_op_RunInstances.go)
+// -- a name only resolves for the default VPC; supplying one for a subnet in
+// a non-default VPC is rejected, matching AWS's InvalidParameterCombination
+// ("The parameter groupName cannot be used with the parameter subnet").
 func (h *Handler) validateSecurityGroupIDs(vals url.Values) ([]string, error) {
 	sgIDs := parseMemberList(vals, "SecurityGroupId")
-	if len(sgIDs) == 0 {
-		return nil, nil
+	if len(sgIDs) > 0 {
+		existing := h.Backend.DescribeSecurityGroups(sgIDs)
+		if len(existing) != len(sgIDs) {
+			return nil, fmt.Errorf("%w: one or more SecurityGroupId values not found", ErrSecurityGroupNotFound)
+		}
 	}
 
-	existing := h.Backend.DescribeSecurityGroups(sgIDs)
-	if len(existing) != len(sgIDs) {
-		return nil, fmt.Errorf("%w: one or more SecurityGroupId values not found", ErrSecurityGroupNotFound)
+	names := parseMemberList(vals, "SecurityGroup")
+	if len(names) == 0 {
+		return sgIDs, nil
 	}
 
-	return sgIDs, nil
+	resolvedIDs, err := h.resolveSecurityGroupNames(names, vals.Get("SubnetId"))
+	if err != nil {
+		return nil, err
+	}
+
+	return append(sgIDs, resolvedIDs...), nil
+}
+
+// resolveSecurityGroupNames resolves RunInstances SecurityGroup.N names to
+// group IDs within the launch target's VPC (the subnet's VPC, or the
+// account's default VPC when subnetID is empty).
+func (h *Handler) resolveSecurityGroupNames(names []string, subnetID string) ([]string, error) {
+	vpcID := vpcDefaultName
+	if subnetID != "" {
+		if subs := h.Backend.DescribeSubnets([]string{subnetID}); len(subs) == 1 {
+			vpcID = subs[0].VPCID
+		}
+	}
+
+	if vpcs := h.Backend.DescribeVpcs([]string{vpcID}); len(vpcs) == 1 && !vpcs[0].IsDefault {
+		return nil, fmt.Errorf(
+			"%w: The parameter groupName cannot be used with the parameter subnet",
+			ErrInvalidParameterCombination,
+		)
+	}
+
+	all := h.Backend.DescribeSecurityGroups(nil)
+	resolvedIDs := make([]string, 0, len(names))
+
+	for _, name := range names {
+		id := ""
+
+		for _, sg := range all {
+			if sg.Name == name && sg.VPCID == vpcID {
+				id = sg.ID
+
+				break
+			}
+		}
+
+		if id == "" {
+			return nil, fmt.Errorf("%w: security group %q not found in VPC %s", ErrSecurityGroupNotFound, name, vpcID)
+		}
+
+		resolvedIDs = append(resolvedIDs, id)
+	}
+
+	return resolvedIDs, nil
 }
 
 // parseEC2Filters parses Filter.N.Name / Filter.N.Value.M from EC2 form values.

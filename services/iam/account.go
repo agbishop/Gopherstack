@@ -3,6 +3,7 @@ package iam
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -685,11 +686,14 @@ func (b *InMemoryBackend) ChangePasswordForCaller(accessKeyID, oldPassword, newP
 		return fmt.Errorf("%w: old password does not match", ErrOldPasswordIncorrect)
 	}
 
-	if polErr := validatePasswordAgainstPolicy(newPassword, b.passwordPolicy); polErr != nil {
+	if polErr := validatePasswordAgainstPolicy(newPassword, b.passwordPolicy, b.currentPasswordHistory); polErr != nil {
 		return polErr
 	}
 
 	b.currentPassword = newPassword
+	b.currentPasswordHistory = recordPasswordHistory(
+		b.currentPasswordHistory, newPassword, reusePreventionLimit(b.passwordPolicy),
+	)
 
 	return nil
 }
@@ -717,20 +721,51 @@ func (b *InMemoryBackend) changeCallerUserPasswordLocked(
 		return true, fmt.Errorf("%w: old password does not match", ErrOldPasswordIncorrect)
 	}
 
-	if err := validatePasswordAgainstPolicy(newPassword, b.passwordPolicy); err != nil {
+	if err := validatePasswordAgainstPolicy(newPassword, b.passwordPolicy, lp.PasswordHistory); err != nil {
 		return true, err
 	}
 
 	lp.Password = newPassword
+	lp.PasswordHistory = recordPasswordHistory(
+		lp.PasswordHistory, newPassword, reusePreventionLimit(b.passwordPolicy),
+	)
 	b.loginProfiles.Put(lp)
 	b.currentPassword = newPassword
 
 	return true, nil
 }
 
-// validatePasswordAgainstPolicy checks that password satisfies the given PasswordPolicy.
-// If policy is nil, the default policy is used. Returns ErrInvalidPassword on violation.
-func validatePasswordAgainstPolicy(password string, policy *PasswordPolicy) error {
+// reusePreventionLimit returns policy's PasswordReusePrevention, treating a nil policy as
+// the default (no reuse restriction).
+func reusePreventionLimit(policy *PasswordPolicy) int {
+	if policy == nil {
+		return 0
+	}
+
+	return policy.PasswordReusePrevention
+}
+
+// recordPasswordHistory prepends password to history and truncates to limit, so a later
+// validatePasswordAgainstPolicy call can reject reuse. limit<=0 disables tracking, matching
+// PasswordReusePrevention's "unset means no restriction" default.
+func recordPasswordHistory(history []string, password string, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+
+	history = append([]string{password}, history...)
+	if len(history) > limit {
+		history = history[:limit]
+	}
+
+	return history
+}
+
+// validatePasswordAgainstPolicy checks that password satisfies the given PasswordPolicy and,
+// when PasswordReusePrevention is set, does not match any password in history (the account's
+// or the user's most-recently-used passwords, newest first). If policy is nil, the default
+// policy is used. Returns ErrInvalidPassword on violation.
+func validatePasswordAgainstPolicy(password string, policy *PasswordPolicy, history []string) error {
 	if policy == nil {
 		policy = defaultPasswordPolicy()
 	}
@@ -761,6 +796,13 @@ func validatePasswordAgainstPolicy(password string, policy *PasswordPolicy) erro
 
 	if policy.RequireSymbols && !strings.ContainsAny(password, `!@#$%^&*()_+-=[]{}|;':",./<>?`) {
 		return fmt.Errorf("%w: password must contain at least one symbol", ErrInvalidPassword)
+	}
+
+	if policy.PasswordReusePrevention > 0 && slices.Contains(history, password) {
+		return fmt.Errorf(
+			"%w: password must not match any of the last %d passwords used",
+			ErrInvalidPassword, policy.PasswordReusePrevention,
+		)
 	}
 
 	return nil

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/blackbirdworks/gopherstack/pkgs/awsmeta"
 	"github.com/blackbirdworks/gopherstack/services/sts"
 )
 
@@ -197,6 +198,142 @@ func TestSessionExpiryConsistent(t *testing.T) {
 		_, err = b.GetCallerIdentity(creds.AccessKeyID, "")
 		require.ErrorIs(t, err, sts.ErrSessionExpired)
 	})
+}
+
+// TestResolvePrincipal_KindReflectsSessionType verifies that ResolvePrincipal
+// (the awsmeta.PrincipalResolver implementation consumed by IAM's cross-service
+// enforcement middleware) only reports Kind=AssumedRole for sessions minted by
+// an actual role-assumption operation. GetSessionToken/GetFederationToken/
+// GetDelegatedAccessToken keep the caller's own identity — they are not role
+// assumptions — and mislabeling them as AssumedRole sends
+// services/iam/middleware.go's resolveAssumedRoleIdentityPolicies down the
+// GetPoliciesForRole path with a garbage "role name" derived from a user/root/
+// federated-user ARN, which fails to resolve and silently falls through to
+// unenforced (full IAM bypass) instead of any policy check.
+func TestResolvePrincipal_KindReflectsSessionType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		mint     func(t *testing.T, b *sts.InMemoryBackend) (accessKeyID, sessionToken string)
+		name     string
+		wantKind awsmeta.PrincipalKind
+	}{
+		{
+			name: "assume_role_is_assumed_role",
+			mint: func(t *testing.T, b *sts.InMemoryBackend) (string, string) {
+				t.Helper()
+
+				resp, err := b.AssumeRole(&sts.AssumeRoleInput{
+					RoleArn:         "arn:aws:iam::123456789012:role/TestRole",
+					RoleSessionName: "sess",
+				})
+				require.NoError(t, err)
+
+				creds := resp.AssumeRoleResult.Credentials
+
+				return creds.AccessKeyID, creds.SessionToken
+			},
+			wantKind: awsmeta.PrincipalKindAssumedRole,
+		},
+		{
+			name: "assume_root_is_assumed_role",
+			mint: func(t *testing.T, b *sts.InMemoryBackend) (string, string) {
+				t.Helper()
+
+				resp, err := b.AssumeRoot(&sts.AssumeRootInput{
+					TargetPrincipal: "123456789012",
+					TaskPolicyArn:   "arn:aws:iam::aws:policy/root-task/IAMAuditRootUserCredentials",
+				})
+				require.NoError(t, err)
+
+				creds := resp.AssumeRootResult.Credentials
+
+				return creds.AccessKeyID, creds.SessionToken
+			},
+			wantKind: awsmeta.PrincipalKindAssumedRole,
+		},
+		{
+			name: "get_session_token_is_not_assumed_role",
+			mint: func(t *testing.T, b *sts.InMemoryBackend) (string, string) {
+				t.Helper()
+
+				resp, err := b.GetSessionToken(&sts.GetSessionTokenInput{})
+				require.NoError(t, err)
+
+				creds := resp.GetSessionTokenResult.Credentials
+
+				return creds.AccessKeyID, creds.SessionToken
+			},
+			wantKind: awsmeta.PrincipalKindUser,
+		},
+		{
+			name: "get_federation_token_is_not_assumed_role",
+			mint: func(t *testing.T, b *sts.InMemoryBackend) (string, string) {
+				t.Helper()
+
+				resp, err := b.GetFederationToken(&sts.GetFederationTokenInput{Name: "alice"})
+				require.NoError(t, err)
+
+				creds := resp.GetFederationTokenResult.Credentials
+
+				return creds.AccessKeyID, creds.SessionToken
+			},
+			wantKind: awsmeta.PrincipalKindUser,
+		},
+		{
+			name: "get_delegated_access_token_is_not_assumed_role",
+			mint: func(t *testing.T, b *sts.InMemoryBackend) (string, string) {
+				t.Helper()
+
+				resp, err := b.GetDelegatedAccessToken(&sts.GetDelegatedAccessTokenInput{TradeInToken: "trade-in-1"})
+				require.NoError(t, err)
+
+				creds := resp.GetDelegatedAccessTokenResult.Credentials
+
+				return creds.AccessKeyID, creds.SessionToken
+			},
+			wantKind: awsmeta.PrincipalKindUser,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := sts.NewInMemoryBackend()
+			accessKeyID, sessionToken := tt.mint(t, b)
+
+			p, ok := b.ResolvePrincipal(t.Context(), accessKeyID, sessionToken)
+			require.True(t, ok)
+			assert.Equal(t, tt.wantKind, p.Kind)
+		})
+	}
+}
+
+// TestLookupSession_RequiresSessionTokenForTempCredentials verifies that an
+// ASIA-prefixed access key ID alone, without its matching X-Amz-Security-Token,
+// does not resolve to the session (gopherstack-g58j). Real AWS rejects a
+// SigV4 request for temporary credentials that omits or misstates the session
+// token; an absent token must not be treated as an automatic match.
+func TestLookupSession_RequiresSessionTokenForTempCredentials(t *testing.T) {
+	t.Parallel()
+
+	b := sts.NewInMemoryBackend()
+	resp, err := b.AssumeRole(&sts.AssumeRoleInput{
+		RoleArn:         "arn:aws:iam::123456789012:role/TestRole",
+		RoleSessionName: "sess",
+	})
+	require.NoError(t, err)
+
+	creds := resp.AssumeRoleResult.Credentials
+	require.NotEmpty(t, creds.SessionToken)
+
+	assert.Nil(t, b.LookupSession(creds.AccessKeyID, ""), "missing token must not match")
+	assert.Nil(t, b.LookupSession(creds.AccessKeyID, "wrong-token"), "wrong token must not match")
+	assert.NotNil(t, b.LookupSession(creds.AccessKeyID, creds.SessionToken), "correct token must match")
+
+	_, ok := b.ResolvePrincipal(t.Context(), creds.AccessKeyID, "")
+	assert.False(t, ok, "ResolvePrincipal must not impersonate the session without its token")
 }
 
 // TestAccountID verifies AccountID() returns a non-empty string.

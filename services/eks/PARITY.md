@@ -1,7 +1,7 @@
 ---
 # PARITY MANIFEST SCHEMA — see services/_PARITY_TEMPLATE.md for the schema doc.
 service: eks
-sdk_module: aws-sdk-go-v2/service/eks@v1.90.4
+sdk_module: aws-sdk-go-v2/service/eks@v1.98.0
 last_audit_commit: 7c297a53  # gopherstack-uult (2026-08-13) fixed after this hash was recorded; hash not yet known at edit time
 last_audit_date: 2026-08-13
 # ERROR path verified 2026-08-29 (wrapper-key-sweep pass): extracted every
@@ -32,7 +32,7 @@ ops:
   DescribeCluster: {wire: fixed, errors: ok, state: ok, persist: ok, note: "see CreateCluster's gopherstack-tp8x note -- same clusterNetConfigJSON fix, shared by both ops."}
   ListClusters: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "now supports maxResults/nextToken pagination via pkgs/page (was returning the full list in one page). gopherstack ignored-parameter sweep (2026-08-29): Include (blank vs 'all') was declared by ListClustersInput but never read -- every cluster, including ones registered via RegisterCluster, was always returned. Now blank Include excludes clusters with a non-nil ConnectorConfig (connected/external clusters); Include=[all] includes them, matching the SDK doc. Backend ListClusters signature gained an includeExternal bool param"}
   DeleteCluster: {wire: ok, errors: ok, state: ok, persist: ok}
-  UpdateClusterConfig: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was routed as bare-path PUT /clusters/{name}; real path is POST /clusters/{name}/update-config. gopherstack-muzq (2026-08-21): the returned Update record was stamped InProgress and never advanced -- DescribeUpdate polled InProgress forever; now scheduled to Successful via scheduleUpdateTransition"}
+  UpdateClusterConfig: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was routed as bare-path PUT /clusters/{name}; real path is POST /clusters/{name}/update-config. gopherstack-muzq (2026-08-21): the returned Update record was stamped InProgress and never advanced -- DescribeUpdate polled InProgress forever; now scheduled to Successful via scheduleUpdateTransition. gopherstack-7opw (2026-09-08): applyVpcEndpointUpdate wrote its rejection via handleError and returned that (always-nil) result; handleUpdateClusterConfig tested it and fell through to write a spurious second 200 on top of the committed error body (gopherstack-8haq shape). Only reachable via a concurrent DeleteCluster racing between UpdateClusterConfig and UpdateClusterVpcEndpoint's identical existence checks on the same cluster, so no unintended mutation was possible. Fixed to return the raw error; handleUpdateClusterConfig now maps and writes it exactly once."}
   UpdateClusterVersion: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was routed at fictional POST /clusters/{name}/update-version; real path is POST /clusters/{name}/updates (shared with ListUpdates GET). gopherstack-muzq (2026-08-21): same InProgress-forever bug and fix as UpdateClusterConfig"}
   RegisterCluster: {wire: fixed, errors: ok, state: ok, persist: ok, note: "was routed at /clusters/{placeholder}/register; real path is global POST /cluster-registrations (name comes from body, always did)"}
   DeregisterCluster: {wire: fixed, errors: ok, state: ok, persist: ok, note: "was routed as POST /clusters/{name}/deregister; real path is DELETE /cluster-registrations/{name}"}
@@ -44,11 +44,11 @@ ops:
   DeleteNodegroup: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateNodegroupConfig: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was reachable on a bare POST to the nodegroup path with no suffix check, so real SDK traffic to .../update-config fell through with a corrupted nodegroupName (the literal suffix baked in); now requires the real /update-config suffix. gopherstack-muzq (2026-08-21): the Update record built in the handler was stamped InProgress and never advanced; now scheduled to Successful"}
   UpdateNodegroupVersion: {wire: ok, errors: ok, state: fixed, persist: ok, note: "gopherstack-muzq (2026-08-21): the returned Update record was stamped InProgress and never advanced -- DescribeUpdate polled InProgress forever; now scheduled to Successful via scheduleUpdateTransition"}
-  CreateAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "2026-08-21 (gopherstack-y1zn): addonToJSON (shared by Create/Describe/Delete) emitted \"marketplaceVersion\" and \"resolveConflicts\"; types.Addon has neither (real Marketplace field is the nested \"marketplaceInformation\" object, not tracked by this backend; resolveConflicts is CreateAddon/UpdateAddon request-only, never echoed). Both removed. Proven via TestAddon_NoMarketplaceVersionOrResolveConflicts_RealClient, hand-reverted/confirmed-failing/restored/md5sum-verified."}
+  CreateAddon: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "2026-08-21 (gopherstack-y1zn): addonToJSON (shared by Create/Describe/Delete) emitted \"marketplaceVersion\" and \"resolveConflicts\"; types.Addon has neither (real Marketplace field is the nested \"marketplaceInformation\" object, not tracked by this backend; resolveConflicts is CreateAddon/UpdateAddon request-only, never echoed). Both removed. Proven via TestAddon_NoMarketplaceVersionOrResolveConflicts_RealClient, hand-reverted/confirmed-failing/restored/md5sum-verified. 2026-09-07 (gopherstack-bs4t): CreateAddonInput.PodIdentityAssociations was declared by the model but never read by createAddonBody, so create-time associations were silently dropped. Fixed -- see the gopherstack-bs4t/wmuv note below."}
   DescribeAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "see CreateAddon's gopherstack-y1zn note -- same addonToJSON fix."}
   ListAddons: {wire: fixed, errors: ok, state: ok, persist: ok, note: "now supports maxResults/nextToken pagination"}
-  DeleteAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "see CreateAddon's gopherstack-y1zn note -- same addonToJSON fix."}
-  UpdateAddon: {wire: fixed, errors: ok, state: ok, persist: ok, note: "was PUT to bare addon path; real op is POST .../addons/{addonName}/update"}
+  DeleteAddon: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "see CreateAddon's gopherstack-y1zn note -- same addonToJSON fix. 2026-09-07 (gopherstack-wmuv): did not clean up the deleted add-on's owned pod identity associations, leaking a tags handle and an orphaned association. Fixed -- see the gopherstack-bs4t/wmuv note below."}
+  UpdateAddon: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was PUT to bare addon path; real op is POST .../addons/{addonName}/update. 2026-09-07 (gopherstack-tu95): PodIdentityAssociations was declared on the wire but never read -- its documented tri-state (absent=no change, []=delete all, populated=replace) was unimplemented. Addon also never surfaced its owned associations back (types.Addon.PodIdentityAssociations), so a delete could not be observed. See PodIdentityAssociation tri-state entry below."}
   DescribeAddonVersions: {wire: fixed, errors: ok, state: n/a, persist: n/a, note: "path was /addon-versions; real path is /addons/supported-versions — was completely unreachable by the real SDK client"}
   DescribeAddonConfiguration: {wire: fixed, errors: ok, state: n/a, persist: n/a, note: "path was /addon-configuration; real path is /addons/configuration-schemas — was completely unreachable. gopherstack-g479 (2026-08-21): configurationSchema was ALSO a nested JSON object where the real member (deserializers.go, case \"configurationSchema\": value.(string)) is the schema as a raw JSON string; failed with 'expected String to be of type string, got map[string]interface {} instead' pre-fix. Found via a new go/types-based map-literal kind scanner."}
   CreateAccessEntry: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -475,3 +475,254 @@ Gates: no source changes to eks; `go build ./services/eks/...`, `go vet
 ./services/eks/...`, `go test -race -count=1 ./services/eks/...`,
 `golangci-lint run ./services/eks/...` all re-confirmed clean (unchanged from
 before this pass).
+
+## 2026-09-07 (gopherstack-tu95): UpdateAddon.PodIdentityAssociations tri-state was unimplemented
+
+`UpdateAddonInput.PodIdentityAssociations` (aws-sdk-go-v2/service/eks@v1.90.4
+`api_op_UpdateAddon.go`) is documented tri-state: "If this value is left
+blank, no change. If an empty array is provided, existing associations owned
+by the add-on are deleted." `updateAddonBody` in `handler_addons.go` never
+declared the field at all, so it was silently dropped on every request
+regardless of value. `types.Addon.PodIdentityAssociations []string` (the
+association IDs owned by the add-on) was also never surfaced by `Addon` or
+`addonToJSON`, so even a correct delete could not have been observed via
+DescribeAddon.
+
+Fixed both. `updateAddonBody.PodIdentityAssociations` is now
+`[]addonPodIdentityAssociationBody` (roleArn/serviceAccount, matching
+`types.AddonPodIdentityAssociations` -- no namespace member); its absent-vs-
+`[]`-vs-populated tri-state is read directly off Go's `encoding/json`
+nil-vs-non-nil-slice unmarshal behavior (a `[]T` field is left nil when its
+JSON key is absent, and set to a non-nil, possibly-empty slice when the key
+is present), the same idiom already used by
+`services/backup/handler_frameworks.go`'s `UpdateFramework`/
+`FrameworkControls`. The handler converts a non-nil `[]addonPodIdentityAssociationBody`
+into `*[]PodIdentityAssociationSpec` (nil pointer = no change) and passes it
+to `Backend.UpdateAddon`, which -- when non-nil -- deletes every
+`PodIdentityAssociation` with `OwnerARN == addon.ARN` and creates one per
+spec, recording the resulting association IDs on `addon.PodIdentityAssociations`.
+`addonToJSON` now always emits `podIdentityAssociations` (empty array when
+nil) so DescribeAddon can observe the result.
+
+Addon-owned associations always land in the `kube-system` namespace
+(`addonPodIdentityNamespace` const): this backend does not track a per-addon
+`NamespaceConfig` override (CreateAddon's own `NamespaceConfig` field is
+separately unwired -- see open item below), so there is no per-addon
+namespace to use instead. `CreateAddon`'s own `PodIdentityAssociations`
+field remains unwired (it has no tri-state semantics on Create, just a plain
+create-time list) -- out of scope for gopherstack-tu95, filed as a follow-up.
+
+Regression tests (`addon_pod_identity_test.go`), all HTTP-handler-driven,
+each proven failing against unmodified code before this fix (reverted the
+three production files, ran, confirmed 4 failures, restored):
+- `TestAddon_UpdateAddon_PodIdentityAssociations_AbsentLeavesUnchanged`
+- `TestAddon_UpdateAddon_PodIdentityAssociations_EmptyDeletesOnlyThisAddon`
+  (creates associations on two addons, deletes one via `[]`, asserts the
+  other addon's associations survive unchanged and ListPodIdentityAssociations
+  returns exactly the survivor)
+- `TestAddon_UpdateAddon_PodIdentityAssociations_PopulatedReplaces`
+- `TestAddon_UpdateAddon_PodIdentityAssociations_RejectsMissingFields`
+  (a populated entry missing roleArn/serviceAccount is rejected
+  InvalidParameterException, no partial associations created)
+
+`Addon` gained the `PodIdentityAssociations []string` field; the
+`pkgs/persistence` snapshot-version guard confirms this is additive-only
+(every existing field unchanged) and needs no `eksSnapshotVersion` bump --
+only its golden `testdata/snapshot_inventory.json` fixture needs a
+`-update` refresh, deliberately left for a separate pass.
+
+## 2026-09-07 (gopherstack-bs4t, gopherstack-wmuv): CreateAddon dropped PodIdentityAssociations; DeleteAddon leaked its owned associations
+
+Two follow-ups from gopherstack-tu95's UpdateAddon fix above, both in
+`services/eks/addons.go`.
+
+**gopherstack-bs4t.** `CreateAddonInput.PodIdentityAssociations`
+(`api_op_CreateAddon.go`) is documented as a plain create-time list: "An
+array of EKS Pod Identity associations to be created. Each association maps
+a Kubernetes service account to an IAM role." -- no tri-state wording at
+all, unlike `UpdateAddonInput`'s field. `createAddonBody` in
+`handler_addons.go` never declared the field, so create-time associations
+were silently dropped. Fixed: `createAddonBody` now carries
+`PodIdentityAssociations []addonPodIdentityAssociationBody` (the same body
+type `updateAddonBody` already used), converted to `[]PodIdentityAssociationSpec`
+and passed as a new trailing parameter to `Backend.CreateAddon`, which
+validates it (`validatePodIdentityAssociationSpecs`, extracted from
+`UpdateAddon`'s inline check and now shared by both) and reuses
+`replaceAddonPodIdentityAssociationsLocked` to create one association per
+spec (its delete-owned-first step is a no-op on a brand-new addon).
+
+**gopherstack-wmuv.** `DeleteAddonInput.Preserve`'s doc comment: "Specifying
+this option preserves the add-on software on your cluster but Amazon EKS
+stops managing any settings for the add-on. If an IAM account is associated
+with the add-on, it isn't removed." The `DeleteAddon` op doc comment itself
+says nothing about pod identity associations; `Preserve`'s doc is the only
+evidence, and its wording only makes sense if the default (`preserve=false`)
+path *does* remove the associated IAM account -- confirming wmuv's claim
+by negative implication. `DeleteAddon` never read a `preserve` flag at all
+and never touched `PodIdentityAssociation`, so owned associations survived
+their deleted owner and leaked a `tags.Tags` Prometheus-label handle. Fixed:
+`DeleteAddonInput`'s `preserve` query parameter (serializers.go's
+`awsRestjson1_serializeOpHttpBindingsDeleteAddonInput` -- `encoder.SetQuery("preserve")`,
+only emitted when true) is now read in `handleDeleteAddon` via
+`strconv.ParseBool` and passed to `Backend.DeleteAddon`, which -- unless
+`preserve` is set -- calls `replaceAddonPodIdentityAssociationsLocked` with
+a nil spec list to delete every association owned by the add-on (`OwnerARN
+== addon.ARN`) before removing it, reusing the exact same helper as
+gopherstack-tu95 and gopherstack-bs4t rather than a third parallel
+implementation.
+
+Both `CreateAddon` errors that podIdentityAssociations validation feeds
+(missing `roleArn`/`serviceAccount`) confirmed declared for `CreateAddon` in
+`deserializeOpErrorCreateAddon` (`InvalidParameterException`, already the
+shared `ErrValidation` sentinel).
+
+Regression tests (`addon_pod_identity_test.go`), all HTTP-handler-driven:
+- `TestAddon_CreateAddon_PodIdentityAssociations_Populated` (create with two
+  associations, asserts DescribeAddon reports exactly those two, each
+  association's roleArn/serviceAccount and ownerArn verified via
+  DescribePodIdentityAssociation/ListPodIdentityAssociations) -- fails
+  against unmodified code (0 associations instead of 2)
+- `TestAddon_CreateAddon_PodIdentityAssociations_Absent` (create without the
+  field, asserts `[]`)
+- `TestAddon_CreateAddon_PodIdentityAssociations_RejectsMissingFields`
+  (a populated entry missing serviceAccount is rejected
+  InvalidParameterException and leaves no partially created addon) -- fails
+  against unmodified code (200 instead of 400, addon exists)
+- `TestAddon_DeleteAddon_CleansUpOwnedPodIdentityAssociations` (creates a
+  second addon with its own association, deletes the first, asserts via
+  ListPodIdentityAssociations that only the second addon's association
+  survives) -- fails against unmodified code (3 survivors instead of 1)
+- `TestAddon_DeleteAddon_Preserve_KeepsOwnedPodIdentityAssociations`
+  (deletes with `?preserve=true`, asserts both associations still present)
+
+`Addon`/`PodIdentityAssociationSpec` gained no new fields (bs4t/wmuv reuse
+the `PodIdentityAssociations []string` field gopherstack-tu95 already added
+to `Addon`); the `pkgs/persistence` snapshot-version guard was re-run
+read-only and reports no drift.
+
+Gates: `go build ./...`, `go vet ./services/eks/...`,
+`go test -race -count=1 ./services/eks/...`, and
+`golangci-lint run services/eks/...` all clean.
+
+## 2026-09-07 (gopherstack-gala): CreateAddonInput.NamespaceConfig was unwired; addon-owned pod identity always landed in kube-system
+
+Follow-up from gopherstack-tu95's "see open item below" note above.
+`CreateAddonInput.NamespaceConfig *types.AddonNamespaceConfigRequest`
+(`api_op_CreateAddon.go`): "The namespace configuration for the addon. If
+specified, this will override the default namespace for the addon." --
+confirmed a real, create-only field: `UpdateAddonInput` (`api_op_UpdateAddon.go`)
+has no such member, so a real client cannot change an add-on's namespace
+after creation. `Addon.NamespaceConfig *types.AddonNamespaceConfigResponse`
+(`types.go:141`) echoes it back; both are `{"namespace": string}` on the wire
+(`serializers.go` `awsRestjson1_serializeDocumentAddonNamespaceConfigRequest`,
+`deserializers.go` `awsRestjson1_deserializeDocumentAddonNamespaceConfigResponse`,
+confirmed against `request_snapshot_test.go`/`response_snapshot_test.go`).
+`AddonInfo.DefaultNamespace` (`types.go:207`, on `DescribeAddonVersions`'
+output) documents that the *default* namespace is genuinely per-addon ("if no
+custom namespace is specified"), not uniformly `kube-system` -- `kube-system`
+is simply the correct default for the AWS-managed add-ons this backend's
+`DescribeAddonVersions` enumerates (vpc-cni, coredns, kube-proxy,
+aws-ebs-csi-driver, aws-efs-csi-driver all install there in real EKS).
+
+`createAddonBody` never declared `NamespaceConfig`, so it was silently
+dropped, `Addon` never carried a namespace, and
+`replaceAddonPodIdentityAssociationsLocked` (`addons.go`) always used the
+`addonPodIdentityNamespace` constant. Fixed: `Addon` gained `Namespace
+string` (`models.go`); `CreateAddon` takes it as a new parameter and stores
+it; `createAddonBody` gained `NamespaceConfig *addonNamespaceConfigBody`;
+`addonToJSON` emits `namespaceConfig: {namespace: ...}` when set;
+`replaceAddonPodIdentityAssociationsLocked` now uses `addon.Namespace` when
+non-empty, falling back to `addonPodIdentityNamespace` otherwise --
+preserving the `kube-system` default gopherstack-tu95 chose. `UpdateAddonInput`
+correctly has no `NamespaceConfig`, so `updateAddonBody` was deliberately left
+without one: an inbound `namespaceConfig` key on an update body is silently
+ignored by `encoding/json`, matching the real API's immutability.
+
+Pod identity association resolution is affected (which namespace an
+addon-owned association is installed into), not authorization/policy
+resolution itself -- no IAM/trust-policy semantics changed.
+
+Regression tests (`addon_namespace_test.go`), each proven failing against
+unmodified code (captured before the fix):
+- `TestAddon_NamespaceConfig_RoundTrip` (real `ekssdk.Client`
+  CreateAddon+DescribeAddon) -- failed: `NamespaceConfig` nil on readback
+  (`Expected value not to be nil`)
+- `TestAddon_NamespaceConfig_PodIdentityAssociationUsesCustomNamespace` --
+  failed: association namespace was `"kube-system"`, wanted `"efs-csi"`
+- `TestAddon_NamespaceConfig_ImmutableOnUpdate` -- failed: `addon` had no
+  `"namespaceConfig"` key at all yet (`NamespaceConfig` wasn't wired on
+  create either)
+- `TestAddon_NamespaceConfig_Absent_OmitsNamespaceConfig` and
+  `TestAddon_NamespaceConfig_Absent_PodIdentityAssociationDefaultsToKubeSystem`
+  passed unmodified (locking in the preserved default, not new behavior)
+- `TestAddon_NamespaceConfig_PersistenceRoundTrip` (new, passes against the
+  fix; see below)
+
+`Addon` gained the `Namespace string` field: additive-only (every existing
+field unchanged), snapshotted generically as plain JSON by
+`pkgs/store/registry.go`'s `Registry.SnapshotAll`/`RestoreAll`, so no
+`eksSnapshotVersion` bump. As with gopherstack-tu95's `PodIdentityAssociations`
+addition, only the shared `pkgs/persistence/testdata/snapshot_inventory.json`
+golden fixture needs a `-update` refresh (`go test ./pkgs/persistence/...
+-run TestSnapshotVersionGuard -update`); left for a separate pass since that
+file is outside `services/eks/` and also carries an unrelated pre-existing
+`codedeploy` drift on this branch not caused by this change.
+
+Gates: `go vet ./services/eks/...`, `go test -race ./services/eks/...`, and
+`golangci-lint run ./services/eks/...` all clean.
+
+## 2026-09-08 (gopherstack-7opw follow-up): the call-site mapping at handler_updates.go:164 is deliberately unpinned
+
+`handleUpdateClusterConfig`'s error-mapping of `applyVpcEndpointUpdate`'s
+return value (`handler_updates.go:164-166`) has no regression test that
+exercises the call site itself. `TestApplyVpcEndpointUpdate_BackendError_
+ReturnsRawError` (`handler_updates_internal_test.go`) pins `applyVpcEndpointUpdate`'s
+new raw-error return, but it calls that helper directly -- it never goes
+through `handleUpdateClusterConfig`. Confirmed the gap is real: temporarily
+changing line 164's condition to `vpcErr != nil && false` (deleting the
+mapping) still compiles and the entire `services/eks` suite, including that
+test, still passes.
+
+Root cause: within one synchronous `handleUpdateClusterConfig` call,
+`UpdateClusterConfig` and `UpdateClusterVpcEndpoint` perform the identical
+cluster-existence check on the same `clusterName`, and `UpdateClusterVpcEndpoint`
+(`updates.go:150`) has no other error path -- confirmed by reading it in
+full, every branch after the existence check only mutates `c.VpcConfig` and
+appends `UpdateParam`s, none of it fallible. So the vpc step structurally
+cannot fail once the config step has already succeeded in the same call.
+The only way to reach the error branch is a concurrent `DeleteCluster`
+landing in the real gap between the two backend calls (each acquires and
+releases the backend's single coarse `lockmetrics.RWMutex` independently --
+confirmed `DeleteCluster`, `UpdateClusterConfig`, and `UpdateClusterVpcEndpoint`
+all lock the same `b.mu`), which is exactly what the existing white-box test
+reproduces by driving the two backend calls itself with a `DeleteCluster`
+inserted between them.
+
+Why that cannot be turned into a call-site test without a production
+change: `Handler.Backend` is a concrete `*InMemoryBackend`
+(`handler.go:155`), not an interface, so there is no seam to inject a
+failure into the second call while `handleUpdateClusterConfig` is running.
+`handler_updates.go:159-164` calls `UpdateClusterConfig` then
+`applyVpcEndpointUpdate` back-to-back with no blocking operation (no
+channel, no lock wait exposed to test code, no timer) between them for a
+test to synchronize on -- `testing/synctest` only lets a test control
+interleaving at goroutines' durable-blocking points, and none exists in
+that gap. A test that instead raced a real goroutine calling `DeleteCluster`
+against a real goroutine calling `handleUpdateClusterConfig`, hoping the
+scheduler lands the delete in that few-instruction window, would be
+non-deterministic (it could pass or fail depending on scheduling, and the
+window is far too narrow to hit reliably even under `-race`) -- exactly the
+kind of contrived, flaky test this repo's no-`time.Sleep`-in-tests
+convention exists to rule out, so it was not written.
+
+What would be required to pin it: a deliberate testability seam, e.g.
+(a) an interface for the subset of `*InMemoryBackend` methods
+`handleUpdateClusterConfig` calls, so a test double can inject a failure
+from `UpdateClusterVpcEndpoint` while `UpdateClusterConfig` succeeds, or
+(b) a test-only hook/callback invoked between the two calls (in the style of
+`b.work.After`'s scheduler) that a test can use to delete the cluster at
+exactly that point. Both are production-code changes and were explicitly
+out of scope for this pass -- introducing either purely for this one test
+was judged not worth the added surface for a call site whose only failure
+mode is an unreachable-in-practice race. Left as an honest, documented gap
+rather than a test that would pass for the wrong reason.

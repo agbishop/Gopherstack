@@ -2,6 +2,7 @@ package kinesis_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -350,4 +351,55 @@ func TestGetShardIterator_AtTimestampNilRejectedAtBackend(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, kinesis.ErrInvalidArgument)
+}
+
+// TestGetRecords_NextShardIteratorHasExpiry verifies GetRecords' chained
+// NextShardIterator carries a CreatedAt timestamp, exactly like the initial
+// token GetShardIterator issues. AWS documents every shard iterator --
+// including a NextShardIterator returned by GetRecords, not just the first
+// one from GetShardIterator -- as expiring 5 minutes after being returned to
+// the requester. decodeIterator's expiry check (shard_iterators.go) only
+// fires when CreatedAt is non-zero, so a token minted with a zero CreatedAt
+// bypasses ExpiredIteratorException forever.
+func TestGetRecords_NextShardIteratorHasExpiry(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, "CreateStream", map[string]any{"StreamName": "next-iter-ttl-stream", "ShardCount": 1})
+
+	b := h.Backend.(*kinesis.InMemoryBackend)
+	ctx := context.Background()
+
+	desc, err := b.DescribeStream(ctx, &kinesis.DescribeStreamInput{StreamName: "next-iter-ttl-stream"})
+	require.NoError(t, err)
+	require.NotEmpty(t, desc.Shards)
+	shardID := desc.Shards[0].ShardID
+
+	_, err = b.PutRecord(ctx, &kinesis.PutRecordInput{
+		StreamName:   "next-iter-ttl-stream",
+		PartitionKey: "pk",
+		Data:         []byte("hello"),
+	})
+	require.NoError(t, err)
+
+	itOut, err := b.GetShardIterator(ctx, &kinesis.GetShardIteratorInput{
+		StreamName:        "next-iter-ttl-stream",
+		ShardID:           shardID,
+		ShardIteratorType: "TRIM_HORIZON",
+	})
+	require.NoError(t, err)
+
+	recOut, err := b.GetRecords(ctx, &kinesis.GetRecordsInput{ShardIterator: itOut.ShardIterator})
+	require.NoError(t, err)
+	require.NotEmpty(t, recOut.NextShardIterator)
+
+	raw, err := base64.StdEncoding.DecodeString(recOut.NextShardIterator)
+	require.NoError(t, err)
+
+	var next kinesis.ShardIterator
+	require.NoError(t, json.Unmarshal(raw, &next))
+
+	assert.False(t, next.CreatedAt.IsZero(),
+		"NextShardIterator must carry a CreatedAt so ExpiredIteratorException can ever fire on a chained token")
+	assert.WithinDuration(t, time.Now(), next.CreatedAt, 5*time.Second)
 }

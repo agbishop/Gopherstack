@@ -95,7 +95,6 @@ func (b *InMemoryBackend) DeleteGlobalCluster(
 	ctx context.Context,
 	globalClusterID string,
 ) (*GlobalCluster, error) {
-	region := getRegion(ctx, b.region)
 	b.mu.Lock("DeleteGlobalCluster")
 	defer b.mu.Unlock()
 	gc, exists := b.globalClusters.Get(globalClusterID)
@@ -114,16 +113,17 @@ func (b *InMemoryBackend) DeleteGlobalCluster(
 		)
 	}
 
-	for _, m := range gc.GlobalClusterMembers {
-		if cl, ok := b.clusterByARNLocked(m.DBClusterARN, region); ok && cl.GlobalClusterIdentifier == globalClusterID {
-			cl.GlobalClusterIdentifier = ""
-		}
+	if len(gc.GlobalClusterMembers) > 0 {
+		return nil, fmt.Errorf(
+			"%w: global cluster %s still has attached member clusters; detach or delete them first",
+			ErrInvalidGlobalClusterState, globalClusterID,
+		)
 	}
 
 	cp := *gc
-	cp.GlobalClusterMembers = make([]GlobalClusterMember, len(gc.GlobalClusterMembers))
-	copy(cp.GlobalClusterMembers, gc.GlobalClusterMembers)
 	b.globalClusters.Delete(globalClusterID)
+	region := regionFromARN(gc.GlobalClusterArn, getRegion(ctx, b.region))
+	delete(b.tagsStore(region), gc.GlobalClusterArn)
 
 	return &cp, nil
 }

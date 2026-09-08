@@ -74,6 +74,10 @@ func (h *Handler) handleCreateApp(c *echo.Context) error {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	var req createAppRequest
 
 	if jsonErr := json.Unmarshal(body, &req); jsonErr != nil {

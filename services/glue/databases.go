@@ -103,7 +103,14 @@ func (b *InMemoryBackend) GetDatabases() []*Database {
 	return out
 }
 
-// DeleteDatabase deletes a Glue database by name, also removing all its tables and partitions.
+// DeleteDatabase deletes a Glue database by name, also removing all its
+// tables (and each table's partitions, versions, column statistics, and
+// table optimizers -- see deleteTablePartitionsLocked) and user-defined
+// functions. Per the real DeleteDatabase's documented contract
+// (aws-sdk-go-v2/service/glue@v1.152.0 api_op_DeleteDatabase.go: "you no
+// longer have access to the tables ... and the user-defined functions in the
+// deleted database"), a client must never be able to reach either kind of
+// resource once the database is gone.
 func (b *InMemoryBackend) DeleteDatabase(name string) error {
 	b.mu.Lock("DeleteDatabase")
 	defer b.mu.Unlock()
@@ -118,18 +125,13 @@ func (b *InMemoryBackend) DeleteDatabase(name string) error {
 	for _, t := range b.tables.Snapshot() {
 		if k := tableKey(t.DatabaseName, t.Name); len(k) > len(prefix) && k[:len(prefix)] == prefix {
 			b.tables.Delete(k)
+			b.deleteTablePartitionsLocked(t.DatabaseName, t.Name)
 		}
 	}
 
-	for _, p := range b.partitions.Snapshot() {
-		if k := partitionKey(p.DatabaseName, p.TableName, p.Values); len(k) > len(prefix) && k[:len(prefix)] == prefix {
-			b.partitions.Delete(k)
-		}
-	}
-
-	for _, tv := range b.tableVersions.Snapshot() {
-		if k := tableVersionEntryKeyFn(tv); len(k) > len(prefix) && k[:len(prefix)] == prefix {
-			b.tableVersions.Delete(k)
+	for _, u := range b.udfs.All() {
+		if u.DatabaseName == name {
+			b.udfs.Delete(b.udfKey(u.DatabaseName, u.FunctionName))
 		}
 	}
 

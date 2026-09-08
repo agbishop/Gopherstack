@@ -143,6 +143,117 @@ func TestHandler_DisableEnableStageTransition_RoundTrip(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// TestHandler_DisableStageTransition_BlocksInboundExecution proves
+// DisableStageTransition actually gates a pipeline run rather than being
+// pure bookkeeping. Before this fix, StartPipelineExecution ignored
+// stageTransitions entirely (action_engine.go never consulted it), so a
+// disabled inbound transition on Deploy never stopped the execution from
+// running straight through Deploy's actions to Succeeded -- the real SDK's
+// own doc comment for DisableStageTransition ("Prevents artifacts in a
+// pipeline from transitioning to the next stage in the pipeline") was not
+// honored at all.
+func TestHandler_DisableStageTransition_BlocksInboundExecution(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doRequest(t, h, "CreatePipeline", map[string]any{"pipeline": twoStagePipeline("inbound-gate")})
+
+	rec := doRequest(t, h, "DisableStageTransition", map[string]any{
+		"pipelineName":   "inbound-gate",
+		"stageName":      "Deploy",
+		"transitionType": "Inbound",
+		"reason":         "change freeze",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	startRec := doRequest(t, h, "StartPipelineExecution", map[string]any{"name": "inbound-gate"})
+	require.Equal(t, http.StatusOK, startRec.Code)
+	execID, _ := decodeBody(t, startRec.Body.Bytes())["pipelineExecutionId"].(string)
+	require.NotEmpty(t, execID)
+
+	getRec := doRequest(t, h, "GetPipelineExecution", map[string]any{
+		"pipelineName": "inbound-gate", "pipelineExecutionId": execID,
+	})
+	require.Equal(t, http.StatusOK, getRec.Code)
+	execBody := decodeBody(t, getRec.Body.Bytes())
+	pipelineExecution, _ := execBody["pipelineExecution"].(map[string]any)
+	require.Equal(t, "InProgress", pipelineExecution["status"],
+		"execution must stall at the disabled inbound gate, not run through to Succeeded")
+
+	stateRec := doRequest(t, h, "GetPipelineState", map[string]any{"name": "inbound-gate"})
+	stageStates, _ := decodeBody(t, stateRec.Body.Bytes())["stageStates"].([]any)
+	require.Len(t, stageStates, 2)
+	deployStage, _ := stageStates[1].(map[string]any)
+	deployActions, _ := deployStage["actionStates"].([]any)
+	require.Len(t, deployActions, 1)
+	deployAction, _ := deployActions[0].(map[string]any)
+	assert.Nil(t, deployAction["latestExecution"],
+		"Deploy must not have been entered while its inbound transition is disabled")
+
+	// EnableStageTransition must resume the parked execution -- real AWS
+	// requires no further client call once the transition is re-enabled.
+	enableRec := doRequest(t, h, "EnableStageTransition", map[string]any{
+		"pipelineName":   "inbound-gate",
+		"stageName":      "Deploy",
+		"transitionType": "Inbound",
+	})
+	require.Equal(t, http.StatusOK, enableRec.Code)
+
+	getRec = doRequest(t, h, "GetPipelineExecution", map[string]any{
+		"pipelineName": "inbound-gate", "pipelineExecutionId": execID,
+	})
+	execBody = decodeBody(t, getRec.Body.Bytes())
+	pipelineExecution, _ = execBody["pipelineExecution"].(map[string]any)
+	assert.Equal(t, "Succeeded", pipelineExecution["status"], "re-enabling must resume the execution to completion")
+}
+
+// TestHandler_DisableStageTransition_BlocksOutboundExecution proves the
+// outbound half of the same gate: Source's actions run to completion, but
+// the execution does not proceed into Deploy while Source's outbound
+// transition is disabled.
+func TestHandler_DisableStageTransition_BlocksOutboundExecution(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doRequest(t, h, "CreatePipeline", map[string]any{"pipeline": twoStagePipeline("outbound-gate")})
+
+	rec := doRequest(t, h, "DisableStageTransition", map[string]any{
+		"pipelineName":   "outbound-gate",
+		"stageName":      "Source",
+		"transitionType": "Outbound",
+		"reason":         "change freeze",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	startRec := doRequest(t, h, "StartPipelineExecution", map[string]any{"name": "outbound-gate"})
+	execID, _ := decodeBody(t, startRec.Body.Bytes())["pipelineExecutionId"].(string)
+	require.NotEmpty(t, execID)
+
+	getRec := doRequest(t, h, "GetPipelineExecution", map[string]any{
+		"pipelineName": "outbound-gate", "pipelineExecutionId": execID,
+	})
+	execBody := decodeBody(t, getRec.Body.Bytes())
+	pipelineExecution, _ := execBody["pipelineExecution"].(map[string]any)
+	require.Equal(t, "InProgress", pipelineExecution["status"])
+
+	stateRec := doRequest(t, h, "GetPipelineState", map[string]any{"name": "outbound-gate"})
+	stageStates, _ := decodeBody(t, stateRec.Body.Bytes())["stageStates"].([]any)
+	sourceStage, _ := stageStates[0].(map[string]any)
+	sourceActions, _ := sourceStage["actionStates"].([]any)
+	sourceAction, _ := sourceActions[0].(map[string]any)
+	sourceLatest, _ := sourceAction["latestExecution"].(map[string]any)
+	require.NotNil(t, sourceLatest, "Source's own actions must still run")
+	assert.Equal(t, "Succeeded", sourceLatest["status"])
+
+	deployStage, _ := stageStates[1].(map[string]any)
+	deployActions, _ := deployStage["actionStates"].([]any)
+	deployAction, _ := deployActions[0].(map[string]any)
+	assert.Nil(t, deployAction["latestExecution"],
+		"Deploy must not have been entered while Source's outbound transition is disabled")
+}
+
 func TestHandler_DisableStageTransition_StageValidation(t *testing.T) {
 	t.Parallel()
 

@@ -204,15 +204,24 @@ func (b *InMemoryBackend) DescribeQuotaShare(ctx context.Context, quotaShareARN 
 	return &cp, nil
 }
 
-// DeleteQuotaShare removes a quota share by ARN.
+// DeleteQuotaShare removes a quota share by ARN. Requires DISABLED state
+// first, via UpdateQuotaShare (api_op_DeleteQuotaShare.go).
 func (b *InMemoryBackend) DeleteQuotaShare(ctx context.Context, quotaShareARN string) error {
 	region := getRegion(ctx, b.region)
 
 	b.mu.Lock("DeleteQuotaShare")
 	defer b.mu.Unlock()
 
-	if !b.quotaShares.Has(regionKey(region, quotaShareARN)) {
+	qs, ok := b.quotaShares.Get(regionKey(region, quotaShareARN))
+	if !ok {
 		return fmt.Errorf("%w: quota share %s not found", ErrNotFound, quotaShareARN)
+	}
+
+	if qs.State != stateDisabled {
+		return fmt.Errorf(
+			"%w: quota share %s must be DISABLED before it can be deleted",
+			ErrValidation, quotaShareARN,
+		)
 	}
 
 	b.quotaShares.Delete(regionKey(region, quotaShareARN))

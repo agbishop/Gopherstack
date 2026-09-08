@@ -18,6 +18,7 @@ const (
 	asyncInvokePendingCleanupBase = 18202 // 18202 reserved
 	asyncInvokeSlotLifetimeBase   = 18203 // 18203–18204 reserved
 	asyncInvokeRetryBase          = 18205 // 18205–18208 reserved
+	asyncInvokeTimeoutDestBase    = 18209 // 18209 reserved
 )
 
 // newAsyncTestBackend returns a backend with no Docker/port-alloc so that
@@ -449,4 +450,44 @@ func TestEnqueueAsync_Retry(t *testing.T) {
 			assert.Equal(t, 0, lambda.QueueLen(srv), "no stale items in queue after completion")
 		})
 	}
+}
+
+// TestEnqueueAsync_TimeoutDeliversToFailureDestination verifies that when an async
+// invocation's container never responds (a genuine execution timeout, not a
+// function-returned error), the outcome still reaches the function's configured
+// on-failure destination. AWS's own docs state that a runtime timeout is a function
+// error for async purposes: "Function errors include errors returned by the
+// function's code and errors returned by the function's runtime, such as timeouts"
+// (docs.aws.amazon.com/lambda/latest/dg/invocation-async-error-handling.html).
+func TestEnqueueAsync_TimeoutDeliversToFailureDestination(t *testing.T) {
+	t.Parallel()
+
+	const failureARN = "arn:aws:sqs:us-east-1:000000000000:on-failure"
+
+	srv := startAsyncTestServer(t, asyncInvokeTimeoutDestBase)
+	bk := newAsyncTestBackend(t)
+
+	require.NoError(t, bk.CreateFunction(&lambda.FunctionConfiguration{FunctionName: "fn-timeout-dest"}))
+
+	_, err := bk.PutFunctionEventInvokeConfig("fn-timeout-dest", &lambda.PutFunctionEventInvokeConfigInput{
+		MaximumRetryAttempts: new(0),
+		DestinationConfig: &lambda.DestinationConfig{
+			OnFailure: &lambda.Destination{Destination: failureARN},
+		},
+	})
+	require.NoError(t, err)
+
+	fake := &fakeAsyncDelivery{}
+	bk.SetAsyncDestinationDelivery(fake)
+
+	// Never simulate any /next or /response call: the container is hung and the
+	// invocation must time out rather than ever completing.
+	lambda.EnqueueAsync(t.Context(), bk, srv, "fn-timeout-dest", []byte(`{}`), 200*time.Millisecond, false)
+
+	require.Eventually(t, func() bool {
+		return len(fake.targets()) > 0
+	}, 3*time.Second, 10*time.Millisecond,
+		"a timed-out async invocation must be delivered to its on-failure destination")
+
+	assert.Contains(t, fake.targets(), failureARN)
 }

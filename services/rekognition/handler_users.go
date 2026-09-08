@@ -306,10 +306,14 @@ type searchUsersByImageResp struct {
 }
 
 func (h *Handler) handleSearchUsersByImage(
-	_ context.Context, req *searchUsersByImageReq,
+	ctx context.Context, req *searchUsersByImageReq,
 ) (*searchUsersByImageResp, error) {
 	if req.CollectionId == "" {
 		return nil, fmt.Errorf("%w: CollectionId is required", ErrValidation)
+	}
+
+	if err := h.checkImageRef(ctx, req.Image); err != nil {
+		return nil, err
 	}
 
 	matches, err := h.Backend.SearchUsersByImage(req.CollectionId, req.MaxUsers, imageRefKey(req.Image))

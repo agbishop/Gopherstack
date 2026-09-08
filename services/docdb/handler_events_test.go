@@ -756,3 +756,58 @@ func TestDescribeEvents_RealLog(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(afterDeleteRR.Body.String(), "<Event>"),
 		"create and delete must each record a distinct event")
 }
+
+// TestDeleteEventSubscription_ClearsTags verifies that DeleteEventSubscription
+// clears tags for the deleted subscription's ARN. Otherwise a new subscription
+// created with the same (user-chosen, reusable) SubscriptionName -- which
+// builds the same deterministic ARN -- inherits the deleted subscription's tags.
+func TestDeleteEventSubscription_ClearsTags(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	const subARN = "arn:aws:rds:us-east-1:000000000000:es:reused-sub"
+
+	doRequest(t, h, url.Values{
+		"Action":           {"CreateEventSubscription"},
+		"Version":          {"2014-10-31"},
+		"SubscriptionName": {"reused-sub"},
+		"SnsTopicArn":      {"arn:aws:sns:us-east-1:000000000000:my-topic"},
+	})
+
+	doRequest(t, h, url.Values{
+		"Action":           {"AddTagsToResource"},
+		"Version":          {"2014-10-31"},
+		"ResourceName":     {subARN},
+		"Tags.Tag.1.Key":   {"env"},
+		"Tags.Tag.1.Value": {"prod"},
+	})
+
+	listRR := doRequest(t, h, url.Values{
+		"Action":       {"ListTagsForResource"},
+		"Version":      {"2014-10-31"},
+		"ResourceName": {subARN},
+	})
+	require.Contains(t, listRR.Body.String(), "prod")
+
+	doRequest(t, h, url.Values{
+		"Action":           {"DeleteEventSubscription"},
+		"Version":          {"2014-10-31"},
+		"SubscriptionName": {"reused-sub"},
+	})
+
+	doRequest(t, h, url.Values{
+		"Action":           {"CreateEventSubscription"},
+		"Version":          {"2014-10-31"},
+		"SubscriptionName": {"reused-sub"},
+		"SnsTopicArn":      {"arn:aws:sns:us-east-1:000000000000:my-topic"},
+	})
+
+	afterRR := doRequest(t, h, url.Values{
+		"Action":       {"ListTagsForResource"},
+		"Version":      {"2014-10-31"},
+		"ResourceName": {subARN},
+	})
+	require.Equal(t, http.StatusOK, afterRR.Code)
+	assert.NotContains(t, afterRR.Body.String(), "prod",
+		"recreated event subscription must not inherit the deleted subscription's tags")
+}

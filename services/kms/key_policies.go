@@ -17,10 +17,15 @@ func (b *InMemoryBackend) PutKeyPolicy(ctx context.Context, input *PutKeyPolicyI
 		policyName = defaultKeyPolicyName
 	}
 
+	// Same fit as the handler-level check in buildGrantPolicyActions
+	// (gopherstack-i4q8): UnsupportedOperationException, per its doc "a
+	// specified parameter is not supported". Unreachable in production today --
+	// the handler already normalizes/rejects PolicyName before calling this
+	// method -- but kept correct as defense in depth.
 	if policyName != defaultKeyPolicyName {
 		return fmt.Errorf(
 			"%w: PolicyName must be %q; got %q",
-			ErrValidation, defaultKeyPolicyName, policyName,
+			ErrUnsupportedParameter, defaultKeyPolicyName, policyName,
 		)
 	}
 
@@ -30,7 +35,7 @@ func (b *InMemoryBackend) PutKeyPolicy(ctx context.Context, input *PutKeyPolicyI
 	// Store the policy in the key's own region (ARN-embedded region for an ARN
 	// input), so GetKeyPolicy reads it back consistently regardless of the request
 	// region.
-	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID)
+	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}
@@ -70,7 +75,7 @@ func (b *InMemoryBackend) GetKeyPolicy(
 	// Resolve against the key's own region (ARN-embedded region for an ARN input),
 	// not the request region, so a cross-region ARN reads the policy from the store
 	// the key actually lives in.
-	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID)
+	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +106,7 @@ func (b *InMemoryBackend) ListKeyPolicies(
 	b.mu.RLock("ListKeyPolicies")
 	defer b.mu.RUnlock()
 
-	if _, err := b.lookupKey(ctx, input.KeyID); err != nil {
+	if _, err := b.lookupKey(ctx, input.KeyID, ErrInvalidArn); err != nil {
 		return nil, err
 	}
 

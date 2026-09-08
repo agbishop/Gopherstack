@@ -104,7 +104,10 @@ func (b *InMemoryBackend) GetRule(serviceID, listenerID, ruleID string) (*Rule, 
 	return r.toRule(), nil
 }
 
-// UpdateRule updates a rule.
+// UpdateRule updates a rule. Real AWS rejects modifying a default listener
+// rule with ValidationException ("You can't modify a default listener
+// rule. To modify a default listener rule, use UpdateListener." --
+// aws-sdk-go-v2/service/vpclattice's api_op_UpdateRule.go doc comment).
 func (b *InMemoryBackend) UpdateRule(
 	serviceID, listenerID, ruleID string,
 	priority int32,
@@ -130,6 +133,10 @@ func (b *InMemoryBackend) UpdateRule(
 	}
 
 	r, _ := b.rules.Get(rID)
+
+	if r.IsDefault {
+		return nil, ErrInvalidParameter
+	}
 
 	if priority != 0 {
 		r.Priority = priority

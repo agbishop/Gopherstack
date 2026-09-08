@@ -349,6 +349,43 @@ func TestDeploymentConfigs_DefaultsCannotDelete(t *testing.T) {
 	assert.Equal(t, "InvalidOperationException", resp["__type"])
 }
 
+// TestDeploymentConfigs_InUseCannotDelete proves a deployment config still
+// referenced by a deployment group cannot be deleted (api_op_DeleteDeploymentConfig.go:12-13,
+// "A deployment configuration cannot be deleted if it is currently in use."),
+// mapped to DeleteDeploymentConfig's own DeploymentConfigInUseException.
+func TestDeploymentConfigs_InUseCannotDelete(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	createRec := doRequest(t, h, "CreateDeploymentConfig", map[string]any{
+		"deploymentConfigName": "in-use-cfg",
+		"computePlatform":      "Server",
+	})
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	doRequest(t, h, "CreateApplication", map[string]any{
+		"applicationName": "cfg-app",
+		"computePlatform": "Server",
+	})
+	dgRec := doRequest(t, h, "CreateDeploymentGroup", map[string]any{
+		"applicationName":      "cfg-app",
+		"deploymentGroupName":  "cfg-dg",
+		"serviceRoleArn":       "arn:aws:iam::000000000000:role/role",
+		"deploymentConfigName": "in-use-cfg",
+	})
+	require.Equal(t, http.StatusOK, dgRec.Code)
+
+	delRec := doRequest(t, h, "DeleteDeploymentConfig", map[string]any{
+		"deploymentConfigName": "in-use-cfg",
+	})
+	assert.Equal(t, http.StatusConflict, delRec.Code)
+
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(delRec.Body.Bytes(), &resp))
+	assert.Equal(t, "DeploymentConfigInUseException", resp["__type"])
+}
+
 func TestDeploymentConfigs_ErrInvalidComputePlatformMapping(t *testing.T) {
 	t.Parallel()
 

@@ -60,6 +60,7 @@ func deliverToAPIDestination(
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	applyTargetHTTPParameters(req, target.HTTPParameters)
 	applyConnectionHTTPParameters(req, dest.HeaderParameters, dest.QueryStringParameters)
 
 	if authErr := applyAPIDestinationAuth(ctx, req, dest); authErr != nil {
@@ -105,6 +106,29 @@ func mergeBodyParameters(payload string, params []ConnectionBodyParameter) strin
 	}
 
 	return string(merged)
+}
+
+// applyTargetHTTPParameters adds a PutTargets Target's own HttpParameters
+// (as opposed to the connection's InvocationHttpParameters) to the outbound
+// request. Applied before the connection's parameters so a conflicting key
+// is overwritten by the connection's value, matching AWS's documented
+// precedence for Target.HttpParameters.
+func applyTargetHTTPParameters(req *http.Request, hp *HTTPParameters) {
+	if hp == nil {
+		return
+	}
+
+	for k, v := range hp.HeaderParameters {
+		req.Header.Set(k, v)
+	}
+
+	if len(hp.QueryStringParameters) > 0 {
+		q := req.URL.Query()
+		for k, v := range hp.QueryStringParameters {
+			q.Set(k, v)
+		}
+		req.URL.RawQuery = q.Encode()
+	}
 }
 
 // applyConnectionHTTPParameters adds a connection's invocation header and

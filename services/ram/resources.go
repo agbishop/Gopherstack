@@ -14,7 +14,7 @@ const arnPartCount = 6
 func resourceTypeFromARN(resourceARN string) string {
 	// ARN format: arn:partition:service:region:account-id:resource-type/resource-id
 	parts := strings.SplitN(resourceARN, ":", arnPartCount)
-	if len(parts) < arnPartCount || parts[0] != "arn" {
+	if len(parts) < arnPartCount || parts[0] != arnPrefix {
 		return "UNKNOWN"
 	}
 

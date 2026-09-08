@@ -59,6 +59,20 @@ func TestStartMedicalTranscriptionJob_SpecialtyType(t *testing.T) {
 		require.ErrorIs(t, err, transcribe.ErrValidation)
 	})
 
+	t.Run("non_en_us_language_code_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.StartMedicalTranscriptionJob(&transcribe.MedicalTranscriptionJob{
+			MedicalTranscriptionJobName: "med-job-bad-lang",
+			LanguageCode:                "fr-FR",
+			Media:                       transcribe.Media{MediaFileURI: "s3://b/f"},
+			Specialty:                   "PRIMARYCARE",
+			Type:                        "CONVERSATION",
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
 	t.Run("phi_content_identification_accepted", func(t *testing.T) {
 		t.Parallel()
 

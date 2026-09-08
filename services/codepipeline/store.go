@@ -84,6 +84,25 @@ const (
 	// matching real AWS's built-in Approval/AWS/Manual/1 action type.
 	actionCategoryApproval = "Approval"
 
+	// actionOwnerAWS is the ActionTypeID.Owner value for AWS-managed built-in
+	// action types, as opposed to "ThirdParty" or "Custom".
+	actionOwnerAWS = "AWS"
+
+	// actionProviderCodeBuild and actionProviderLambda are the
+	// ActionTypeID.Provider values for the built-in Build/CodeBuild and
+	// Invoke/Lambda action types, wired via SetCodeBuildBackend/
+	// SetLambdaBackend when a real backend is available (action_engine.go).
+	actionProviderCodeBuild = "CodeBuild"
+	actionProviderLambda    = "Lambda"
+
+	// configKeyProjectName and configKeyFunctionName are the
+	// Action.Configuration keys real AWS documents for the built-in
+	// Build/CodeBuild and Invoke/Lambda action types (not part of the SDK's
+	// Action/ActionTypeId shape, which leaves Configuration an opaque
+	// map[string]string).
+	configKeyProjectName  = "ProjectName"
+	configKeyFunctionName = "FunctionName"
+
 	// approvalStatusApproved and approvalStatusRejected are the valid
 	// ApprovalResult.Status values for PutApprovalResult.
 	approvalStatusApproved = "Approved"
@@ -137,9 +156,16 @@ type InMemoryBackend struct {
 	executions                 map[string]map[string][]*PipelineExecution  // region → pipelineName → executions
 	actionExecutions           map[string]map[string][]*ActionExecution    // region → pipelineName → action executions
 	actionRevisions            map[string]map[string]*ActionRevisionRecord // region → "pipeline/stage/action" → revision
-	mu                         *lockmetrics.RWMutex
-	accountID                  string
-	region                     string
+	// codeBuildBackend and lambdaBackend back a Build/CodeBuild and an
+	// Invoke/Lambda action respectively (see runOneAction, action_engine.go).
+	// Nil until wired via SetCodeBuildBackend/SetLambdaBackend, in which case
+	// those actions complete instantly with no cross-service call, matching
+	// this backend's original behavior.
+	codeBuildBackend CodeBuildStarter
+	lambdaBackend    LambdaInvoker
+	mu               *lockmetrics.RWMutex
+	accountID        string
+	region           string
 }
 
 // NewInMemoryBackend creates a new backend for the given account and region.
@@ -157,6 +183,26 @@ func NewInMemoryBackend(accountID, region string) *InMemoryBackend {
 	registerAllTables(b)
 
 	return b
+}
+
+// SetCodeBuildBackend wires CodeBuild so a Build/CodeBuild action's
+// ProjectName actually starts a build, instead of every action completing
+// unconditionally with no cross-service call (gopherstack-cb9l).
+func (b *InMemoryBackend) SetCodeBuildBackend(codeBuild CodeBuildStarter) {
+	b.mu.Lock("SetCodeBuildBackend")
+	defer b.mu.Unlock()
+
+	b.codeBuildBackend = codeBuild
+}
+
+// SetLambdaBackend wires Lambda so an Invoke/Lambda action's FunctionName is
+// actually invoked, instead of every action completing unconditionally with
+// no cross-service call (gopherstack-cb9l).
+func (b *InMemoryBackend) SetLambdaBackend(lambda LambdaInvoker) {
+	b.mu.Lock("SetLambdaBackend")
+	defer b.mu.Unlock()
+
+	b.lambdaBackend = lambda
 }
 
 // regionKey builds the composite store.Table primary key ("region|id") shared

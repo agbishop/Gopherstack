@@ -44,6 +44,15 @@ func TestHandler_AdapterVersionLifecycle(t *testing.T) {
 			createVersionBody := map[string]any{
 				"AdapterId": adapterID,
 				"Tags":      map[string]string{"env": "test"},
+				"DatasetConfig": map[string]any{
+					"ManifestS3Object": map[string]any{
+						"Bucket": "test-dataset-bucket",
+						"Name":   "manifest.json",
+					},
+				},
+				"OutputConfig": map[string]any{
+					"S3Bucket": "test-output-bucket",
+				},
 			}
 			createVersionRec := doTextractRequest(t, h, "CreateAdapterVersion", createVersionBody)
 			assert.Equal(t, http.StatusOK, createVersionRec.Code)
@@ -75,6 +84,86 @@ func TestHandler_AdapterVersionLifecycle(t *testing.T) {
 			// GetAdapterVersion after delete returns error
 			getVersionRec2 := doTextractRequest(t, h, "GetAdapterVersion", getVersionBody)
 			assert.Equal(t, http.StatusBadRequest, getVersionRec2.Code)
+		})
+	}
+}
+
+// TestHandler_CreateAdapterVersion_RequiresDatasetAndOutputConfig verifies
+// that DatasetConfig and OutputConfig.S3Bucket are enforced as required:
+// real AWS's CreateAdapterVersionInput marks both "This member is required"
+// (api_op_CreateAdapterVersion.go), mirrored by the client-side
+// validateOpCreateAdapterVersionInput/validateOutputConfig in validators.go.
+func TestHandler_CreateAdapterVersion_RequiresDatasetAndOutputConfig(t *testing.T) {
+	t.Parallel()
+
+	validDatasetConfig := map[string]any{
+		"ManifestS3Object": map[string]any{
+			"Bucket": "test-dataset-bucket",
+			"Name":   "manifest.json",
+		},
+	}
+	validOutputConfig := map[string]any{"S3Bucket": "test-output-bucket"}
+
+	tests := []struct {
+		datasetConfig map[string]any
+		outputConfig  map[string]any
+		name          string
+		wantStatus    int
+	}{
+		{
+			name:       "missing both is rejected",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:          "missing OutputConfig is rejected",
+			datasetConfig: validDatasetConfig,
+			wantStatus:    http.StatusBadRequest,
+		},
+		{
+			name:         "missing DatasetConfig is rejected",
+			outputConfig: validOutputConfig,
+			wantStatus:   http.StatusBadRequest,
+		},
+		{
+			name:          "OutputConfig without S3Bucket is rejected",
+			datasetConfig: validDatasetConfig,
+			outputConfig:  map[string]any{},
+			wantStatus:    http.StatusBadRequest,
+		},
+		{
+			name:          "both present succeeds",
+			datasetConfig: validDatasetConfig,
+			outputConfig:  validOutputConfig,
+			wantStatus:    http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+
+			createAdapterRec := doTextractRequest(t, h, "CreateAdapter", map[string]any{
+				"AdapterName":  "required-config-adapter",
+				"FeatureTypes": []string{"FORMS"},
+			})
+			require.Equal(t, http.StatusOK, createAdapterRec.Code)
+
+			var createAdapterResp map[string]string
+			require.NoError(t, json.Unmarshal(createAdapterRec.Body.Bytes(), &createAdapterResp))
+
+			body := map[string]any{"AdapterId": createAdapterResp["AdapterId"]}
+			if tt.datasetConfig != nil {
+				body["DatasetConfig"] = tt.datasetConfig
+			}
+
+			if tt.outputConfig != nil {
+				body["OutputConfig"] = tt.outputConfig
+			}
+
+			rec := doTextractRequest(t, h, "CreateAdapterVersion", body)
+			assert.Equal(t, tt.wantStatus, rec.Code)
 		})
 	}
 }
@@ -150,6 +239,9 @@ func TestHandler_CreateAdapterVersion_DatasetConfig(t *testing.T) {
 				"Name":   "manifest.json",
 			},
 		},
+		"OutputConfig": map[string]any{
+			"S3Bucket": "my-output-bucket",
+		},
 		"KMSKeyId": "arn:aws:kms:us-east-1:123456789012:key/abcd1234",
 	})
 	require.Equal(t, http.StatusOK, createVersionRec.Code)
@@ -198,6 +290,15 @@ func TestHandler_AdapterVersion_InProgressThenActive(t *testing.T) {
 
 	createVersionRec := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
 		"AdapterId": adapterID,
+		"DatasetConfig": map[string]any{
+			"ManifestS3Object": map[string]any{
+				"Bucket": "test-dataset-bucket",
+				"Name":   "manifest.json",
+			},
+		},
+		"OutputConfig": map[string]any{
+			"S3Bucket": "test-output-bucket",
+		},
 	})
 	require.Equal(t, http.StatusOK, createVersionRec.Code)
 
@@ -252,6 +353,15 @@ func TestHandler_AdapterVersion_EvaluationMetrics(t *testing.T) {
 
 	createVersionRec := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
 		"AdapterId": adapterID,
+		"DatasetConfig": map[string]any{
+			"ManifestS3Object": map[string]any{
+				"Bucket": "test-dataset-bucket",
+				"Name":   "manifest.json",
+			},
+		},
+		"OutputConfig": map[string]any{
+			"S3Bucket": "test-output-bucket",
+		},
 	})
 	require.Equal(t, http.StatusOK, createVersionRec.Code)
 
@@ -308,6 +418,15 @@ func TestHandler_DeleteAdapterVersion_GetReturnsErrorAfterDelete(t *testing.T) {
 
 	createVerRec := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
 		"AdapterId": adapterID,
+		"DatasetConfig": map[string]any{
+			"ManifestS3Object": map[string]any{
+				"Bucket": "test-dataset-bucket",
+				"Name":   "manifest.json",
+			},
+		},
+		"OutputConfig": map[string]any{
+			"S3Bucket": "test-output-bucket",
+		},
 	})
 	require.Equal(t, http.StatusOK, createVerRec.Code)
 	var verResp map[string]string
@@ -355,6 +474,15 @@ func TestHandler_ListAdapterVersions_HappyPath(t *testing.T) {
 	for range 3 {
 		doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
 			"AdapterId": adapterID,
+			"DatasetConfig": map[string]any{
+				"ManifestS3Object": map[string]any{
+					"Bucket": "test-dataset-bucket",
+					"Name":   "manifest.json",
+				},
+			},
+			"OutputConfig": map[string]any{
+				"S3Bucket": "test-output-bucket",
+			},
 		})
 	}
 
@@ -415,6 +543,15 @@ func TestHandler_ListAdapterVersions_SummaryShape(t *testing.T) {
 	verRec := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
 		"AdapterId": adapterID,
 		"Tags":      map[string]string{"phase": "alpha"},
+		"DatasetConfig": map[string]any{
+			"ManifestS3Object": map[string]any{
+				"Bucket": "test-dataset-bucket",
+				"Name":   "manifest.json",
+			},
+		},
+		"OutputConfig": map[string]any{
+			"S3Bucket": "test-output-bucket",
+		},
 	})
 	require.Equal(t, http.StatusOK, verRec.Code)
 
@@ -468,6 +605,15 @@ func TestHandler_AdapterVersion_CreationTimeIsEpochSeconds(t *testing.T) {
 
 	createVersionRec := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
 		"AdapterId": adapterID,
+		"DatasetConfig": map[string]any{
+			"ManifestS3Object": map[string]any{
+				"Bucket": "test-dataset-bucket",
+				"Name":   "manifest.json",
+			},
+		},
+		"OutputConfig": map[string]any{
+			"S3Bucket": "test-output-bucket",
+		},
 	})
 	require.Equal(t, http.StatusOK, createVersionRec.Code)
 
@@ -524,7 +670,18 @@ func TestHandler_ListAdapterVersions_Pagination(t *testing.T) {
 	adapterID := createResp["AdapterId"]
 
 	for range 3 {
-		rec := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{"AdapterId": adapterID})
+		rec := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
+			"AdapterId": adapterID,
+			"DatasetConfig": map[string]any{
+				"ManifestS3Object": map[string]any{
+					"Bucket": "test-dataset-bucket",
+					"Name":   "manifest.json",
+				},
+			},
+			"OutputConfig": map[string]any{
+				"S3Bucket": "test-output-bucket",
+			},
+		})
 		require.Equal(t, http.StatusOK, rec.Code)
 	}
 

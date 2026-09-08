@@ -379,6 +379,109 @@ func TestStartReplay_FilterArnsRestrictsDelivery(t *testing.T) {
 	assert.Len(t, sqsMock.MessagesFor(queueB), 1, "queue B: 1 live only, replay excluded by FilterArns")
 }
 
+// blockingSQSSender blocks each SendMessageToQueue call until proceed is
+// closed, and signals started the first time a call arrives -- used to hold
+// a replay's async delivery worker open so a test can call CancelReplay
+// while delivery is still in flight, deterministically instead of racing a
+// background goroutine.
+type blockingSQSSender struct {
+	started chan struct{}
+	proceed chan struct{}
+}
+
+func newBlockingSQSSender() *blockingSQSSender {
+	return &blockingSQSSender{started: make(chan struct{}), proceed: make(chan struct{})}
+}
+
+func (b *blockingSQSSender) SendMessageToQueue(_ context.Context, _, _ string) error {
+	close(b.started)
+	<-b.proceed
+
+	return nil
+}
+
+// TestCancelReplay_InFlightReplayReachesCancelled proves that cancelling a
+// replay whose delivery worker is still running eventually settles in the
+// terminal CANCELLED state, not stuck in CANCELLING forever. Real AWS moves
+// a cancelled replay from CANCELLING to CANCELLED once cancellation
+// completes (DescribeReplay's documented State enum includes CANCELLED).
+// Previously CancelReplay only ever set CANCELLING: the async delivery
+// worker's completion step checked exclusively for State == STARTING before
+// writing COMPLETED, so once CancelReplay ran first the replay never left
+// CANCELLING -- accepted on the wire, but the cancellation never finished.
+func TestCancelReplay_InFlightReplayReachesCancelled(t *testing.T) {
+	t.Parallel()
+	b := newBackend()
+	ctx := context.Background()
+
+	defaultBus, err := b.DescribeEventBus(ctx, "")
+	require.NoError(t, err)
+	defaultBusARN := defaultBus.Arn
+
+	_, err = b.CreateArchive(ctx, eventbridge.CreateArchiveInput{
+		ArchiveName:    "cancel-inflight-archive",
+		EventSourceArn: defaultBusARN,
+	})
+	require.NoError(t, err)
+
+	// Archive the event before any rule exists, so this PutEvents does not
+	// also fan out live delivery to the blocking target below.
+	_, err = b.PutEvents(ctx, []eventbridge.EventEntry{
+		{Source: "cancel.inflight.test", DetailType: "t", Detail: `{}`},
+	})
+	require.NoError(t, err)
+
+	sender := newBlockingSQSSender()
+	b.SetDeliveryTargets(&eventbridge.DeliveryTargets{SQS: sender})
+
+	rule, err := b.PutRule(ctx, eventbridge.PutRuleInput{
+		Name:         "cancel-inflight-rule",
+		EventPattern: `{"source":["cancel.inflight.test"]}`,
+		State:        "ENABLED",
+	})
+	require.NoError(t, err)
+
+	_, err = b.PutTargets(ctx, rule.Name, "", []eventbridge.Target{
+		{ID: "t1", Arn: "arn:aws:sqs:us-east-1:123456789012:cancel-inflight-queue"},
+	})
+	require.NoError(t, err)
+
+	archive, err := b.DescribeArchive(ctx, "cancel-inflight-archive")
+	require.NoError(t, err)
+
+	replay, err := b.StartReplay(ctx, eventbridge.StartReplayInput{
+		ReplayName:     "cancel-inflight-replay",
+		EventSourceArn: archive.ArchiveArn,
+		Destination:    &eventbridge.ReplayDestination{Arn: defaultBusARN},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "STARTING", replay.State)
+
+	// Wait until the replay's async worker is blocked inside delivery, then
+	// cancel it while it's still in flight.
+	select {
+	case <-sender.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replay delivery never started")
+	}
+
+	cancelled, err := b.CancelReplay(ctx, "cancel-inflight-replay")
+	require.NoError(t, err)
+	assert.Equal(t, "CANCELLING", cancelled.State)
+
+	close(sender.proceed)
+
+	require.Eventually(t, func() bool {
+		r, descErr := b.DescribeReplay(ctx, "cancel-inflight-replay")
+
+		return descErr == nil && r.State != "STARTING" && r.State != "CANCELLING"
+	}, 2*time.Second, 10*time.Millisecond, "replay must leave the CANCELLING state")
+
+	final, err := b.DescribeReplay(ctx, "cancel-inflight-replay")
+	require.NoError(t, err)
+	assert.Equal(t, "CANCELLED", final.State, "a cancelled in-flight replay must settle as CANCELLED, not COMPLETED")
+}
+
 // TestDescribeReplay_EchoesDestinationAndDescription proves DescribeReplay
 // echoes Destination and Description -- both real DescribeReplayOutput
 // members that ListReplays (real AWS's types.Replay) does not have.

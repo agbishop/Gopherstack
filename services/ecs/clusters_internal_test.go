@@ -36,7 +36,12 @@ func TestClusterKey(t *testing.T) {
 	}
 }
 
-func TestDeleteCluster_CascadesServiceDeployments(t *testing.T) {
+// TestDeleteService_CleansServiceDeployments verifies ServiceDeployment
+// records are cleaned up on DeleteService (not DeleteCluster, which now
+// refuses to delete a cluster with services still in it -- see
+// clusterDependencyViolationLocked) and that the now-empty cluster deletes
+// cleanly afterward.
+func TestDeleteService_CleansServiceDeployments(t *testing.T) {
 	t.Parallel()
 	b := newTestBackend()
 
@@ -87,9 +92,9 @@ func TestDeleteCluster_CascadesServiceDeployments(t *testing.T) {
 	})
 	b.mu.Unlock()
 
-	_, err = b.DeleteCluster("test-cluster")
+	_, err = b.DeleteService("test-cluster", "my-svc")
 	if err != nil {
-		t.Fatalf("DeleteCluster: %v", err)
+		t.Fatalf("DeleteService: %v", err)
 	}
 
 	// Both the real and the injected service deployment should be gone.
@@ -99,10 +104,16 @@ func TestDeleteCluster_CascadesServiceDeployments(t *testing.T) {
 	b.mu.RUnlock()
 
 	if realStillExists {
-		t.Error("real service deployment not cascade-deleted with cluster")
+		t.Error("real service deployment not deleted with service")
 	}
 
 	if extraStillExists {
-		t.Error("injected service deployment not cascade-deleted with cluster")
+		t.Error("injected service deployment not deleted with service")
+	}
+
+	// The cluster is now empty of services/tasks/container instances, so
+	// deletion succeeds.
+	if _, err = b.DeleteCluster("test-cluster"); err != nil {
+		t.Fatalf("DeleteCluster on empty cluster: %v", err)
 	}
 }

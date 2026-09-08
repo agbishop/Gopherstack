@@ -93,27 +93,32 @@ func (c *storedChannel) toSummary() *ChannelSummary {
 }
 
 type storedInput struct {
-	Tags      map[string]string `json:"tags"`
-	ARN       string            `json:"arn"`
-	ID        string            `json:"id"`
-	Name      string            `json:"name"`
-	InputType string            `json:"inputType"`
-	RoleARN   string            `json:"roleArn"`
-	State     string            `json:"state"`
+	Tags       map[string]string `json:"tags"`
+	ARN        string            `json:"arn"`
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	InputType  string            `json:"inputType"`
+	RoleARN    string            `json:"roleArn"`
+	State      string            `json:"state"`
+	SdiSources []string          `json:"sdiSources"`
 }
 
 func (i *storedInput) toInput() *Input {
 	tags := make(map[string]string, len(i.Tags))
 	maps.Copy(tags, i.Tags)
 
+	sdiSources := make([]string, len(i.SdiSources))
+	copy(sdiSources, i.SdiSources)
+
 	return &Input{
-		ARN:       i.ARN,
-		ID:        i.ID,
-		Name:      i.Name,
-		InputType: i.InputType,
-		RoleARN:   i.RoleARN,
-		State:     i.State,
-		Tags:      tags,
+		ARN:        i.ARN,
+		ID:         i.ID,
+		Name:       i.Name,
+		InputType:  i.InputType,
+		RoleARN:    i.RoleARN,
+		State:      i.State,
+		Tags:       tags,
+		SdiSources: sdiSources,
 	}
 }
 
@@ -601,7 +606,7 @@ func (r *storedReservation) toReservation() *Reservation {
 		Arn:             r.Arn, ReservationID: r.ReservationID, Name: r.Name,
 		OfferingID: r.OfferingID, OfferingDescription: r.OfferingDescription,
 		OfferingType: r.OfferingType, CurrencyCode: r.CurrencyCode,
-		Start: r.Start, End: r.End, Region: r.Region, State: r.State,
+		Start: r.Start, End: r.End, Region: r.Region, State: r.effectiveState(),
 		FixedPrice: r.FixedPrice, UsagePrice: r.UsagePrice,
 		Duration: r.Duration, DurationUnits: r.DurationUnits, Count: r.Count,
 	}
@@ -614,21 +619,24 @@ type storedScheduleAction struct {
 }
 
 type storedNetwork struct {
-	Tags                 map[string]string `json:"tags"`
-	ARN                  string            `json:"arn"`
-	ID                   string            `json:"id"`
-	Name                 string            `json:"name"`
-	State                string            `json:"state"`
-	AssociatedClusterIDs []string          `json:"associatedClusterIds"`
-	IPPools              []IPPool          `json:"ipPools"`
-	Routes               []Route           `json:"routes"`
+	Tags    map[string]string `json:"tags"`
+	ARN     string            `json:"arn"`
+	ID      string            `json:"id"`
+	Name    string            `json:"name"`
+	State   string            `json:"state"`
+	IPPools []IPPool          `json:"ipPools"`
+	Routes  []Route           `json:"routes"`
 }
 
-func (n *storedNetwork) toNetwork() *Network {
+// toNetwork converts to the domain Network shape. clusterIDs is the live set
+// of Cluster IDs whose NetworkSettings.InterfaceMappings reference this
+// network (derived, not persisted -- see clusterIDsForNetwork; gopherstack
+// previously hardcoded this to an always-empty slice, gopherstack-1um).
+func (n *storedNetwork) toNetwork(clusterIDs []string) *Network {
 	tags := make(map[string]string, len(n.Tags))
 	maps.Copy(tags, n.Tags)
-	clusters := make([]string, len(n.AssociatedClusterIDs))
-	copy(clusters, n.AssociatedClusterIDs)
+	clusters := make([]string, len(clusterIDs))
+	copy(clusters, clusterIDs)
 	pools := make([]IPPool, len(n.IPPools))
 	copy(pools, n.IPPools)
 	routes := make([]Route, len(n.Routes))

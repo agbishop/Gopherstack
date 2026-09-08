@@ -64,13 +64,14 @@ func (h *Handler) handlePurchaseOffering(
 	body map[string]any,
 ) error {
 	name, _ := body["name"].(string)
+	start, _ := body["start"].(string)
 	var count int32 = 1
 	if v, ok := body["count"].(float64); ok {
 		count = int32(v)
 	}
 	renewalSettings, _ := extractRenewalSettings(body)
 	tags := extractTags(body)
-	r, err := h.Backend.PurchaseOffering(offeringID, name, count, renewalSettings, tags)
+	r, err := h.Backend.PurchaseOffering(offeringID, name, start, count, renewalSettings, tags)
 	if err != nil {
 		return respondErr(c, err)
 	}

@@ -3,6 +3,7 @@ package kms
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,15 +89,21 @@ func (b *InMemoryBackend) CreateGrant(
 		return nil, fmt.Errorf("%w: Operations must contain at least one entry", ErrValidation)
 	}
 
-	// Validate grant name length.
+	// LimitExceededException's doc (kms@v1.55.4 types/errors.go): "a length
+	// constraint or quota was exceeded" -- CreateGrant declares it, and this is
+	// a length constraint (gopherstack-i4q8).
 	if len(input.Name) > maxGrantNameLength {
 		return nil, fmt.Errorf(
 			"%w: grant name must not exceed %d characters, got %d",
-			ErrValidation, maxGrantNameLength, len(input.Name),
+			ErrLimitExceeded, maxGrantNameLength, len(input.Name),
 		)
 	}
 
-	// Validate each operation against the allowed set.
+	// CreateGrant does not declare UnsupportedOperationException (5rjn's CreateKey
+	// KeySpec/KeyUsage remedy doesn't transfer here) or ValidationException. But
+	// GrantOperation is a plain enum-constrained string shape (api-2.json), the same
+	// single-field structural class as q9bs's GetPublicKey precedent, not a cross-field
+	// business rule like KeySpec/KeyUsage -- so ErrValidation is kept (gopherstack-jyi3).
 	for _, op := range input.Operations {
 		if !isValidGrantOperation(op) {
 			return nil, fmt.Errorf(
@@ -111,15 +118,17 @@ func (b *InMemoryBackend) CreateGrant(
 
 	// Store the grant in the key's own region (ARN-embedded region for an ARN
 	// input), so ListGrants/RevokeGrant/RetireGrant addressing the key the same
-	// way find it.
-	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID)
+	// way find it. All four grant ops recognize InvalidArnException for a
+	// malformed KeyId ARN (gopherstack-qxaj).
+	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
 
 	keyID := key.KeyID
 
-	if key.KeyState == KeyStatePendingDeletion || key.KeyState == KeyStatePendingImport {
+	if key.KeyState == KeyStatePendingDeletion || key.KeyState == KeyStatePendingImport ||
+		key.KeyState == KeyStatePendingReplicaDeletion {
 		return nil, keyStateError(key)
 	}
 
@@ -200,12 +209,18 @@ func (b *InMemoryBackend) findGrantByToken(grantTokens []string) *Grant {
 	return nil
 }
 
-// validateGrantTokenConstraints checks that, if a grant token is provided, the encryption
-// context satisfies the grant's constraints. No-op when grantTokens is empty.
-// Must be called with at least a read lock held.
+// grantPermitsOperation reports whether the grant's Operations list authorizes operation.
+func grantPermitsOperation(grant *Grant, operation string) bool {
+	return slices.Contains(grant.Operations, operation)
+}
+
+// validateGrantTokenConstraints checks that, if a grant token is provided, it authorizes
+// operation and the encryption context satisfies the grant's constraints. No-op when
+// grantTokens is empty. Must be called with at least a read lock held.
 func (b *InMemoryBackend) validateGrantTokenConstraints(
 	_ context.Context,
 	grantTokens []string,
+	operation string,
 	encCtx map[string]string,
 ) error {
 	if len(grantTokens) == 0 {
@@ -222,6 +237,13 @@ func (b *InMemoryBackend) validateGrantTokenConstraints(
 		return fmt.Errorf("%w: grant token has expired", ErrInvalidGrantToken)
 	}
 
+	if !grantPermitsOperation(grant, operation) {
+		return fmt.Errorf(
+			"%w: grant %q does not permit operation %q",
+			ErrAccessDenied, grant.GrantID, operation,
+		)
+	}
+
 	if !grantConstraintsSatisfied(grant.Constraints, encCtx) {
 		return fmt.Errorf(
 			"%w: encryption context does not satisfy grant constraints",
@@ -233,13 +255,14 @@ func (b *InMemoryBackend) validateGrantTokenConstraints(
 }
 
 // validateGrantTokenPresence checks that, if grant tokens are provided, at least one
-// resolves to an existing, non-expired grant. Unlike validateGrantTokenConstraints,
-// it does not evaluate EncryptionContext-based grant constraints: per AWS KMS docs,
-// EncryptionContextEquals/EncryptionContextSubset constraints apply only to operations
-// that support an encryption context. Sign, Verify, GetPublicKey, GenerateMac, VerifyMac,
-// and DeriveSharedSecret do not, so only grant-token validity (existence + TTL) is checked.
-// Must be called with at least a read lock held.
-func (b *InMemoryBackend) validateGrantTokenPresence(grantTokens []string) error {
+// resolves to an existing, non-expired grant that authorizes operation. Unlike
+// validateGrantTokenConstraints, it does not evaluate EncryptionContext-based grant
+// constraints: per AWS KMS docs, EncryptionContextEquals/EncryptionContextSubset
+// constraints apply only to operations that support an encryption context. Sign, Verify,
+// GetPublicKey, GenerateMac, VerifyMac, and DeriveSharedSecret do not, so only grant-token
+// validity (existence + TTL + Operations) is checked. Must be called with at least a read
+// lock held.
+func (b *InMemoryBackend) validateGrantTokenPresence(grantTokens []string, operation string) error {
 	if len(grantTokens) == 0 {
 		return nil
 	}
@@ -251,6 +274,13 @@ func (b *InMemoryBackend) validateGrantTokenPresence(grantTokens []string) error
 
 	if !grant.TokenIssuedAt.IsZero() && time.Since(grant.TokenIssuedAt) > grantTokenTTL {
 		return fmt.Errorf("%w: grant token has expired", ErrInvalidGrantToken)
+	}
+
+	if !grantPermitsOperation(grant, operation) {
+		return fmt.Errorf(
+			"%w: grant %q does not permit operation %q",
+			ErrAccessDenied, grant.GrantID, operation,
+		)
 	}
 
 	return nil
@@ -266,7 +296,7 @@ func (b *InMemoryBackend) ListGrants(
 
 	// Read grants from the key's own region (ARN-embedded region for an ARN input),
 	// matching where CreateGrant stored them.
-	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID)
+	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +353,7 @@ func (b *InMemoryBackend) RevokeGrant(ctx context.Context, input *RevokeGrantInp
 
 	// Resolve against the key's own region (ARN-embedded region for an ARN input)
 	// so the grant is found in the store CreateGrant wrote it to.
-	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID)
+	key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}
@@ -368,7 +398,7 @@ func (b *InMemoryBackend) RetireGrant(ctx context.Context, input *RetireGrantInp
 	// grant created via a cross-region ARN is retired consistently. When no KeyId
 	// is supplied there is no region hint, so search every region for the grant ID.
 	if input.KeyID != "" {
-		key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID)
+		key, region, err := b.resolveKeyAndRegion(ctx, input.KeyID, ErrInvalidArn)
 		if err != nil {
 			return err
 		}

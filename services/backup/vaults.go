@@ -247,9 +247,8 @@ func (b *InMemoryBackend) CreateLogicallyAirGappedBackupVault(
 // /logically-air-gapped-backup-vaults/{BackupVaultName}/... paths), so the
 // name is resolved and stored here rather than re-derived from the ARN later.
 func (b *InMemoryBackend) CreateRestoreAccessBackupVault(
-	sourceVaultArn, vaultName string,
-	_ /* creatorRequestID */ string,
-	_ /* kv */ map[string]string,
+	sourceVaultArn, vaultName, creatorRequestID string,
+	kv map[string]string,
 ) (*RestoreAccessVault, error) {
 	b.mu.Lock("CreateRestoreAccessBackupVault")
 	defer b.mu.Unlock()
@@ -269,7 +268,14 @@ func (b *InMemoryBackend) CreateRestoreAccessBackupVault(
 		vaultName = uuid.NewString()
 	}
 
-	if b.restoreAccessVaults.Has(vaultName) {
+	if existing, exists := b.restoreAccessVaults.Get(vaultName); exists {
+		// Idempotent create: same CreatorRequestId returns existing vault.
+		if creatorRequestID != "" && existing.CreatorRequestID == creatorRequestID {
+			cp := *existing
+
+			return &cp, nil
+		}
+
 		return nil, fmt.Errorf(
 			"%w: restore access vault %s already exists",
 			ErrAlreadyExists,
@@ -278,15 +284,22 @@ func (b *InMemoryBackend) CreateRestoreAccessBackupVault(
 	}
 
 	vaultARN := arn.Build("backup", b.region, b.accountID, "restore-access-backup-vault:"+vaultName)
+	t := tags.New("backup.restore-access-vault." + vaultName + ".tags")
+	if len(kv) > 0 {
+		t.Merge(kv)
+	}
 	rav := &RestoreAccessVault{
 		RestoreAccessBackupVaultName: vaultName,
 		RestoreAccessBackupVaultArn:  vaultARN,
 		SourceBackupVaultArn:         sourceVaultArn,
 		SourceBackupVaultName:        sourceName,
+		CreatorRequestID:             creatorRequestID,
 		VaultState:                   statusCreating,
 		CreationDate:                 time.Now().UTC(),
+		Tags:                         t,
 	}
 	b.restoreAccessVaults.Put(rav)
+	b.restoreAccessVaultARNIndex[vaultARN] = vaultName
 	cp := *rav
 
 	return &cp, nil
@@ -336,7 +349,9 @@ func (b *InMemoryBackend) RevokeRestoreAccessBackupVault(vaultName, restoreAcces
 		if v.SourceBackupVaultName != vaultName {
 			break
 		}
+		delete(b.restoreAccessVaultARNIndex, v.RestoreAccessBackupVaultArn)
 		b.restoreAccessVaults.Delete(v.RestoreAccessBackupVaultName)
+		v.Tags.Close()
 
 		return nil
 	}

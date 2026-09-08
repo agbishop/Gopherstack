@@ -222,6 +222,27 @@ func TestInMemoryBackend_DeleteSamplingRule(t *testing.T) {
 	}
 }
 
+func TestDeleteSamplingRule_ClearsResourceTagsOnRecreate(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+
+	created, err := b.CreateSamplingRule(xray.SamplingRule{RuleName: "reused-rule", Priority: 1})
+	require.NoError(t, err)
+	require.NoError(t, b.TagResource(created.RuleARN, map[string]string{"env": "prod"}))
+
+	_, err = b.DeleteSamplingRule("reused-rule", "")
+	require.NoError(t, err)
+
+	recreated, err := b.CreateSamplingRule(xray.SamplingRule{RuleName: "reused-rule", Priority: 1})
+	require.NoError(t, err)
+	require.Equal(t, created.RuleARN, recreated.RuleARN)
+
+	tags, err := b.ListTagsForResource(recreated.RuleARN)
+	require.NoError(t, err)
+	assert.Empty(t, tags)
+}
+
 // TestModifiedAtTracking verifies ModifiedAt is updated on UpdateSamplingRule.
 func TestModifiedAtTracking(t *testing.T) {
 	t.Parallel()

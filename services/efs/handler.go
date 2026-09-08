@@ -586,57 +586,49 @@ func (h *Handler) dispatchTagAndMiscOps(
 	return false, nil
 }
 
-func (h *Handler) handleError(c *echo.Context, err error) error {
-	switch {
-	case errors.Is(err, ErrValidation):
-		c.Response().Header().Set("x-amzn-ErrorType", "ValidationException")
+// errClassification maps an error sentinel to the EFS error code and HTTP
+// status handleError reports for it.
+type errClassification struct {
+	err    error
+	code   string
+	status int
+}
 
-		return c.JSON(http.StatusBadRequest, errResp("ValidationException", err.Error()))
-	case errors.Is(err, ErrInvalidPolicy):
-		c.Response().Header().Set("x-amzn-ErrorType", "InvalidPolicyException")
-
-		return c.JSON(http.StatusBadRequest, errResp("InvalidPolicyException", err.Error()))
-	case errors.Is(err, ErrTooManyRequests):
-		c.Response().Header().Set("x-amzn-ErrorType", "TooManyRequests")
-
-		return c.JSON(http.StatusTooManyRequests, errResp("TooManyRequests", err.Error()))
-	case errors.Is(err, ErrFileSystemInUse):
-		c.Response().Header().Set("x-amzn-ErrorType", "FileSystemInUse")
-
-		return c.JSON(http.StatusConflict, errResp("FileSystemInUse", err.Error()))
-	case errors.Is(err, ErrMountTargetConflict):
-		c.Response().Header().Set("x-amzn-ErrorType", "MountTargetConflict")
-
-		return c.JSON(http.StatusConflict, errResp("MountTargetConflict", err.Error()))
-	case errors.Is(err, ErrSecurityGroupLimitExceeded):
-		c.Response().Header().Set("x-amzn-ErrorType", "SecurityGroupLimitExceeded")
-
-		return c.JSON(http.StatusBadRequest, errResp("SecurityGroupLimitExceeded", err.Error()))
-	case errors.Is(err, ErrNotFound):
-		c.Response().Header().Set("x-amzn-ErrorType", "FileSystemNotFound")
-
-		return c.JSON(http.StatusNotFound, errResp("FileSystemNotFound", err.Error()))
-	case errors.Is(err, ErrMountTargetNotFound):
-		c.Response().Header().Set("x-amzn-ErrorType", "MountTargetNotFound")
-
-		return c.JSON(http.StatusNotFound, errResp("MountTargetNotFound", err.Error()))
-	case errors.Is(err, ErrAccessPointNotFound):
-		c.Response().Header().Set("x-amzn-ErrorType", "AccessPointNotFound")
-
-		return c.JSON(http.StatusNotFound, errResp("AccessPointNotFound", err.Error()))
-	case errors.Is(err, ErrAlreadyExists):
-		c.Response().Header().Set("x-amzn-ErrorType", "FileSystemAlreadyExists")
-
-		return c.JSON(http.StatusConflict, errResp("FileSystemAlreadyExists", err.Error()))
-	case errors.Is(err, ErrPolicyNotFound):
-		c.Response().Header().Set("x-amzn-ErrorType", "PolicyNotFound")
-
-		return c.JSON(http.StatusNotFound, errResp("PolicyNotFound", err.Error()))
-	default:
-		c.Response().Header().Set("x-amzn-ErrorType", "InternalServerError")
-
-		return c.JSON(http.StatusInternalServerError, errResp("InternalServerError", err.Error()))
+// Adding a 15th case to handleError's old switch tripped cyclop; a
+// data-driven lookup keeps handleError itself at a single loop+return
+// regardless of how many error codes EFS grows.
+func efsErrClassifications() []errClassification {
+	return []errClassification{
+		{ErrValidation, "ValidationException", http.StatusBadRequest},
+		{ErrBadRequest, "BadRequest", http.StatusBadRequest},
+		{ErrInvalidPolicy, "InvalidPolicyException", http.StatusBadRequest},
+		{ErrTooManyRequests, "TooManyRequests", http.StatusTooManyRequests},
+		{ErrFileSystemInUse, "FileSystemInUse", http.StatusConflict},
+		{ErrMountTargetConflict, "MountTargetConflict", http.StatusConflict},
+		{ErrIncorrectFileSystemLifeCycleState, "IncorrectFileSystemLifeCycleState", http.StatusConflict},
+		{ErrSecurityGroupLimitExceeded, "SecurityGroupLimitExceeded", http.StatusBadRequest},
+		{ErrNotFound, "FileSystemNotFound", http.StatusNotFound},
+		{ErrMountTargetNotFound, "MountTargetNotFound", http.StatusNotFound},
+		{ErrAccessPointNotFound, "AccessPointNotFound", http.StatusNotFound},
+		{ErrSubnetNotFound, "SubnetNotFound", http.StatusNotFound},
+		{ErrAlreadyExists, "FileSystemAlreadyExists", http.StatusConflict},
+		{ErrReplicationConfigExists, "ConflictException", http.StatusConflict},
+		{ErrPolicyNotFound, "PolicyNotFound", http.StatusNotFound},
 	}
+}
+
+func (h *Handler) handleError(c *echo.Context, err error) error {
+	for _, ec := range efsErrClassifications() {
+		if errors.Is(err, ec.err) {
+			c.Response().Header().Set("x-amzn-ErrorType", ec.code)
+
+			return c.JSON(ec.status, errResp(ec.code, err.Error()))
+		}
+	}
+
+	c.Response().Header().Set("x-amzn-ErrorType", "InternalServerError")
+
+	return c.JSON(http.StatusInternalServerError, errResp("InternalServerError", err.Error()))
 }
 
 func errResp(code, msg string) map[string]string {

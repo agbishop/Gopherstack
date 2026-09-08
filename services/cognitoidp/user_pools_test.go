@@ -33,6 +33,123 @@ func TestCreateUserPool_PasswordPolicy_Persisted(t *testing.T) {
 	assert.True(t, got.PasswordPolicy.RequireSymbols)
 }
 
+// TestDeleteUserPool_ClearsUserDeviceState verifies DeleteUserPool's user
+// cascade clears devices/authEvents for each user, not just the user record
+// itself. The cascade deletes users directly (b.users.Delete) instead of
+// calling AdminDeleteUser, so it does not inherit AdminDeleteUser's own
+// devices/authEvents cleanup -- the cascade-variant of the ghost-row bug
+// class, where a parent delete bypasses the single-resource delete path that
+// holds the fix.
+func TestDeleteUserPool_ClearsUserDeviceState(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	pool, err := b.CreateUserPool("del-pool-device-state")
+	require.NoError(t, err)
+
+	_, err = b.AdminCreateUser(pool.ID, "some-user", "Pass1234!", nil)
+	require.NoError(t, err)
+
+	b.SeedDeviceForTest(pool.ID, "some-user", &cognitoidp.Device{DeviceKey: "dev1", Status: "valid"})
+	b.SeedAuthEventForTest(pool.ID, "some-user", &cognitoidp.AuthEvent{EventID: "ev1", EventType: "SignIn"})
+	require.True(t, b.HasDeviceStateForTest(pool.ID, "some-user"))
+
+	otherPool, err := b.CreateUserPool("del-pool-device-state-sibling")
+	require.NoError(t, err)
+	_, err = b.AdminCreateUser(otherPool.ID, "some-user", "Pass1234!", nil)
+	require.NoError(t, err)
+	b.SeedDeviceForTest(otherPool.ID, "some-user", &cognitoidp.Device{DeviceKey: "dev1", Status: "valid"})
+
+	require.NoError(t, b.DeleteUserPool(pool.ID))
+
+	assert.False(t, b.HasDeviceStateForTest(pool.ID, "some-user"))
+	assert.True(t, b.HasDeviceStateForTest(otherPool.ID, "some-user"),
+		"deleting one pool must not disturb another pool's device state")
+}
+
+// TestDeleteUserPool_RefusesWhenDomainAttached covers gopherstack-tq5q:
+// deleting a pool that still owns a domain must be refused, matching real
+// AWS Cognito (InvalidParameterException: "User pool cannot be deleted...
+// domain configured that should be deleted first" -- confirmed via the AWS
+// API's documented error, github.com/hashicorp/terraform-provider-aws#16479)
+// rather than silently orphaning the domain the way this backend used to.
+func TestDeleteUserPool_RefusesWhenDomainAttached(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	pool, err := b.CreateUserPool("domain-lockout-pool")
+	require.NoError(t, err)
+
+	_, err = b.CreateUserPoolDomain(pool.ID, "lockout-domain")
+	require.NoError(t, err)
+
+	deleteErr := b.DeleteUserPool(pool.ID)
+	require.ErrorIs(t, deleteErr, cognitoidp.ErrInvalidParameter)
+	assert.Equal(t, 1, b.UserPoolCount(), "pool must survive a refused delete")
+	assert.NotNil(t, b.FindUserPoolDomain("lockout-domain"), "domain must survive a refused delete")
+
+	// AWS's documented remediation: delete the domain first (still possible
+	// through the normal path since the pool is still alive), then the pool.
+	require.NoError(t, b.DeleteUserPoolDomain(pool.ID, "lockout-domain"))
+	require.NoError(t, b.DeleteUserPool(pool.ID))
+
+	// Recovery: the domain name is immediately usable again by a new pool.
+	newPool, err := b.CreateUserPool("post-lockout-pool")
+	require.NoError(t, err)
+	_, err = b.CreateUserPoolDomain(newPool.ID, "lockout-domain")
+	require.NoError(t, err)
+}
+
+// TestDeleteUserPool_DomainRefusal_DoesNotDisturbSiblingDomain is the
+// negative case: a refused delete on one pool must not touch another pool's
+// domain.
+func TestDeleteUserPool_DomainRefusal_DoesNotDisturbSiblingDomain(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	poolA, err := b.CreateUserPool("domain-sibling-a")
+	require.NoError(t, err)
+	poolB, err := b.CreateUserPool("domain-sibling-b")
+	require.NoError(t, err)
+
+	_, err = b.CreateUserPoolDomain(poolA.ID, "domain-a")
+	require.NoError(t, err)
+	_, err = b.CreateUserPoolDomain(poolB.ID, "domain-b")
+	require.NoError(t, err)
+
+	require.ErrorIs(t, b.DeleteUserPool(poolA.ID), cognitoidp.ErrInvalidParameter)
+	assert.NotNil(t, b.FindUserPoolDomain("domain-b"))
+
+	require.NoError(t, b.DeleteUserPoolDomain(poolA.ID, "domain-a"))
+	require.NoError(t, b.DeleteUserPool(poolA.ID))
+
+	assert.NotNil(t, b.FindUserPoolDomain("domain-b"), "deleting one pool must not disturb another pool's domain")
+}
+
+// TestDeleteUserPool_ClearsResourceTags verifies DeleteUserPool clears the
+// pool's own resourceTags entry. ListTagsForResource does a bare map lookup
+// on ARN with no pool-existence check, and TaggedResources feeds the
+// cross-service Resource Groups Tagging API (cli.go's wireTaggingCognitoIDP),
+// so a stale entry keeps a deleted pool's tags visible through both paths.
+func TestDeleteUserPool_ClearsResourceTags(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	pool, err := b.CreateUserPool("del-pool-tags")
+	require.NoError(t, err)
+	b.TagResource(pool.ARN, map[string]string{"env": "prod"})
+
+	otherPool, err := b.CreateUserPool("del-pool-tags-sibling")
+	require.NoError(t, err)
+	b.TagResource(otherPool.ARN, map[string]string{"env": "staging"})
+
+	require.NoError(t, b.DeleteUserPool(pool.ID))
+
+	assert.Empty(t, b.ListTagsForResource(pool.ARN))
+	assert.Equal(t, map[string]string{"env": "staging"}, b.ListTagsForResource(otherPool.ARN),
+		"deleting one pool must not disturb another pool's tags")
+}
+
 func TestHandler_CreateUserPool_WithPasswordPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -626,6 +743,65 @@ func TestInMemoryBackend_UserPoolReplicas(t *testing.T) {
 			assert.ErrorIs(t, err, cognitoidp.ErrReplicaNotFound)
 		})
 	}
+}
+
+// TestDeleteUserPoolReplica_CleansResourceTags covers gopherstack-rdq3:
+// unlike a user pool (random id), a replica's ARN is deterministic
+// (region + pool id), so deleting a replica and recreating one for the same
+// pool and Region genuinely inherits the dead replica's tags unless
+// DeleteUserPoolReplica clears resourceTags[replicaARN].
+func TestDeleteUserPoolReplica_CleansResourceTags(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	pool, err := b.CreateUserPool("replica-tags-pool")
+	require.NoError(t, err)
+
+	created, err := b.CreateUserPoolReplica(pool.ID, "us-west-2", map[string]string{"env": "prod"})
+	require.NoError(t, err)
+	replicaARN := created.ARN
+
+	require.NotEmpty(t, b.ListTagsForResource(replicaARN))
+
+	_, err = b.DeleteUserPoolReplica(pool.ID, "us-west-2")
+	require.NoError(t, err)
+
+	assert.Empty(t, b.ListTagsForResource(replicaARN), "deleted replica's ARN must not still resolve tags")
+
+	// Recreate a replica for the same pool+Region: since the ARN is
+	// deterministic, it must not inherit the dead replica's tags.
+	recreated, err := b.CreateUserPoolReplica(pool.ID, "us-west-2", nil)
+	require.NoError(t, err)
+	require.Equal(t, replicaARN, recreated.ARN, "replica ARN must be deterministic for the same pool+Region")
+
+	assert.Empty(
+		t, b.ListTagsForResource(recreated.ARN), "recreated replica must not inherit the deleted replica's tags",
+	)
+}
+
+// TestDeleteUserPoolReplica_DoesNotDisturbSiblingTags is the negative case:
+// deleting one pool's replica must not touch another pool's replica tags.
+func TestDeleteUserPoolReplica_DoesNotDisturbSiblingTags(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	keepPool, err := b.CreateUserPool("replica-keep-pool")
+	require.NoError(t, err)
+	doomedPool, err := b.CreateUserPool("replica-doomed-pool")
+	require.NoError(t, err)
+
+	kept, err := b.CreateUserPoolReplica(keepPool.ID, "us-west-2", map[string]string{"keep": "me"})
+	require.NoError(t, err)
+	doomed, err := b.CreateUserPoolReplica(doomedPool.ID, "us-west-2", map[string]string{"doomed": "yes"})
+	require.NoError(t, err)
+
+	_, err = b.DeleteUserPoolReplica(doomedPool.ID, "us-west-2")
+	require.NoError(t, err)
+
+	assert.Equal(t, map[string]string{"keep": "me"}, b.ListTagsForResource(kept.ARN))
+	assert.Empty(t, b.ListTagsForResource(doomed.ARN))
 }
 
 // TestHandler_UserPoolReplicas covers the HTTP handler wire shape for

@@ -191,9 +191,13 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 		}},
 		{name: "usersByEmail raw map and globalAliases table", run: func(t *testing.T) {
 			t.Helper()
-			// A duplicate RegisterToWorkMail with the same email must
-			// conflict -- proof usersByEmail/globalAliases round-tripped.
-			err := fresh.RegisterToWorkMail(ids.orgID, ids.userID, "alice@acme.com")
+			// RegisterToWorkMail for a second, still-DISABLED entity with
+			// alice's email must conflict -- proof usersByEmail/
+			// globalAliases round-tripped. (Registering alice's own
+			// already-ENABLED user with her own email is now a no-op per
+			// RegisterToWorkMail's real doc, so it can no longer serve as
+			// the round-trip proof here.)
+			err := fresh.RegisterToWorkMail(ids.orgID, ids.groupID, "alice@acme.com")
 			require.Error(t, err)
 			assert.ErrorIs(t, err, workmail.ErrEmailInUse)
 		}},

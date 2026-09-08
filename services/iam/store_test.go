@@ -45,6 +45,87 @@ func TestBackendResetAndPurge(t *testing.T) {
 	h.Purge(context.Background(), timeNow())
 }
 
+// TestBackendReset_ClearsPasswordAndFederationState covers gopherstack-54of:
+// Reset() must clear passwordPolicy, currentPassword, currentPasswordHistory
+// and outboundFederationEnabled, all mutated by real account.go operations,
+// none of which were named in Reset()'s field list.
+func TestBackendReset_ClearsPasswordAndFederationState(t *testing.T) {
+	t.Parallel()
+
+	t.Run("password_policy", func(t *testing.T) {
+		t.Parallel()
+
+		b := newBackend(t)
+		require.NoError(t, b.UpdateAccountPasswordPolicy(iam.PasswordPolicy{
+			MinimumPasswordLength: 20,
+			RequireSymbols:        true,
+		}))
+
+		b.Reset()
+
+		got := b.GetAccountPasswordPolicy()
+		assert.Equal(t, 8, got.MinimumPasswordLength,
+			"passwordPolicy must be cleared to nil so GetAccountPasswordPolicy falls back to the default")
+		assert.False(t, got.RequireSymbols, "custom RequireSymbols must not survive Reset")
+	})
+
+	t.Run("current_password", func(t *testing.T) {
+		t.Parallel()
+
+		b := newBackend(t)
+		require.NoError(t, b.ChangePassword("InitialOld1!", "SetBeforeReset1!"))
+
+		b.Reset()
+
+		// currentPassword started "" and was only ever set by the ChangePassword
+		// above; if Reset failed to clear it, "SetBeforeReset1!" would still be
+		// the required OldPassword and this mismatched call would fail.
+		err := b.ChangePassword("NotTheOldPassword1!", "AfterReset1!")
+		require.NoError(t, err,
+			"currentPassword must be cleared to \"\" so any OldPassword is accepted")
+	})
+
+	t.Run("current_password_history", func(t *testing.T) {
+		t.Parallel()
+
+		b := newBackend(t)
+		require.NoError(t, b.UpdateAccountPasswordPolicy(iam.PasswordPolicy{
+			MinimumPasswordLength:   8,
+			PasswordReusePrevention: 2,
+		}))
+		require.NoError(t, b.ChangePassword("InitialOld1!", "Password1!"))
+		require.NoError(t, b.ChangePassword("Password1!", "Password2!"))
+
+		b.Reset()
+
+		// Re-apply reuse prevention fresh after Reset (independent of whether
+		// passwordPolicy itself was cleared) and reuse the OldPassword value
+		// that satisfies the check whether or not currentPassword was cleared
+		// (it matches both the cleared "" bypass and a leftover stale value),
+		// isolating this assertion to currentPasswordHistory alone.
+		require.NoError(t, b.UpdateAccountPasswordPolicy(iam.PasswordPolicy{
+			MinimumPasswordLength:   8,
+			PasswordReusePrevention: 2,
+		}))
+
+		err := b.ChangePassword("Password2!", "Password1!")
+		require.NoError(t, err,
+			"currentPasswordHistory must be cleared so a pre-Reset password is reusable")
+	})
+
+	t.Run("outbound_federation_enabled", func(t *testing.T) {
+		t.Parallel()
+
+		b := newBackend(t)
+		b.DisableOutboundWebIdentityFederation()
+
+		b.Reset()
+
+		assert.True(t, b.OutboundWebIdentityFederationEnabled(),
+			"outboundFederationEnabled must be reset to its constructed default (true)")
+	})
+}
+
 // newBackend returns a fresh InMemoryBackend for testing.
 func newBackend(t *testing.T) *iam.InMemoryBackend {
 	t.Helper()

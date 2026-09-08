@@ -271,6 +271,12 @@ func (b *InMemoryBackend) DeleteCluster(ctx context.Context, id string) error {
 		return err
 	}
 
+	// AWS refuses DeleteCacheCluster for a cluster that is the last read replica
+	// of a replication group; use DeleteReplicationGroup instead.
+	if c.ReplicationGroupID != "" && b.isLastRGMemberLocked(region, c.ReplicationGroupID, id) {
+		return ErrClusterInReplicationGroup
+	}
+
 	// With a lifecycle delay, dwell in "deleting" so waiters can observe it; the
 	// engine stays live and the entry is reaped by the next write op once the
 	// deadline passes. Without a delay (default), delete synchronously.
@@ -285,6 +291,98 @@ func (b *InMemoryBackend) DeleteCluster(ctx context.Context, id string) error {
 	b.releaseClusterLocked(c)
 	tbl.Delete(id)
 	b.appendEventLocked(id, "cache-cluster", "cluster deleted")
+
+	return nil
+}
+
+// isLastRGMemberLocked reports whether clusterID is the only remaining cluster
+// carrying replicationGroupID in region. Caller must hold b.mu.
+func (b *InMemoryBackend) isLastRGMemberLocked(region, replicationGroupID, clusterID string) bool {
+	for _, other := range b.clustersStore(region).All() {
+		if other.ClusterID != clusterID && other.ReplicationGroupID == replicationGroupID {
+			return false
+		}
+	}
+
+	return true
+}
+
+// SetClusterSubnetGroupName records the cache subnet group a cluster was
+// created with. Kept separate from CreateClusterWithOptions to avoid
+// widening that method's already-long positional signature.
+func (b *InMemoryBackend) SetClusterSubnetGroupName(ctx context.Context, id, subnetGroupName string) error {
+	if subnetGroupName == "" {
+		return nil
+	}
+
+	region := getRegion(ctx, b.region)
+
+	b.mu.Lock("SetClusterSubnetGroupName")
+	defer b.mu.Unlock()
+
+	c, exists := b.clustersStore(region).Get(id)
+	if !exists {
+		return ErrClusterNotFound
+	}
+
+	c.SubnetGroupName = subnetGroupName
+
+	return nil
+}
+
+// SetClusterSnapshotRetentionLimit records how many days of automatic
+// snapshots a cluster retains. limit is a pointer so a caller that never sent
+// SnapshotRetentionLimit (nil) can be distinguished from one that explicitly
+// sent 0 -- AWS documents 0 as "backups are turned off" (api_op_
+// ModifyCacheCluster.go), not "leave unchanged". Kept separate from
+// CreateClusterWithOptions/ModifyCluster to avoid widening their already-long
+// positional signatures, same rationale as SetClusterSubnetGroupName.
+func (b *InMemoryBackend) SetClusterSnapshotRetentionLimit(ctx context.Context, id string, limit *int) error {
+	if limit == nil {
+		return nil
+	}
+
+	region := getRegion(ctx, b.region)
+
+	b.mu.Lock("SetClusterSnapshotRetentionLimit")
+	defer b.mu.Unlock()
+
+	c, exists := b.clustersStore(region).Get(id)
+	if !exists {
+		return ErrClusterNotFound
+	}
+
+	c.SnapshotRetentionLimit = *limit
+
+	return nil
+}
+
+// SetClusterReplicationGroupID attaches an existing cluster to an existing
+// replication group as a read replica, wiring CreateCacheCluster's
+// ReplicationGroupId parameter (api_op_CreateCacheCluster.go: "the cluster is
+// added to the specified replication group as a read replica"). Kept
+// separate from CreateClusterWithOptions for the same reason as
+// SetClusterSubnetGroupName.
+func (b *InMemoryBackend) SetClusterReplicationGroupID(ctx context.Context, id, replicationGroupID string) error {
+	if replicationGroupID == "" {
+		return nil
+	}
+
+	region := getRegion(ctx, b.region)
+
+	b.mu.Lock("SetClusterReplicationGroupID")
+	defer b.mu.Unlock()
+
+	if _, exists := b.replicationGroupsStore(region).Get(replicationGroupID); !exists {
+		return ErrReplicationGroupNotFound
+	}
+
+	c, exists := b.clustersStore(region).Get(id)
+	if !exists {
+		return ErrClusterNotFound
+	}
+
+	c.ReplicationGroupID = replicationGroupID
 
 	return nil
 }

@@ -190,10 +190,6 @@ func (h *Handler) deleteUser(ctx context.Context, c *echo.Context, form url.Valu
 			return xmlError(c, http.StatusNotFound, "UserNotFound", "User not found")
 		}
 
-		if errors.Is(err, ErrUserNotInGroup) {
-			return xmlError(c, http.StatusBadRequest, "InvalidParameterValue", err.Error())
-		}
-
 		return xmlError(c, http.StatusInternalServerError, "InternalFailure", err.Error())
 	}
 

@@ -875,6 +875,40 @@ func TestUpdateClusterConfig_Handler_AccessConfig(t *testing.T) {
 	assert.Equal(t, "API", ac["authenticationMode"])
 }
 
+// TestUpdateClusterConfig_AccessConfig_DoesNotClobberBootstrapPermissions
+// guards against a field-clobbering bug: types.UpdateAccessConfigRequest
+// (eks@v1.90.4 types/types.go:2727) has only AuthenticationMode --
+// BootstrapClusterCreatorAdminPermissions cannot be sent on this op by any
+// real client. UpdateClusterConfig must leave a cluster's existing bootstrap
+// flag untouched when only authenticationMode is being updated.
+func TestUpdateClusterConfig_AccessConfig_DoesNotClobberBootstrapPermissions(t *testing.T) {
+	t.Parallel()
+
+	h := newTestEKSHandler(t)
+	doREST(t, h, http.MethodPost, "/clusters", map[string]any{
+		"name": "upd-ac-no-clobber",
+		"accessConfig": map[string]any{
+			"authenticationMode":                      "CONFIG_MAP",
+			"bootstrapClusterCreatorAdminPermissions": true,
+		},
+	})
+
+	rec := doREST(t, h, http.MethodPost, "/clusters/upd-ac-no-clobber/update-config", map[string]any{
+		"accessConfig": map[string]any{
+			"authenticationMode": "API",
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	desc := doREST(t, h, http.MethodGet, "/clusters/upd-ac-no-clobber", nil)
+	cluster := parseResp(t, desc)["cluster"].(map[string]any)
+	ac, ok := cluster["accessConfig"].(map[string]any)
+	require.True(t, ok, "accessConfig must be present after update")
+	assert.Equal(t, "API", ac["authenticationMode"])
+	assert.Equal(t, true, ac["bootstrapClusterCreatorAdminPermissions"],
+		"UpdateClusterConfig must not clobber this field -- it is not part of this op's wire shape")
+}
+
 func TestUpdateClusterConfig_Handler_ComputeConfig(t *testing.T) {
 	t.Parallel()
 

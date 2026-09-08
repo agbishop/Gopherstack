@@ -493,8 +493,17 @@ func (db *InMemoryDB) GetRecords(
 	}
 
 	limit := int64(maxRecords)
-	if input.Limit != nil && *input.Limit > 0 && int64(*input.Limit) < limit {
-		limit = int64(*input.Limit)
+	if input.Limit != nil {
+		// AWS: "GetRecords was called with a value of more than 1000 for the
+		// limit request parameter" (dynamodbstreams types.LimitExceededException doc).
+		if *input.Limit > maxRecords {
+			return nil, NewLimitExceededException(
+				fmt.Sprintf("Member must have value less than or equal to %d", maxRecords),
+			)
+		}
+		if *input.Limit > 0 {
+			limit = int64(*input.Limit)
+		}
 	}
 
 	trimSeq, currentSeq, tail, head := streamRecordsSnapshotRLocked(table)

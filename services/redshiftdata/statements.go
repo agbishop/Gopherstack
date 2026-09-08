@@ -29,6 +29,9 @@ func (b *InMemoryBackend) ExecuteStatement(
 	if sql == "" {
 		return nil, fmt.Errorf("%w: Sql is required", ErrValidation)
 	}
+	if err := ValidateConnectionTarget(clusterIdentifier, workgroupName); err != nil {
+		return nil, err
+	}
 
 	resultFormat, err := requestedResultFormat(resultFormat)
 	if err != nil {
@@ -89,6 +92,9 @@ func (b *InMemoryBackend) BatchExecuteStatement(
 		if sql == "" {
 			return nil, fmt.Errorf("%w: Sqls[%d] must not be empty", ErrValidation, i)
 		}
+	}
+	if err := ValidateConnectionTarget(clusterIdentifier, workgroupName); err != nil {
+		return nil, err
 	}
 
 	// Database is not validated as required -- see ExecuteStatement's doc

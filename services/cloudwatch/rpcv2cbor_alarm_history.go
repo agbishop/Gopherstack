@@ -13,6 +13,7 @@ func (h *Handler) cborDescribeAlarmHistory(input cbor.Map, c *echo.Context) erro
 	alarmTypes := cborStrList(input, "AlarmTypes")
 	historyItemType := cborStr(input, "HistoryItemType")
 	nextToken := cborStr(input, "NextToken")
+	scanBy := cborStr(input, "ScanBy")
 	maxRecords := int(cborInt32(input, "MaxRecords"))
 
 	// Treat zero-value times as unset (cborTime returns now when key is missing).
@@ -29,6 +30,7 @@ func (h *Handler) cborDescribeAlarmHistory(input cbor.Map, c *echo.Context) erro
 		alarmTypes,
 		historyItemType,
 		nextToken,
+		scanBy,
 		sd,
 		ed,
 		maxRecords,

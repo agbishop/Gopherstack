@@ -282,6 +282,9 @@ func userMatchesFilter(u *User, filter *UserFilter) bool {
 }
 
 // RegisterToWorkMail assigns an email address to a user/group/resource.
+// Per its own doc (api_op_RegisterToWorkMail.go), it "performs no change if
+// the user, group, or resource is enabled" -- an already-ENABLED entity is
+// left untouched (including its existing email) rather than reassigned.
 func (b *InMemoryBackend) RegisterToWorkMail(orgID, entityID, email string) error {
 	b.mu.Lock("RegisterToWorkMail")
 	defer b.mu.Unlock()
@@ -290,56 +293,90 @@ func (b *InMemoryBackend) RegisterToWorkMail(orgID, entityID, email string) erro
 		return fmt.Errorf("%w: organization %q not found", ErrNotFound, orgID)
 	}
 
+	if u := b.findUser(orgID, entityID); u != nil {
+		return b.registerUserToWorkMail(orgID, u, email)
+	}
+	if g := b.findGroup(orgID, entityID); g != nil {
+		return b.registerGroupToWorkMail(orgID, g, email)
+	}
+	if r := b.findResource(orgID, entityID); r != nil {
+		return b.registerResourceToWorkMail(orgID, r, email)
+	}
+
+	return fmt.Errorf("%w: entity %q not found", ErrNotFound, entityID)
+}
+
+func (b *InMemoryBackend) registerUserToWorkMail(orgID string, u *User, email string) error {
+	if u.State == stateEnabled {
+		return nil
+	}
+	if err := b.checkEmailAvailable(orgID, email); err != nil {
+		return err
+	}
+	if u.Email != "" {
+		delete(b.usersByEmail[orgID], u.Email)
+		b.globalAliases.Delete(u.Email)
+	}
+
+	now := time.Now().UTC()
+	u.Email = email
+	u.State = stateEnabled
+	u.EnabledDate = now
+	u.MailboxProvisionedDate = now
+	b.usersByEmail[orgID][email] = u.UserID
+	b.globalAliases.Put(&trackedAlias{Alias: email, OrgID: orgID, EntityID: u.UserID})
+
+	return nil
+}
+
+func (b *InMemoryBackend) registerGroupToWorkMail(orgID string, g *Group, email string) error {
+	if g.State == stateEnabled {
+		return nil
+	}
+	if err := b.checkEmailAvailable(orgID, email); err != nil {
+		return err
+	}
+	if g.Email != "" {
+		delete(b.groupsByEmail[orgID], g.Email)
+		b.globalAliases.Delete(g.Email)
+	}
+
+	g.Email = email
+	g.State = stateEnabled
+	g.EnabledDate = time.Now().UTC()
+	b.groupsByEmail[orgID][email] = g.GroupID
+	b.globalAliases.Put(&trackedAlias{Alias: email, OrgID: orgID, EntityID: g.GroupID})
+
+	return nil
+}
+
+func (b *InMemoryBackend) registerResourceToWorkMail(orgID string, r *Resource, email string) error {
+	if r.State == stateEnabled {
+		return nil
+	}
+	if err := b.checkEmailAvailable(orgID, email); err != nil {
+		return err
+	}
+	if r.Email != "" {
+		delete(b.resourcesByEmail[orgID], r.Email)
+		b.globalAliases.Delete(r.Email)
+	}
+
+	r.Email = email
+	r.State = stateEnabled
+	r.EnabledDate = time.Now().UTC()
+	b.resourcesByEmail[orgID][email] = r.ResourceID
+	b.globalAliases.Put(&trackedAlias{Alias: email, OrgID: orgID, EntityID: r.ResourceID})
+
+	return nil
+}
+
+func (b *InMemoryBackend) checkEmailAvailable(orgID, email string) error {
 	if ta, exists := b.globalAliases.Get(email); exists && ta.OrgID == orgID {
 		return fmt.Errorf("%w: email %q already in use", ErrEmailInUse, email)
 	}
 
-	now := time.Now().UTC()
-
-	if u := b.findUser(orgID, entityID); u != nil {
-		if u.Email != "" {
-			delete(b.usersByEmail[orgID], u.Email)
-			b.globalAliases.Delete(u.Email)
-		}
-		u.Email = email
-		u.State = stateEnabled
-		u.EnabledDate = now
-		u.MailboxProvisionedDate = now
-		b.usersByEmail[orgID][email] = u.UserID
-		b.globalAliases.Put(&trackedAlias{Alias: email, OrgID: orgID, EntityID: u.UserID})
-
-		return nil
-	}
-
-	if g := b.findGroup(orgID, entityID); g != nil {
-		if g.Email != "" {
-			delete(b.groupsByEmail[orgID], g.Email)
-			b.globalAliases.Delete(g.Email)
-		}
-		g.Email = email
-		g.State = stateEnabled
-		g.EnabledDate = now
-		b.groupsByEmail[orgID][email] = g.GroupID
-		b.globalAliases.Put(&trackedAlias{Alias: email, OrgID: orgID, EntityID: g.GroupID})
-
-		return nil
-	}
-
-	if r := b.findResource(orgID, entityID); r != nil {
-		if r.Email != "" {
-			delete(b.resourcesByEmail[orgID], r.Email)
-			b.globalAliases.Delete(r.Email)
-		}
-		r.Email = email
-		r.State = stateEnabled
-		r.EnabledDate = now
-		b.resourcesByEmail[orgID][email] = r.ResourceID
-		b.globalAliases.Put(&trackedAlias{Alias: email, OrgID: orgID, EntityID: r.ResourceID})
-
-		return nil
-	}
-
-	return fmt.Errorf("%w: entity %q not found", ErrNotFound, entityID)
+	return nil
 }
 
 // DeregisterFromWorkMail removes an email address assignment.

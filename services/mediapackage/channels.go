@@ -105,9 +105,11 @@ func (b *InMemoryBackend) DeleteChannel(id string) (*Channel, error) {
 	matches := slices.Clone(b.originEndpointsByChannel.Get(id))
 	for _, ep := range matches {
 		b.originEndpoints.Delete(ep.ID)
+		delete(b.tags, ep.ARN)
 	}
 
 	b.channels.Delete(id)
+	delete(b.tags, ch.ARN)
 
 	return ch.toChannel(), nil
 }

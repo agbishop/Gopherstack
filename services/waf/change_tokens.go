@@ -9,13 +9,24 @@ const (
 	maxChangeTokens = 10_000
 )
 
-// GetChangeToken returns a new change token in PROVISIONED state.
+// GetChangeToken returns the outstanding PROVISIONED token if one exists
+// (real AWS: "If your application submits a GetChangeToken request and then
+// submits a second GetChangeToken request before submitting a create,
+// update, or delete request, the second GetChangeToken request returns the
+// same value as the first" -- waf@v1.33.4 api_op_GetChangeToken.go:23-27),
+// otherwise it mints a new one. A token stops being outstanding once
+// MarkChangeTokenUsed consumes it.
 func (b *InMemoryBackend) GetChangeToken() string {
 	b.mu.Lock("GetChangeToken")
 	defer b.mu.Unlock()
 
+	if b.outstandingChangeToken != "" {
+		return b.outstandingChangeToken
+	}
+
 	token := uuid.New().String()
 	b.changeTokens[token] = changeTokenStatusPROVISIONED
+	b.outstandingChangeToken = token
 
 	if len(b.changeTokens) > maxChangeTokens {
 		for k, v := range b.changeTokens {
@@ -41,13 +52,19 @@ func (b *InMemoryBackend) GetChangeTokenStatus(token string) string {
 	return changeTokenStatusINSYNC
 }
 
-// MarkChangeTokenUsed transitions a change token from PROVISIONED to INSYNC.
+// MarkChangeTokenUsed transitions a change token from PROVISIONED to INSYNC
+// and, if it was the outstanding token, clears that so the next
+// GetChangeToken mints a fresh one.
 func (b *InMemoryBackend) MarkChangeTokenUsed(token string) {
 	b.mu.Lock("MarkChangeTokenUsed")
 	defer b.mu.Unlock()
 
 	if _, ok := b.changeTokens[token]; ok {
 		b.changeTokens[token] = changeTokenStatusINSYNC
+	}
+
+	if b.outstandingChangeToken == token {
+		b.outstandingChangeToken = ""
 	}
 }
 

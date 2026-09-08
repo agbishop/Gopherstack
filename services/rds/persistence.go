@@ -149,6 +149,18 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 	// FIS fault state is transient — clear it on restore so stale faults are not retained.
 	b.fisFailoverFaults = make(map[string]time.Time)
 
+	// The reconciler goroutine is not part of the snapshot and does not
+	// restart itself: without this, a restored instance/cluster whose
+	// pending transition deadline has already passed (the common case,
+	// since a restart takes longer than the transition delay) would stay
+	// stuck in "creating"/"modifying"/"rebooting" forever, since no
+	// Describe* call reconciles state and nothing else schedules the
+	// reconciler until an unrelated instance/cluster op happens to run.
+	b.reconcileInstancesLocked()
+	if len(b.instanceReadyAt) > 0 || len(b.clusterReadyAt) > 0 {
+		b.scheduleReconcilerLocked()
+	}
+
 	return nil
 }
 

@@ -23,6 +23,13 @@ type RedshiftDataExecutor interface {
 	ExecuteStatement(ctx context.Context, sql, clusterIdentifier, database, dbUser string) error
 }
 
+// CWLogsBackend is the subset of CloudWatch Logs operations that Firehose needs to deliver
+// a destination's CloudWatchLoggingOptions error-log events, wired via SetCWLogsBackend.
+type CWLogsBackend interface {
+	EnsureLogGroupAndStream(groupName, streamName string) error
+	PutLogLines(groupName, streamName string, messages []string) error
+}
+
 // KinesisReader is the subset of Kinesis operations that Firehose needs to poll source streams.
 type KinesisReader interface {
 	// ListShards returns all open shard IDs for the named stream.

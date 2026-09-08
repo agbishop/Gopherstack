@@ -365,29 +365,36 @@ func (b *InMemoryBackend) runAsyncInvocationRetryLoop(
 
 	for attempt := range maxRetries + 1 {
 		result, ok, containerTimedOut := b.waitForAsyncResult(srv, currentInv, timeout)
-		if !ok {
-			// A container timeout means the process is hung; evict it so the next
-			// invocation gets a fresh container, matching the synchronous timeout path.
-			if containerTimedOut {
-				b.cleanupTimedOutRuntime(functionName)
-			}
-
+		if !ok && !containerTimedOut {
+			// Backend shutdown: abandon without retry or destination delivery.
 			return
 		}
 
-		if !result.isError || attempt == maxRetries {
+		// AWS treats a runtime timeout as a function error for async retry/destination
+		// purposes: "Function errors include errors returned by the function's code and
+		// errors returned by the function's runtime, such as timeouts"
+		// (docs.aws.amazon.com/lambda/latest/dg/invocation-async-error-handling.html).
+		isError := result.isError
+		if !ok {
+			// A container timeout means the process is hung; evict it so the next
+			// invocation gets a fresh container, matching the synchronous timeout path.
+			b.cleanupTimedOutRuntime(functionName)
+			isError = true
+		}
+
+		if !isError || attempt == maxRetries {
 			outcome := asyncOutcome{
 				functionName:    functionName,
 				requestID:       inv.requestID,
 				requestPayload:  inv.payload,
 				responsePayload: result.payload,
-				functionError:   classifyFunctionError(result.isError, result.payload),
+				functionError:   classifyFunctionError(isError, result.payload),
 				invokeCount:     attempt + 1,
 				statusCode:      result.statusCode,
-				success:         !result.isError,
+				success:         !isError,
 			}
 
-			if !result.isError {
+			if !isError {
 				b.dispatchInvocationLog(
 					b.ctx,
 					functionName,

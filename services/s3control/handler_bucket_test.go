@@ -253,8 +253,37 @@ func TestBackendBucketReplication(t *testing.T) {
 		t.Parallel()
 
 		b := s3control.NewInMemoryBackend()
+		b.CreateBucket("acct1", "bkt")
 		err := b.DeleteBucketReplication("bkt")
 		require.NoError(t, err)
+	})
+
+	// "delete requires bucket to exist" locks in the fix: PutBucketReplication/
+	// GetBucketReplication/DeleteBucketReplication previously skipped the
+	// bucket-existence check every sibling bucket sub-resource op enforces
+	// (PutBucketPolicy, PutBucketTagging, PutBucketLifecycleConfiguration,
+	// PutBucketVersioning), silently accepting replication config for a
+	// bucket that was never created.
+	t.Run("delete requires bucket to exist", func(t *testing.T) {
+		t.Parallel()
+
+		b := s3control.NewInMemoryBackend()
+		require.Error(t, b.DeleteBucketReplication("no-such-bucket"))
+	})
+
+	t.Run("put requires bucket to exist", func(t *testing.T) {
+		t.Parallel()
+
+		b := s3control.NewInMemoryBackend()
+		require.Error(t, b.PutBucketReplication("no-such-bucket", "<Rule/>"))
+	})
+
+	t.Run("get requires bucket to exist", func(t *testing.T) {
+		t.Parallel()
+
+		b := s3control.NewInMemoryBackend()
+		_, err := b.GetBucketReplication("no-such-bucket")
+		require.Error(t, err)
 	})
 }
 
@@ -290,6 +319,7 @@ func TestBucketReplication_Table(t *testing.T) {
 
 			b := s3control.NewInMemoryBackend()
 			h := s3control.NewHandler(b)
+			b.CreateBucket("000000000000", tt.bucket)
 
 			body := `<ReplicationConfiguration>` + tt.rules + `</ReplicationConfiguration>`
 			rec := doS3ControlNewOpRequest(t, h, http.MethodPut,
@@ -308,22 +338,29 @@ func TestBucketReplication_Delete(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		bucket   string
-		preload  bool
-		wantCode int
+		name        string
+		bucket      string
+		createFirst bool
+		preload     bool
+		wantCode    int
 	}{
 		{
-			name:     "delete_existing",
-			bucket:   "my-bucket",
-			preload:  true,
-			wantCode: http.StatusNoContent,
+			name:        "delete_existing",
+			bucket:      "my-bucket",
+			createFirst: true,
+			preload:     true,
+			wantCode:    http.StatusNoContent,
 		},
 		{
-			name:     "delete_nonexistent_still_204",
-			bucket:   "missing-bucket",
-			preload:  false,
-			wantCode: http.StatusNoContent,
+			// Bucket never created: PutBucketReplication/
+			// DeleteBucketReplication now require the bucket to exist, like
+			// every other bucket sub-resource op, so this 404s instead of
+			// silently succeeding.
+			name:        "delete_nonexistent_bucket_404s",
+			bucket:      "missing-bucket",
+			createFirst: false,
+			preload:     false,
+			wantCode:    http.StatusNotFound,
 		},
 	}
 
@@ -334,8 +371,11 @@ func TestBucketReplication_Delete(t *testing.T) {
 			b := s3control.NewInMemoryBackend()
 			h := s3control.NewHandler(b)
 
+			if tt.createFirst {
+				b.CreateBucket("000000000000", tt.bucket)
+			}
 			if tt.preload {
-				b.PutBucketReplication(tt.bucket, "<Rule/>")
+				require.NoError(t, b.PutBucketReplication(tt.bucket, "<Rule/>"))
 			}
 
 			rec := doS3ControlNewOpRequest(t, h, http.MethodDelete,

@@ -512,9 +512,10 @@ func TestGetGeoLocation(t *testing.T) {
 			wantContain: "United States",
 		},
 		{
-			name:     "not_found",
-			query:    "?continentcode=XX",
-			wantCode: http.StatusNotFound,
+			name:        "not_found",
+			query:       "?continentcode=XX",
+			wantCode:    http.StatusNotFound,
+			wantContain: "<Code>NoSuchGeoLocation</Code>",
 		},
 	}
 

@@ -106,6 +106,7 @@ func (b *InMemoryBackend) DeleteThingType(thingTypeName string) error {
 	}
 
 	b.thingTypes.Delete(thingTypeName)
+	delete(b.resourceTags, tt.ThingTypeARN)
 
 	return nil
 }

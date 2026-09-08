@@ -2,7 +2,12 @@ package mediapackage
 
 import (
 	"maps"
+	"strings"
 )
+
+// arnFieldCount is the number of colon-separated fields in an ARN:
+// arn:<partition>:<service>:<region>:<account>:<resource>.
+const arnFieldCount = 6
 
 // TagResource adds or updates tags on a resource.
 func (b *InMemoryBackend) TagResource(resourceARN string, tags map[string]string) error {
@@ -58,38 +63,60 @@ func (b *InMemoryBackend) UntagResource(resourceARN string, keys []string) error
 	return nil
 }
 
-// findChannelByARN returns the channel with the given ARN, or nil. Must be called with lock held.
-func (b *InMemoryBackend) findChannelByARN(resourceARN string) *storedChannel {
-	var found *storedChannel
+// splitMediaPackageResourceARN extracts the resource-type segment
+// ("channels"/"origin_endpoints") and ID from a MediaPackage ARN's trailing
+// "<resourceType>/<id>" component: arn:<partition>:mediapackage:<region>:
+// <account>:<resourceType>/<id> (see buildChannelARN/buildOriginEndpointARN,
+// store.go).
+func splitMediaPackageResourceARN(resourceARN string) (string, string, bool) {
+	// Split to exactly 6 fields so a colon inside the ID stays in the
+	// resource segment rather than being mistaken for the segment boundary.
+	parts := strings.SplitN(resourceARN, ":", arnFieldCount)
+	if len(parts) != arnFieldCount {
+		return "", "", false
+	}
 
-	b.channels.Range(func(ch *storedChannel) bool {
-		if ch.ARN == resourceARN {
-			found = ch
+	resourceType, id, found := strings.Cut(parts[arnFieldCount-1], "/")
+	if !found {
+		return "", "", false
+	}
 
-			return false
-		}
-
-		return true
-	})
-
-	return found
+	return resourceType, id, true
 }
 
-// findOriginEndpointByARN returns the origin endpoint with the given ARN, or nil. Must be called with lock held.
+// findChannelByARN returns the channel with the given ARN, or nil. O(1): the
+// ID is read directly out of the ARN's "channels/<id>" resource segment
+// rather than scanning every channel. Must be called with lock held.
+func (b *InMemoryBackend) findChannelByARN(resourceARN string) *storedChannel {
+	resourceType, id, ok := splitMediaPackageResourceARN(resourceARN)
+	if !ok || resourceType != resourceTypeChannel {
+		return nil
+	}
+
+	ch, found := b.channels.Get(id)
+	if !found || ch.ARN != resourceARN {
+		return nil
+	}
+
+	return ch
+}
+
+// findOriginEndpointByARN returns the origin endpoint with the given ARN, or
+// nil. O(1): the ID is read directly out of the ARN's "origin_endpoints/<id>"
+// resource segment rather than scanning every origin endpoint. Must be
+// called with lock held.
 func (b *InMemoryBackend) findOriginEndpointByARN(resourceARN string) *storedOriginEndpoint {
-	var found *storedOriginEndpoint
+	resourceType, id, ok := splitMediaPackageResourceARN(resourceARN)
+	if !ok || resourceType != resourceTypeOriginEndpoint {
+		return nil
+	}
 
-	b.originEndpoints.Range(func(ep *storedOriginEndpoint) bool {
-		if ep.ARN == resourceARN {
-			found = ep
+	ep, found := b.originEndpoints.Get(id)
+	if !found || ep.ARN != resourceARN {
+		return nil
+	}
 
-			return false
-		}
-
-		return true
-	})
-
-	return found
+	return ep
 }
 
 // ListTagsForResource returns all tags for a resource.

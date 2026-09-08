@@ -184,6 +184,49 @@ func TestInstance(t *testing.T) {
 				assert.Equal(t, "online", inst["Status"])
 			},
 		},
+		{
+			name: "DeleteInstance succeeds on a stopped instance",
+			check: func(t *testing.T, h *opsworks.Handler, stackID, layerID string) {
+				t.Helper()
+				rec := doTarget(t, h, "CreateInstance", map[string]any{
+					"StackId":      stackID,
+					"LayerIds":     []string{layerID},
+					"InstanceType": "t2.micro",
+				})
+				instanceID := parseJSON(t, rec.Body.Bytes())["InstanceId"].(string)
+
+				rec = doTarget(t, h, "DeleteInstance", map[string]any{"InstanceId": instanceID})
+				assert.Equal(t, http.StatusOK, rec.Code)
+
+				rec = doTarget(t, h, "DescribeInstances", map[string]any{"StackId": stackID})
+				resp := parseJSON(t, rec.Body.Bytes())
+				assert.Empty(t, resp["Instances"].([]any))
+			},
+		},
+		{
+			// api_op_DeleteInstance.go: "You must stop an instance before
+			// you can delete it."
+			name: "DeleteInstance on an online instance returns ValidationException",
+			check: func(t *testing.T, h *opsworks.Handler, stackID, layerID string) {
+				t.Helper()
+				rec := doTarget(t, h, "CreateInstance", map[string]any{
+					"StackId":      stackID,
+					"LayerIds":     []string{layerID},
+					"InstanceType": "t2.micro",
+				})
+				instanceID := parseJSON(t, rec.Body.Bytes())["InstanceId"].(string)
+
+				doTarget(t, h, "StartInstance", map[string]any{"InstanceId": instanceID})
+
+				rec = doTarget(t, h, "DeleteInstance", map[string]any{"InstanceId": instanceID})
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+
+				rec = doTarget(t, h, "DescribeInstances", map[string]any{"StackId": stackID})
+				resp := parseJSON(t, rec.Body.Bytes())
+				assert.Len(t, resp["Instances"].([]any), 1)
+			},
+		},
 	}
 
 	for _, tt := range tests {

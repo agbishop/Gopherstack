@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	wssdk "github.com/aws/aws-sdk-go-v2/service/workspaces"
 	"github.com/aws/aws-sdk-go-v2/service/workspaces/types"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -93,6 +94,20 @@ func TestConnectionAliasCRUD(t *testing.T) { //nolint:paralleltest // existing i
 				t.Fatalf("disassociate: expected 200, got %d", rec6.Code)
 			}
 
+			// Unshare: real AWS requires "no longer shared with any accounts
+			// or associated with any directories" before delete
+			// (api_op_DeleteConnectionAlias.go doc comment).
+			recUnshare := doTargetRequest(t, h, "UpdateConnectionAliasPermission", map[string]any{
+				"AliasId": aliasID,
+				"ConnectionAliasPermission": map[string]any{
+					"SharedAccountId":  "999988887777",
+					"AllowAssociation": false,
+				},
+			})
+			if recUnshare.Code != http.StatusOK {
+				t.Fatalf("unshare: expected 200, got %d", recUnshare.Code)
+			}
+
 			// Delete
 			rec7 := doTargetRequest(t, h, "DeleteConnectionAlias", map[string]any{
 				"AliasId": aliasID,
@@ -102,6 +117,74 @@ func TestConnectionAliasCRUD(t *testing.T) { //nolint:paralleltest // existing i
 			}
 		})
 	}
+}
+
+// TestDeleteConnectionAlias_StillAssociated verifies DeleteConnectionAlias
+// rejects an alias still associated with a directory/resource: "You can
+// delete a connection alias only after it is no longer shared with any
+// accounts or associated with any directories" (api_op_DeleteConnectionAlias.go
+// doc comment).
+func TestDeleteConnectionAlias_StillAssociated(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandlerWithBackend(t)
+
+	rec := doTargetRequest(t, h, "CreateConnectionAlias", map[string]any{
+		"ConnectionString": "assoc.corp.example",
+	})
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	var createOut map[string]string
+	decodeJSON(t, rec.Body.Bytes(), &createOut)
+	aliasID := createOut["AliasId"]
+	require.NotEmpty(t, aliasID)
+
+	recAssoc := doTargetRequest(t, h, "AssociateConnectionAlias", map[string]any{
+		"AliasId":    aliasID,
+		"ResourceId": "res-still-associated",
+	})
+	require.Equal(t, http.StatusOK, recAssoc.Code, "body: %s", recAssoc.Body)
+
+	recDelete := doTargetRequest(t, h, "DeleteConnectionAlias", map[string]any{
+		"AliasId": aliasID,
+	})
+	assert.Equal(t, http.StatusBadRequest, recDelete.Code,
+		"deleting an associated alias must fail: body: %s", recDelete.Body)
+}
+
+// TestDeleteConnectionAlias_StillShared verifies DeleteConnectionAlias
+// rejects an alias still shared (AllowAssociation=true) with an account,
+// matching the same real-AWS precondition as
+// TestDeleteConnectionAlias_StillAssociated.
+func TestDeleteConnectionAlias_StillShared(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandlerWithBackend(t)
+
+	rec := doTargetRequest(t, h, "CreateConnectionAlias", map[string]any{
+		"ConnectionString": "shared.corp.example",
+	})
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	var createOut map[string]string
+	decodeJSON(t, rec.Body.Bytes(), &createOut)
+	aliasID := createOut["AliasId"]
+	require.NotEmpty(t, aliasID)
+
+	recShare := doTargetRequest(t, h, "UpdateConnectionAliasPermission", map[string]any{
+		"AliasId": aliasID,
+		"ConnectionAliasPermission": map[string]any{
+			"SharedAccountId":  "999988887777",
+			"AllowAssociation": true,
+		},
+	})
+	require.Equal(t, http.StatusOK, recShare.Code, "body: %s", recShare.Body)
+
+	recDelete := doTargetRequest(t, h, "DeleteConnectionAlias", map[string]any{
+		"AliasId": aliasID,
+	})
+	assert.Equal(t, http.StatusBadRequest, recDelete.Code,
+		"deleting a shared alias must fail: body: %s", recDelete.Body)
 }
 
 // TestDescribeConnectionAliases_Pagination proves the op pages through every

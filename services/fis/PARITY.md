@@ -1,8 +1,8 @@
 ---
 service: fis
 sdk_module: aws-sdk-go-v2/service/fis@v1.40.4   # version audited against
-last_audit_commit: f8a54fdb                       # HEAD when this manifest was written
-last_audit_date: 2026-08-19
+last_audit_commit: 66f10c59                       # HEAD when this manifest was written
+last_audit_date: 2026-09-04
 overall: A            # genuine wire/error-code fixes found and applied
 ops:
   CreateExperimentTemplate: {wire: ok, errors: ok, state: ok, persist: ok, note: 'experimentReportConfiguration now accepted + persisted; this sweep added targetAccountConfigurationsCount to the response envelope (see Notes)'}
@@ -36,13 +36,96 @@ families:
   experiment_lifecycle: {status: fixed, note: 'real background goroutine state machine: pending→initiating→running→completed/stopped/cancelled/failed — matches types.ExperimentStatus exactly. A prior revision had invented a "completing" status/action-status pair not present in the real SDK enum; removed this sweep (see Notes). "cancelled" (real enum value, previously never emitted) is now used when StopExperiment interrupts an experiment before it reaches "running". actionsMode skip-all is now a real dry-run mode (all actions → "skipped", no fault rules/external calls). StopExperiment cancels via context; snapshot/restore cancels in-flight goroutines and marks non-terminal experiments failed (no stuck-pending disguised no-op)'}
   experiment_reports: {status: ok, note: 'ExperimentTemplateReportConfiguration (create/update/get on templates) and ExperimentReportConfiguration/ExperimentReport (on running experiments, inherited from the template at StartExperiment time) implemented end-to-end this sweep — see Notes. Was entirely unimplemented before (gaps/deferred item).'}
   error_taxonomy: {status: ok, note: 'four exception shapes (ValidationException/ResourceNotFoundException/ConflictException/ServiceQuotaExceededException@402) verified against deserializers.go this sweep; no regressions'}
+  target_selection_mode: {status: fixed, note: 'FIXED (gopherstack-0u4/gopherstack-5csh): ExperimentTemplateTarget.SelectionMode (COUNT(n)/PERCENT(n)) was validated syntactically and echoed on the wire everywhere but never consulted when building the target ARN list handed to a real FISActionProvider -- COUNT(2) on a 4-ARN target still faulted all 4. types/types.go:888 (v1.40.4): "Scopes the identified resources to a specific count or percentage." Fixed with applySelectionMode() in experiments.go, applied in executeExternalAction. AWS does not publish the selection algorithm; gopherstack takes the first N ARNs in stored order for determinism. Test: TestStartExperiment_SelectionMode_ScopesTargetARNs (experiment_selection_mode_test.go).'}
+  stop_conditions: {status: fixed, note: 'FIXED (gopherstack-x842/gopherstack-9939): an "aws:cloudwatch:alarm" stop condition (types.ExperimentStopCondition{Source, Value}, types.go:517) was validated and stored but nothing ever reacted to the named alarm. gopherstack-9939 explicitly rejected polling in favor of a subscription: CloudWatch now exposes SubscribeAlarmStateChange(alarmArn, cb) (services/cloudwatch/alarm_subscriptions.go), fired from setAlarmStateLocked''s single state-transition choke point (alarm_state.go) after b.mu is released, mirroring the existing AlarmActions/SNS/Lambda dispatch pattern. FIS''s runExperiment subscribes each alarm-sourced stop condition at start and calls the existing StopExperiment(id) -- the same cancellation path manual stops already use (exp.cancel() -> ctx.Done() observed by waitForCompletionOrStop) -- when the alarm transitions to ALARM; unsubscribes on any terminal transition. cli.go''s wireFISStopConditions wires the two backends together; either side left unwired is a no-op (nil AlarmStateSubscriber / zero subscribers), identical to today''s behavior. Tests: services/cloudwatch/alarm_subscriptions_test.go, services/fis/stop_condition_alarm_test.go, cli_fis_cloudwatch_stopcondition_wiring_test.go.'}
 gaps:                     # known divergences NOT fixed — link bd issue ids
   - Experiment report generation is synchronous/immediate (terminal state computed the instant the owning experiment reaches a terminal status) rather than modeling the real async pending→running→completed/failed report lifecycle with its own timing. There is no real S3/CloudWatch backend to wait on in this emulator, so this is a reasonable simplification, not a wire-shape defect — the four modeled ExperimentReportStatus values pending/completed/cancelled/failed are all reachable (in the exact wire shape), "running" is skipped over.
   - CloudWatch dashboard snapshot capture (ExperimentReportConfigurationDataSources.CloudWatchDashboards) is accepted, validated, and echoed back on both the template and the running experiment's report configuration, but does not influence report generation (gopherstack has no real CloudWatch dashboard rendering to snapshot) — only the S3 output destination affects the generated ExperimentReportS3Report.
+  - experimentOptions.accountTargeting / emptyTargetResolutionMode (CreateExperimentTemplate) are accepted, validated only as opaque strings (no enum check), and echoed on the wire, but never consulted: gopherstack has no multi-account fan-out and no dynamic tag/filter-based resource discovery (ResourceTags/Filters are stored as informational metadata only -- see buildExperimentTargets), so there is no "empty target" or "multi-account" condition for these fields to actually govern. Implementing either requires building resource discovery/multi-account execution infrastructure that does not exist -- a design decision, not something the terse SDK doc comments (types.go:364,371: "The account/empty target resolution... setting/mode for an experiment") unambiguously specify how to build. Not fixed; not guessed at.
 deferred:                 # consciously not audited this pass (scope) — next pass targets
   - Built-in action catalog completeness vs the full real AWS FIS action list (gopherstack ships a curated subset across EC2/RDS/ECS/EKS/DynamoDB/Lambda/SSM/network/CloudWatch/Kinesis + the aws:fis:inject-api-*/wait built-ins; real AWS has more actions per service and evolves this list independently of the API shape)
 leaks: {status: clean, note: 'Restore() cancels in-flight experiment goroutines before replacing state; Shutdown() (service.Shutdowner) cancels all running experiments; janitor sweeps terminal experiments (completed/stopped/failed/cancelled) past TTL under the coarse lock with a pre-snapshotted slice so Delete-while-iterating is safe. No new goroutines/tickers were introduced for report generation — it is computed synchronously inside the same locked critical section that already finalizes the experiment''s terminal status (cleanupActions / markExperimentFailed), so there is nothing new to leak or drain on Shutdown.'}
 ---
+
+## Notes (2026-09-06 — gopherstack-x842 / gopherstack-9939)
+
+**"aws:cloudwatch:alarm" stop conditions were validated and stored but never
+evaluated.** x842 originally framed this as "the alarm state is never
+polled"; 9939 explicitly rejected a poller and specified a CloudWatch
+alarm-state-change subscription instead. Verified against the pinned SDK
+before building: `ExperimentStopCondition`/`ExperimentTemplateStopCondition`
+(`types/types.go:517,834`, v1.40.4) are `{Source, Value *string}`, with
+`CreateExperimentTemplateStopConditionInput`'s doc comment
+(`types/types.go:158`) confirming `Source` is `"aws:cloudwatch:alarm"` (or
+`"none"`) and `Value` is the alarm ARN — exactly what gopherstack already
+validated. `types.ExperimentStatus` (`types/enums.go:120`) has only
+`pending/initiating/running/completed/stopping/stopped/failed/cancelled` — no
+separate "stop-condition-triggered" status — so a triggered stop condition
+should land on the same `stopping`→`stopped` path a manual `StopExperiment`
+already takes, which gopherstack's `runExperiment`/`waitForCompletionOrStop`
+goroutine already implements via `exp.cancel()` → `ctx.Done()`.
+
+Fixed with a generic subscription, not a poller: `cloudwatch.InMemoryBackend`
+gained `SubscribeAlarmStateChange(alarmArn, cb) (unsubscribe func())`
+(`alarm_subscriptions.go`), fired from `setAlarmStateLocked`'s single
+state-transition choke point (`alarm_state.go`) — the same point
+`AlarmActions`/SNS/Lambda dispatch already uses — but independent of
+`ActionsEnabled`/muting, since a stop condition watches the alarm's state
+itself, not its configured actions. Callbacks are collected under `b.mu` and
+invoked only after it is released (mirroring `ses`'s `sendEmailLocked` /
+cloudwatch's own alarm-action pattern), so a subscriber can safely call back
+into FIS (or any other backend) without risking a cross-backend deadlock —
+proven by `TestSubscribeAlarmStateChange_CallbackRunsAfterLockReleased`. FIS's
+`runExperiment` subscribes each alarm-sourced stop condition at start
+(`subscribeStopConditions`, `experiments.go`) and calls the existing
+`StopExperiment(id)` when the alarm transitions to `ALARM`, unsubscribing on
+any terminal transition; a transition to any other state (e.g. `OK`) is a
+no-op. `cli.go`'s new `wireFISStopConditions` connects the two backends at
+startup, right alongside `wireCloudWatchAlarmActions`. Either direction left
+unwired is a silent no-op — a nil `AlarmStateSubscriber` on the FIS side, or
+zero subscribers on the CloudWatch side — identical to pre-fix behavior;
+proven by `TestFISStopCondition_CloudWatchUnwired_ExperimentUnaffected` and
+`TestSubscribeAlarmStateChange_NoSubscribers_Unaffected`.
+
+## Notes (2026-09-04 sweep — gopherstack-0u4)
+
+**`ExperimentTemplateTarget.SelectionMode` (`COUNT(n)`/`PERCENT(n)`) was inert.**
+gopherstack validated the syntax of `selectionMode` on template create/update
+(`selectionModeRe`, `experiment_templates.go`) and carried the value through
+onto every wire response, but never used it to narrow which `resourceArns`
+actually got sent to a fault-injection action provider. `executeExternalAction`
+(`experiments.go`) built `targetARNs` from the target's *entire*
+`ResourceArns` slice regardless of mode, so a target configured with
+`COUNT(2)` against 4 ARNs still faulted all 4 — the real SDK's own doc
+comment on this field (`types/types.go:888`, v1.40.4) is explicit: "Scopes the
+identified resources to a specific count or percentage." Fixed: a new
+`applySelectionMode(arns, mode)` helper takes the first N ARNs (`COUNT`) or
+`ceil(percentage)` of them (`PERCENT`) in stored order — AWS does not publish
+the actual selection algorithm (random vs. deterministic), so gopherstack
+picks deterministically for reproducible experiment runs, same posture as the
+existing report-generation/dashboard-snapshot simplifications already
+documented above. Proven by hand-revert in
+`TestStartExperiment_SelectionMode_ScopesTargetARNs`
+(`experiment_selection_mode_test.go`): reverting `executeExternalAction` to
+use the raw `ResourceArns` reproduces 4 target ARNs delivered to the mock
+action provider instead of the requested 2.
+
+Investigated per this sweep's brief but confirmed already correct / genuinely
+out of scope, not re-reported as new:
+
+- `gopherstack-x842` (stop conditions never evaluated against a real
+  CloudWatch alarm) — fixed in the 2026-09-06 sweep below (see `stop_conditions`
+  family entry above); no longer accurate as written here.
+- `DeleteExperimentTemplate` / `DeleteTargetAccountConfiguration` preconditions
+  — both SDK doc comments (`api_op_DeleteExperimentTemplate.go`,
+  `api_op_DeleteTargetAccountConfiguration.go`) are one-line, with no stated
+  precondition about in-flight experiments; the SDK is silent here, so no
+  precondition was added.
+- `accountTargeting` / `emptyTargetResolutionMode` — see `gaps` above; both
+  are structurally inert (no multi-account execution model, no dynamic
+  tag/filter resource discovery exists to have an "empty target" or
+  "multi-account" case), not a narrow bug fixable without new discovery
+  infrastructure.
 
 ## Notes (2026-08-19 sweep — wrapper-key / nested-shape audit)
 

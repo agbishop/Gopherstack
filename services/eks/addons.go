@@ -6,9 +6,17 @@ import (
 	"slices"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
 	"github.com/blackbirdworks/gopherstack/pkgs/tags"
 )
+
+// addonPodIdentityNamespace is the Kubernetes namespace EKS installs
+// AWS-managed add-ons into when CreateAddonInput.NamespaceConfig is absent
+// (vpc-cni, coredns, kube-proxy, etc -- see AddonInfo.DefaultNamespace,
+// eks@v1.90.4 types/types.go:207).
+const addonPodIdentityNamespace = "kube-system"
 
 // addonTransitionDelay is the async delay before a CREATING addon reaches ACTIVE.
 const addonTransitionDelay = 100 * time.Millisecond
@@ -45,9 +53,14 @@ func isValidResolveConflicts(s string) bool {
 }
 
 // CreateAddon creates a new managed add-on in a cluster.
+//
+// Unlike UpdateAddon, CreateAddonInput.PodIdentityAssociations has no
+// tri-state semantics: it is a plain create-time list (verified against the
+// SDK doc comment, which says nothing about empty-versus-absent).
 func (b *InMemoryBackend) CreateAddon(
-	clusterName, addonName, addonVersion, serviceAccountRoleARN, configuration, resolveConflicts string,
+	clusterName, addonName, addonVersion, serviceAccountRoleARN, configuration, resolveConflicts, namespace string,
 	kv map[string]string,
+	podIdentityAssociations []PodIdentityAssociationSpec,
 ) (*Addon, error) {
 	b.mu.Lock("CreateAddon")
 	defer b.mu.Unlock()
@@ -65,6 +78,10 @@ func (b *InMemoryBackend) CreateAddon(
 			"%w: resolveConflicts %q must be one of OVERWRITE, NONE, PRESERVE",
 			ErrValidation, resolveConflicts,
 		)
+	}
+
+	if err := validatePodIdentityAssociationSpecs(podIdentityAssociations); err != nil {
+		return nil, err
 	}
 
 	addonARN := arn.Build(
@@ -98,8 +115,10 @@ func (b *InMemoryBackend) CreateAddon(
 		Tags:                  t,
 		Configuration:         configuration,
 		ResolveConflicts:      resolveConflicts,
+		Namespace:             namespace,
 	}
 	b.addons.Put(addon)
+	b.replaceAddonPodIdentityAssociationsLocked(clusterName, addon, podIdentityAssociations)
 
 	b.work.After("AddonTransition", addonTransitionDelay, func() {
 		b.mu.Lock("CreateAddon-async")
@@ -115,8 +134,12 @@ func (b *InMemoryBackend) CreateAddon(
 	return &cp, nil
 }
 
-// DeleteAddon removes an add-on from a cluster.
-func (b *InMemoryBackend) DeleteAddon(clusterName, addonName string) (*Addon, error) {
+// DeleteAddon removes an add-on from a cluster. Unless preserve is set, its
+// owned pod identity associations (OwnerARN == addon.ARN) are deleted along
+// with it -- confirmed via DeleteAddonInput.Preserve's doc comment ("If an
+// IAM account is associated with the add-on, it isn't removed"), which only
+// makes sense if the default (preserve=false) path does remove it.
+func (b *InMemoryBackend) DeleteAddon(clusterName, addonName string, preserve bool) (*Addon, error) {
 	b.mu.Lock("DeleteAddon")
 	defer b.mu.Unlock()
 
@@ -127,6 +150,10 @@ func (b *InMemoryBackend) DeleteAddon(clusterName, addonName string) (*Addon, er
 	addon, ok := b.addons.Get(addonKey(clusterName, addonName))
 	if !ok {
 		return nil, fmt.Errorf("%w: addon %s not found in cluster %s", ErrNotFound, addonName, clusterName)
+	}
+
+	if !preserve {
+		b.replaceAddonPodIdentityAssociationsLocked(clusterName, addon, nil)
 	}
 
 	cp := *addon
@@ -182,8 +209,14 @@ func (b *InMemoryBackend) ListAddons(clusterName string) ([]string, error) {
 }
 
 // UpdateAddon updates an existing add-on.
+//
+// podIdentityAssociations implements UpdateAddonInput's tri-state field: nil
+// means "left blank, no change"; a non-nil pointer to an empty slice deletes
+// every association owned by the add-on; a non-nil pointer to a populated
+// slice replaces them.
 func (b *InMemoryBackend) UpdateAddon(
 	clusterName, addonName, addonVersion, serviceAccountRoleARN, configuration, resolveConflicts string,
+	podIdentityAssociations *[]PodIdentityAssociationSpec,
 ) (*Addon, error) {
 	b.mu.Lock("UpdateAddon")
 	defer b.mu.Unlock()
@@ -204,6 +237,12 @@ func (b *InMemoryBackend) UpdateAddon(
 		)
 	}
 
+	if podIdentityAssociations != nil {
+		if err := validatePodIdentityAssociationSpecs(*podIdentityAssociations); err != nil {
+			return nil, err
+		}
+	}
+
 	if addonVersion != "" {
 		addon.AddonVersion = addonVersion
 	}
@@ -220,9 +259,77 @@ func (b *InMemoryBackend) UpdateAddon(
 		addon.ResolveConflicts = resolveConflicts
 	}
 
+	if podIdentityAssociations != nil {
+		b.replaceAddonPodIdentityAssociationsLocked(clusterName, addon, *podIdentityAssociations)
+	}
+
 	cp := *addon
 
 	return &cp, nil
+}
+
+// validatePodIdentityAssociationSpecs requires roleARN and serviceAccount on
+// every spec. Shared by CreateAddon and UpdateAddon.
+func validatePodIdentityAssociationSpecs(specs []PodIdentityAssociationSpec) error {
+	for _, s := range specs {
+		if s.RoleARN == "" || s.ServiceAccount == "" {
+			return fmt.Errorf(
+				"%w: podIdentityAssociations roleArn and serviceAccount are required",
+				ErrValidation,
+			)
+		}
+	}
+
+	return nil
+}
+
+// replaceAddonPodIdentityAssociationsLocked deletes every pod identity
+// association owned by addon (OwnerARN == addon.ARN) and creates one per
+// spec. Caller must hold b.mu for writing and must have already validated
+// specs.
+func (b *InMemoryBackend) replaceAddonPodIdentityAssociationsLocked(
+	clusterName string, addon *Addon, specs []PodIdentityAssociationSpec,
+) {
+	for _, a := range b.podIdentityAssociationsByCluster.Get(clusterName) {
+		if a.OwnerARN != addon.ARN {
+			continue
+		}
+
+		if a.Tags != nil {
+			a.Tags.Close()
+		}
+
+		b.podIdentityAssociations.Delete(podIdentityAssociationKey(clusterName, a.AssociationID))
+	}
+
+	namespace := addon.Namespace
+	if namespace == "" {
+		namespace = addonPodIdentityNamespace
+	}
+
+	ids := make([]string, 0, len(specs))
+	now := time.Now().UTC()
+
+	for _, s := range specs {
+		assocID := uuid.NewString()
+		assoc := &PodIdentityAssociation{
+			ClusterName:    clusterName,
+			AssociationID:  assocID,
+			ARN:            arn.Build("eks", b.region, b.accountID, "podidentityassociation/"+clusterName+"/"+assocID),
+			Namespace:      namespace,
+			ServiceAccount: s.ServiceAccount,
+			RoleARN:        s.RoleARN,
+			OwnerARN:       addon.ARN,
+			CreatedAt:      now,
+			ModifiedAt:     now,
+			ExternalID:     uuid.NewString(),
+			Tags:           tags.New("eks.podidentity." + clusterName + "." + assocID + ".tags"),
+		}
+		b.podIdentityAssociations.Put(assoc)
+		ids = append(ids, assocID)
+	}
+
+	addon.PodIdentityAssociations = ids
 }
 
 // DescribeAddonVersions returns static addon version metadata.

@@ -539,9 +539,10 @@ func rotatePrimaryDeployment(svc *Service) []Deployment {
 }
 
 // DeleteService removes a service from the cluster.
-func (b *InMemoryBackend) DeleteService(cluster, serviceName string) (*Service, error) {
+func (b *InMemoryBackend) DeleteService(cluster, serviceName string, force ...bool) (*Service, error) {
 	clusterName := clusterKey(b.resolveCluster(cluster))
 	key := serviceKey(serviceName)
+	forced := len(force) > 0 && force[0]
 
 	b.mu.Lock("DeleteService")
 	defer b.mu.Unlock()
@@ -553,6 +554,14 @@ func (b *InMemoryBackend) DeleteService(cluster, serviceName string) (*Service, 
 	svc, ok := b.services.Get(scopedKey(clusterName, key))
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrServiceNotFound, serviceName)
+	}
+
+	if !forced && (svc.DesiredCount != 0 || svc.RunningCount != 0) {
+		return nil, fmt.Errorf(
+			"%w: the service %s is still active (desiredCount=%d, runningCount=%d); "+
+				"update it to a desired count of zero or delete with force",
+			ErrInvalidParameter, serviceName, svc.DesiredCount, svc.RunningCount,
+		)
 	}
 
 	// Capture the authoritative tags before deleteResourceTagsLocked below

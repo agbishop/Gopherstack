@@ -89,47 +89,6 @@ func builtInIndicators(inv *storedInvestigation) []*Indicator {
 		},
 	}
 
-	// Higher-severity investigations include richer indicator sets.
-	if inv.Severity == severityMedium || inv.Severity == severityHigh || inv.Severity == severityCritical {
-		indicators = append(indicators,
-			&Indicator{
-				IndicatorType: indicatorFlaggedIPAddress,
-				Detail: IndicatorDetail{
-					FlaggedIPAddress: &FlaggedIPAddressDetail{
-						Reason: "AWS_THREAT_INTELLIGENCE",
-					},
-				},
-			},
-			&Indicator{
-				IndicatorType: indicatorImpossibleTravel,
-				Detail: IndicatorDetail{
-					ImpossibleTravel: &ImpossibleTravelDetail{},
-				},
-			},
-		)
-	}
-
-	if inv.Severity == severityHigh || inv.Severity == severityCritical {
-		indicators = append(indicators,
-			&Indicator{
-				IndicatorType: indicatorRelatedFinding,
-				Detail: IndicatorDetail{
-					RelatedFinding: &RelatedFindingDetail{
-						Type: "Recon:IAMUser/MaliciousIPCaller",
-					},
-				},
-			},
-			&Indicator{
-				IndicatorType: indicatorRelatedFindingGroup,
-				Detail: IndicatorDetail{
-					RelatedFindingGroup: &RelatedFindingGroupDetail{
-						ID: inv.InvestigationID,
-					},
-				},
-			},
-		)
-	}
-
 	return indicators
 }
 
@@ -185,7 +144,11 @@ func (b *InMemoryBackend) StartInvestigation(
 		EntityType:      entityType,
 		Severity:        severityInformational,
 		State:           investigationStateActive,
-		Status:          investigationStatusRunning,
+		// builtInIndicators is a pure function computed synchronously, so
+		// indicator derivation is already complete by the time this
+		// returns -- there is no real async pipeline that could still be
+		// RUNNING or ever FAILED, so completion is immediate.
+		Status: investigationStatusSucceeded,
 	}
 
 	b.investigations.Put(inv)

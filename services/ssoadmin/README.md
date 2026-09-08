@@ -11,7 +11,7 @@
 | Feature families | 6 (6 ok) |
 | Known gaps | 4 |
 | Deferred items | 0 |
-| Resource leaks | clean |
+| Resource leaks | fixed |
 
 ### Known gaps
 

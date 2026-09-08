@@ -23,15 +23,16 @@ package s3tables
 //     generated but never used as a lookup key; every namespace operation
 //     is parent(bucket)-scoped -- with a "byBucket" *store.Index grouping
 //     by TableBucketARN for the per-bucket scans ListNamespaces and
-//     DeleteTableBucket's cascade need (services/workmail/services/emr's
-//     parent-nested composite-key + Index template).
+//     DeleteTableBucket's not-empty precondition (services/workmail/
+//     services/emr's parent-nested composite-key + Index template).
 //   - tables registers directly by Table.ARN, same as tableBuckets: ARN is
 //     globally unique and is how table-replication/expiry/tag operations
 //     already look tables up directly. Two additive secondary indexes cover
 //     the remaining access patterns: "byComposite" (bucketARN::namespace::
 //     name -> table) replaces the old tableIndex map outright, and
 //     "byBucket" (TableBucketARN -> tables) serves ListTables and
-//     DeleteTableBucket's cascade, mirroring namespaces' byBucket index.
+//     DeleteNamespace's not-empty precondition, mirroring namespaces'
+//     byBucket index.
 //
 // bucketReplication, tableReplication, and tableRecordExpiry hold value
 // types (BucketReplicationConfig, TableReplicationConfig,

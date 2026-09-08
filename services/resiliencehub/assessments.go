@@ -282,28 +282,18 @@ func (b *InMemoryBackend) ListAppAssessments(
 // detection requires comparing a resource's compliance evaluation across two
 // points in time using the same proprietary scoring model ResiliencyScore
 // depends on -- see PARITY.md. An honestly-empty list is correct here, not a
-// stub, since no drift is ever fabricated.
-func (b *InMemoryBackend) ListAppAssessmentComplianceDrifts(assessmentArn string) error {
-	b.mu.RLock("ListAppAssessmentComplianceDrifts")
-	defer b.mu.RUnlock()
-
-	if _, ok := b.resolveAssessmentLocked(assessmentArn); !ok {
-		return notFoundError(resourceAssessment, assessmentArn)
-	}
-
+// stub, since no drift is ever fabricated. Does NOT gate on assessmentArn
+// existing (gopherstack-ulsj): confirmed via deserializers.go that this op's
+// error set omits ResourceNotFoundException, unlike DescribeAppAssessment's;
+// an unknown ARN gets the same empty list, not a 404.
+func (b *InMemoryBackend) ListAppAssessmentComplianceDrifts(_ string) error {
 	return nil
 }
 
 // ListAppAssessmentResourceDrifts always returns an empty list -- same
-// honest-gap rationale as ListAppAssessmentComplianceDrifts.
-func (b *InMemoryBackend) ListAppAssessmentResourceDrifts(assessmentArn string) error {
-	b.mu.RLock("ListAppAssessmentResourceDrifts")
-	defer b.mu.RUnlock()
-
-	if _, ok := b.resolveAssessmentLocked(assessmentArn); !ok {
-		return notFoundError(resourceAssessment, assessmentArn)
-	}
-
+// honest-gap rationale and gopherstack-ulsj not-found fix as
+// ListAppAssessmentComplianceDrifts above.
+func (b *InMemoryBackend) ListAppAssessmentResourceDrifts(_ string) error {
 	return nil
 }
 

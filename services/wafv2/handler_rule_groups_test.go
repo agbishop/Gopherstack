@@ -1,6 +1,7 @@
 package wafv2_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -642,14 +643,19 @@ func TestHandler_UpdateRuleGroup(t *testing.T) {
 			h := newTestHandler(t)
 
 			id := tt.requestID
+			var lockToken string
 			if tt.setupName != "" && tt.requestID == "" {
 				id, _ = createRuleGroupHelper(t, h, tt.setupName)
+				rg, err := h.Backend.GetRuleGroup(context.Background(), id)
+				require.NoError(t, err)
+				lockToken = rg.LockToken
 			}
 
 			var body any
 			if id != "" {
 				body = map[string]any{
-					"Id": id, "Name": tt.setupName, "Scope": "REGIONAL", "Description": tt.description,
+					"Id": id, "Name": tt.setupName, "Scope": "REGIONAL",
+					"Description": tt.description, "LockToken": lockToken,
 				}
 			} else {
 				body = map[string]any{}

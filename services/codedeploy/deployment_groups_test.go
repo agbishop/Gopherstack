@@ -102,7 +102,7 @@ func TestDeploymentGroups_RichFieldsRoundTrip(t *testing.T) {
 		"serviceRoleArn":       "arn:aws:iam::123:role/role",
 		"deploymentConfigName": "CodeDeployDefault.AllAtOnce",
 		"ec2TagFilters": []map[string]string{
-			{"Key": "env", "Value": "prod", "Type": "EQUALS"},
+			{"Key": "env", "Value": "prod", "Type": "KEY_AND_VALUE"},
 		},
 		"autoScalingGroups": []map[string]string{
 			{"name": "my-asg"},
@@ -187,7 +187,7 @@ func TestDeploymentGroups_RichFieldsRoundTrip(t *testing.T) {
 	require.Len(t, info.Ec2TagFilters, 1)
 	assert.Equal(t, "env", info.Ec2TagFilters[0].Key)
 	assert.Equal(t, "prod", info.Ec2TagFilters[0].Value)
-	assert.Equal(t, "EQUALS", info.Ec2TagFilters[0].Type)
+	assert.Equal(t, "KEY_AND_VALUE", info.Ec2TagFilters[0].Type)
 	require.Len(t, info.TriggerConfigurations, 1)
 	assert.Equal(t, "deploy-trigger", info.TriggerConfigurations[0].TriggerName)
 	assert.Equal(t, "UPDATE", info.OutdatedInstancesStrategy)

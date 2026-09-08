@@ -25,9 +25,10 @@ func TestExecuteStatement_ClientToken_ReplaysOnRetry(t *testing.T) {
 	h := newTestHandler(t)
 
 	req := map[string]any{
-		"Sql":         "SELECT 1",
-		"Database":    "dev",
-		"ClientToken": "retry-token-1",
+		"Sql":               "SELECT 1",
+		"Database":          "dev",
+		"ClientToken":       "retry-token-1",
+		"ClusterIdentifier": "my-cluster",
 	}
 
 	rec1 := doRequest(t, h, "ExecuteStatement", req)
@@ -64,8 +65,9 @@ func TestExecuteStatement_NoClientToken_CreatesDistinctStatements(t *testing.T) 
 	h := newTestHandler(t)
 
 	req := map[string]any{
-		"Sql":      "SELECT 1",
-		"Database": "dev",
+		"Sql":               "SELECT 1",
+		"Database":          "dev",
+		"ClusterIdentifier": "my-cluster",
 	}
 
 	rec1 := doRequest(t, h, "ExecuteStatement", req)
@@ -93,9 +95,10 @@ func TestBatchExecuteStatement_ClientToken_ReplaysOnRetry(t *testing.T) {
 	h := newTestHandler(t)
 
 	req := map[string]any{
-		"Sqls":        []string{"SELECT 1", "SELECT 2"},
-		"Database":    "dev",
-		"ClientToken": "batch-retry-token-1",
+		"Sqls":              []string{"SELECT 1", "SELECT 2"},
+		"Database":          "dev",
+		"ClientToken":       "batch-retry-token-1",
+		"ClusterIdentifier": "my-cluster",
 	}
 
 	rec1 := doRequest(t, h, "BatchExecuteStatement", req)

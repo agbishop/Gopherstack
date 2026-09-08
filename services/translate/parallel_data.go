@@ -147,6 +147,18 @@ func (b *InMemoryBackend) UpdateParallelData(
 		return nil, fmt.Errorf("%w: parallel data %q not found", ErrNotFound, name)
 	}
 
+	// A prior Create/Update on this resource hasn't been observed to
+	// completion yet (GetParallelData's advanceParallelData call is what
+	// carries CREATING/UPDATING to ACTIVE) -- exactly the "another
+	// modification is being made" case ConcurrentModificationException
+	// documents.
+	if pd.Status == parallelDataStatusCreating || pd.Status == parallelDataStatusUpdating {
+		return nil, fmt.Errorf(
+			"%w: parallel data %q has a modification in progress (status: %s)",
+			ErrConcurrentModification, name, pd.Status,
+		)
+	}
+
 	pd.Description = description
 	if cfg != nil {
 		pd.ParallelDataConfig = cfg

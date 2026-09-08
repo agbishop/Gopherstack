@@ -755,6 +755,71 @@ func TestSQS_DLQRedrive_DefaultDestination(t *testing.T) {
 	}
 }
 
+// TestDLQ_SelfReferentialRedrivePolicy_DoesNotDeadlock covers a queue whose
+// RedrivePolicy names itself as the dead-letter target. tryRouteToDLQ locks
+// q.dlq.mu while the caller already holds q.mu (Caller must hold q.mu, per
+// its doc comment). When q.dlq == q, that second lock targets the same
+// non-reentrant sync.Mutex the caller is already holding, so the call never
+// returns — wedging q.mu forever and hanging every future operation on this
+// queue. This is a genuine goroutine-level deadlock (blocked on a real
+// sync.Mutex), not a timing issue, so synctest's fake-clock deadlock
+// detection does not apply here (confirmed: the unfixed call hangs
+// indefinitely rather than being reported by synctest) — a bounded real
+// timeout via a completion channel is the correct tool.
+func TestDLQ_SelfReferentialRedrivePolicy_DoesNotDeadlock(t *testing.T) {
+	t.Parallel()
+
+	b := newBackend(t)
+
+	qURL := createTestQueue(t, b, "self-dlq")
+
+	attrs, err := b.GetQueueAttributes(&sqs.GetQueueAttributesInput{
+		QueueURL:       qURL,
+		AttributeNames: []string{"QueueArn"},
+	})
+	require.NoError(t, err)
+	selfARN := attrs.Attributes["QueueArn"]
+
+	require.NoError(t, b.SetQueueAttributes(&sqs.SetQueueAttributesInput{
+		QueueURL: qURL,
+		Attributes: map[string]string{
+			"RedrivePolicy": `{"deadLetterTargetArn":"` + selfARN + `","maxReceiveCount":1}`,
+		},
+	}))
+
+	_, err = b.SendMessage(&sqs.SendMessageInput{QueueURL: qURL, MessageBody: "self-loop"})
+	require.NoError(t, err)
+
+	out, err := b.ReceiveMessage(&sqs.ReceiveMessageInput{
+		QueueURL:            qURL,
+		MaxNumberOfMessages: 1,
+		VisibilityTimeout:   0,
+	})
+	require.NoError(t, err)
+	require.Len(t, out.Messages, 1)
+
+	// ApproximateReceiveCount is now 1, equal to MaxReceiveCount. Resetting
+	// visibility to 0 drives tryRouteToDLQ inline from inside
+	// ChangeMessageVisibility, which must not deadlock even though the DLQ
+	// target is this same queue. Run off the test goroutine so an unfixed
+	// deadlock reports as a test failure instead of hanging the whole suite.
+	done := make(chan error, 1)
+	go func() {
+		done <- b.ChangeMessageVisibility(&sqs.ChangeMessageVisibilityInput{
+			QueueURL:          qURL,
+			ReceiptHandle:     out.Messages[0].ReceiptHandle,
+			VisibilityTimeout: 0,
+		})
+	}()
+
+	select {
+	case cmvErr := <-done:
+		require.NoError(t, cmvErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("ChangeMessageVisibility deadlocked: queue configured as its own dead-letter target")
+	}
+}
+
 func makeRedrivePolicy(dlqARN string, maxReceiveCount int) string {
 	b, _ := json.Marshal(map[string]any{
 		"deadLetterTargetArn": dlqARN,

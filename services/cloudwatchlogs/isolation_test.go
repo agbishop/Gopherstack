@@ -71,7 +71,11 @@ func TestCloudWatchLogsRegionIsolation_LookupTable(t *testing.T) { //nolint:para
 	assert.Contains(t, eastTable.LookupTableArn, "us-east-1")
 
 	westTable, err := backend.CreateLookupTable(ctxWest, "sharedname", csvBody, "", "", "")
-	require.NoError(t, err, "creating a same-named lookup table in a DIFFERENT region must not collide")
+	require.NoError(
+		t,
+		err,
+		"creating a same-named lookup table in a DIFFERENT region must not collide",
+	)
 	assert.Contains(t, westTable.LookupTableArn, "us-west-2")
 	assert.NotEqual(t, eastTable.LookupTableArn, westTable.LookupTableArn,
 		"the two regions' tables must not share a storage key")
@@ -85,4 +89,57 @@ func TestCloudWatchLogsRegionIsolation_LookupTable(t *testing.T) { //nolint:para
 	require.Len(t, westTables, 1, "us-west-2 must only see its own lookup table")
 	assert.Equal(t, "sharedname", westTables[0].LookupTableName)
 	assert.Contains(t, westTables[0].LookupTableArn, "us-west-2")
+}
+
+// fakeIsolationExportSink records the objects written by an export task, keyed
+// by S3 key.
+type fakeIsolationExportSink struct {
+	objects map[string][]byte
+}
+
+func (s *fakeIsolationExportSink) PutObject(_ context.Context, _, key string, body []byte) error {
+	s.objects[key] = body
+
+	return nil
+}
+
+// TestCloudWatchLogsRegionIsolation_ExportTask proves CreateExportTask looked
+// up the log group's streams under the backend's constant default region
+// (b.region) rather than the ctx-derived per-request region every sibling op
+// in this package uses. A caller in a non-default region whose log group and
+// events genuinely exist got a task that reports COMPLETED with zero
+// exported events -- the export silently found nothing, because it searched
+// the wrong region's (empty) namespace for a same-named group.
+func TestCloudWatchLogsRegionIsolation_ExportTask(t *testing.T) { //nolint:paralleltest // existing issue.
+	backend := NewInMemoryBackend() // default region us-east-1
+
+	ctxWest := context.WithValue(context.Background(), regionContextKey{}, "us-west-2")
+
+	_, err := backend.CreateLogGroup(ctxWest, "grp", "", "")
+	require.NoError(t, err)
+	_, err = backend.CreateLogStream(ctxWest, "grp", "stream-1")
+	require.NoError(t, err)
+
+	// Timestamp below minRealisticTimestampMs bypasses PutLogEvents' age
+	// validation (treated as synthetic test data), matching this file's
+	// existing test-fixture convention.
+	_, err = backend.PutLogEvents(ctxWest, "grp", "stream-1", "", []InputLogEvent{
+		{Message: "west-event", Timestamp: 1500},
+	})
+	require.NoError(t, err)
+
+	sink := &fakeIsolationExportSink{objects: make(map[string][]byte)}
+	backend.SetExportSink(sink)
+
+	taskID, err := backend.CreateExportTask(ctxWest, "t", "grp", "", "dest-bucket", "", 1000, 2000)
+	require.NoError(t, err, "an export task for a log group that genuinely exists in the caller's region must succeed")
+
+	tasks, _, err := backend.DescribeExportTasks(taskID, "", 10, "")
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, exportStatusCompleted, tasks[0].Status)
+
+	key := "exportedlogs/" + taskID + "/stream-1/000000.gz"
+	_, ok := sink.objects[key]
+	assert.True(t, ok, "export must find events in the caller's own region, not the backend's default region")
 }

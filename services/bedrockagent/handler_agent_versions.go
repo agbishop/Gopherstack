@@ -3,6 +3,7 @@ package bedrockagent
 import (
 	"context"
 	"net/http"
+	"strconv"
 
 	"github.com/labstack/echo/v5"
 )
@@ -25,7 +26,9 @@ func (h *Handler) handleGetAgentVersion(
 func (h *Handler) handleDeleteAgentVersion(
 	ctx context.Context, c *echo.Context, agentID, version string,
 ) error {
-	if err := h.Backend.DeleteAgentVersion(ctx, agentID, version); err != nil {
+	skip, _ := strconv.ParseBool(c.QueryParam("skipResourceInUseCheck"))
+
+	if err := h.Backend.DeleteAgentVersion(ctx, agentID, version, skip); err != nil {
 		return handleErr(c, err)
 	}
 

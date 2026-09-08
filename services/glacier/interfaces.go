@@ -32,7 +32,7 @@ type StorageBackend interface {
 
 	// Multipart upload operations.
 	InitiateMultipartUpload(accountID, region, vaultName, description string, partSize int64) (*MultipartUpload, error)
-	UploadMultipartPart(accountID, region, vaultName, uploadID, rangeHeader, checksum string) error
+	UploadMultipartPart(accountID, region, vaultName, uploadID, rangeHeader, checksum string, data []byte) error
 	CompleteMultipartUpload(
 		accountID, region, vaultName, uploadID, checksum string,
 		archiveSize int64,

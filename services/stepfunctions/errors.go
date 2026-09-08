@@ -6,6 +6,7 @@ import (
 
 var (
 	ErrStateMachineAlreadyExists       = errors.New("StateMachineAlreadyExists")
+	ErrStateMachineDeleting            = errors.New("StateMachineDeleting")
 	ErrStateMachineDoesNotExist        = errors.New("StateMachineDoesNotExist")
 	ErrStateMachineVersionDoesNotExist = errors.New("StateMachineVersionDoesNotExist")
 	ErrStateMachineAliasAlreadyExists  = errors.New("StateMachineAliasAlreadyExists")
@@ -18,7 +19,7 @@ var (
 	ErrStateMachineTypeNotSupported    = errors.New("StateMachineTypeNotSupported")
 	ErrInvalidRoleArn                  = errors.New("InvalidArn")
 	ErrInvalidName                     = errors.New("InvalidName")
-	ErrInvalidRoutingConfiguration     = errors.New("InvalidRoutingConfiguration")
+	ErrInvalidRoutingConfiguration     = errors.New("ValidationException")
 	ErrTagPolicyViolation              = errors.New("TagPolicyViolation")
 	ErrActivityAlreadyExists           = errors.New("ActivityAlreadyExists")
 	ErrActivityDoesNotExist            = errors.New("ActivityDoesNotExist")
@@ -30,4 +31,8 @@ var (
 	ErrValidation                      = errors.New("ValidationException")
 	ErrMapRunDoesNotExist              = errors.New("MapRunDoesNotExist")
 	ErrTooManyTags                     = errors.New("TooManyTags")
+	// ErrStateMachineVersionReferencedByAlias is returned by
+	// DeleteStateMachineVersion when the version is still referenced by one
+	// or more aliases' RoutingConfiguration.
+	ErrStateMachineVersionReferencedByAlias = errors.New("StateMachineVersionReferencedByAlias")
 )

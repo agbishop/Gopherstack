@@ -115,6 +115,31 @@ func nextInvocationsXML(schedule string) []string {
 	return out
 }
 
+// Values of types.ScheduledActionTypeValues, the DescribeScheduledActionsInput.
+// TargetActionType filter.
+const (
+	scheduledActionTypeResizeCluster = "ResizeCluster"
+	scheduledActionTypePauseCluster  = "PauseCluster"
+	scheduledActionTypeResumeCluster = "ResumeCluster"
+)
+
+// scheduledActionTargetType returns the DescribeScheduledActionsInput.TargetActionType
+// value matching which sub-action of a is set. Returns "" for nil or an unset target.
+func scheduledActionTargetType(a *ScheduledActionTarget) string {
+	switch {
+	case a == nil:
+		return ""
+	case a.ResizeCluster != nil:
+		return scheduledActionTypeResizeCluster
+	case a.PauseCluster != nil:
+		return scheduledActionTypePauseCluster
+	case a.ResumeCluster != nil:
+		return scheduledActionTypeResumeCluster
+	default:
+		return ""
+	}
+}
+
 // parseTargetAction parses the TargetAction.{PauseCluster,ResumeCluster,ResizeCluster}
 // nested request parameters into a ScheduledActionTarget. Returns nil if none of the
 // three sub-actions were present (a real client always sends exactly one, but this
@@ -223,10 +248,16 @@ func (h *Handler) handleDescribeScheduledActions(vals url.Values) (any, error) {
 		active = &b
 	}
 
+	targetActionType := vals.Get("TargetActionType")
+
 	members := make([]scheduledActionXML, 0, len(actions))
 
 	for i := range actions {
 		if active != nil && (actions[i].State == scheduledActionStateActiveValue) != *active {
+			continue
+		}
+
+		if targetActionType != "" && scheduledActionTargetType(actions[i].TargetAction) != targetActionType {
 			continue
 		}
 

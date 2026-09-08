@@ -49,11 +49,16 @@ func (b *InMemoryBackend) TaggedResources() []TaggedEntry {
 		out = appendBackupTaggedEntry(out, rp.ReportPlanArn, rp.Tags)
 	}
 
+	for _, rav := range b.restoreAccessVaults.All() {
+		out = appendBackupTaggedEntry(out, rav.RestoreAccessBackupVaultArn, rav.Tags)
+	}
+
 	return out
 }
 
 // TagResource adds tags to a resource by ARN.
-// Supported resource types: backup vaults, backup plans, frameworks, report plans.
+// Supported resource types: backup vaults, backup plans, frameworks, report
+// plans, restore access backup vaults.
 func (b *InMemoryBackend) TagResource(resourceArn string, kv map[string]string) error {
 	b.mu.Lock("TagResource")
 	defer b.mu.Unlock()
@@ -82,6 +87,16 @@ func (b *InMemoryBackend) TagResource(resourceArn string, kv map[string]string) 
 	if name, ok := b.reportPlanARNIndex[resourceArn]; ok {
 		rp, _ := b.reportPlans.Get(name)
 		rp.Tags.Merge(kv)
+
+		return nil
+	}
+
+	if name, ok := b.restoreAccessVaultARNIndex[resourceArn]; ok {
+		rav, _ := b.restoreAccessVaults.Get(name)
+		if rav.Tags == nil {
+			rav.Tags = tags.New("backup.restore-access-vault." + name + ".tags")
+		}
+		rav.Tags.Merge(kv)
 
 		return nil
 	}
@@ -119,6 +134,15 @@ func (b *InMemoryBackend) ListTags(resourceArn string) (map[string]string, error
 		return rp.Tags.Clone(), nil
 	}
 
+	if name, ok := b.restoreAccessVaultARNIndex[resourceArn]; ok {
+		rav, _ := b.restoreAccessVaults.Get(name)
+		if rav.Tags == nil {
+			return map[string]string{}, nil
+		}
+
+		return rav.Tags.Clone(), nil
+	}
+
 	return nil, fmt.Errorf("%w: resource %s not found", ErrNotFound, resourceArn)
 }
 
@@ -152,6 +176,15 @@ func (b *InMemoryBackend) UntagResource(resourceArn string, tagKeys []string) er
 	if name, ok := b.reportPlanARNIndex[resourceArn]; ok {
 		rp, _ := b.reportPlans.Get(name)
 		rp.Tags.DeleteKeys(tagKeys)
+
+		return nil
+	}
+
+	if name, ok := b.restoreAccessVaultARNIndex[resourceArn]; ok {
+		rav, _ := b.restoreAccessVaults.Get(name)
+		if rav.Tags != nil {
+			rav.Tags.DeleteKeys(tagKeys)
+		}
 
 		return nil
 	}

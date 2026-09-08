@@ -10,7 +10,7 @@ type StorageBackend interface {
 	CreateThing(input *CreateThingInput) (*CreateThingOutput, error)
 	DescribeThing(thingName string) (*Thing, error)
 	ListThings() []*Thing
-	DeleteThing(thingName string) error
+	DeleteThing(thingName string, expectedVersion int64) error
 	UpdateThing(input *UpdateThingInput) error
 
 	CreateTopicRule(input *CreateTopicRuleInput) error
@@ -56,7 +56,7 @@ type StorageBackend interface {
 	RootToParentThingGroups(thingGroupName string) []GroupNameAndARN
 	ListThingGroups() []*ThingGroup
 	UpdateThingGroup(input *UpdateThingGroupInput) (int64, error)
-	DeleteThingGroup(thingGroupName string) error
+	DeleteThingGroup(thingGroupName string, expectedVersion int64) error
 	RemoveThingFromThingGroup(input *RemoveThingFromThingGroupInput) error
 	ListThingsInThingGroup(input *ListThingsInThingGroupInput) ([]string, error)
 
@@ -161,8 +161,8 @@ type StorageBackend interface {
 	CreateBillingGroup(input *CreateBillingGroupInput) (*BillingGroup, error)
 	DescribeBillingGroup(name string) (*BillingGroup, error)
 	ListBillingGroups() []*BillingGroup
-	UpdateBillingGroup(name string, props BillingGroupProperties) (int64, error)
-	DeleteBillingGroup(name string) error
+	UpdateBillingGroup(name string, props BillingGroupProperties, expectedVersion int64) (int64, error)
+	DeleteBillingGroup(name string, expectedVersion int64) error
 
 	// ScheduledAudit operations.
 	CreateScheduledAudit(input *CreateScheduledAuditInput) (*ScheduledAudit, error)
@@ -183,7 +183,7 @@ type StorageBackend interface {
 	DescribeSecurityProfile(name string) (*SecurityProfile, error)
 	ListSecurityProfiles() []*SecurityProfile
 	UpdateSecurityProfile(input *UpdateSecurityProfileInput) (*SecurityProfile, error)
-	DeleteSecurityProfile(name string) error
+	DeleteSecurityProfile(name string, expectedVersion int64) error
 	SecurityProfileARN(name string) string
 
 	// Batch 2: CACertificate operations.
@@ -210,7 +210,7 @@ type StorageBackend interface {
 	DescribeFleetMetric(name string) (*FleetMetric, error)
 	ListFleetMetrics() []*FleetMetric
 	UpdateFleetMetric(name string, input *UpdateFleetMetricInput) error
-	DeleteFleetMetric(name string) error
+	DeleteFleetMetric(name string, expectedVersion int64) error
 
 	// Batch 2: CustomMetric operations.
 	CreateCustomMetric(input *CreateCustomMetricInput) (*CustomMetric, error)
@@ -349,7 +349,7 @@ type StorageBackend interface {
 
 	// Batch 3: Dynamic thing groups.
 	CreateDynamicThingGroup(input *CreateThingGroupInput) (*ThingGroup, error)
-	DeleteDynamicThingGroup(name string) error
+	DeleteDynamicThingGroup(name string, expectedVersion int64) error
 	UpdateDynamicThingGroup(input *UpdateThingGroupInput) (int64, error)
 
 	// Batch 3: Commands.

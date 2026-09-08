@@ -5,9 +5,9 @@
 # AND check the SDK module for ops added since sdk_version. Only audit changed/new surface;
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: codestarconnections
-sdk_module: aws-sdk-go-v2/service/codestarconnections@v1.38.4   # version audited against
-last_audit_commit: 1d7169f66                       # HEAD when this manifest was written
-last_audit_date: 2026-08-07
+sdk_module: aws-sdk-go-v2/service/codestarconnections@v1.38.4   # unchanged this pass; still the go.mod pin
+last_audit_commit: e0dfee4c0                       # HEAD at the start of this pass (gopherstack-42j/5k45); this pass's changes are uncommitted working-tree changes on top
+last_audit_date: 2026-09-04
 # 2026-08-19 re-audit (gopherstack-6flj wrapper-key/nested-shape sweep): all 27 ops
 # re-verified field-by-field against the LIVE awsjson1.0 deserializers in
 # codestarconnections@v1.38.4. Zero bugs, no code changed. last_audit_commit above is
@@ -53,15 +53,17 @@ ops:
   GetSyncBlockerSummary: {wire: ok, errors: ok, state: ok, persist: ok, note: "epoch-seconds CreatedAt/ResolvedAt verified correct."}
   UpdateSyncBlocker: {wire: ok, errors: ok, state: ok, persist: ok, note: "'SyncBlocker' (singular) response key verified correct. NEW this pass: ResourceName/SyncType/ResolvedReason are now enforced as required input (all four members -- Id, ResolvedReason, ResourceName, SyncType -- are 'This member is required' per aws-sdk-go-v2's generated api_op_UpdateSyncBlocker.go); previously only Id was validated."}
   ListRepositorySyncDefinitions: {wire: ok, errors: ok, state: ok, persist: ok}
-  UpdateRepositoryLink: {wire: ok, errors: ok, state: ok, persist: ok}
+  UpdateRepositoryLink: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-09-04 (gopherstack-5k45): ConnectionArn was written through with zero validation. UpdateRepositoryLinkInput.ConnectionArn's own doc comment states the updated ARN must share the original connection's providerType; the backend now looks up the new connection (region-scoped via regionFromARN) and returns ResourceNotFoundException (ErrNotFound) if it does not exist, InvalidInputException (ErrValidation) on a ProviderType mismatch -- both confirmed present in this SDK module's own UpdateRepositoryLink error switch (awsAwsjson10_deserializeOpErrorUpdateRepositoryLink). Same bug and fix already applied to the codeconnections twin (commit 619f7c06a)."}
 families:
   RouteMatcher: {status: ok, note: "X-Amz-Target prefix 'CodeStar_connections_20191201.' and Content-Type 'application/x-amz-json-1.0' both verified byte-for-byte against aws-sdk-go-v2's serializers.go SetHeader calls for every op."}
   ConnectionStatus: {status: ok, note: "CreateConnection sets AVAILABLE immediately (not AWS's real PENDING-until-console-handshake); this is the correct emulated behavior for a service with no state-transition API -- do not 'fix' this to PENDING."}
   HostStatus: {status: ok, note: "CreateHost sets PENDING and stays there (no auto-transition); consistent with AWS's real HOST behavior (host setup genuinely requires console/agent installation)."}
   ErrorTaxonomy: {status: ok, note: "Every error sentinel field-diffed this pass against botocore's codestar-connections/2019-12-01/service-2.json operations[].errors (the authoritative per-op error list, cross-checked against aws-sdk-go-v2/service/codestarconnections/types/errors.go's exhaustive 17-type catalog). Two invented-type bugs fixed: ErrValidation was 'ValidationException' (does not exist in this service's real error catalog at all) -> now InvalidInputException; DeleteHost's dependency-check error was 'ConflictException' (a real type, but not in DeleteHost's real error list -- it belongs to UpdateHost's) -> now ResourceUnavailableException. Both fixes mirror decisions already made and evidence-documented in the codeconnections sibling service's own error-taxonomy audit. New ErrTagLimitExceeded sentinel (LimitExceededException) replaces the previous ErrValidation/InvalidInputException mapping for 'too many tags' on CreateConnection/CreateHost/TagResource, none of which document InvalidInputException as a possible error for that case."}
   Tagging: {status: ok, note: "Connections, hosts, AND repository links are all real taggable resources (CreateRepositoryLinkInput has a genuine Tags member -- see CreateRepositoryLink note above). Sync configurations are NOT taggable (CreateSyncConfigurationInput has no Tags member at all in the real SDK) -- verified, not touched."}
+  ListPaginationTotalOrder: {status: ok, note: "FIXED 2026-09-04 (gopherstack-42j): ListHosts/ListConnections sorted purely on the non-unique Name/ConnectionName field (both explicitly allow duplicates -- CreateHost/CreateConnection model no ResourceAlreadyExistsException for a name collision). sort.Slice is not stable, so two rows sharing a name had no defined total order -- enough for a cursor-paginated caller to skip or repeat one. Added HostArn/ConnectionArn (always unique) as secondary sort keys, matching the identical fix already made in the codeconnections sibling service (commit 619f7c06a)."}
 gaps:
   - PullRequestComment field (CreateSyncConfiguration/UpdateSyncConfiguration/SyncConfiguration) — present in current AWS API docs but NOT in the pinned aws-sdk-go-v2@v1.35.15 SDK's types/serializers/deserializers; correctly omitted to match the SDK version actually vendored by this repo (not a gap in the usual sense — flagged here only so a future SDK bump re-checks it)
+  - "CreateRepositoryLink's ConnectionArn and CreateSyncConfiguration's RepositoryLinkId are never checked for existence -- disclosed 2026-09-04 (gopherstack-42j), deliberately NOT fixed: unlike UpdateRepositoryLink (gopherstack-5k45), neither CreateRepositoryLink's nor CreateSyncConfiguration's own error deserializer switch (awsAwsjson10_deserializeOpErrorCreateRepositoryLink / ...CreateSyncConfiguration) contains ResourceNotFoundException; both DO contain InvalidInputException, but this service's own ErrValidation doc comment (errors.go) establishes InvalidInputException as the real type for malformed/missing-required-field input specifically, not FK-style reference validation -- using it here would be exactly the kind of invented-purpose wire-shape bug this campaign exists to catch, not a fix. Cannot be determined from the SDK whether real AWS validates these fields at all (and if so, via which mechanism); declining to guess. Same conclusion independently reached for the codeconnections twin."
 structural_gaps:
   - "GetResourceSyncStatus does not populate optional DesiredState/LatestSuccessfulSync (types.Revision-bearing) fields, nor InitialRevision/TargetRevision within LatestSync/LatestSuccessfulSync. types.Revision.Sha is a required member (a 40-hex-char git commit SHA) with no real backing state in this emulator: RECLASSIFIED this pass (gopherstack-7mmd) from gaps to structural_gaps after re-examining whether a scoped simulation is buildable. It is not, for two independent reasons specific to this service (not merely 'large'): (1) codestarconnections has zero concept of repository content anywhere in its data model -- RepositoryLink stores only an ARN to an external provider connection (GitHub/Bitbucket/etc.), never any file tree, commit graph, or branch HEAD; there is no internal state a SHA could be honestly derived FROM. (2) There is no customer-facing operation in this service that would ever cause AWS to observe/generate a new commit SHA in the first place -- sync statuses are populated exclusively via the SetRepositorySyncStatus/SetResourceSyncStatus test/internal helpers (sync_statuses.go), not any routed op, so there is no real 'moment' analogous to a real sync attempt to hang a SHA off of. Fabricating a placeholder SHA would present as if the emulator had observed a specific real commit from an external git host it has never connected to -- exactly the kind of fabricated data parity-principles.md's no-stub rule prohibits. The current behavior (omit the whole optional Revision-bearing wrapper) is wire-correct, not a stub. (bd: gopherstack-7mmd)"
   - "SyncBlocker.Contexts ([]types.SyncBlockerContext) is never populated. Real AWS creates sync blockers, with contexts describing what specifically went wrong, as a side effect of internal Git-sync/CloudFormation validation actually running against real repository content and a real CloudFormation stack. This emulator has neither: no git content (see the Revision.Sha structural gap above) and no CloudFormation integration. gopherstack's only blocker-creation path is the CreateSyncBlocker test/internal helper (not a routed customer-facing op), which has no realistic source of context data to attach -- there is no internal event this backend could honestly summarize into a Contexts entry. Contexts is an optional member, so omitting it remains wire-correct. RECLASSIFIED this pass from gaps to structural_gaps for the same reason as the Revision.Sha entry above: the missing data's source (real CFN validation against real git content) cannot exist in this emulator, not merely a feature this pass ran out of room for. (bd: gopherstack-7mmd)"
@@ -357,3 +359,44 @@ mechanism never flagged it).
 
 Gates: `go build`, `go vet` (repo-wide, clean), `go test -race -count=1`,
 `golangci-lint run` — all clean (`./services/codestarconnections/...`).
+
+### 2026-09-04 (gopherstack-42j/5k45 parity sweep, template: codeconnections commit 619f7c06a)
+
+Two real bugs found and fixed, both above (`UpdateRepositoryLink`
+ConnectionArn validation, gopherstack-5k45; List* pagination total order,
+gopherstack-42j). `TestUpdateRepositoryLink`'s "success" case had been
+asserting the bug: it passed a fabricated `ConnectionArn` that was never
+created and asserted a 200 with that ARN written straight through
+unchanged. Rewritten to a table matching the codeconnections precedent, with
+`new_connection_does_not_exist` and `new_connection_provider_type_mismatch`
+cases added. `TestListHosts_OrdersTiedNamesByArn`/
+`TestListConnections_OrdersTiedNamesByArn` added, seeding three rows with a
+shared name via `AddHostInternal`/`AddConnectionInternal` in descending-ARN
+order and asserting ascending-ARN output. All four new/changed subtests
+confirmed to fail without their respective fix (hand-reverted one file at a
+time, re-tested, restored).
+
+One referential-integrity question examined and deliberately left unfixed
+(see `gaps` above): `CreateRepositoryLink`/`CreateSyncConfiguration` FK
+existence checks -- neither op's error switch has `ResourceNotFoundException`,
+and using the `InvalidInputException` that IS present would repurpose it
+beyond this service's own documented scope for that code (malformed input,
+not a missing reference). `ConnectionStatus`/`HostStatus` hardcoded-`AVAILABLE`
+state machine re-examined and reconfirmed as the prior passes' deliberate,
+documented choice -- not re-litigated. `DeleteConnection`/`DeleteHost`/
+`DeleteRepositoryLink`/`DeleteSyncConfiguration` preconditions re-verified
+against this SDK module's own error switches: all four match already
+(`DeleteConnection` has no dependency check because none is modeled;
+`DeleteHost`/`DeleteRepositoryLink` correctly block on in-use dependents;
+`DeleteSyncConfiguration` is correctly idempotent). Noted, not filed: hosts
+without any HostArn-referencing connection are never route-reachable via
+`SetRepositorySyncStatus`/repositorySyncStatuses cleanup on
+`DeleteRepositoryLink` -- inert in practice, since that table is populated
+only by a test/internal helper never reachable through any routed op (same
+structural reasoning as the existing `structural_gaps` entries above).
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race -count=1
+./services/codestarconnections/...` (pass), `GOTOOLCHAIN=go1.26.6
+golangci-lint run ./services/codestarconnections/...` (0 issues), dependents
+`./services/cloudformation/...` and `./services/codeconnections/...` (both
+pass, unchanged).

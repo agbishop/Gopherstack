@@ -3,6 +3,8 @@ package iam
 import (
 	"encoding/xml"
 	"net/url"
+
+	"github.com/blackbirdworks/gopherstack/pkgs/page"
 )
 
 // iamMFALinkDispatch wires EnableMFADevice, DeactivateMFADevice, and ListMFADevices.
@@ -43,20 +45,22 @@ func (h *Handler) iamMFALinkDispatch() map[string]iamActionFn {
 		opListMFADevices: func(vals url.Values, reqID string) (any, error) {
 			userName := vals.Get("UserName")
 
-			var devices []VirtualMFADevice
+			var p page.Page[VirtualMFADevice]
 
 			if userName != "" {
 				var err error
 
-				devices, err = h.Backend.ListMFADevicesForUser(userName)
+				marker, maxItems := vals.Get("Marker"), parseMaxItems(vals.Get("MaxItems"))
+
+				p, err = h.Backend.ListMFADevicesForUser(userName, marker, maxItems)
 				if err != nil {
 					return nil, err
 				}
 			}
 
-			members := make([]mfaDeviceXML, 0, len(devices))
+			members := make([]mfaDeviceXML, 0, len(p.Data))
 
-			for _, d := range devices {
+			for _, d := range p.Data {
 				members = append(members, mfaDeviceXML{
 					UserName:     userName,
 					SerialNumber: d.SerialNumber,
@@ -69,7 +73,8 @@ func (h *Handler) iamMFALinkDispatch() map[string]iamActionFn {
 				Xmlns:   iamXMLNS,
 				ListMFADevicesResult: listMFADevicesResult{
 					MFADevices:  members,
-					IsTruncated: false,
+					Marker:      p.Next,
+					IsTruncated: p.Next != "",
 				},
 				ResponseMetadata: ResponseMetadata{RequestID: reqID},
 			}, nil
@@ -159,18 +164,22 @@ func (h *Handler) iamVirtualMFADispatch() map[string]iamActionFn {
 	}
 }
 
+// iamMFADeviceDispatch's "ListMFADevices" entry is shadowed by
+// iamMFALinkDispatch's opListMFADevices (buildDispatchTable merges
+// iamComprehensiveDispatchTable last) and never runs.
 func (h *Handler) iamMFADeviceDispatch() map[string]iamActionFn {
 	return map[string]iamActionFn{
 		"ListMFADevices": func(vals url.Values, reqID string) (any, error) {
 			userName := vals.Get("UserName")
-			devices, err := h.Backend.ListMFADevicesForUser(userName)
+
+			p, err := h.Backend.ListMFADevicesForUser(userName, vals.Get("Marker"), parseMaxItems(vals.Get("MaxItems")))
 			if err != nil {
 				// If user not found, return empty list (matches AWS behavior for optional UserName).
-				devices = nil
+				p = page.Page[VirtualMFADevice]{}
 			}
 
-			members := make([]mfaDeviceXML, 0, len(devices))
-			for _, d := range devices {
+			members := make([]mfaDeviceXML, 0, len(p.Data))
+			for _, d := range p.Data {
 				members = append(members, mfaDeviceXML{
 					UserName:     h.Backend.GetMFADeviceOwner(d.SerialNumber),
 					SerialNumber: d.SerialNumber,
@@ -183,7 +192,8 @@ func (h *Handler) iamMFADeviceDispatch() map[string]iamActionFn {
 				Xmlns:   iamXMLNS,
 				ListMFADevicesResult: listMFADevicesResult{
 					MFADevices:  members,
-					IsTruncated: false,
+					Marker:      p.Next,
+					IsTruncated: p.Next != "",
 				},
 				ResponseMetadata: ResponseMetadata{RequestID: reqID},
 			}, nil

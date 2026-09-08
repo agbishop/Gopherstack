@@ -63,6 +63,29 @@ func TestHandler_PutMetricData_ValueAndStatisticSet_Returns400(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "InvalidParameterCombination")
 }
 
+// TestHandler_PutMetricData_TimestampOutOfRange_Returns400 verifies real AWS
+// behaviour (api_op_PutMetricData.go: "You can specify time stamps that are
+// as much as two weeks before the current date, and as much as 2 hours after
+// the current day and time.") -- a Timestamp outside that window must fail
+// with 400 InvalidParameterValue, not fall through to a 500 as an unmapped
+// error.
+func TestHandler_PutMetricData_TimestampOutOfRange_Returns400(t *testing.T) {
+	t.Parallel()
+
+	h := newCWHandler()
+	tooOld := time.Now().UTC().Add(-15 * 24 * time.Hour).Format(time.RFC3339)
+	rec := postForm(
+		t, h,
+		"Action=PutMetricData"+
+			"&Namespace=App"+
+			"&MetricData.member.1.MetricName=Latency"+
+			"&MetricData.member.1.Value=1.0"+
+			"&MetricData.member.1.Timestamp="+tooOld,
+	)
+	assert.Equal(t, 400, rec.Code)
+	assert.Contains(t, rec.Body.String(), "InvalidParameterValue")
+}
+
 func TestHandler_PutMetricData_InvalidStorageResolution_Returns400(t *testing.T) {
 	t.Parallel()
 

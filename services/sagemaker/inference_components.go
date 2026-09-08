@@ -203,19 +203,22 @@ func (b *InMemoryBackend) CreateInferenceComponent(
 	b.inferenceComponentsStore(region).Put(c)
 
 	b.scheduleInferenceComponentTransition(
-		b.lifecycleCtx, region, opts.InferenceComponentName, statusInService, inferenceComponentCreatingToInService,
+		b.lifecycleCtx, region, opts.InferenceComponentName, statusCreating, statusInService,
+		inferenceComponentCreatingToInService,
 	)
 
 	return cloneInferenceComponent(c), nil
 }
 
-// scheduleInferenceComponentTransition drives an inference component to
-// nextStatus after delay, and — when nextStatus is InService — catches
-// CurrentCopyCount up to the desired CopyCount. ctx must be b.lifecycleCtx
-// captured by the caller while holding b.mu.
+// scheduleInferenceComponentTransition drives an inference component from
+// fromStatus to nextStatus after delay, and — when nextStatus is InService —
+// catches CurrentCopyCount up to the desired CopyCount. A no-op if the
+// component has since been deleted or has moved to a status other than
+// fromStatus (e.g. a later overlapping transition already completed it).
+// ctx must be b.lifecycleCtx captured by the caller while holding b.mu.
 func (b *InMemoryBackend) scheduleInferenceComponentTransition(
 	ctx context.Context,
-	region, name, nextStatus string,
+	region, name, fromStatus, nextStatus string,
 	delay time.Duration,
 ) {
 	b.runDelayed(ctx, delay, func() {
@@ -223,7 +226,7 @@ func (b *InMemoryBackend) scheduleInferenceComponentTransition(
 		defer b.mu.Unlock()
 
 		c, ok := b.inferenceComponentsStore(region).Get(name)
-		if !ok {
+		if !ok || c.InferenceComponentStatus != fromStatus {
 			return
 		}
 
@@ -415,7 +418,7 @@ func (b *InMemoryBackend) UpdateInferenceComponent(
 	c.LastModifiedTime = time.Now()
 
 	b.scheduleInferenceComponentTransition(
-		b.lifecycleCtx, region, name, statusInService, inferenceComponentUpdatingToInService,
+		b.lifecycleCtx, region, name, statusUpdating, statusInService, inferenceComponentUpdatingToInService,
 	)
 
 	return nil
@@ -443,7 +446,7 @@ func (b *InMemoryBackend) UpdateInferenceComponentRuntimeConfig(
 	c.LastModifiedTime = time.Now()
 
 	b.scheduleInferenceComponentTransition(
-		b.lifecycleCtx, region, name, statusInService, inferenceComponentUpdatingToInService,
+		b.lifecycleCtx, region, name, statusUpdating, statusInService, inferenceComponentUpdatingToInService,
 	)
 
 	return nil

@@ -20,12 +20,6 @@ package networkmonitor
 // Probes are NOT converted: they were never a map (map[string]*Probe) to
 // begin with, only a []*Probe slice nested inside Monitor, so there is
 // nothing here for store.Table to replace.
-//
-// arnIndex (map[string]map[string]string) is deliberately NOT converted:
-// its values are bare strings with no identity of their own for store.Table
-// to key on, and it was never itself persisted -- Restore has always rebuilt
-// it fresh from monitors (see persistence.go). It remains a plain
-// region-nested map, unchanged by this refactor.
 import (
 	"github.com/blackbirdworks/gopherstack/pkgs/store"
 )

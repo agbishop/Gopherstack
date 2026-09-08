@@ -18,6 +18,24 @@ var (
 	// AWS ECS reports as a ClientException (for example, malformed container
 	// definitions or an unsupported network mode / launch-type combination).
 	ErrClient = awserr.New("ClientException", awserr.ErrInvalidParameter)
+	// ErrCapacityProviderInUse is returned when deleting a capacity provider
+	// still associated with a cluster. Uses the ErrAlreadyExists kind (like
+	// ErrDaemonAlreadyExists in daemon.go) since handleError only maps
+	// ErrNotFound/ErrAlreadyExists/ErrInvalidParameter kinds to 400; the wire
+	// code is still the real SDK's ResourceInUseException.
+	ErrCapacityProviderInUse = awserr.New("ResourceInUseException", awserr.ErrAlreadyExists)
+	// ErrClusterContainsServices is returned by DeleteCluster when the cluster
+	// still has services; they must be deleted first.
+	ErrClusterContainsServices = awserr.New("ClusterContainsServicesException", awserr.ErrInvalidParameter)
+	// ErrClusterContainsTasks is returned by DeleteCluster when the cluster
+	// still has active (non-STOPPED) tasks.
+	ErrClusterContainsTasks = awserr.New("ClusterContainsTasksException", awserr.ErrInvalidParameter)
+	// ErrClusterContainsContainerInstances is returned by DeleteCluster when the
+	// cluster still has registered container instances; they must be
+	// deregistered first.
+	ErrClusterContainsContainerInstances = awserr.New(
+		"ClusterContainsContainerInstancesException", awserr.ErrInvalidParameter,
+	)
 )
 
 // errServiceDeploymentAlreadyStopped is returned by StopServiceDeployment when

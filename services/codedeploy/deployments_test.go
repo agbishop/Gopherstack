@@ -535,6 +535,49 @@ func TestDeployments_ListStatusFilter(t *testing.T) {
 	}
 }
 
+// TestDeployments_ListExternalIDFilter guards against ListDeployments
+// silently ignoring externalId: nothing in this backend can ever set a
+// deployment's ExternalID (CreateDeploymentInput has no such field --
+// api_op_CreateDeployment.go), so a non-empty filter must match zero
+// deployments rather than returning the unfiltered list.
+func TestDeployments_ListExternalIDFilter(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	_, _ = h.Backend.CreateApplication("app", "Server", nil)
+	_, _ = createDG(h.Backend, "app", "dg", "", "", nil)
+	_, _ = createDeploy(h.Backend, "app", "dg", "", "")
+
+	tests := []struct {
+		name       string
+		externalID string
+		wantLen    int
+	}{
+		{name: "no_filter", externalID: "", wantLen: 1},
+		{name: "nonexistent_external_id", externalID: "pipeline-external-id", wantLen: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			input := map[string]any{"applicationName": "app", "deploymentGroupName": "dg"}
+			if tt.externalID != "" {
+				input["externalId"] = tt.externalID
+			}
+
+			rec := doRequest(t, h, "ListDeployments", input)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var resp struct {
+				Deployments []string `json:"deployments"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			assert.Len(t, resp.Deployments, tt.wantLen)
+		})
+	}
+}
+
 // TestHandler_ContinueDeployment covers the real ContinueDeployment
 // preconditions: aws-sdk-go-v2/service/codedeploy@v1.38.4/types/errors.go:556-557
 // ("The deployment does not have a status of Ready and can't continue yet.")
@@ -670,6 +713,37 @@ func TestHandler_ContinueDeployment(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDeployments_StopDeployment_AlreadyStopped proves stopping an
+// already-stopped deployment is rejected with DeploymentAlreadyCompletedException
+// (types/errors.go:221, "The deployment is already complete.") instead of
+// silently succeeding a second time.
+func TestDeployments_StopDeployment_AlreadyStopped(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	createAppAndDG(t, h, "stop-twice-app", "stop-twice-dg")
+
+	createRec := doRequest(t, h, "CreateDeployment", map[string]any{
+		"applicationName":     "stop-twice-app",
+		"deploymentGroupName": "stop-twice-dg",
+	})
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	var createOut map[string]string
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createOut))
+	deployID := createOut["deploymentId"]
+
+	firstStop := doRequest(t, h, "StopDeployment", map[string]any{"deploymentId": deployID})
+	require.Equal(t, http.StatusOK, firstStop.Code)
+
+	secondStop := doRequest(t, h, "StopDeployment", map[string]any{"deploymentId": deployID})
+	assert.Equal(t, http.StatusConflict, secondStop.Code)
+
+	var errResp map[string]string
+	require.NoError(t, json.Unmarshal(secondStop.Body.Bytes(), &errResp))
+	assert.Equal(t, "DeploymentAlreadyCompletedException", errResp["__type"])
 }
 
 func TestDeployments_StopDeploymentStatus(t *testing.T) {

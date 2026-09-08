@@ -2,6 +2,7 @@ package securityhub
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
 )
@@ -133,10 +134,48 @@ func (b *InMemoryBackend) GetInsightResults(insightArn string) (*InsightResults,
 		return nil, fmt.Errorf("%w: insight %s", ErrNotFound, insightArn)
 	}
 
-	// Return empty results (no real aggregation in mock)
 	return &InsightResults{
 		InsightArn:       insightArn,
 		GroupByAttribute: insight.GroupByAttribute,
-		ResultValues:     []map[string]any{},
+		ResultValues:     b.aggregateInsightResults(insight),
 	}, nil
+}
+
+// aggregateInsightResults groups every stored finding matching insight's
+// Filters by insight.GroupByAttribute, counting occurrences per distinct
+// value -- gopherstack-1qf: this backend previously always returned empty
+// ResultValues regardless of Filters/GroupByAttribute or how many findings
+// existed. Filters is evaluated via matchesFindingFilters (same
+// field-name-mapped subset GetFindings already supports) and
+// GroupByAttribute is resolved via findingFieldString, which already
+// handles the SeverityLabel/WorkflowStatus/ComplianceStatus nested-field
+// cases -- reusing both keeps this consistent with GetFindings rather than
+// inventing a second filter/field-resolution implementation.
+func (b *InMemoryBackend) aggregateInsightResults(insight *Insight) []map[string]any {
+	counts := make(map[string]int)
+
+	for _, f := range b.findings {
+		if !matchesFindingFilters(f, insight.Filters) {
+			continue
+		}
+
+		counts[findingFieldString(f, insight.GroupByAttribute)]++
+	}
+
+	values := make([]string, 0, len(counts))
+	for v := range counts {
+		values = append(values, v)
+	}
+
+	sort.Strings(values)
+
+	resultValues := make([]map[string]any, 0, len(values))
+	for _, v := range values {
+		resultValues = append(resultValues, map[string]any{
+			"GroupByAttributeValue": v,
+			"Count":                 counts[v],
+		})
+	}
+
+	return resultValues
 }

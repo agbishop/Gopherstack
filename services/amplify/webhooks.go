@@ -8,13 +8,22 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
 )
 
-// CreateWebhook creates a new webhook for an app branch.
+// CreateWebhook creates a new webhook for an app branch. Real Amplify's
+// CreateWebhookInput.BranchName doc reads "The name for a branch that is
+// part of an Amplify app" (aws-sdk-go-v2/service/amplify
+// api_op_CreateWebhook.go), and CreateWebhook models NotFoundException, so a
+// branch not belonging to appID is rejected rather than accepted as a
+// dangling reference.
 func (b *InMemoryBackend) CreateWebhook(appID, branchName, description string) (*Webhook, error) {
 	b.mu.Lock("CreateWebhook")
 	defer b.mu.Unlock()
 
 	if !b.apps.Has(appID) {
 		return nil, fmt.Errorf("%w: app %s not found", ErrNotFound, appID)
+	}
+
+	if !b.branches.Has(branchKey(appID, branchName)) {
+		return nil, fmt.Errorf("%w: branch %s not found for app %s", ErrNotFound, branchName, appID)
 	}
 
 	webhookID := randomID()
@@ -45,7 +54,12 @@ func (b *InMemoryBackend) CreateWebhook(appID, branchName, description string) (
 	return &cp, nil
 }
 
-// UpdateWebhook updates a webhook.
+// UpdateWebhook updates a webhook. Real Amplify's UpdateWebhookInput.BranchName
+// doc reads "The name for a branch that is part of an Amplify app"
+// (aws-sdk-go-v2/service/amplify api_op_UpdateWebhook.go), and UpdateWebhook
+// models NotFoundException, so retargeting a webhook at a branch not
+// belonging to the webhook's app is rejected rather than accepted as a
+// dangling reference.
 func (b *InMemoryBackend) UpdateWebhook(
 	webhookID, branchName, description string,
 ) (*Webhook, error) {
@@ -58,6 +72,10 @@ func (b *InMemoryBackend) UpdateWebhook(
 	}
 
 	if branchName != "" {
+		if !b.branches.Has(branchKey(wh.AppID, branchName)) {
+			return nil, fmt.Errorf("%w: branch %s not found for app %s", ErrNotFound, branchName, wh.AppID)
+		}
+
 		wh.BranchName = branchName
 	}
 

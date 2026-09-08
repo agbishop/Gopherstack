@@ -234,3 +234,48 @@ func TestUpdateLFTag_SortsTagValues(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"dev", "prod", "staging"}, tag.TagValues)
 }
+
+func TestDeleteLFTag_DetachesFromResources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{name: "deleting a tag removes its resource attachments"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := lakeformation.NewInMemoryBackend()
+			require.NoError(t, b.CreateLFTag("cat1", "env", []string{"prod", "dev"}))
+
+			resource := &lakeformation.Resource{
+				Database: &lakeformation.DatabaseResource{Name: "mydb"},
+			}
+			pairs := []lakeformation.LFTagPair{{CatalogID: "cat1", TagKey: "env", TagValues: []string{"prod"}}}
+
+			require.Empty(t, b.AddLFTagsToResource("cat1", resource, pairs))
+
+			attached, err := b.GetResourceLFTags("cat1", resource)
+			require.NoError(t, err)
+			require.Len(t, attached, 1, "precondition: tag must be attached before delete")
+
+			require.NoError(t, b.DeleteLFTag("cat1", "env"))
+
+			remaining, err := b.GetResourceLFTags("cat1", resource)
+			require.NoError(t, err)
+			assert.Empty(t, remaining, "GetResourceLFTags must not return a ghost attachment for a deleted tag")
+
+			// A tag key is reusable; a freshly created tag with the same key
+			// must not inherit the old attachment.
+			require.NoError(t, b.CreateLFTag("cat1", "env", []string{"staging"}))
+
+			afterRecreate, err := b.GetResourceLFTags("cat1", resource)
+			require.NoError(t, err)
+			assert.Empty(t, afterRecreate,
+				"recreated tag must not inherit stale attachments from before it was deleted")
+		})
+	}
+}

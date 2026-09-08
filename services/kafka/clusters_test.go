@@ -274,6 +274,42 @@ func TestDeleteCluster_CascadesTopicsAndScram(t *testing.T) {
 	assert.Equal(t, 0, kafka.ScramSecretCount(b))
 }
 
+// TestDeleteCluster_CascadesVpcConnectionsAndChannels proves DeleteCluster no
+// longer leaves ghost VpcConnection/Channel rows pointing at a deleted
+// cluster: both are cluster-scoped children (VpcConnection.TargetClusterArn,
+// Channel.ClusterArn), and prior to this fix only topics/SCRAM secrets/the
+// cluster policy were cascaded on delete.
+func TestDeleteCluster_CascadesVpcConnectionsAndChannels(t *testing.T) {
+	t.Parallel()
+
+	b := kafka.NewInMemoryBackend(testAccountID, testRegion)
+	cl := b.AddClusterInternal("c1", "2.8.0")
+
+	conn := b.AddVpcConnectionInternal(cl.ClusterArn, "vpc-1")
+
+	s3Dest, topics := s3ChannelFixtures()
+	ch, err := b.CreateChannel(
+		context.Background(), cl.ClusterArn, "my-channel", topics, nil, nil, s3Dest, nil, nil,
+	)
+	require.NoError(t, err)
+
+	require.Len(t, b.ListVpcConnections(context.Background()), 1)
+
+	require.NoError(t, b.DeleteCluster(context.Background(), cl.ClusterArn))
+
+	assert.Empty(
+		t,
+		b.ListVpcConnections(context.Background()),
+		"deleted cluster's VPC connection must not survive as a ghost row",
+	)
+
+	_, err = b.DescribeVpcConnection(context.Background(), conn.VpcConnectionArn)
+	require.ErrorIs(t, err, kafka.ErrNotFound)
+
+	_, err = b.DescribeChannel(context.Background(), cl.ClusterArn, ch.ChannelArn)
+	require.ErrorIs(t, err, kafka.ErrNotFound)
+}
+
 func TestSortedListClusters(t *testing.T) {
 	t.Parallel()
 

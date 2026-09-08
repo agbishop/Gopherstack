@@ -68,6 +68,12 @@ func (b *InMemoryBackend) DeleteSubnetGroup(ctx context.Context, name string) er
 		return ErrSubnetGroupNotFound
 	}
 
+	for _, c := range b.clustersStore(region).All() {
+		if c.SubnetGroupName == name {
+			return ErrSubnetGroupInUse
+		}
+	}
+
 	sg.Tags.Close()
 	tbl.Delete(name)
 

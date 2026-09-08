@@ -72,10 +72,8 @@ func TestInMemoryBackend_RestoreOldSnapshotDecodesAsZero(t *testing.T) {
 // TestInMemoryBackend_SnapshotRestore_FullState exercises a Snapshot->Restore
 // round trip across the store.Table-backed monitors collection (composite
 // "region|name" key, see store_setup.go) plus its nested, order-sensitive
-// []*Probe slices and the raw, unconverted arnIndex map (rebuilt fresh on
-// every Restore, so it is verified indirectly via TagResource/ARN lookups
-// rather than by inspecting it directly). Two regions are seeded to confirm
-// region isolation survives the round trip.
+// []*Probe slices. Two regions are seeded to confirm region isolation
+// survives the round trip.
 func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	t.Parallel()
 
@@ -125,8 +123,6 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	_, err = fresh.GetMonitor(ctxWest, "east-monitor")
 	require.Error(t, err, "east-monitor must not leak into us-west-2")
 
-	// arnIndex was rebuilt (not persisted directly): TagResource/ARN lookups
-	// still resolve correctly by ARN after restore.
 	tags, err := fresh.ListTagsForResource(ctxEast, gotEast.MonitorArn)
 	require.NoError(t, err)
 	assert.Equal(t, "prod", tags["env"])

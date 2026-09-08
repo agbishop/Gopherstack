@@ -80,9 +80,6 @@ func (b *InMemoryBackend) Reset() {
 	b.mu.Lock("Reset")
 	defer b.mu.Unlock()
 
-	// NOTE: clusterReadyAt, piMetrics, instanceLogFiles, and instanceLogContent
-	// were not cleared by the pre-conversion Reset either -- preserved exactly
-	// (not a fix target; see parity-principles.md #5).
 	b.registry.ResetAll()
 	b.instanceReadyAt = make(map[string]time.Time)
 	b.tags = make(map[string][]Tag)
@@ -93,6 +90,13 @@ func (b *InMemoryBackend) Reset() {
 	b.proxyTargets = make(map[string][]DBProxyTarget)
 	b.automatedBackups = make(map[string]*DBInstanceAutomatedBackup)
 	b.snapshotTenantDatabases = make(map[string][]*DBSnapshotTenantDatabase)
+	b.clusterReadyAt = make(map[string]time.Time)
+	b.piMetrics = make(map[string]map[string][]PIDataPoint)
+	b.instanceLogFiles = make(map[string][]DBLogFile)
+	b.instanceLogContent = make(map[string]map[string]string)
+	// defaultCACertificateID is an account setting (ModifyCertificates), not a
+	// resource collection: its clean-state value is the const default, not "".
+	b.defaultCACertificateID = defaultCACertificateID
 }
 
 // SetDNSRegistrar wires a DNS server so RDS instance hostnames are auto-registered.

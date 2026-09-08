@@ -109,6 +109,42 @@ func TestVersion_Delete(t *testing.T) {
 	assert.ErrorIs(t, err, stepfunctions.ErrStateMachineVersionDoesNotExist)
 }
 
+// TestVersion_Delete_RejectedWhileReferencedByAlias locks real AWS's
+// DeleteStateMachineVersion doc comment: "You can't delete a state machine
+// version currently referenced by one or more aliases. Before you delete a
+// version, you must either delete the aliases or update them....
+func TestVersion_Delete_RejectedWhileReferencedByAlias(t *testing.T) {
+	t.Parallel()
+
+	b := stepfunctions.NewInMemoryBackend()
+	sm, err := b.CreateStateMachine(
+		context.Background(),
+		"del-ver-aliased-sm",
+		minimalDefinition,
+		validRoleARN,
+		"STANDARD",
+	)
+	require.NoError(t, err)
+
+	v, err := b.PublishStateMachineVersion(sm.StateMachineArn, "", "")
+	require.NoError(t, err)
+
+	alias, err := b.CreateStateMachineAlias(sm.StateMachineArn, "live", "", []stepfunctions.AliasRoutingConfig{
+		{StateMachineVersionArn: v.StateMachineVersionArn, Weight: 100},
+	})
+	require.NoError(t, err)
+
+	err = b.DeleteStateMachineVersion(v.StateMachineVersionArn)
+	require.ErrorIs(t, err, stepfunctions.ErrStateMachineVersionReferencedByAlias)
+
+	_, err = b.DescribeStateMachineVersion(v.StateMachineVersionArn)
+	require.NoError(t, err, "version must still exist after the rejected delete")
+
+	require.NoError(t, b.DeleteStateMachineAlias(alias.StateMachineAliasArn))
+
+	require.NoError(t, b.DeleteStateMachineVersion(v.StateMachineVersionArn))
+}
+
 // ─── Aliases ──────────────────────────────────────────────────────────────────
 
 func TestHandler_ListStateMachineVersions(t *testing.T) {

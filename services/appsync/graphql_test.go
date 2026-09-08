@@ -41,6 +41,9 @@ func TestInMemoryBackend_ExecuteGraphQL_LambdaResolver(t *testing.T) {
 			b.SetLambdaInvoker(mock)
 
 			api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+			key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+			require.NoError(t, keyErr)
+			auth := appsync.GraphQLAuth{APIKey: key.ID}
 			_, _ = b.StartSchemaCreation(api.APIID, tt.schema)
 			_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 				Name: "LambdaDS",
@@ -54,7 +57,7 @@ func TestInMemoryBackend_ExecuteGraphQL_LambdaResolver(t *testing.T) {
 				DataSourceName: "LambdaDS",
 			})
 
-			result, err := b.ExecuteGraphQL(t.Context(), api.APIID, tt.query, "", nil)
+			result, err := b.ExecuteGraphQL(t.Context(), api.APIID, tt.query, "", nil, auth)
 			require.NoError(t, err)
 			assert.Len(t, mock.calls, tt.wantCalls)
 			assert.Equal(t, tt.wantValue, result[tt.wantField])
@@ -88,6 +91,9 @@ func TestInMemoryBackend_ExecuteGraphQL_NoneResolver(t *testing.T) {
 
 			b := newTestBackend()
 			api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+			key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+			require.NoError(t, keyErr)
+			auth := appsync.GraphQLAuth{APIKey: key.ID}
 			_, _ = b.StartSchemaCreation(api.APIID, tt.schema)
 			_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 				Name: "NoneDS",
@@ -98,7 +104,7 @@ func TestInMemoryBackend_ExecuteGraphQL_NoneResolver(t *testing.T) {
 				DataSourceName: "NoneDS",
 			})
 
-			result, err := b.ExecuteGraphQL(t.Context(), api.APIID, tt.query, "", tt.variables)
+			result, err := b.ExecuteGraphQL(t.Context(), api.APIID, tt.query, "", tt.variables, auth)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -117,7 +123,10 @@ func TestInMemoryBackend_ExecuteGraphQL_NoSchema(t *testing.T) {
 
 	b := newTestBackend()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
-	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
+	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil, auth)
 	require.Error(t, err)
 }
 
@@ -126,9 +135,12 @@ func TestInMemoryBackend_ExecuteGraphQL_InvalidQuery(t *testing.T) {
 
 	b := newTestBackend()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
 
-	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `{ not valid gql`, "", nil)
+	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `{ not valid gql`, "", nil, auth)
 	require.Error(t, err)
 }
 
@@ -136,7 +148,7 @@ func TestInMemoryBackend_ExecuteGraphQL_MissingAPI(t *testing.T) {
 	t.Parallel()
 
 	b := newTestBackend()
-	_, err := b.ExecuteGraphQL(t.Context(), "nonexistent", `query { hello }`, "", nil)
+	_, err := b.ExecuteGraphQL(t.Context(), "nonexistent", `query { hello }`, "", nil, appsync.GraphQLAuth{})
 	require.Error(t, err)
 }
 
@@ -184,6 +196,9 @@ func TestInMemoryBackend_ExecuteGraphQL_LambdaResolver_WithTemplates(t *testing.
 			b.SetLambdaInvoker(mock)
 
 			api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+			key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+			require.NoError(t, keyErr)
+			auth := appsync.GraphQLAuth{APIKey: key.ID}
 			_, _ = b.StartSchemaCreation(api.APIID, tt.schema)
 			_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 				Name: "LambdaDS",
@@ -199,7 +214,7 @@ func TestInMemoryBackend_ExecuteGraphQL_LambdaResolver_WithTemplates(t *testing.
 				ResponseMappingTemplate: tt.respTemplate,
 			})
 
-			result, err := b.ExecuteGraphQL(t.Context(), api.APIID, tt.query, "", nil)
+			result, err := b.ExecuteGraphQL(t.Context(), api.APIID, tt.query, "", nil, auth)
 			require.NoError(t, err)
 			assert.Len(t, mock.calls, tt.wantCalls)
 			assert.NotNil(t, result[tt.wantField])
@@ -242,6 +257,9 @@ func TestInMemoryBackend_ExecuteGraphQL_NoneResolver_WithTemplates(t *testing.T)
 
 			b := newTestBackend()
 			api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+			key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+			require.NoError(t, keyErr)
+			auth := appsync.GraphQLAuth{APIKey: key.ID}
 			_, _ = b.StartSchemaCreation(api.APIID, tt.schema)
 			_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 				Name: "NoneDS",
@@ -254,7 +272,7 @@ func TestInMemoryBackend_ExecuteGraphQL_NoneResolver_WithTemplates(t *testing.T)
 				ResponseMappingTemplate: tt.respTemplate,
 			})
 
-			result, err := b.ExecuteGraphQL(t.Context(), api.APIID, tt.query, "", nil)
+			result, err := b.ExecuteGraphQL(t.Context(), api.APIID, tt.query, "", nil, auth)
 			require.NoError(t, err)
 			assert.Contains(t, result, tt.wantField)
 		})
@@ -270,6 +288,9 @@ type Mutation { createItem(name: String): String }`
 
 	b := newTestBackend()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, schema)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name: "NoneDS",
@@ -280,7 +301,7 @@ type Mutation { createItem(name: String): String }`
 		DataSourceName: "NoneDS",
 	})
 
-	result, err := b.ExecuteGraphQL(t.Context(), api.APIID, query, "", nil)
+	result, err := b.ExecuteGraphQL(t.Context(), api.APIID, query, "", nil, auth)
 	require.NoError(t, err)
 	assert.Contains(t, result, "createItem")
 }
@@ -290,6 +311,9 @@ func TestInMemoryBackend_ExecuteGraphQL_UnsupportedDataSource(t *testing.T) {
 
 	b := newTestBackend()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name: "HTTPDS",
@@ -300,7 +324,7 @@ func TestInMemoryBackend_ExecuteGraphQL_UnsupportedDataSource(t *testing.T) {
 		DataSourceName: "HTTPDS",
 	})
 
-	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil)
+	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil, auth)
 	require.Error(t, err)
 }
 
@@ -309,6 +333,9 @@ func TestInMemoryBackend_ExecuteGraphQL_NamedOperation(t *testing.T) {
 
 	b := newTestBackend()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name: "NoneDS",
@@ -320,7 +347,7 @@ func TestInMemoryBackend_ExecuteGraphQL_NamedOperation(t *testing.T) {
 	})
 
 	result, err := b.ExecuteGraphQL(t.Context(), api.APIID,
-		`query MyQuery { hello }`, "MyQuery", nil)
+		`query MyQuery { hello }`, "MyQuery", nil, auth)
 	require.NoError(t, err)
 	assert.Contains(t, result, "hello")
 }
@@ -330,10 +357,13 @@ func TestInMemoryBackend_ExecuteGraphQL_OperationNotFound(t *testing.T) {
 
 	b := newTestBackend()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
 
 	_, err := b.ExecuteGraphQL(t.Context(), api.APIID,
-		`query MyQuery { hello }`, "NonExistentOp", nil)
+		`query MyQuery { hello }`, "NonExistentOp", nil, auth)
 	require.Error(t, err)
 }
 
@@ -342,6 +372,9 @@ func TestInMemoryBackend_ExecuteGraphQL_Subscription(t *testing.T) {
 
 	b := newTestBackend()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `
 		type Query { dummy: String }
 		type Subscription { onEvent: String }
@@ -356,7 +389,7 @@ func TestInMemoryBackend_ExecuteGraphQL_Subscription(t *testing.T) {
 	})
 
 	result, err := b.ExecuteGraphQL(t.Context(), api.APIID,
-		`subscription { onEvent }`, "", nil)
+		`subscription { onEvent }`, "", nil, auth)
 	require.NoError(t, err)
 	assert.Contains(t, result, "onEvent")
 }
@@ -369,6 +402,9 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_GetItem(t *testing.T) {
 	b.SetDynamoDBBackend(ddb)
 
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { getItem(id: String): String }`)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name: "DDBDataSource",
@@ -386,7 +422,7 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_GetItem(t *testing.T) {
 	})
 
 	result, err := b.ExecuteGraphQL(t.Context(), api.APIID,
-		`query { getItem(id: "123") }`, "", nil)
+		`query { getItem(id: "123") }`, "", nil, auth)
 	require.NoError(t, err)
 	assert.Contains(t, result, "getItem")
 }
@@ -399,6 +435,9 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_NoTemplate(t *testing.T
 	b.SetDynamoDBBackend(ddb)
 
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { getItem(id: String): String }`)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name:           "DDBDataSource",
@@ -412,7 +451,7 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_NoTemplate(t *testing.T
 	})
 
 	result, err := b.ExecuteGraphQL(t.Context(), api.APIID,
-		`query { getItem(id: "123") }`, "", nil)
+		`query { getItem(id: "123") }`, "", nil, auth)
 	require.NoError(t, err)
 	assert.Contains(t, result, "getItem")
 }
@@ -425,6 +464,9 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_UnsupportedOperation(t 
 	b.SetDynamoDBBackend(ddb)
 
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { getItem(id: String): String }`)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name:           "DDBDataSource",
@@ -437,7 +479,7 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_UnsupportedOperation(t 
 		RequestMappingTemplate: `{"operation": "Scan"}`,
 	})
 
-	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { getItem(id: "1") }`, "", nil)
+	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { getItem(id: "1") }`, "", nil, auth)
 	require.Error(t, err)
 }
 
@@ -449,6 +491,9 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_NilConfig(t *testing.T)
 	b.SetDynamoDBBackend(ddb)
 
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { getItem(id: String): String }`)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name: "DDBDataSource",
@@ -460,7 +505,7 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_NilConfig(t *testing.T)
 		DataSourceName: "DDBDataSource",
 	})
 
-	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { getItem(id: "1") }`, "", nil)
+	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { getItem(id: "1") }`, "", nil, auth)
 	require.Error(t, err)
 }
 
@@ -471,6 +516,9 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_NilBackend(t *testing.T
 	// Do NOT set DynamoDB backend.
 
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { getItem(id: String): String }`)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name:           "DDBDataSource",
@@ -482,7 +530,7 @@ func TestInMemoryBackend_ExecuteGraphQL_DynamoDBResolver_NilBackend(t *testing.T
 		DataSourceName: "DDBDataSource",
 	})
 
-	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { getItem(id: "1") }`, "", nil)
+	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { getItem(id: "1") }`, "", nil, auth)
 	require.Error(t, err)
 }
 
@@ -493,6 +541,9 @@ func TestInMemoryBackend_ExecuteGraphQL_LambdaResolver_NilInvoker(t *testing.T) 
 	// Do NOT set lambda invoker.
 
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name: "LambdaDS",
@@ -506,7 +557,7 @@ func TestInMemoryBackend_ExecuteGraphQL_LambdaResolver_NilInvoker(t *testing.T) 
 		DataSourceName: "LambdaDS",
 	})
 
-	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil)
+	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil, auth)
 	require.Error(t, err)
 }
 
@@ -518,6 +569,9 @@ func TestInMemoryBackend_ExecuteGraphQL_LambdaResolver_NilLambdaConfig(t *testin
 	b.SetLambdaInvoker(mock)
 
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
 	_, _ = b.CreateDataSource(api.APIID, &appsync.DataSource{
 		Name: "LambdaDS",
@@ -529,7 +583,7 @@ func TestInMemoryBackend_ExecuteGraphQL_LambdaResolver_NilLambdaConfig(t *testin
 		DataSourceName: "LambdaDS",
 	})
 
-	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil)
+	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil, auth)
 	require.Error(t, err)
 }
 
@@ -538,10 +592,13 @@ func TestInMemoryBackend_ExecuteGraphQL_NilResolver(t *testing.T) {
 
 	b := newTestBackend()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
 
 	// No resolvers defined at all — field should return nil.
-	result, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil)
+	result, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil, auth)
 	require.NoError(t, err)
 	assert.Nil(t, result["hello"])
 }
@@ -551,6 +608,9 @@ func TestInMemoryBackend_ExecuteGraphQL_MissingDataSource(t *testing.T) {
 
 	b := newTestBackend()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
+	auth := appsync.GraphQLAuth{APIKey: key.ID}
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
 	// Create resolver but NOT the data source.
 	_, _ = b.CreateResolver(api.APIID, "Query", &appsync.Resolver{
@@ -558,6 +618,6 @@ func TestInMemoryBackend_ExecuteGraphQL_MissingDataSource(t *testing.T) {
 		DataSourceName: "MissingDS",
 	})
 
-	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil)
+	_, err := b.ExecuteGraphQL(t.Context(), api.APIID, `query { hello }`, "", nil, auth)
 	require.Error(t, err)
 }

@@ -74,7 +74,7 @@ func (b *InMemoryBackend) GetLifecyclePolicyPreview(
 
 	preview, ok := b.lifecyclePolicyPreviews.Get(repositoryName)
 	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrLifecyclePolicyNotFound, repositoryName)
+		return nil, fmt.Errorf("%w: %s", ErrLifecyclePolicyPreviewNotFound, repositoryName)
 	}
 
 	cp := *preview

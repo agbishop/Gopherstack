@@ -97,6 +97,35 @@ func TestElasticsearchHandler_DeleteElasticsearchServiceRole(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
+// TestElasticsearchHandler_DeleteElasticsearchServiceRole_RejectedWithVPCDomain
+// locks real AWS's DeleteElasticsearchServiceRole doc comment: "Role
+// deletion will fail if any existing VPC domains use the role. You must
+// delete any such Elasticsearch domains before deleting the role".
+func TestElasticsearchHandler_DeleteElasticsearchServiceRole_RejectedWithVPCDomain(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+
+	createResp := doRequest(t, h, http.MethodPost, "/2015-01-01/es/domain", map[string]any{
+		"DomainName": "vpc-role-domain",
+		"VPCOptions": map[string]any{"SubnetIds": []string{"subnet-abc"}},
+	})
+	createResp.Body.Close()
+	require.Equal(t, http.StatusOK, createResp.StatusCode)
+
+	rejected := doRequest(t, h, http.MethodDelete, "/2015-01-01/es/role", nil)
+	defer rejected.Body.Close()
+	assert.NotEqual(t, http.StatusOK, rejected.StatusCode)
+
+	delDomainResp := doRequest(t, h, http.MethodDelete, "/2015-01-01/es/domain/vpc-role-domain", nil)
+	delDomainResp.Body.Close()
+	require.Equal(t, http.StatusOK, delDomainResp.StatusCode)
+
+	allowed := doRequest(t, h, http.MethodDelete, "/2015-01-01/es/role", nil)
+	defer allowed.Body.Close()
+	assert.Equal(t, http.StatusOK, allowed.StatusCode)
+}
+
 // TestElasticsearchHandler_UpgradeAndSoftwareUpdate_Lifecycle drives
 // UpgradeElasticsearchDomain and StartElasticsearchServiceSoftwareUpdate
 // through the HTTP handler.

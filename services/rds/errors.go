@@ -19,6 +19,8 @@ var (
 	ErrSubnetGroupNotFound = awserr.New("DBSubnetGroupNotFound", awserr.ErrNotFound)
 	// ErrSubnetGroupAlreadyExists is returned when a subnet group already exists.
 	ErrSubnetGroupAlreadyExists = awserr.New("DBSubnetGroupAlreadyExists", awserr.ErrAlreadyExists)
+	// ErrSubnetGroupInUse is returned when a subnet group is still associated with a DB instance.
+	ErrSubnetGroupInUse = awserr.New("InvalidDBSubnetGroupStateFault", awserr.ErrConflict)
 	// ErrInvalidParameter is returned for invalid input.
 	ErrInvalidParameter = awserr.New("InvalidParameterValue", awserr.ErrInvalidParameter)
 	// ErrInvalidParameterCombination is returned when a set of otherwise-valid
@@ -29,6 +31,13 @@ var (
 	ErrUnknownAction = awserr.New("InvalidAction", awserr.ErrInvalidParameter)
 	// ErrInvalidDBInstanceState is returned when an instance operation is invalid given its current state.
 	ErrInvalidDBInstanceState = awserr.New("InvalidDBInstanceState", awserr.ErrConflict)
+	// ErrResourceNotFound is the generic not-found error for operations whose
+	// ResourceArn/ResourceIdentifier can name more than one resource type
+	// (verified against aws-sdk-go-v2/service/rds@v1.124.1's deserializers.go
+	// declared error sets for ApplyPendingMaintenanceAction, EnableHttpEndpoint,
+	// and DisableHttpEndpoint, none of which declare a resource-type-specific
+	// not-found code).
+	ErrResourceNotFound = awserr.New("ResourceNotFoundFault", awserr.ErrNotFound)
 
 	// ErrParameterGroupNotFound is returned when a DB parameter group does not exist.
 	ErrParameterGroupNotFound = awserr.New("DBParameterGroupNotFound", awserr.ErrNotFound)
@@ -70,6 +79,11 @@ var (
 	ErrDBSecurityGroupNotFound = awserr.New("DBSecurityGroupNotFound", awserr.ErrNotFound)
 	// ErrDBSecurityGroupAlreadyExists is returned when a DB security group already exists.
 	ErrDBSecurityGroupAlreadyExists = awserr.New("DBSecurityGroupAlreadyExists", awserr.ErrAlreadyExists)
+	// ErrDBSecurityGroupInvalidState is returned by DeleteDBSecurityGroup for
+	// the default DB security group. Real AWS: DeleteDBSecurityGroupInput.
+	// DBSecurityGroupName's own doc comment, "You can't delete the default
+	// DB security group" ("Must not be \"Default\"").
+	ErrDBSecurityGroupInvalidState = awserr.New("InvalidDBSecurityGroupState", awserr.ErrConflict)
 	// ErrBlueGreenDeploymentNotFound is returned when a Blue/Green Deployment does not exist.
 	ErrBlueGreenDeploymentNotFound = awserr.New("BlueGreenDeploymentNotFound", awserr.ErrNotFound)
 	// ErrBlueGreenDeploymentAlreadyExists is returned when a Blue/Green Deployment already exists.
@@ -91,6 +105,14 @@ var (
 	ErrTenantDatabaseNotFound = awserr.New("TenantDatabaseNotFound", awserr.ErrNotFound)
 	// ErrTenantDatabaseAlreadyExists is returned when a tenant database already exists.
 	ErrTenantDatabaseAlreadyExists = awserr.New("TenantDatabaseAlreadyExists", awserr.ErrAlreadyExists)
+
+	// ErrCustomDBEngineVersionNotFound is returned when a custom DB engine version does not exist.
+	ErrCustomDBEngineVersionNotFound = awserr.New("CustomDBEngineVersionNotFoundFault", awserr.ErrNotFound)
+	// ErrCustomDBEngineVersionAlreadyExists is returned when a custom DB engine version already exists.
+	ErrCustomDBEngineVersionAlreadyExists = awserr.New(
+		"CustomDBEngineVersionAlreadyExistsFault",
+		awserr.ErrAlreadyExists,
+	)
 
 	// ErrDBClusterAutomatedBackupNotFound is returned when a cluster automated backup does not exist.
 	ErrDBClusterAutomatedBackupNotFound = awserr.New("DBClusterAutomatedBackupNotFound", awserr.ErrNotFound)

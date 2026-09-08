@@ -2,7 +2,7 @@
 service: apprunner
 sdk_module: aws-sdk-go-v2/service/apprunner@v1.42.4
 last_audit_commit:                                # unknown: pass ran without git access at write time, never backfilled -- gopherstack-33in
-last_audit_date: 2026-08-23
+last_audit_date: 2026-09-03
 overall: A            # full field-diff sweep: closed every gaps/deferred item from the 2026-07-13 audit,
                        # plus the wrapper-key/nested-shape sweep (2026-08-19, one fabricated-field bug fixed);
                        # 2026-08-23: closed the four member-never-emitted items disclosed 2026-08-19 (see Notes)
@@ -10,7 +10,7 @@ ops:
   CreateService: {wire: fixed, errors: ok, state: ok, persist: ok, note: "immediate RUNNING (no OPERATION_IN_PROGRESS poll-forever trap); full field set now threaded: InstanceConfiguration (Cpu/Memory/InstanceRoleArn), SourceConfiguration (ImageRepository incl. ImageConfiguration, CodeRepository incl. SourceCodeVersion/CodeConfiguration, AuthenticationConfiguration, AutoDeploymentsEnabled with real default), AutoScalingConfigurationArn (resolved-or-default, HasAssociatedService bookkeeping), NetworkConfiguration (Egress/IngressConfiguration, IpAddressType, real defaults), HealthCheckConfiguration (real defaults), EncryptionConfiguration, ObservabilityConfiguration. Service response now includes the previously-missing required AutoScalingConfigurationSummary and NetworkConfiguration fields. FIXED 2026-08-21 (bd gopherstack-r80d, batch 10; fixed but NOT counted -- see Notes): validateSourceConfig checked CodeRepository.RepositoryUrl but never SourceCodeVersion (types.go:245-263, both required on CodeRepository) -- an omitted SourceCodeVersion was silently accepted and then dropped from codeRepositoryOutput entirely. Added the same required-field check already used for RepositoryUrl/ImageIdentifier. Not counted: the real aws-sdk-go-v2 client's own generated validateCodeRepository (validators.go:792-806) already rejects a nil SourceCodeVersion client-side, so no real Go SDK client can ever reach gopherstack in the buggy state -- proven instead via a raw request bypassing that client-side check, which is real for any other caller (raw HTTP, a non-Go SDK) but not provable via this campaign's real-SDK-client round-trip standard."}
   DescribeService: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateService: {wire: ok, errors: ok, state: ok, persist: ok, note: "rejects update unless status RUNNING, matches InvalidStateException; rejects switching between image/code source types (InvalidRequestException, matching the real op's documented restriction); all new CreateService fields are independently patchable (nil/empty = no change)"}
-  DeleteService: {wire: fixed, errors: ok, state: ok, persist: ok, note: "now cascade-cleans the service's customDomains map entry and recomputes the old AutoScalingConfiguration's HasAssociatedService (see leaks). FIXED 2026-08-23: Service.DeletedAt (deserializers.go:6615) was entirely absent from storedService and Service -- added the field, set on DeleteService before the row is evicted from the store, emitted as an omitempty pointer (only DeleteService's own response can ever observe it, since ListServices/DescribeService can no longer see the service after eviction)."}
+  DeleteService: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "now cascade-cleans the service's customDomains map entry and recomputes the old AutoScalingConfiguration's HasAssociatedService (see leaks). FIXED 2026-08-23: Service.DeletedAt (deserializers.go:6615) was entirely absent from storedService and Service -- added the field, set on DeleteService before the row is evicted from the store, emitted as an omitempty pointer (only DeleteService's own response can ever observe it, since ListServices/DescribeService can no longer see the service after eviction). FIXED 2026-09-03 (gopherstack-9vv): now rejects (InvalidStateException) deleting a service with an active VpcIngressConnection still referencing it, matching the op's own doc sentence -- see Notes."}
   ListServices: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-23: ServiceSummary.UpdatedAt (deserializers.go:6939) was omitted from the wire struct even though storedService.UpdatedAt was already tracked and current -- emit-only fix, no backend logic change."}
   PauseService: {wire: ok, errors: ok, state: ok, persist: ok}
   ResumeService: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -18,20 +18,20 @@ ops:
   ListOperations: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed -- OperationSummary now includes UpdatedAt (set equal to StartedAt/EndedAt since operations complete immediately in this backend's simplified state machine)"}
   CreateAutoScalingConfiguration: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-23: AutoScalingConfiguration.Latest (deserializers.go:4692) and .DeletedAt (deserializers.go:4660) were both untracked/unemitted. Latest is now computed the same way ObservabilityConfiguration.Latest already was -- b.asgByName[name] tracks revisions in creation order; the new revision flips the prior last entry's Latest to false and sets its own to true. DeletedAt was already tracked on storedAutoScalingConfiguration/AutoScalingConfiguration (DeleteAutoScalingConfiguration already set it) but never surfaced on the wire; emit-only fix, omitempty pointer."}
   DescribeAutoScalingConfiguration: {wire: fixed, errors: ok, state: ok, persist: ok, note: "same Latest/DeletedAt fix as CreateAutoScalingConfiguration."}
-  DeleteAutoScalingConfiguration: {wire: fixed, errors: ok, state: ok, persist: ok, note: "same Latest/DeletedAt fix as CreateAutoScalingConfiguration; on delete, the remaining highest-revision sibling (if any) gets Latest promoted to true, mirroring DeleteObservabilityConfiguration's existing convention."}
+  DeleteAutoScalingConfiguration: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "same Latest/DeletedAt fix as CreateAutoScalingConfiguration; on delete, the remaining highest-revision sibling (if any) gets Latest promoted to true, mirroring DeleteObservabilityConfiguration's existing convention. FIXED 2026-09-03 (gopherstack-9vv): now rejects (InvalidRequestException) deleting the account default configuration or one still associated with a service, using the cfg.IsDefault/HasAssociatedService fields this backend already tracked but never checked on delete -- see Notes."}
   ListAutoScalingConfigurations: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed -- summary now includes real HasAssociatedService, recomputed from live CreateService/UpdateService/DeleteService association state"}
   UpdateDefaultAutoScalingConfiguration: {wire: ok, errors: ok, state: ok, persist: ok}
   ListServicesForAutoScalingConfiguration: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed -- now returns real associated service ARNs; CreateService threads AutoScalingConfigurationArn (explicit, name-only-ARN, or the account's always-present seeded default) into a real association tracked on every service"}
   CreateConnection: {wire: ok, errors: ok, state: ok, persist: ok}
-  DeleteConnection: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteConnection: {wire: ok, errors: fixed, state: ok, persist: ok, note: "FIXED 2026-09-03 (gopherstack-9vv): now rejects (InvalidRequestException) deleting a connection still referenced by a service's SourceConfiguration.AuthenticationConfiguration.ConnectionArn, matching the op's own doc sentence -- see Notes."}
   ListConnections: {wire: ok, errors: ok, state: ok, persist: ok}
   CreateObservabilityConfiguration: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-21 (bd gopherstack-r80d, batch 10; fixed but NOT counted toward the required-field tally -- TraceConfiguration itself is optional per types.go:601, only its nested Vendor is required-when-present): TracingVendor was captured from CreateObservabilityConfigurationInput and stored, but observabilityConfigurationOutput had no TraceConfiguration field at all, so it was silently dropped on every response. Added, present only when TracingVendor != \"\" (real AWS: absent means tracing isn't enabled -- not fabricating a vendor when none was configured)."}
   DescribeObservabilityConfiguration: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-21 (bd gopherstack-r80d, batch 10): same TraceConfiguration gap and fix as CreateObservabilityConfiguration above."}
-  DeleteObservabilityConfiguration: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteObservabilityConfiguration: {wire: ok, errors: fixed, state: ok, persist: ok, note: "FIXED 2026-09-03 (gopherstack-9vv): now rejects (InvalidRequestException) deleting a configuration still enabled on a service, matching the op's own doc sentence -- see Notes."}
   ListObservabilityConfigurations: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed 2026-08-19 -- summary entries were emitting fabricated Status/Latest/CreatedAt keys that have no case in the real types.ObservabilityConfigurationSummary document deserializer (deserializers.go:6215-6270); a real client would silently drop them. Now emits only ObservabilityConfigurationArn/Name/Revision, matching the narrower summary type exactly (types/types.go:613-628)"}
   CreateVpcConnector: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-23: VpcConnector.DeletedAt (deserializers.go:7299) was already tracked on storedVpcConnector/VpcConnector (DeleteVpcConnector already set it) but never surfaced on the wire; emit-only fix, omitempty pointer."}
   DescribeVpcConnector: {wire: fixed, errors: ok, state: ok, persist: ok, note: "same DeletedAt fix as CreateVpcConnector."}
-  DeleteVpcConnector: {wire: fixed, errors: ok, state: ok, persist: ok, note: "same DeletedAt fix as CreateVpcConnector."}
+  DeleteVpcConnector: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "same DeletedAt fix as CreateVpcConnector. FIXED 2026-09-03 (gopherstack-9vv): now rejects (InvalidRequestException) deleting a connector still referenced by a service's NetworkConfiguration.EgressConfiguration.VpcConnectorArn, matching the op's own doc sentence -- see Notes."}
   ListVpcConnectors: {wire: ok, errors: ok, state: ok, persist: ok}
   CreateVpcIngressConnection: {wire: ok, errors: ok, state: partial, persist: ok, note: "doesn't validate ServiceArn refers to an existing service (dangling ref allowed); matches real op's documented error set which has no ResourceNotFoundException, so not a wire bug -- see gaps"}
   DescribeVpcIngressConnection: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-23: VpcIngressConnection.DeletedAt (deserializers.go:7547) was already tracked on storedVpcIngressConnection/VpcIngressConnection (DeleteVpcIngressConnection already set it) but never surfaced on the wire; emit-only fix, omitempty pointer."}
@@ -557,3 +557,110 @@ changed backend interface methods), `go test -race -count=1
 ./services/apprunner/...`, `golangci-lint run ./services/apprunner/...` (0
 issues; `fieldalignment` checked via a scratch-directory oracle per this
 repo's no-automated-fixer convention, hand-applied to both changed structs).
+
+## 2026-09-03 pass (bd gopherstack-9vv): 5 missing delete-precondition bugs, referential integrity
+
+Targeted sweep of the "missing delete precondition / referential integrity"
+class this campaign has repeatedly found across services: every `Delete*`
+op's own doc comment in `aws-sdk-go-v2/service/apprunner@v1.42.4
+api_op_Delete*.go`, read in full, against what the corresponding backend
+method actually checks before mutating state.
+
+**5 bugs found and fixed, all backed by an explicit doc sentence (not just a
+modelled error) and all proven via a hand-revert/confirmed-failing/restored
+regression test:**
+
+- **`DeleteConnection`** (`api_op_DeleteConnection.go`): "You must first
+  ensure that there are no running App Runner services that use this
+  connection. If there are any, the DeleteConnection action fails." Never
+  checked -- `connections.go`'s `DeleteConnection` deleted unconditionally.
+  Fixed: rejects (`InvalidRequestException` -- this op's error set has no
+  `InvalidStateException`, confirmed against
+  `awsAwsjson10_deserializeOpErrorDeleteConnection`'s switch) when any live
+  service's `SourceConfiguration.AuthenticationConfiguration.ConnectionArn`
+  still references it (`serviceUsesConnection`, `service_associations.go`).
+  Test: `TestDeleteConnection_RejectsWhenServiceUsesIt`
+  (`handler_connections_test.go`).
+- **`DeleteAutoScalingConfiguration`** (`api_op_DeleteAutoScalingConfiguration.go`):
+  "You can't delete the default auto scaling configuration or a
+  configuration that's used by one or more App Runner services." Never
+  checked, despite this backend already tracking both exact booleans
+  (`cfg.IsDefault`, `cfg.HasAssociatedService`) for other purposes
+  (`ListAutoScalingConfigurations`'s summary, `UpdateDefaultAutoScalingConfiguration`).
+  Fixed: two guards in `DeleteAutoScalingConfiguration`
+  (`auto_scaling_configurations.go`), each independently proven load-bearing
+  by neutering one at a time. Test:
+  `TestDeleteAutoScalingConfiguration_RejectsDefaultAndInUse`
+  (`handler_auto_scaling_configurations_test.go`, two subtests).
+- **`DeleteVpcConnector`** (`api_op_DeleteVpcConnector.go`): "You can't
+  delete a connector that's used by one or more App Runner services." Never
+  checked. Fixed: rejects (`InvalidRequestException`) when any live
+  service's `NetworkConfiguration.EgressConfiguration.VpcConnectorArn` still
+  references it (`serviceUsesVpcConnector`). Test:
+  `TestDeleteVpcConnector_RejectsWhenServiceUsesIt`
+  (`handler_vpc_connectors_test.go`).
+- **`DeleteObservabilityConfiguration`** (`api_op_DeleteObservabilityConfiguration.go`):
+  "You can't delete a configuration that's used by one or more App Runner
+  services." Never checked. Fixed: rejects (`InvalidRequestException`) when
+  any live service has it enabled
+  (`Observability.Enabled && Observability.ConfigurationArn == obsArn`,
+  `serviceUsesObservabilityConfig`). Test:
+  `TestDeleteObservabilityConfiguration_RejectsWhenServiceUsesIt`
+  (`handler_observability_configurations_test.go`).
+- **`DeleteService`** (`api_op_DeleteService.go`): "Make sure that you don't
+  have any active VPCIngressConnections associated with the service you want
+  to delete." Never checked. Unlike the four resource-config deletes above,
+  `DeleteService`'s error set *does* model `InvalidStateException`
+  (`awsAwsjson10_deserializeOpErrorDeleteService`), the same mechanism
+  `UpdateService`/`PauseService`/`ResumeService` already use for their own
+  state preconditions, so this fix uses `ErrInvalidState` rather than
+  `ErrInvalidParameter`. Fixed: rejects when any VPC ingress connection still
+  references the service (`hasActiveVpcIngressConnections` --
+  `DeleteVpcIngressConnection` already removes its row from the table on
+  delete, so any entry found is inherently active; no status filter needed).
+  Test: `TestDeleteService_RejectsWhenActiveVpcIngressConnectionExists`
+  (`handler_services_test.go`).
+
+All 4 new cross-resource-scan helpers (`serviceUsesConnection`,
+`serviceUsesVpcConnector`, `serviceUsesObservabilityConfig`,
+`hasActiveVpcIngressConnections`) live in `service_associations.go` next to
+the pre-existing `recomputeASGAssociation`/`validateNetworkConfig`/
+`validateObservability`/`validateSourceAuth` helpers they mirror in style
+(scan `b.services`/`b.vpcIngressConnections` under the already-held lock, no
+new locking or goroutines).
+
+Every fix hand-verified to fail without it (temporarily reverted the guard
+via `cp`-backup/edit/restore, ran the specific new test, confirmed it failed
+with the exact expected-vs-actual mismatch, then restored and reconfirmed
+green) -- see bd gopherstack-9vv for the verbatim failure output. No existing
+test asserted the old (permissive) behavior, so none needed correcting; full
+existing suite was green throughout.
+
+**`dupl` fallout**: `DeleteAutoScalingConfiguration`/`DeleteObservabilityConfiguration`
+diverged enough (different in-use checks) that they're no longer
+near-duplicates of each other, making their existing `//nolint:dupl`
+directives stale (flagged by `nolintlint`) while `ListAutoScalingConfigurations`/
+`ListObservabilityConfigurations` (unchanged, always structurally identical)
+became the new `dupl` match. Moved the `//nolint:dupl` directives from the
+two `Delete*` functions to the two `List*` functions accordingly -- same
+"duplication moves, directive follows it" pattern the 2026-08-23 pass
+documented for these same two function pairs.
+
+**Not touched / out of scope this pass**: `DeleteVpcIngressConnection`'s own
+documented state-machine precondition ("must be in AVAILABLE,
+FAILED_CREATION, FAILED_UPDATE, or FAILED_DELETION") and `UpdateVpcIngressConnection`'s
+("AVAILABLE, FAILED_CREATION, or FAILED_UPDATE") are structurally
+unreachable in this backend: VPC ingress connections only ever have
+`AVAILABLE` (live, in `b.vpcIngressConnections`) or removed-from-table
+(post-delete) states -- the `FAILED_*`/`PENDING_*` transitional states are
+never modeled anywhere in this service (a deliberate simplification this
+campaign has repeatedly confirmed elsewhere: services/configs transition to
+terminal states immediately). Adding a guard against an unreachable state
+would be dead code, not a fix.
+
+Gates: `go build`, `go vet`, `go fix -diff`, `gofmt -l`, `go test -race
+-count=1 ./services/apprunner/...`, `golangci-lint run
+./services/apprunner/...` (0 issues) all clean. `go test -race -count=1
+./services/cloudformation/...` (unrelated dependent sanity check per this
+campaign's standing instruction) also green. No `StorageBackend` interface
+method signatures changed, so no root-package run was needed.

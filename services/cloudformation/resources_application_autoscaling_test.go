@@ -10,6 +10,10 @@ import (
 	"github.com/blackbirdworks/gopherstack/services/cloudformation"
 )
 
+// int32p is a test helper for applicationautoscaling.RegisterScalableTarget's
+// *int32 MinCapacity/MaxCapacity parameters.
+func int32p(v int32) *int32 { return new(v) }
+
 // TestResourceCreator_AppAutoScaling_ScalableTarget_CreateDelete verifies
 // scalable target is registered in the backend and deregistered on delete.
 func TestResourceCreator_AppAutoScaling_ScalableTarget_CreateDelete(t *testing.T) {
@@ -68,7 +72,7 @@ func TestResourceCreator_AppAutoScaling_ScalingPolicy_CreateDelete(t *testing.T)
 	// separate AWS::ApplicationAutoScaling::ScalableTarget resource); register it
 	// so PutScalingPolicy does not fail with ObjectNotFoundException.
 	_, regErr := backends.AppAutoScaling.Backend.RegisterScalableTarget(
-		"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+		"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 	)
 	require.NoError(t, regErr)
 

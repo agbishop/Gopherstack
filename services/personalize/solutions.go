@@ -2,6 +2,7 @@ package personalize
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -133,7 +134,9 @@ func (b *InMemoryBackend) UpdateSolution(
 	return sol, nil
 }
 
-// DeleteSolution removes a solution.
+// DeleteSolution removes a solution and all its versions. Per
+// api_op_DeleteSolution.go's doc comment, the caller must first delete all
+// campaigns based on the solution.
 func (b *InMemoryBackend) DeleteSolution(nameOrArn string) error {
 	b.mu.Lock("DeleteSolution")
 	defer b.mu.Unlock()
@@ -141,6 +144,17 @@ func (b *InMemoryBackend) DeleteSolution(nameOrArn string) error {
 	sol := b.findSolution(nameOrArn)
 	if sol == nil {
 		return fmt.Errorf("%w: solution %q not found", ErrNotFound, nameOrArn)
+	}
+	for _, c := range b.campaigns.All() {
+		if strings.HasPrefix(c.SolutionVersionArn, sol.SolutionArn+"/") {
+			return fmt.Errorf("%w: solution %q still has campaigns", ErrInUse, nameOrArn)
+		}
+	}
+	for _, sv := range b.solutionVersions.All() {
+		if sv.SolutionArn == sol.SolutionArn {
+			b.solutionVersions.Delete(sv.SolutionVersionArn)
+			delete(b.tags, sv.SolutionVersionArn)
+		}
 	}
 	b.solutions.Delete(sol.Name)
 	delete(b.tags, sol.SolutionArn)
@@ -276,6 +290,12 @@ func (b *InMemoryBackend) LatestSolutionVersion(solutionArn string) *SolutionVer
 	b.mu.RLock("LatestSolutionVersion")
 	defer b.mu.RUnlock()
 
+	return b.latestSolutionVersionLocked(solutionArn)
+}
+
+// latestSolutionVersionLocked is LatestSolutionVersion without its own
+// locking, for callers that already hold b.mu (read or write).
+func (b *InMemoryBackend) latestSolutionVersionLocked(solutionArn string) *SolutionVersion {
 	var latest *SolutionVersion
 	for _, sv := range b.solutionVersions.All() {
 		if sv.SolutionArn != solutionArn {

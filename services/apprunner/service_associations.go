@@ -208,6 +208,78 @@ func (b *InMemoryBackend) validateObservability(o *ServiceObservability) error {
 	return nil
 }
 
+// serviceUsesConnection reports whether any live service's source
+// authentication still references connArn. Deleted services are already
+// absent from b.services, so no status filter is needed (mirrors
+// recomputeASGAssociation's scan).
+func (b *InMemoryBackend) serviceUsesConnection(connArn string) bool {
+	inUse := false
+	b.services.Range(func(s *storedService) bool {
+		if s.Source.ConnectionArn == connArn {
+			inUse = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return inUse
+}
+
+// serviceUsesVpcConnector reports whether any live service's egress network
+// configuration still references vcArn.
+func (b *InMemoryBackend) serviceUsesVpcConnector(vcArn string) bool {
+	inUse := false
+	b.services.Range(func(s *storedService) bool {
+		if s.Network.EgressVpcConnectorArn == vcArn {
+			inUse = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return inUse
+}
+
+// serviceUsesObservabilityConfig reports whether any live service's enabled
+// observability configuration still references obsArn.
+func (b *InMemoryBackend) serviceUsesObservabilityConfig(obsArn string) bool {
+	inUse := false
+	b.services.Range(func(s *storedService) bool {
+		if s.Observability.Enabled && s.Observability.ConfigurationArn == obsArn {
+			inUse = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return inUse
+}
+
+// hasActiveVpcIngressConnections reports whether any VPC ingress connection
+// still references serviceArn. DeleteVpcIngressConnection already removes
+// its row from b.vpcIngressConnections on delete, so any entry found here is
+// inherently active (no status filter needed).
+func (b *InMemoryBackend) hasActiveVpcIngressConnections(serviceArn string) bool {
+	active := false
+	b.vpcIngressConnections.Range(func(v *storedVpcIngressConnection) bool {
+		if v.ServiceArn == serviceArn {
+			active = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return active
+}
+
 // validateSourceAuth checks that an AuthenticationConfiguration.ConnectionArn
 // (required for GitHub code repositories) resolves to a real connection when
 // present. A nil ConnectionArn is valid (e.g. image-based sources or

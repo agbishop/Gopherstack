@@ -1064,6 +1064,8 @@ func TestCancelUpdateStack(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	b.ForceStackStatus("cancel-stack", "UPDATE_IN_PROGRESS")
+
 	err = b.CancelUpdateStack(t.Context(), "cancel-stack")
 	require.NoError(t, err)
 }

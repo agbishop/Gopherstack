@@ -13,6 +13,54 @@ import (
 	"github.com/blackbirdworks/gopherstack/services/docdb"
 )
 
+// TestHandler_DeleteGlobalCluster_HasMembers asserts DeleteGlobalCluster
+// rejects a global cluster that still has an attached member cluster
+// (api_op_DeleteGlobalCluster.go: "The primary and secondary clusters must
+// already be detached or deleted before attempting to delete a global
+// cluster.").
+func TestHandler_DeleteGlobalCluster_HasMembers(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doRequest(t, h, url.Values{
+		"Action":              {"CreateDBCluster"},
+		"Version":             {"2014-10-31"},
+		"DBClusterIdentifier": {"gc-member-cluster"},
+		"Engine":              {"docdb"},
+		"MasterUsername":      {"admin"},
+	})
+	doRequest(t, h, url.Values{
+		"Action":                    {"CreateGlobalCluster"},
+		"Version":                   {"2014-10-31"},
+		"GlobalClusterIdentifier":   {"gc-with-member"},
+		"SourceDBClusterIdentifier": {"gc-member-cluster"},
+	})
+
+	recEarly := doRequest(t, h, url.Values{
+		"Action":                  {"DeleteGlobalCluster"},
+		"Version":                 {"2014-10-31"},
+		"GlobalClusterIdentifier": {"gc-with-member"},
+	})
+	assert.Equal(t, http.StatusBadRequest, recEarly.Code)
+	assert.Contains(t, recEarly.Body.String(), "InvalidGlobalClusterStateFault")
+
+	recRemove := doRequest(t, h, url.Values{
+		"Action":                  {"RemoveFromGlobalCluster"},
+		"Version":                 {"2014-10-31"},
+		"GlobalClusterIdentifier": {"gc-with-member"},
+		"DbClusterIdentifier":     {"gc-member-cluster"},
+	})
+	require.Equal(t, http.StatusOK, recRemove.Code)
+
+	recDelete := doRequest(t, h, url.Values{
+		"Action":                  {"DeleteGlobalCluster"},
+		"Version":                 {"2014-10-31"},
+		"GlobalClusterIdentifier": {"gc-with-member"},
+	})
+	assert.Equal(t, http.StatusOK, recDelete.Code)
+}
+
 func TestHandler_GlobalClusters(t *testing.T) {
 	t.Parallel()
 

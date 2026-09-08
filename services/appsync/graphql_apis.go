@@ -278,6 +278,8 @@ func (b *InMemoryBackend) DeleteGraphqlAPI(apiID string) error {
 		b.types.Delete(apiTypeKey(apiID, t.Name))
 	}
 
+	b.cascadeDeleteAPIAssociations(apiID)
+
 	if api.Tags != nil {
 		api.Tags.Close()
 	}
@@ -289,6 +291,30 @@ func (b *InMemoryBackend) DeleteGraphqlAPI(apiID string) error {
 	}
 
 	return nil
+}
+
+// cascadeDeleteAPIAssociations removes source/merged API associations and the
+// domain name association referencing apiID -- otherwise they outlive the
+// API, leaving Get/ListSourceAPIAssociations and GetApiAssociation pointing
+// at a resource that no longer exists. Caller must hold the write lock.
+func (b *InMemoryBackend) cascadeDeleteAPIAssociations(apiID string) {
+	for _, assoc := range slices.Clone(b.sourceAssocs.All()) {
+		if assoc.SourceAPIID == apiID || assoc.MergedAPIID == apiID {
+			b.sourceAssocs.Delete(assoc.AssociationID)
+		}
+	}
+
+	for _, assoc := range slices.Clone(b.apiAssociations.All()) {
+		if assoc.APIID != apiID {
+			continue
+		}
+
+		b.apiAssociations.Delete(assoc.DomainName)
+
+		if dn, ok := b.domainNames.Get(assoc.DomainName); ok {
+			dn.APIID = ""
+		}
+	}
 }
 
 // GetGraphqlAPIEnvironmentVariables returns environment variables for a GraphQL API.

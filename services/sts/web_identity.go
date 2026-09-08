@@ -266,6 +266,7 @@ func (b *InMemoryBackend) buildWebIdentityResponse(
 		AssumedRoleID:   assumedRoleID,
 		Tags:            tags,
 		SourceIdentity:  sourceIdentity,
+		IsAssumedRole:   true,
 	}
 
 	b.storeSession(session)

@@ -102,6 +102,8 @@ func (b *InMemoryBackend) DeleteStage(apiID, stageName string) error {
 		return ErrStageNotFound
 	}
 
+	b.clearStageThrottleBuckets(apiID, stageName)
+
 	return nil
 }
 

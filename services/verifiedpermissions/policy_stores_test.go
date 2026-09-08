@@ -171,9 +171,11 @@ func TestBackend_DeletePolicyStore(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			// DeletePolicyStore is documented idempotent: deleting a
+			// nonexistent store returns success, not ResourceNotFoundException.
 			name:          "delete non-existent",
 			policyStoreID: "nonexistent-id",
-			wantErr:       true,
+			wantErr:       false,
 		},
 	}
 
@@ -201,6 +203,43 @@ func TestBackend_DeletePolicyStore(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+// TestBackend_DeletePolicyStore_DeletionProtectionIsInvalidState is the
+// regression test for gopherstack-990: real AWS's InvalidStateException doc
+// comment names this exact condition ("The policy store can't be deleted
+// because deletion protection is enabled"), so the backend must return
+// ErrPolicyStoreDeletionProtected, not the generic ErrConflict.
+func TestBackend_DeletePolicyStore_DeletionProtectionIsInvalidState(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	ps, err := b.CreatePolicyStore("desc", nil, "OFF", "ENABLED", "")
+	require.NoError(t, err)
+
+	err = b.DeletePolicyStore(ps.PolicyStoreID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, verifiedpermissions.ErrPolicyStoreDeletionProtected)
+	assert.NotErrorIs(t, err, verifiedpermissions.ErrConflict, "must not be the generic ConflictException sentinel")
+}
+
+// TestBackend_DeletePolicyStore_IdempotentOnMissing is the regression test
+// for the DeletePolicyStore idempotency fix: gopherstack-990. Real AWS
+// (api_op_DeletePolicyStore.go doc): "This operation is idempotent. If you
+// specify a policy store that does not exist, the request response will
+// still return a successful HTTP 200 status code." ResourceNotFoundException
+// isn't even in DeletePolicyStore's modelled error set (deserializers.go),
+// confirming there is no not-found case to return at all.
+func TestBackend_DeletePolicyStore_IdempotentOnMissing(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	require.NoError(t, b.DeletePolicyStore("nonexistent-id"))
+	require.NoError(t,
+		b.DeletePolicyStore("nonexistent-id"),
+		"a second delete of the same missing ID must also succeed",
+	)
 }
 
 func TestBackend_CreatePolicyStore_WithTags(t *testing.T) {

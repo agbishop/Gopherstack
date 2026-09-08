@@ -442,6 +442,84 @@ func TestClassificationJobUserPausedDetails(t *testing.T) {
 	assert.Nil(t, resumed["userPausedDetails"], "userPausedDetails must clear once no longer USER_PAUSED")
 }
 
+// TestUpdateClassificationJob_InvalidTransitions locks
+// UpdateClassificationJobInput.JobStatus's doc comment
+// (api_op_UpdateClassificationJob.go:37-58): CANCELLED is valid only from
+// IDLE/PAUSED/RUNNING/USER_PAUSED, RUNNING only from USER_PAUSED, and
+// USER_PAUSED only from IDLE/PAUSED/RUNNING. A target outside that
+// three-value set isn't a documented "Valid value" for the field at all.
+func TestUpdateClassificationJob_InvalidTransitions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		setup      func(t *testing.T, h *macie2.Handler) string
+		name       string
+		targetStat string
+		wantCode   int
+	}{
+		{
+			name: "RUNNING target requires USER_PAUSED, not RUNNING itself",
+			setup: func(t *testing.T, h *macie2.Handler) string {
+				t.Helper()
+				jobID, _ := createTestJob(t, h, "already-running", "ONE_TIME")
+
+				return jobID
+			},
+			targetStat: "RUNNING",
+			wantCode:   http.StatusConflict,
+		},
+		{
+			name: "USER_PAUSED target rejected from CANCELLED",
+			setup: func(t *testing.T, h *macie2.Handler) string {
+				t.Helper()
+				jobID, _ := createTestJob(t, h, "cancel-then-pause", "ONE_TIME")
+				rec := doRequest(t, h, http.MethodPatch, "/jobs/"+jobID, map[string]any{"jobStatus": "CANCELLED"})
+				require.Equal(t, http.StatusOK, rec.Code)
+
+				return jobID
+			},
+			targetStat: "USER_PAUSED",
+			wantCode:   http.StatusConflict,
+		},
+		{
+			name: "CANCELLED target rejected once already CANCELLED",
+			setup: func(t *testing.T, h *macie2.Handler) string {
+				t.Helper()
+				jobID, _ := createTestJob(t, h, "double-cancel", "ONE_TIME")
+				rec := doRequest(t, h, http.MethodPatch, "/jobs/"+jobID, map[string]any{"jobStatus": "CANCELLED"})
+				require.Equal(t, http.StatusOK, rec.Code)
+
+				return jobID
+			},
+			targetStat: "CANCELLED",
+			wantCode:   http.StatusConflict,
+		},
+		{
+			name: "unrecognized target status rejected",
+			setup: func(t *testing.T, h *macie2.Handler) string {
+				t.Helper()
+				jobID, _ := createTestJob(t, h, "bad-target", "ONE_TIME")
+
+				return jobID
+			},
+			targetStat: "COMPLETE",
+			wantCode:   http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			jobID := tt.setup(t, h)
+
+			rec := doRequest(t, h, http.MethodPatch, "/jobs/"+jobID, map[string]any{"jobStatus": tt.targetStat})
+			assert.Equal(t, tt.wantCode, rec.Code)
+		})
+	}
+}
+
 // TestClassificationJobTagging locks the tags gap fix: TagResource/
 // ListTagsForResource/UntagResource must recognize classification-job ARNs
 // (isKnownARN), not just allow-list/custom-data-identifier/findings-filter.

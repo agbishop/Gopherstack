@@ -63,6 +63,7 @@ func (b *InMemoryBackend) DeleteHostKey(serverID, hostKeyID string) error {
 	}
 
 	b.hostKeys.Delete(key)
+	delete(b.tagsStore, hostKeyARN(b.accountID, b.region, serverID, hostKeyID))
 
 	return nil
 }

@@ -34,8 +34,9 @@ func TestHandler_CreateAndDescribePipeline(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
-			rec := doRequest(t, h, http.MethodPost, "/pipelines", map[string]string{
-				"pipelineName": tt.pipelineName,
+			rec := doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{
+				"pipelineName":       tt.pipelineName,
+				"pipelineActivities": validPipelineActivitiesBody(),
 			})
 
 			assert.Equal(t, tt.wantStatus, rec.Code)
@@ -85,12 +86,21 @@ func TestHandler_StartAndCancelPipelineReprocessing(t *testing.T) {
 					h,
 					http.MethodPost,
 					"/pipelines",
-					map[string]string{"pipelineName": tt.pipelineName},
+					map[string]any{
+						"pipelineName":       tt.pipelineName,
+						"pipelineActivities": validPipelineActivitiesBody(),
+					},
 				)
 				require.Equal(t, http.StatusOK, rec.Code)
 			}
 
-			startRec := doRequest(t, h, http.MethodPost, "/pipelines/"+tt.pipelineName+"/reprocessing", nil)
+			startRec := doRequest(
+				t,
+				h,
+				http.MethodPost,
+				"/pipelines/"+tt.pipelineName+"/reprocessing",
+				nil,
+			)
 			assert.Equal(t, tt.wantStart, startRec.Code)
 
 			if tt.wantStart == http.StatusCreated {
@@ -134,8 +144,11 @@ func TestHandler_RunPipelineActivity(t *testing.T) {
 			wantLen:    2,
 		},
 		{
-			name:       "empty_payloads",
-			body:       map[string]any{"pipelineActivity": map[string]any{}, "payloads": [][]byte{}},
+			name: "empty_payloads",
+			body: map[string]any{
+				"pipelineActivity": map[string]any{},
+				"payloads":         [][]byte{},
+			},
 			wantStatus: http.StatusOK,
 			wantLen:    0,
 		},
@@ -214,7 +227,9 @@ func TestHandler_Pipelines(t *testing.T) {
 
 			switch tt.op {
 			case "list":
-				doRequest(t, h, http.MethodPost, "/pipelines", map[string]string{"pipelineName": tt.pipelineName})
+				doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{
+					"pipelineName": tt.pipelineName, "pipelineActivities": validPipelineActivitiesBody(),
+				})
 				listRec := doRequest(t, h, http.MethodGet, "/pipelines", nil)
 				assert.Equal(t, tt.wantStatus, listRec.Code)
 				var resp map[string]any
@@ -224,12 +239,16 @@ func TestHandler_Pipelines(t *testing.T) {
 				assert.Len(t, summaries, 1)
 
 			case "update":
-				doRequest(t, h, http.MethodPost, "/pipelines", map[string]string{"pipelineName": tt.pipelineName})
+				doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{
+					"pipelineName": tt.pipelineName, "pipelineActivities": validPipelineActivitiesBody(),
+				})
 				rec := doRequest(t, h, http.MethodPut, "/pipelines/"+tt.pipelineName, nil)
 				assert.Equal(t, tt.wantStatus, rec.Code)
 
 			case "delete":
-				doRequest(t, h, http.MethodPost, "/pipelines", map[string]string{"pipelineName": tt.pipelineName})
+				doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{
+					"pipelineName": tt.pipelineName, "pipelineActivities": validPipelineActivitiesBody(),
+				})
 				rec := doRequest(t, h, http.MethodDelete, "/pipelines/"+tt.pipelineName, nil)
 				assert.Equal(t, tt.wantStatus, rec.Code)
 
@@ -250,10 +269,14 @@ func TestHandler_ErrAlreadyExists_Pipeline(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	rec := doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{"pipelineName": "dup_pipe"})
+	rec := doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{
+		"pipelineName": "dup_pipe", "pipelineActivities": validPipelineActivitiesBody(),
+	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	rec2 := doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{"pipelineName": "dup_pipe"})
+	rec2 := doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{
+		"pipelineName": "dup_pipe", "pipelineActivities": validPipelineActivitiesBody(),
+	})
 	assert.Equal(t, http.StatusConflict, rec2.Code)
 }
 
@@ -265,11 +288,19 @@ func TestHandler_CancelPipelineReprocessing_NotFound(t *testing.T) {
 	pipelineName := "cancel_test_pipeline"
 
 	// Create pipeline.
-	rec := doRequest(t, h, http.MethodPost, "/pipelines", map[string]string{"pipelineName": pipelineName})
+	rec := doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{
+		"pipelineName": pipelineName, "pipelineActivities": validPipelineActivitiesBody(),
+	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	// Cancel with non-existent reprocessing ID.
-	cancelRec := doRequest(t, h, http.MethodDelete, "/pipelines/"+pipelineName+"/reprocessing/nonexistent-id", nil)
+	cancelRec := doRequest(
+		t,
+		h,
+		http.MethodDelete,
+		"/pipelines/"+pipelineName+"/reprocessing/nonexistent-id",
+		nil,
+	)
 	assert.Equal(t, http.StatusNotFound, cancelRec.Code)
 }
 
@@ -286,8 +317,11 @@ func TestHandler_DescribePipeline_NewFields(t *testing.T) {
 		{
 			name:         "basic_has_pipeline_wrapper",
 			pipelineName: "desc_pipe1",
-			body:         map[string]any{"pipelineName": "desc_pipe1"},
-			wantFields:   []string{"pipeline"},
+			body: map[string]any{
+				"pipelineName":       "desc_pipe1",
+				"pipelineActivities": validPipelineActivitiesBody(),
+			},
+			wantFields: []string{"pipeline"},
 		},
 		{
 			name:         "with_activities",
@@ -296,6 +330,7 @@ func TestHandler_DescribePipeline_NewFields(t *testing.T) {
 				"pipelineName": "desc_pipe2",
 				"pipelineActivities": []map[string]any{
 					{"channel": map[string]any{"name": "ch_activity", "channelName": "src"}},
+					{"datastore": map[string]any{"name": "ds_activity", "datastoreName": "sink"}},
 				},
 			},
 			wantFields: []string{"pipeline"},
@@ -368,7 +403,16 @@ func TestHandler_StartPipelineReprocessing_TimeRange(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
-			rec := doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{"pipelineName": "rp_pipe"})
+			rec := doRequest(
+				t,
+				h,
+				http.MethodPost,
+				"/pipelines",
+				map[string]any{
+					"pipelineName":       "rp_pipe",
+					"pipelineActivities": validPipelineActivitiesBody(),
+				},
+			)
 			require.Equal(t, http.StatusOK, rec.Code)
 
 			startRec := doRequest(t, h, http.MethodPost, "/pipelines/rp_pipe/reprocessing", tt.body)
@@ -383,13 +427,28 @@ func TestHandler_ReprocessingSummaries_Sorted(t *testing.T) {
 
 	h := newTestHandler(t)
 
-	rec := doRequest(t, h, http.MethodPost, "/pipelines", map[string]any{"pipelineName": "rps_pipe"})
+	rec := doRequest(
+		t,
+		h,
+		http.MethodPost,
+		"/pipelines",
+		map[string]any{
+			"pipelineName":       "rps_pipe",
+			"pipelineActivities": validPipelineActivitiesBody(),
+		},
+	)
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	// Start 3 reprocessings.
 	ids := make([]string, 3)
 	for i := range ids {
-		startRec := doRequest(t, h, http.MethodPost, "/pipelines/rps_pipe/reprocessing", map[string]any{})
+		startRec := doRequest(
+			t,
+			h,
+			http.MethodPost,
+			"/pipelines/rps_pipe/reprocessing",
+			map[string]any{},
+		)
 		require.Equal(t, http.StatusCreated, startRec.Code)
 
 		var resp map[string]any
@@ -424,7 +483,16 @@ func TestHandler_PipelineReprocessingSummary_StartTime(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	doRequest(t, h, http.MethodPost, "/pipelines", map[string]string{"pipelineName": "rp_start_pl"})
+	doRequest(
+		t,
+		h,
+		http.MethodPost,
+		"/pipelines",
+		map[string]any{
+			"pipelineName":       "rp_start_pl",
+			"pipelineActivities": validPipelineActivitiesBody(),
+		},
+	)
 
 	body := map[string]any{
 		"startTime": 1000.0,

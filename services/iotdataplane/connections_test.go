@@ -683,6 +683,96 @@ func TestHandler_ListSubscriptions_WireShape(t *testing.T) {
 	}
 }
 
+// TestHandler_ListSubscriptions_Pagination verifies maxResults/nextToken --
+// real ListSubscriptionsInput query params, confirmed via
+// awsRestjson1_serializeOpHttpBindingsListSubscriptionsInput in
+// aws-sdk-go-v2/service/iotdataplane@v1.35.4's serializers.go -- are honored
+// instead of being silently ignored, and that the documented MaxResults
+// default of 20 (ListSubscriptionsInput.MaxResults doc comment: "By default,
+// this is set to 20") is used when the param is absent.
+func TestHandler_ListSubscriptions_Pagination(t *testing.T) {
+	t.Parallel()
+
+	brokerSubs := map[string]byte{
+		"a/topic": 0,
+		"b/topic": 1,
+		"c/topic": 0,
+		"d/topic": 1,
+		"e/topic": 0,
+	}
+
+	newHandler := func() *iotdataplane.Handler {
+		b := iotdataplane.NewInMemoryBackend()
+		b.AddConnectionInternal("dev-1")
+
+		mock := &mockMQTTPublisher{
+			knownClients: map[string]bool{"dev-1": true},
+			clientSubs:   map[string]map[string]byte{"dev-1": brokerSubs},
+		}
+		b.SetBroker(mock)
+
+		return iotdataplane.NewHandler(b)
+	}
+
+	tests := []struct {
+		name          string
+		query         string
+		wantNextToken string
+		wantFilters   []string
+	}{
+		{
+			name:        "default_page_size_returns_all_five",
+			query:       "",
+			wantFilters: []string{"a/topic", "b/topic", "c/topic", "d/topic", "e/topic"},
+		},
+		{
+			name:          "maxResults_caps_page_and_sets_nextToken",
+			query:         "?maxResults=2",
+			wantFilters:   []string{"a/topic", "b/topic"},
+			wantNextToken: "c/topic",
+		},
+		{
+			name:          "nextToken_resumes_from_cursor",
+			query:         "?maxResults=2&nextToken=c%2Ftopic",
+			wantFilters:   []string{"c/topic", "d/topic"},
+			wantNextToken: "e/topic",
+		},
+		{
+			name:        "nextToken_on_last_page_has_no_further_token",
+			query:       "?maxResults=2&nextToken=e%2Ftopic",
+			wantFilters: []string{"e/topic"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHandler()
+			rec := doRequest(t, h, http.MethodGet, "/connections/dev-1/subscriptions"+tt.query, nil)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+			subs, ok := resp["subscriptions"].([]any)
+			require.True(t, ok)
+
+			gotFilters := make([]string, 0, len(subs))
+			for _, raw := range subs {
+				entry, entryOk := raw.(map[string]any)
+				require.True(t, entryOk)
+				gotFilters = append(gotFilters, entry["topicFilter"].(string))
+			}
+
+			assert.Equal(t, tt.wantFilters, gotFilters)
+
+			gotNextToken, _ := resp["nextToken"].(string)
+			assert.Equal(t, tt.wantNextToken, gotNextToken)
+		})
+	}
+}
+
 // TestBackend_SendDirectMessage exercises InMemoryBackend.SendDirectMessage
 // directly: a tracked clientId whose broker session the broker actually
 // knows about is now addressed directly via MQTTPublisher.SendToClient (true

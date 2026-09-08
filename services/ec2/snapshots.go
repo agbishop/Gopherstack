@@ -645,6 +645,15 @@ func (b *InMemoryBackend) DeleteSnapshot(id string) error {
 	}
 	b.snapshots.Delete(id)
 	delete(b.tags, id)
+	delete(b.snapshotAttributes, id)
+	delete(b.snapshotTiers, id)
+
+	prefix := id + ":"
+	for key := range b.fastSnapshotRestores {
+		if strings.HasPrefix(key, prefix) {
+			delete(b.fastSnapshotRestores, key)
+		}
+	}
 
 	return nil
 }

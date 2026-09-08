@@ -360,6 +360,13 @@ func TestIntegration_Batch_ServiceEnvironmentLifecycle(t *testing.T) {
 	require.Len(t, descOut.ServiceEnvironments, 1)
 	assert.Equal(t, seName, aws.ToString(descOut.ServiceEnvironments[0].ServiceEnvironmentName))
 
+	// AWS requires DISABLED before delete (api_op_DeleteServiceEnvironment.go).
+	_, err = client.UpdateServiceEnvironment(ctx, &batch.UpdateServiceEnvironmentInput{
+		ServiceEnvironment: aws.String(seName),
+		State:              batchtypes.ServiceEnvironmentStateDisabled,
+	})
+	require.NoError(t, err)
+
 	// Delete
 	_, err = client.DeleteServiceEnvironment(ctx, &batch.DeleteServiceEnvironmentInput{
 		ServiceEnvironment: aws.String(seName),

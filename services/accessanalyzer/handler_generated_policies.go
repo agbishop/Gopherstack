@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
+	"strconv"
 	"time"
 )
 
@@ -204,15 +204,20 @@ func (h *Handler) handleCancelPolicyGeneration(path string) (int, error) {
 }
 
 func (h *Handler) handleListPolicyGenerations(query string) (any, int, error) {
-	var principalArn string
+	principalArn := queryParamValue(query, "principalArn")
+	nextToken := queryParamValue(query, "nextToken")
 
-	for part := range strings.SplitSeq(query, "&") {
-		if v, ok := strings.CutPrefix(part, "principalArn="); ok {
-			principalArn = v
+	maxResults := 0
+	if v := queryParamValue(query, "maxResults"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, 0, ErrValidation
 		}
+
+		maxResults = n
 	}
 
-	pgs, err := h.Backend.ListPolicyGenerations(principalArn)
+	pgs, next, err := h.Backend.ListPolicyGenerations(principalArn, maxResults, nextToken)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -223,7 +228,13 @@ func (h *Handler) handleListPolicyGenerations(query string) (any, int, error) {
 		list = append(list, policyGenerationToJSON(pg))
 	}
 
-	return map[string]any{"policyGenerations": list}, http.StatusOK, nil
+	resp := map[string]any{"policyGenerations": list}
+
+	if next != "" {
+		resp["nextToken"] = next
+	}
+
+	return resp, http.StatusOK, nil
 }
 
 // ---- URL path parsing ----

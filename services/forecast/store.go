@@ -390,11 +390,32 @@ func (b *InMemoryBackend) deleteTreeLocked(targetARN string) {
 	}
 }
 
-// arnReferencedBy returns true if any string value in r.Data equals targetARN.
+// arnReferencedBy returns true if any string value in r.Data equals
+// targetARN, searched recursively: parent ARN references are not always
+// top-level (e.g. CreatePredictorInput.InputDataConfig.DatasetGroupArn and
+// CreateAutoPredictorInput.DataConfig.DatasetGroupArn nest the reference one
+// level down), so DeleteResourceTree's cascade must look inside nested
+// maps/slices too or it silently fails to find dependents like a
+// DatasetGroup's Predictors.
 func arnReferencedBy(r *Resource, targetARN string) bool {
-	for _, v := range r.Data {
-		if s, ok := v.(string); ok && s == targetARN {
-			return true
+	return valueReferencesARN(r.Data, targetARN)
+}
+
+func valueReferencesARN(v any, targetARN string) bool {
+	switch value := v.(type) {
+	case string:
+		return value == targetARN
+	case map[string]any:
+		for _, nested := range value {
+			if valueReferencesARN(nested, targetARN) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range value {
+			if valueReferencesARN(nested, targetARN) {
+				return true
+			}
 		}
 	}
 

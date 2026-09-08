@@ -199,6 +199,59 @@ func Test_SnapshotRestore_EmptyBackend(t *testing.T) {
 	assert.Empty(t, restored.ListExecutedStatements(ctx))
 }
 
+// Test_Restore_V1SnapshotBackfillsTransactionTimestamps verifies that a
+// v1-shaped snapshot -- one predating Transaction.CreatedAt/LastActivityAt,
+// so its transactions have neither key at all -- restores with both fields
+// backfilled to non-zero, rather than reviving a transaction the Janitor
+// (janitor.go) would immediately reap as 24-hour-stale.
+func Test_Restore_V1SnapshotBackfillsTransactionTimestamps(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data string
+	}{
+		{
+			name: "single region",
+			data: `{"version":1,"transactions":{"us-east-1":[` +
+				`{"transactionId":"txn-000001","status":"active"}` +
+				`]},"executedStatements":{},"txCounter":{"us-east-1":1},` +
+				`"accountID":"000000000000","region":"us-east-1"}`,
+		},
+		{
+			name: "multiple regions",
+			data: `{"version":1,"transactions":{` +
+				`"us-east-1":[{"transactionId":"txn-000001","status":"active"}],` +
+				`"us-west-2":[{"transactionId":"txn-000001","status":"active"}]` +
+				`},"executedStatements":{},"txCounter":{"us-east-1":1,"us-west-2":1},` +
+				`"accountID":"000000000000","region":"us-east-1"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := NewInMemoryBackend("", "")
+			require.NoError(t, b.Restore(t.Context(), []byte(tt.data)))
+
+			regions := []string{"us-east-1", "us-west-2"}
+			for _, region := range regions {
+				ctx := rdsdataCtxRegion(region)
+
+				txns := b.ListTransactions(ctx)
+				if _, seeded := txns["txn-000001"]; !seeded {
+					continue
+				}
+
+				tx := txns["txn-000001"]
+				assert.False(t, tx.CreatedAt.IsZero(), "%s: CreatedAt must be backfilled, not zero", region)
+				assert.False(t, tx.LastActivityAt.IsZero(), "%s: LastActivityAt must be backfilled, not zero", region)
+			}
+		})
+	}
+}
+
 // Test_Handler_SnapshotRestore verifies Handler.Snapshot/Restore delegate to
 // the backend -- this is the dead-wiring fix: InMemoryBackend already
 // implemented Snapshot/Restore, but Handler never delegated to them, so

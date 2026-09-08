@@ -186,6 +186,10 @@ func TestAWSConfigBackend_DescribeConfigurationAggregatorSourcesStatus(t *testin
 	})
 }
 
+// delete_validation's wantErr was awsconfig.ErrValidation until this pass;
+// DeletePendingAggregationRequest's deserializer declares only
+// InvalidParameterValueException, never ValidationException
+// (configservice@v1.68.4 deserializers.go).
 func TestAWSConfigBackend_PendingAggregationRequests(t *testing.T) {
 	t.Parallel()
 
@@ -228,10 +232,15 @@ func TestAWSConfigBackend_PendingAggregationRequests(t *testing.T) {
 		b := awsconfig.NewInMemoryBackend()
 		err := b.DeletePendingAggregationRequest("", "us-east-1")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, awsconfig.ErrValidation)
+		assert.ErrorIs(t, err, awsconfig.ErrInvalidParameterValue)
 	})
 }
 
+// TestAWSConfigBackend_DeleteAggregationAuthorization_Validation's wantErr was
+// awsconfig.ErrValidation until this pass; DeleteAggregationAuthorization's
+// deserializer declares only InvalidParameterValueException, never
+// ValidationException (configservice@v1.68.4 deserializers.go) -- the old
+// assertion locked in the exact wire-code defect this pass fixed.
 func TestAWSConfigBackend_DeleteAggregationAuthorization_Validation(t *testing.T) {
 	t.Parallel()
 
@@ -245,13 +254,13 @@ func TestAWSConfigBackend_DeleteAggregationAuthorization_Validation(t *testing.T
 			name:      "empty_account_id_fails",
 			accountID: "",
 			region:    "us-east-1",
-			wantErr:   awsconfig.ErrValidation,
+			wantErr:   awsconfig.ErrInvalidParameterValue,
 		},
 		{
 			name:      "empty_region_fails",
 			accountID: "123456789012",
 			region:    "",
-			wantErr:   awsconfig.ErrValidation,
+			wantErr:   awsconfig.ErrInvalidParameterValue,
 		},
 	}
 

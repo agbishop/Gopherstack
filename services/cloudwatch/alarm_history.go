@@ -51,8 +51,13 @@ func matchesHistoryFilters(
 // alarms are returned"), omitting alarmTypes returns ONLY metric alarm history -- composite
 // and log alarm history are included only when explicitly requested, mirroring DescribeAlarms'
 // AlarmTypes default (bd gopherstack-yvb7).
+//
+// scanBy honors DescribeAlarmHistoryInput.ScanBy ("Specify TimestampDescending to
+// have the newest event history returned first, and specify TimestampAscending
+// to have the oldest history returned first" -- api_op_DescribeAlarmHistory.go).
+// An empty/unrecognized scanBy keeps the existing oldest-first ordering.
 func (b *InMemoryBackend) DescribeAlarmHistory(
-	alarmName string, alarmTypes []string, historyItemType, nextToken string,
+	alarmName string, alarmTypes []string, historyItemType, nextToken, scanBy string,
 	startDate, endDate time.Time,
 	maxRecords int,
 ) (page.Page[AlarmHistoryItem], error) {
@@ -78,9 +83,18 @@ func (b *InMemoryBackend) DescribeAlarmHistory(
 		}
 	}
 
+	descending := scanBy == "TimestampDescending"
 	sort.Slice(result, func(i, j int) bool {
 		if !result[i].Timestamp.Equal(result[j].Timestamp) {
+			if descending {
+				return result[i].Timestamp.After(result[j].Timestamp)
+			}
+
 			return result[i].Timestamp.Before(result[j].Timestamp)
+		}
+
+		if descending {
+			return result[i].seq > result[j].seq
 		}
 
 		return result[i].seq < result[j].seq

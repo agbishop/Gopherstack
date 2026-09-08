@@ -136,10 +136,7 @@ func NewInMemoryBackendWithMeta(accountID, region string) *InMemoryBackend {
 	return b
 }
 
-// Reset clears all in-memory state. Note conformancePackCounter and
-// aggregatorCounter are deliberately NOT reset here -- this is a pre-existing
-// quirk of the map-based implementation (they were never zeroed in the old
-// Reset either), preserved as-is per Phase 3.3's mechanical-conversion scope.
+// Reset clears all in-memory state.
 func (b *InMemoryBackend) Reset() {
 	b.mu.Lock("Reset")
 	defer b.mu.Unlock()
@@ -151,6 +148,8 @@ func (b *InMemoryBackend) Reset() {
 	b.captureCounter = 0
 	b.ruleCounter = 0
 	b.orgRuleCounter = 0
+	b.conformancePackCounter = 0
+	b.aggregatorCounter = 0
 	b.resourceTags = make(map[string][]Tag)
 	b.remediationExceptions = make(map[string][]RemediationException)
 	b.customRulePolicies = make(map[string]string)

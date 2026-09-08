@@ -142,6 +142,128 @@ func TestAttachInternetGateway_AlreadyAssociated(t *testing.T) {
 	})
 }
 
+// TestDetachInternetGateway_DependencyViolation verifies that
+// DetachInternetGateway matches real AWS: it fails with DependencyViolation
+// while the VPC has a running instance with a public IP address, or an
+// associated Elastic IP, and succeeds once those are gone or the instance is
+// stopped/terminated/lacks a public address.
+func TestDetachInternetGateway_DependencyViolation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("running instance with auto-assigned public IP blocks detach", func(t *testing.T) {
+		t.Parallel()
+
+		b := newTestBackend()
+
+		vpc, err := b.CreateVpc("10.10.0.0/16", "default")
+		require.NoError(t, err)
+		subnet, err := b.CreateSubnet(vpc.ID, "10.10.1.0/24", "us-east-1a")
+		require.NoError(t, err)
+		require.NoError(t, b.ModifySubnetAttribute(subnet.ID, "mapPublicIpOnLaunch", true))
+
+		igw, err := b.CreateInternetGateway()
+		require.NoError(t, err)
+		require.NoError(t, b.AttachInternetGateway(igw.ID, vpc.ID))
+
+		instances, err := b.RunInstances("ami-123", "t2.micro", subnet.ID, 1)
+		require.NoError(t, err)
+		b.TickLifecycleForTest()
+
+		running := b.DescribeInstances([]string{instances[0].ID}, "")
+		require.Len(t, running, 1)
+		require.Equal(t, "running", running[0].State.Name)
+		require.NotEmpty(t, running[0].PublicIPAddress)
+
+		err = b.DetachInternetGateway(igw.ID, vpc.ID)
+		require.Error(t, err, "DetachInternetGateway must fail while a running instance has a public IP")
+		require.ErrorIs(t, err, ec2.ErrDependencyViolation)
+
+		_, err = b.TerminateInstances([]string{instances[0].ID})
+		require.NoError(t, err)
+		b.TickLifecycleForTest()
+
+		require.NoError(t, b.DetachInternetGateway(igw.ID, vpc.ID))
+	})
+
+	t.Run("running instance with associated elastic IP blocks detach", func(t *testing.T) {
+		t.Parallel()
+
+		b := newTestBackend()
+
+		vpc, err := b.CreateVpc("10.11.0.0/16", "default")
+		require.NoError(t, err)
+		subnet, err := b.CreateSubnet(vpc.ID, "10.11.1.0/24", "us-east-1a")
+		require.NoError(t, err)
+
+		igw, err := b.CreateInternetGateway()
+		require.NoError(t, err)
+		require.NoError(t, b.AttachInternetGateway(igw.ID, vpc.ID))
+
+		instances, err := b.RunInstances("ami-123", "t2.micro", subnet.ID, 1)
+		require.NoError(t, err)
+		b.TickLifecycleForTest()
+		require.Empty(t, instances[0].PublicIPAddress)
+
+		addr, err := b.AllocateAddress()
+		require.NoError(t, err)
+		_, err = b.AssociateAddress(addr.AllocationID, instances[0].ID)
+		require.NoError(t, err)
+
+		err = b.DetachInternetGateway(igw.ID, vpc.ID)
+		require.Error(t, err, "DetachInternetGateway must fail while a running instance has an associated EIP")
+		require.ErrorIs(t, err, ec2.ErrDependencyViolation)
+
+		require.NoError(t, b.DisassociateAddress(addr.AssociationID))
+		require.NoError(t, b.DetachInternetGateway(igw.ID, vpc.ID))
+	})
+
+	t.Run("stopped instance with public IP does not block detach", func(t *testing.T) {
+		t.Parallel()
+
+		b := newTestBackend()
+
+		vpc, err := b.CreateVpc("10.12.0.0/16", "default")
+		require.NoError(t, err)
+		subnet, err := b.CreateSubnet(vpc.ID, "10.12.1.0/24", "us-east-1a")
+		require.NoError(t, err)
+		require.NoError(t, b.ModifySubnetAttribute(subnet.ID, "mapPublicIpOnLaunch", true))
+
+		igw, err := b.CreateInternetGateway()
+		require.NoError(t, err)
+		require.NoError(t, b.AttachInternetGateway(igw.ID, vpc.ID))
+
+		instances, err := b.RunInstances("ami-123", "t2.micro", subnet.ID, 1)
+		require.NoError(t, err)
+		b.TickLifecycleForTest()
+		require.NotEmpty(t, instances[0].PublicIPAddress)
+
+		_, err = b.StopInstances([]string{instances[0].ID})
+		require.NoError(t, err)
+		b.TickLifecycleForTest()
+
+		stopped := b.DescribeInstances([]string{instances[0].ID}, "")
+		require.Len(t, stopped, 1)
+		require.Equal(t, "stopped", stopped[0].State.Name)
+
+		require.NoError(t, b.DetachInternetGateway(igw.ID, vpc.ID))
+	})
+
+	t.Run("no instances in vpc does not block detach", func(t *testing.T) {
+		t.Parallel()
+
+		b := newTestBackend()
+
+		vpc, err := b.CreateVpc("10.13.0.0/16", "default")
+		require.NoError(t, err)
+
+		igw, err := b.CreateInternetGateway()
+		require.NoError(t, err)
+		require.NoError(t, b.AttachInternetGateway(igw.ID, vpc.ID))
+
+		require.NoError(t, b.DetachInternetGateway(igw.ID, vpc.ID))
+	})
+}
+
 // TestDeleteInternetGateway_DependencyViolation verifies that DeleteInternetGateway
 // fails with DependencyViolation while the IGW is still attached to a VPC, and
 // succeeds once it has been detached — matching real AWS (no implicit detach).

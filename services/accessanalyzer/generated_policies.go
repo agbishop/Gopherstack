@@ -61,8 +61,13 @@ func (b *InMemoryBackend) CancelPolicyGeneration(jobID string) error {
 	return nil
 }
 
-// ListPolicyGenerations returns all policy generation jobs, optionally filtered by principalArn.
-func (b *InMemoryBackend) ListPolicyGenerations(principalArn string) ([]*PolicyGeneration, error) {
+// ListPolicyGenerations returns policy generation jobs, optionally filtered
+// by principalArn and paginated by maxResults/nextToken (both real
+// ListPolicyGenerationsInput members -- serializers.go:2571-2577, guarded by
+// `!= nil`, same as ListFindings' maxResults/nextToken).
+func (b *InMemoryBackend) ListPolicyGenerations(
+	principalArn string, maxResults int, nextToken string,
+) ([]*PolicyGeneration, string, error) {
 	b.mu.RLock("ListPolicyGenerations")
 	defer b.mu.RUnlock()
 
@@ -81,5 +86,23 @@ func (b *InMemoryBackend) ListPolicyGenerations(principalArn string) ([]*PolicyG
 		return result[i].JobID < result[j].JobID
 	})
 
-	return result, nil
+	start := 0
+
+	if nextToken != "" {
+		for i, pg := range result {
+			if pg.JobID == nextToken {
+				start = i
+
+				break
+			}
+		}
+	}
+
+	result = result[start:]
+
+	if maxResults > 0 && len(result) > maxResults {
+		return result[:maxResults], result[maxResults].JobID, nil
+	}
+
+	return result, "", nil
 }

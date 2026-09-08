@@ -30,7 +30,7 @@ type StorageBackend interface {
 	ConfigureHealthCheck(ctx context.Context, name string, hc HealthCheck) (*HealthCheck, error)
 
 	ModifyLoadBalancerAttributes(
-		ctx context.Context, name string, attrs LoadBalancerAttributes,
+		ctx context.Context, name string, attrs LoadBalancerAttributes, mask LoadBalancerAttributesMask,
 	) (*LoadBalancerAttributes, error)
 	DescribeLoadBalancerAttributes(ctx context.Context, name string) (*LoadBalancerAttributes, error)
 

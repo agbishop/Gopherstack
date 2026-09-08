@@ -54,6 +54,32 @@ func TestPersonalize_Schema_InvalidDomain(t *testing.T) {
 	assert.Equal(t, "InvalidInputException", m["__type"])
 }
 
+// TestPersonalize_Schema_DeleteInUse locks that DeleteSchema rejects a
+// schema still referenced by a dataset (api_op_DeleteSchema.go: "Before
+// deleting a schema, you must delete all datasets referencing the schema.").
+func TestPersonalize_Schema_DeleteInUse(t *testing.T) {
+	t.Parallel()
+
+	h := personalizeHandler(t)
+	dsArn := personalizeCreateDataset(t, h, "schema-in-use")
+
+	rec := personalizeDo(t, h, "DescribeDataset", map[string]any{"datasetArn": dsArn})
+	require.Equal(t, http.StatusOK, rec.Code)
+	schemaArn := personalizeUnmarshal(t, rec)["dataset"].(map[string]any)["schemaArn"].(string)
+
+	rec = personalizeDo(t, h, "DeleteSchema", map[string]any{"schemaArn": schemaArn})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	m := personalizeUnmarshal(t, rec)
+	assert.Equal(t, "ResourceInUseException", m["__type"])
+
+	// Deleting the dataset first clears the way.
+	rec = personalizeDo(t, h, "DeleteDataset", map[string]any{"datasetArn": dsArn})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = personalizeDo(t, h, "DeleteSchema", map[string]any{"schemaArn": schemaArn})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestPersonalize_Schema_List(t *testing.T) {
 	t.Parallel()
 

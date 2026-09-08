@@ -1,6 +1,7 @@
 package iam_test
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -69,9 +70,9 @@ func TestBackendReset_ClearsComprehensiveState(t *testing.T) {
 	_, err = b.CreateUser("mfa-device-user", "/", "")
 	require.NoError(t, err)
 
-	devices, err := b.ListMFADevicesForUser("mfa-device-user")
+	devicesPage, err := b.ListMFADevicesForUser("mfa-device-user", "", 0)
 	require.NoError(t, err)
-	assert.Empty(t, devices)
+	assert.Empty(t, devicesPage.Data)
 
 	// GetMFADeviceOwner (should return empty for unknown serial).
 	owner := b.GetMFADeviceOwner("arn:aws:iam::000000000000:mfa/nonexistent")
@@ -177,10 +178,10 @@ func TestEnableMFADevice_SetsActiveStatus(t *testing.T) {
 
 	require.NoError(t, b.EnableMFADevice("lena", dev.SerialNumber, "111111", "222222"))
 
-	devices, err := b.ListMFADevicesForUser("lena")
+	devicesPage, err := b.ListMFADevicesForUser("lena", "", 0)
 	require.NoError(t, err)
-	require.Len(t, devices, 1)
-	assert.Equal(t, iam.MFAStatusEnabled, devices[0].Status)
+	require.Len(t, devicesPage.Data, 1)
+	assert.Equal(t, iam.MFAStatusEnabled, devicesPage.Data[0].Status)
 }
 
 func TestEnableMFADevice_RejectsDoubleEnable(t *testing.T) {
@@ -320,16 +321,34 @@ func TestVirtualMFADevice_CRUD(t *testing.T) {
 
 	require.NoError(t, b.EnableMFADevice("alice", dev.SerialNumber, "123456", "789012"))
 
-	devices, err := b.ListMFADevicesForUser("alice")
+	devicesPage, err := b.ListMFADevicesForUser("alice", "", 0)
 	require.NoError(t, err)
-	assert.Len(t, devices, 1)
+	assert.Len(t, devicesPage.Data, 1)
 
 	require.NoError(t, b.DeactivateMFADevice("alice", dev.SerialNumber))
 
-	devices2, err := b.ListMFADevicesForUser("alice")
+	devicesPage2, err := b.ListMFADevicesForUser("alice", "", 0)
 	require.NoError(t, err)
-	assert.Empty(t, devices2)
+	assert.Empty(t, devicesPage2.Data)
 
+	require.NoError(t, b.DeleteVirtualMFADevice(dev.SerialNumber))
+}
+
+func TestDeleteVirtualMFADevice_RequiresDeactivation(t *testing.T) {
+	t.Parallel()
+
+	b := newBackend(t)
+	_, _ = b.CreateUser("bob", "/", "")
+
+	dev, err := b.CreateVirtualMFADeviceFull("bob-token", "/mfa/")
+	require.NoError(t, err)
+
+	require.NoError(t, b.EnableMFADevice("bob", dev.SerialNumber, "123456", "789012"))
+
+	err = b.DeleteVirtualMFADevice(dev.SerialNumber)
+	require.ErrorIs(t, err, iam.ErrDeleteConflict)
+
+	require.NoError(t, b.DeactivateMFADevice("bob", dev.SerialNumber))
 	require.NoError(t, b.DeleteVirtualMFADevice(dev.SerialNumber))
 }
 
@@ -384,4 +403,40 @@ func TestListVirtualMFADevices_ItemShape_RealClient(t *testing.T) {
 	require.Len(t, found.Tags, 1)
 	assert.Equal(t, "env", aws.ToString(found.Tags[0].Key))
 	assert.Equal(t, "prod", aws.ToString(found.Tags[0].Value))
+}
+
+func TestListMFADevices_Pagination(t *testing.T) {
+	t.Parallel()
+
+	h, b := newTestHandler(t)
+	client := newTestIAMClient(t, h)
+
+	_, err := b.CreateUser("paula", "/", "")
+	require.NoError(t, err)
+
+	for i := range 3 {
+		dev, devErr := b.CreateVirtualMFADeviceFull(fmt.Sprintf("paula-device-%d", i), "/")
+		require.NoError(t, devErr)
+		require.NoError(t, b.EnableMFADevice("paula", dev.SerialNumber, "111111", "222222"))
+	}
+
+	page1, err := client.ListMFADevices(t.Context(), &iamsdk.ListMFADevicesInput{
+		UserName: aws.String("paula"),
+		MaxItems: aws.Int32(2),
+	})
+	require.NoError(t, err)
+	require.Len(t, page1.MFADevices, 2)
+	assert.True(t, page1.IsTruncated)
+	require.NotNil(t, page1.Marker)
+	assert.NotEmpty(t, *page1.Marker)
+
+	page2, err := client.ListMFADevices(t.Context(), &iamsdk.ListMFADevicesInput{
+		UserName: aws.String("paula"),
+		MaxItems: aws.Int32(2),
+		Marker:   page1.Marker,
+	})
+	require.NoError(t, err)
+	require.Len(t, page2.MFADevices, 1)
+	assert.False(t, page2.IsTruncated)
+	assert.Nil(t, page2.Marker)
 }

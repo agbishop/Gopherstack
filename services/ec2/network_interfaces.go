@@ -140,6 +140,7 @@ func (b *InMemoryBackend) DeleteNetworkInterface(id string) error {
 	b.deindexENIByVPCLocked(id, eni)
 	b.networkInterfaces.Delete(id)
 	delete(b.tags, id)
+	delete(b.niIPv6Addresses, id)
 
 	return nil
 }

@@ -136,6 +136,13 @@ func (b *InMemoryBackend) cascadeDeleteInstance(instanceArn string) {
 		delete(b.customerManagedPolicies, psArn)
 		b.permissionBoundaries.Delete(psArn)
 		b.permissionSets.Delete(psArn)
+		// A permission set can be force-deleted here with live assignments
+		// (unlike DeletePermissionSet, cascadeDeleteInstance has no
+		// "no assignments" precondition), so provisionedAt/assignmentCreationIDs
+		// rows keyed off it would otherwise never be reclaimed -- unbounded
+		// growth across repeated instance create/delete cycles.
+		purgeByPrefix(b.provisionedAt, key+"|")
+		purgeByPrefix(b.assignmentCreationIDs, key+"|")
 	}
 	b.instanceACAs.Delete(instanceArn)
 	delete(b.instanceRegions, instanceArn)
@@ -151,6 +158,15 @@ func (b *InMemoryBackend) cascadeDeleteInstance(instanceArn string) {
 	}
 	for _, tti := range slices.Clone(b.trustedTokenIssuersByInstance.Get(instanceArn)) {
 		b.trustedTokenIssuers.Delete(tti.TrustedTokenIssuerArn)
+	}
+}
+
+// purgeByPrefix deletes every entry of m whose key starts with prefix.
+func purgeByPrefix[V any](m map[string]V, prefix string) {
+	for k := range m {
+		if strings.HasPrefix(k, prefix) {
+			delete(m, k)
+		}
 	}
 }
 

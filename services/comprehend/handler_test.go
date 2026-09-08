@@ -43,6 +43,17 @@ func endpointBody(name string) map[string]any {
 	}
 }
 
+// datasetBody returns a CreateDatasetInput body carrying every field
+// validateOpCreateDatasetInput marks required (DatasetName, FlywheelArn,
+// InputDataConfig).
+func datasetBody(name string) map[string]any {
+	return map[string]any{
+		"DatasetName":     name,
+		"FlywheelArn":     "arn:aws:comprehend:us-east-1:123456789012:flywheel/" + name,
+		"InputDataConfig": map[string]any{},
+	}
+}
+
 // mergedBody returns a new map holding base's entries overlaid with extra's,
 // without mutating either argument.
 func mergedBody(base, extra map[string]any) map[string]any {
@@ -391,6 +402,10 @@ func TestResourceCRUDAndTags(t *testing.T) {
 			// check caught; this test now exercises real behavior instead of the
 			// fabricated op.
 			noDelete: true,
+			extraFields: map[string]any{
+				"FlywheelArn":     "arn:aws:comprehend:us-east-1:123456789012:flywheel/data",
+				"InputDataConfig": map[string]any{},
+			},
 		},
 	}
 	for _, test := range tests {
@@ -526,7 +541,7 @@ func TestResetRemovesState(t *testing.T) {
 	t.Parallel()
 
 	handler := newHandler()
-	request(t, handler, "CreateDataset", map[string]any{"DatasetName": "temporary"})
+	request(t, handler, "CreateDataset", datasetBody("temporary"))
 	handler.Reset()
 	output := request(t, handler, "ListDatasets", nil)
 	assert.Empty(t, output["DatasetPropertiesList"])
@@ -639,6 +654,10 @@ func TestResourceProperties_TimestampFieldNamesMatchAWSShape(t *testing.T) {
 			describeOp: "DescribeDataset", arnField: "DatasetArn",
 			objectField: "DatasetProperties", wantTimeFields: []string{"CreationTime", "EndTime"},
 			absentTimeField: "LastModifiedTime",
+			extraFields: map[string]any{
+				"FlywheelArn":     "arn:aws:comprehend:us-east-1:123456789012:flywheel/resource-name",
+				"InputDataConfig": map[string]any{},
+			},
 		},
 	}
 

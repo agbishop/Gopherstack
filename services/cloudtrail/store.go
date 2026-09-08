@@ -7,6 +7,7 @@ import (
 
 // InMemoryBackend is the in-memory store for CloudTrail resources.
 type InMemoryBackend struct {
+	s3               S3Backend
 	dashboardsByARN  *store.Index[Dashboard]
 	eventConfigs     map[string]*EventConfiguration
 	trailsByARN      *store.Index[Trail]
@@ -48,6 +49,14 @@ func NewInMemoryBackend(accountID, region string) *InMemoryBackend {
 	registerAllTables(b)
 
 	return b
+}
+
+// SetS3Backend wires S3 so CreateTrail/UpdateTrail validate the configured
+// bucket exists and recorded management events are actually delivered as
+// log files, instead of S3BucketName being stored/echoed with no
+// validation and no delivery (gopherstack-g9b4).
+func (b *InMemoryBackend) SetS3Backend(s3 S3Backend) {
+	b.s3 = s3
 }
 
 // Reset clears all state in the backend.

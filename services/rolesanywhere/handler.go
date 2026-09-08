@@ -641,34 +641,40 @@ func extractID(path, prefix string) string {
 	return ""
 }
 
-// parsePageParams extracts nextToken and maxResults from a query string.
+// parsePageParams extracts nextToken and pageSize from a query string.
+// pageSize, not maxResults, is the real wire query param every
+// ListProfiles/ListTrustAnchors/ListCrls/ListSubjects request carries (see
+// aws-sdk-go-v2/service/rolesanywhere/serializers.go's
+// awsRestjson1_serializeOpHttpBindingsList*Input, which all call
+// encoder.SetQuery("pageSize")); a real SDK client's page size was
+// previously silently ignored here.
 func parsePageParams(query string) (string, int, error) {
 	var nextToken string
 
-	var maxResults int
+	var pageSize int
 
 	for part := range strings.SplitSeq(query, "&") {
 		if after, ok := strings.CutPrefix(part, "nextToken="); ok {
 			nextToken = after
 		}
 
-		if after, ok := strings.CutPrefix(part, "maxResults="); ok {
+		if after, ok := strings.CutPrefix(part, "pageSize="); ok {
 			if after == "" {
 				continue
 			}
 
-			// AWS rejects a non-numeric maxResults with ValidationException
+			// AWS rejects a non-numeric pageSize with ValidationException
 			// rather than silently coercing it to zero / dropping non-digits.
 			n, err := strconv.Atoi(after)
 			if err != nil || n < 0 {
 				return "", 0, ErrValidation
 			}
 
-			maxResults = n
+			pageSize = n
 		}
 	}
 
-	return nextToken, maxResults, nil
+	return nextToken, pageSize, nil
 }
 
 func errBody(code, message string) map[string]string {

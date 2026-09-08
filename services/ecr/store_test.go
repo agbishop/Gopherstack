@@ -158,6 +158,27 @@ func TestReset_MultipleCycles(t *testing.T) {
 	}
 }
 
+// TestReset_ClearsRepoUploadIndex verifies that Reset clears repoUploadIndex,
+// the same ephemeral in-progress-upload bookkeeping that Restore already
+// clears (see persistence.go's Restore). Without this, repoUploadIndex grows
+// unboundedly across repeated Reset cycles on a long-running server: each
+// InitiateLayerUpload call for a never-since-deleted repository name adds an
+// entry that nothing but DeleteRepository ever removes.
+func TestReset_ClearsRepoUploadIndex(t *testing.T) {
+	t.Parallel()
+
+	b := newBackend(t)
+	makeRepo(t, b, "r1")
+
+	_, err := b.InitiateLayerUpload(context.Background(), "r1")
+	require.NoError(t, err)
+	require.Positive(t, b.RepoUploadIndexCount())
+
+	b.Reset()
+
+	assert.Equal(t, 0, b.RepoUploadIndexCount())
+}
+
 // TestSeedHelpers_AddRepositoryAndLifecyclePolicy verifies AddRepositoryInternal
 // and AddLifecyclePolicyInternal, the test-only seed helpers exported via
 // export_test.go.

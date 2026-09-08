@@ -99,6 +99,71 @@ func TestWAF_SqlInjectionMatchSet_CreateGetUpdateDeleteList(t *testing.T) {
 	assert.Equal(t, 0, waf.SqlInjectionMatchSetCount(h.Backend.(*waf.InMemoryBackend)))
 }
 
+func wafCreateSQLInjectionMatchSet(t *testing.T, h *waf.Handler, name string) string {
+	t.Helper()
+
+	token := wafGetToken(t, h)
+	rec := wafDo(t, h, "CreateSqlInjectionMatchSet", map[string]any{"ChangeToken": token, "Name": name})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	m := resp["SqlInjectionMatchSet"].(map[string]any)
+	id := m["SqlInjectionMatchSetId"].(string)
+	require.NotEmpty(t, id)
+
+	return id
+}
+
+func TestWAF_SqlInjectionMatchSet_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	tuple := map[string]any{
+		"FieldToMatch":       map[string]any{"Type": "QUERY_STRING"},
+		"TextTransformation": "URL_DECODE",
+	}
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateSQLInjectionMatchSet(t, h, "noop-insert-sqli")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateSqlInjectionMatchSet", map[string]any{
+			"ChangeToken":            token,
+			"SqlInjectionMatchSetId": id,
+			"Updates":                []map[string]any{{"Action": "INSERT", "SqlInjectionMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateSqlInjectionMatchSet", map[string]any{
+			"ChangeToken":            token,
+			"SqlInjectionMatchSetId": id,
+			"Updates":                []map[string]any{{"Action": "INSERT", "SqlInjectionMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateSQLInjectionMatchSet(t, h, "noop-delete-sqli")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateSqlInjectionMatchSet", map[string]any{
+			"ChangeToken":            token,
+			"SqlInjectionMatchSetId": id,
+			"Updates":                []map[string]any{{"Action": "DELETE", "SqlInjectionMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestWAF_SqlInjectionMatchSet_NotFound(t *testing.T) {
 	t.Parallel()
 

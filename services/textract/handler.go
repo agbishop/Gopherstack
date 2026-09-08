@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	sdk_s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/labstack/echo/v5"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/config"
@@ -339,6 +341,8 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, action string,
 		code, status = "InvalidJobIdException", http.StatusBadRequest
 	case errors.Is(err, ErrAdapterNotFound), errors.Is(err, ErrAdapterVersionNotFound):
 		code, status = "ResourceNotFoundException", http.StatusBadRequest
+	case errors.Is(err, ErrInvalidS3Object):
+		code, status = "InvalidS3ObjectException", http.StatusBadRequest
 	case errors.Is(err, ErrValidation), errors.Is(err, errInvalidRequest),
 		errors.Is(err, errUnknownAction),
 		errors.As(err, &syntaxErr), errors.As(err, &typeErr):
@@ -367,6 +371,41 @@ func documentURI(bucket, key string) string {
 	}
 
 	return "s3://" + bucket + "/" + key
+}
+
+// resolveDocumentLocation validates bucket/key are both set (required
+// DocumentLocation.S3Object members for every async Start* op) and applies
+// checkS3Object, returning the resolved documentURI.
+func (h *Handler) resolveDocumentLocation(ctx context.Context, bucket, key string) (string, error) {
+	if bucket == "" || key == "" {
+		return "", fmt.Errorf("%w: DocumentLocation.S3Object.Bucket and Name are required", errInvalidRequest)
+	}
+
+	if err := h.checkS3Object(ctx, bucket, key); err != nil {
+		return "", err
+	}
+
+	return "s3://" + bucket + "/" + key, nil
+}
+
+// checkS3Object returns ErrInvalidS3Object if bucket is set and the wired S3
+// backend cannot find bucket/key. A no-op when Backend isn't
+// *InMemoryBackend, S3 is unwired, or bucket=="" (inline Bytes, no
+// S3Object), per this repo's unwired-hook-stays-permissive convention.
+func (h *Handler) checkS3Object(ctx context.Context, bucket, key string) error {
+	b, ok := h.Backend.(*InMemoryBackend)
+	if !ok || b.s3 == nil || bucket == "" {
+		return nil
+	}
+
+	if _, err := b.s3.HeadObject(ctx, &sdk_s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}); err != nil {
+		return fmt.Errorf("%w: s3://%s/%s", ErrInvalidS3Object, bucket, key)
+	}
+
+	return nil
 }
 
 // startJobResponse is the shared response shape for every Start* async job

@@ -41,9 +41,17 @@ func TestCreateSubnetGroup(t *testing.T) {
 			},
 		},
 		{
-			name:    "empty name",
-			sgName:  "",
-			wantErr: true,
+			// SubnetGroupName carries no required/format check in the real API
+			// (CreateSubnetGroup's declared error set has no
+			// InvalidParameterValueException case) -- an empty name is accepted,
+			// same as any other string.
+			name:      "empty name accepted",
+			sgName:    "",
+			subnetIDs: []string{"subnet-11111111"},
+			check: func(t *testing.T, sg *dax.SubnetGroup) {
+				t.Helper()
+				assert.Empty(t, sg.SubnetGroupName)
+			},
 		},
 	}
 
@@ -125,34 +133,34 @@ func TestCreateSubnetGroupVpcIDPopulated(t *testing.T) {
 	assert.True(t, strings.HasPrefix(sg.VpcID, "vpc-"), "VpcID should start with vpc-")
 }
 
-// ---- SubnetGroupName format validation ----
-
-func TestCreateSubnetGroupNameValidation(t *testing.T) {
+// ---- SubnetGroupName has no format constraint in the real API ----
+//
+// Unlike ClusterName/ParameterGroupName, SubnetGroupName's real declared error
+// set (CreateSubnetGroup's deserializeOpErrorCreateSubnetGroup) has no
+// InvalidParameterValueException case, and its client-side validator
+// (validateOpCreateSubnetGroupInput) checks only presence, not shape -- so
+// none of these are rejected.
+func TestCreateSubnetGroupNameNotFormatValidated(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		sgName  string
-		wantErr bool
+		name   string
+		sgName string
 	}{
-		{name: "valid", sgName: "my-sg", wantErr: false},
-		{name: "starts with digit", sgName: "1sg", wantErr: true},
-		{name: "ends with hyphen", sgName: "sg-", wantErr: true},
-		{name: "consecutive hyphens", sgName: "my--sg", wantErr: true},
+		{name: "alphanumeric-hyphen", sgName: "my-sg"},
+		{name: "starts with digit", sgName: "1sg"},
+		{name: "ends with hyphen", sgName: "sg-"},
+		{name: "consecutive hyphens", sgName: "my--sg"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			b := newTestBackend()
-			_, err := b.CreateSubnetGroup(tt.sgName, "", []string{"subnet-11111111"})
+			sg, err := b.CreateSubnetGroup(tt.sgName, "", []string{"subnet-11111111"})
 
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, dax.ErrInvalidParameterValue)
-			} else {
-				require.NoError(t, err)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.sgName, sg.SubnetGroupName)
 		})
 	}
 }
@@ -199,6 +207,16 @@ func TestUpdateSubnetGroup(t *testing.T) {
 			input:   dax.UpdateSubnetGroupInput{SubnetGroupName: "no-such"},
 			wantErr: true,
 		},
+		{
+			// UpdateSubnetGroup's own deserializeOpErrorUpdateSubnetGroup switch has
+			// no InvalidParameterValueException case; SubnetGroupNotFoundFault is the
+			// code it actually types, matching DeleteSubnetGroup's treatment of the
+			// same condition.
+			name:    "empty name",
+			setup:   func(_ *dax.InMemoryBackend) {},
+			input:   dax.UpdateSubnetGroupInput{SubnetGroupName: ""},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -210,7 +228,7 @@ func TestUpdateSubnetGroup(t *testing.T) {
 			sg, err := b.UpdateSubnetGroup(tt.input)
 
 			if tt.wantErr {
-				require.Error(t, err)
+				require.ErrorIs(t, err, dax.ErrSubnetGroupNotFound)
 
 				return
 			}

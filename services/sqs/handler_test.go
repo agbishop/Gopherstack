@@ -638,6 +638,52 @@ func TestHandlerIntrospection(t *testing.T) {
 	})
 }
 
+// TestSQSHandler_JSONResponseContentType verifies the JSON-protocol
+// response carries the AWS-accurate media type. The pinned SDK
+// (aws-sdk-go-v2/service/sqs@v1.46.4 serializers.go) sets
+// "application/x-amz-json-1.0" on every request it sends — SQS uses the
+// awsJson1_0 protocol, not 1.1 — so a spec-conformant server response uses
+// the same media type for both success and error bodies.
+func TestSQSHandler_JSONResponseContentType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		body    map[string]any
+		name    string
+		action  string
+		wantErr bool
+	}{
+		{
+			name:   "success_response",
+			action: "ListQueues",
+			body:   map[string]any{},
+		},
+		{
+			name:    "error_response",
+			action:  "GetQueueAttributes",
+			body:    map[string]any{"QueueUrl": "http://localhost/000000000000/does-not-exist"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			rec := doRequest(t, h, tt.action, tt.body)
+
+			if tt.wantErr {
+				require.NotEqual(t, http.StatusOK, rec.Code)
+			} else {
+				require.Equal(t, http.StatusOK, rec.Code)
+			}
+
+			assert.Equal(t, "application/x-amz-json-1.0", rec.Header().Get("Content-Type"))
+		})
+	}
+}
+
 func TestProviderNameAndInit(t *testing.T) {
 	t.Parallel()
 

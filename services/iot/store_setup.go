@@ -51,8 +51,8 @@ func customMetricsKeyFn(v *CustomMetric) string                     { return v.M
 // (see InMemoryBackend.Reset in store.go).
 //
 // Fields left as plain maps: shadows (keyed by composite shadowKey{thingName,
-// shadowName}, no pure keyFn without changing ThingShadow's shape — also
-// Reset() never clears it, a pre-existing quirk kept byte-for-byte);
+// shadowName}, no pure keyFn without changing ThingShadow's shape; cleared
+// separately in Reset());
 // packageVersionSboms/commandExecutions/thingConnectivity (value carries no
 // recoverable identity field for its key); resourceTags, certificateTransfers,
 // thingBillingGroups, thingThingGroups, thingGroupMembers, jobTargets,

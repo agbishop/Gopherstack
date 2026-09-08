@@ -78,6 +78,7 @@ func (b *InMemoryBackend) makeInstances(g *AutoScalingGroup, count int32) []Inst
 
 	instances := fabricateInstances(n, az, g.LaunchConfigurationName, instanceType)
 	b.registerELBTargets(instanceIDsOf(instances), g.TargetGroupARNs)
+	b.registerELBInstances(instanceIDsOf(instances), g.LoadBalancerNames)
 
 	return instances
 }
@@ -111,6 +112,7 @@ func (b *InMemoryBackend) launchInEC2(
 
 	instances := instancesFromIDs(ids, az, g.LaunchConfigurationName, instanceType)
 	b.registerELBTargets(ids, g.TargetGroupARNs)
+	b.registerELBInstances(ids, g.LoadBalancerNames)
 
 	return instances, true
 }

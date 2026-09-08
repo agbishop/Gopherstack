@@ -2,6 +2,7 @@ package rekognition
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/service"
 )
@@ -32,8 +33,12 @@ type detectModerationLabelsResp struct {
 }
 
 func (h *Handler) handleDetectModerationLabels(
-	_ context.Context, req *detectModerationLabelsReq,
+	ctx context.Context, req *detectModerationLabelsReq,
 ) (*detectModerationLabelsResp, error) {
+	if err := h.checkImageRef(ctx, req.Image); err != nil {
+		return nil, err
+	}
+
 	// Default: content is clean. Only return labels if MinConfidence is very low,
 	// which indicates the caller wants to see all possible labels.
 	labels := []moderationLabelEntry{}
@@ -52,8 +57,8 @@ func (h *Handler) handleDetectModerationLabels(
 
 type detectProtectiveEquipmentReq struct {
 	SummarizationAttributes *struct {
-		RequiredEquipmentTypes []string `json:"RequiredEquipmentTypes"`
-		MinConfidence          float32  `json:"MinConfidence"`
+		RequiredEquipmentTypes *[]string `json:"RequiredEquipmentTypes"`
+		MinConfidence          *float32  `json:"MinConfidence"`
 	} `json:"SummarizationAttributes"`
 	Image imageRef `json:"Image"`
 }
@@ -69,8 +74,22 @@ type detectProtectiveEquipmentResp struct {
 }
 
 func (h *Handler) handleDetectProtectiveEquipment(
-	_ context.Context, _ *detectProtectiveEquipmentReq,
+	ctx context.Context, req *detectProtectiveEquipmentReq,
 ) (*detectProtectiveEquipmentResp, error) {
+	if err := h.checkImageRef(ctx, req.Image); err != nil {
+		return nil, err
+	}
+
+	if sa := req.SummarizationAttributes; sa != nil {
+		if sa.MinConfidence == nil {
+			return nil, fmt.Errorf("%w: SummarizationAttributes.MinConfidence is required", ErrValidation)
+		}
+
+		if sa.RequiredEquipmentTypes == nil {
+			return nil, fmt.Errorf("%w: SummarizationAttributes.RequiredEquipmentTypes is required", ErrValidation)
+		}
+	}
+
 	return &detectProtectiveEquipmentResp{
 		Persons:                         []protectiveEquipmentPersonEntry{},
 		ProtectiveEquipmentModelVersion: "1.0",
@@ -87,8 +106,12 @@ type startContentModerationReq struct {
 }
 
 func (h *Handler) handleStartContentModeration(
-	_ context.Context, req *startContentModerationReq,
+	ctx context.Context, req *startContentModerationReq,
 ) (*startJobResp, error) {
+	if err := h.checkVideoRef(ctx, req.Video); err != nil {
+		return nil, err
+	}
+
 	bucket, name, version := videoRefS3(req.Video)
 
 	jobID, err := h.Backend.StartAsyncJob(StartAsyncJobParams{

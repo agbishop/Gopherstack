@@ -74,7 +74,9 @@ func (b *InMemoryBackend) PutMetricAlarm(alarm *MetricAlarm) error {
 	return nil
 }
 
-// DescribeAlarms lists a page of alarms, optionally filtered by name, type, prefix, and/or state.
+// DescribeAlarms lists a page of alarms, optionally filtered by name, type, prefix,
+// state, action prefix, or alarm-family relationship (children/parents of a
+// composite alarm's rule).
 // alarmTypes can contain "MetricAlarm", "CompositeAlarm", and/or "LogAlarm".
 // Per the real DescribeAlarmsInput.AlarmTypes doc comment ("If you omit this
 // parameter, only metric alarms are returned, even if composite alarms or
@@ -90,24 +92,44 @@ func (b *InMemoryBackend) DescribeAlarms(
 	alarmTypes []string,
 	alarmNamePrefix, stateValue, nextToken string,
 	maxRecords int,
+	actionPrefix, childrenOfAlarmName, parentsOfAlarmName string,
 ) (page.Page[MetricAlarm], page.Page[CompositeAlarm], page.Page[LogAlarm], error) {
+	if err := validateAlarmFamilyFilter(
+		alarmNames, alarmTypes, alarmNamePrefix, actionPrefix, stateValue,
+		childrenOfAlarmName, parentsOfAlarmName,
+	); err != nil {
+		return page.Page[MetricAlarm]{}, page.Page[CompositeAlarm]{}, page.Page[LogAlarm]{}, err
+	}
+
 	b.mu.RLock("DescribeAlarms")
 	defer b.mu.RUnlock()
 
-	nameSet := toSet(alarmNames)
-	typeSet := toSet(alarmTypes)
-	includeMetric := len(typeSet) == 0 || typeSet["MetricAlarm"]
-	includeComposite := typeSet["CompositeAlarm"]
-	includeLog := typeSet[alarmTypeLogAlarm]
+	var metricResult []MetricAlarm
+	var compositeResult []CompositeAlarm
+	var logResult []LogAlarm
 
-	metricResult := b.collectMetricAlarms(nameSet, alarmNamePrefix, stateValue, includeMetric)
-	compositeResult := b.collectCompositeAlarms(
-		nameSet,
-		alarmNamePrefix,
-		stateValue,
-		includeComposite,
-	)
-	logResult := b.collectLogAlarms(nameSet, alarmNamePrefix, stateValue, includeLog)
+	switch {
+	case childrenOfAlarmName != "":
+		metricResult, compositeResult = b.collectChildrenOfAlarm(childrenOfAlarmName)
+	case parentsOfAlarmName != "":
+		compositeResult = b.collectParentsOfAlarm(parentsOfAlarmName)
+	default:
+		nameSet := toSet(alarmNames)
+		typeSet := toSet(alarmTypes)
+		includeMetric := len(typeSet) == 0 || typeSet["MetricAlarm"]
+		includeComposite := typeSet["CompositeAlarm"]
+		includeLog := typeSet[alarmTypeLogAlarm]
+
+		metricResult = b.collectMetricAlarms(nameSet, alarmNamePrefix, stateValue, actionPrefix, includeMetric)
+		compositeResult = b.collectCompositeAlarms(
+			nameSet,
+			alarmNamePrefix,
+			stateValue,
+			actionPrefix,
+			includeComposite,
+		)
+		logResult = b.collectLogAlarms(nameSet, alarmNamePrefix, stateValue, actionPrefix, includeLog)
+	}
 
 	// Apply a single combined page limit so MaxRecords constrains the total result set.
 	limit := maxRecords
@@ -122,6 +144,160 @@ func (b *InMemoryBackend) DescribeAlarms(
 		page.Page[CompositeAlarm]{Data: compositeSlice, Next: next},
 		page.Page[LogAlarm]{Data: logSlice, Next: next},
 		nil
+}
+
+// validateAlarmFamilyFilter enforces DescribeAlarmsInput's documented
+// restriction on ChildrenOfAlarmName and ParentsOfAlarmName: per the doc
+// comment on both fields (aws-sdk-go-v2/service/cloudwatch@v1.66.3/
+// api_op_DescribeAlarms.go), specifying either one with any parameter other
+// than MaxRecords/NextToken (which this backend does not see here) is a
+// validation error, and the two are mutually exclusive with each other.
+func validateAlarmFamilyFilter(
+	alarmNames, alarmTypes []string,
+	alarmNamePrefix, actionPrefix, stateValue, childrenOfAlarmName, parentsOfAlarmName string,
+) error {
+	if childrenOfAlarmName == "" && parentsOfAlarmName == "" {
+		return nil
+	}
+	if childrenOfAlarmName != "" && parentsOfAlarmName != "" {
+		return ErrAlarmFamilyFilterExclusive
+	}
+	if len(alarmNames) > 0 || len(alarmTypes) > 0 || alarmNamePrefix != "" ||
+		actionPrefix != "" || stateValue != "" {
+		return ErrAlarmFamilyFilterExclusive
+	}
+
+	return nil
+}
+
+// collectChildrenOfAlarm returns the metric and composite alarms referenced
+// by the named composite alarm's AlarmRule (its "children"), abbreviated per
+// the ChildrenOfAlarmName doc comment: only Name, ARN, StateValue, and
+// StateUpdatedTimestamp are returned. This model does not track
+// StateUpdatedTimestamp separately from StateTransitionedTimestamp for
+// MetricAlarm/CompositeAlarm, so StateTransitionedTimestamp stands in for it.
+// Caller must hold b.mu (read lock).
+func (b *InMemoryBackend) collectChildrenOfAlarm(name string) ([]MetricAlarm, []CompositeAlarm) {
+	parent, isComposite := b.compositeAlarms.Get(name)
+	if !isComposite {
+		return nil, nil
+	}
+
+	seen := make(map[string]bool)
+	var metrics []MetricAlarm
+	var composites []CompositeAlarm
+
+	for _, ref := range extractAlarmRuleRefs(parent.AlarmRule) {
+		if ref.Name == name || seen[ref.Name] {
+			continue
+		}
+		seen[ref.Name] = true
+
+		if m, found := b.alarms.Get(ref.Name); found {
+			metrics = append(metrics, abbreviateMetricAlarmForFamily(*m))
+		}
+		if c, found := b.compositeAlarms.Get(ref.Name); found {
+			composites = append(composites, abbreviateCompositeAlarmForFamily(*c))
+		}
+	}
+
+	sort.Slice(metrics, func(i, j int) bool { return metrics[i].AlarmName < metrics[j].AlarmName })
+	sort.Slice(composites, func(i, j int) bool { return composites[i].AlarmName < composites[j].AlarmName })
+
+	return metrics, composites
+}
+
+// collectParentsOfAlarm returns the composite alarms whose AlarmRule
+// references the named alarm (its "parents"), abbreviated per the
+// ParentsOfAlarmName doc comment: only Name and ARN are returned.
+// Caller must hold b.mu (read lock).
+func (b *InMemoryBackend) collectParentsOfAlarm(name string) []CompositeAlarm {
+	var composites []CompositeAlarm
+
+	for _, ca := range b.compositeAlarms.All() {
+		if ca.AlarmName == name {
+			continue
+		}
+		for _, ref := range extractAlarmRuleRefs(ca.AlarmRule) {
+			if ref.Name == name {
+				composites = append(composites, CompositeAlarm{
+					AlarmName: ca.AlarmName,
+					AlarmArn:  ca.AlarmArn,
+				})
+
+				break
+			}
+		}
+	}
+
+	sort.Slice(composites, func(i, j int) bool { return composites[i].AlarmName < composites[j].AlarmName })
+
+	return composites
+}
+
+// abbreviateMetricAlarmForFamily returns the ChildrenOfAlarmName field subset
+// of a MetricAlarm: Name, ARN, StateValue, and StateUpdatedTimestamp.
+func abbreviateMetricAlarmForFamily(a MetricAlarm) MetricAlarm {
+	return MetricAlarm{
+		AlarmName:                  a.AlarmName,
+		AlarmArn:                   a.AlarmArn,
+		StateValue:                 a.StateValue,
+		StateTransitionedTimestamp: a.StateTransitionedTimestamp,
+	}
+}
+
+// abbreviateCompositeAlarmForFamily returns the ChildrenOfAlarmName field
+// subset of a CompositeAlarm: Name, ARN, StateValue, and StateUpdatedTimestamp.
+func abbreviateCompositeAlarmForFamily(a CompositeAlarm) CompositeAlarm {
+	return CompositeAlarm{
+		AlarmName:                  a.AlarmName,
+		AlarmArn:                   a.AlarmArn,
+		StateValue:                 a.StateValue,
+		StateTransitionedTimestamp: a.StateTransitionedTimestamp,
+	}
+}
+
+// actionListsHavePrefix reports whether any action ARN across the given
+// action lists starts with prefix. ActionPrefix's doc comment ("filter the
+// results ... to only those alarms that use a certain alarm action")
+// does not name a specific action list, so this checks AlarmActions,
+// OKActions, and InsufficientDataActions alike.
+func actionListsHavePrefix(prefix string, lists ...[]string) bool {
+	for _, list := range lists {
+		for _, action := range list {
+			if strings.HasPrefix(action, prefix) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// alarmMatchesDescribeFilter applies DescribeAlarms' name-set, name-prefix,
+// state, and action-prefix filters shared by metric, composite, and log
+// alarms. actionLists is that alarm's AlarmActions/OKActions/
+// InsufficientDataActions, in that order.
+func alarmMatchesDescribeFilter(
+	alarmName, alarmState string,
+	nameSet map[string]bool,
+	alarmNamePrefix, stateValue, actionPrefix string,
+	actionLists ...[]string,
+) bool {
+	if len(nameSet) > 0 && !nameSet[alarmName] {
+		return false
+	}
+	if alarmNamePrefix != "" && !strings.HasPrefix(alarmName, alarmNamePrefix) {
+		return false
+	}
+	if stateValue != "" && alarmState != stateValue {
+		return false
+	}
+	if actionPrefix != "" && !actionListsHavePrefix(actionPrefix, actionLists...) {
+		return false
+	}
+
+	return true
 }
 
 // paginateAlarmResults applies a single combined page window across the three
@@ -185,7 +361,7 @@ func toSet(ss []string) map[string]bool {
 // Caller must hold b.mu (read lock).
 func (b *InMemoryBackend) collectMetricAlarms(
 	nameSet map[string]bool,
-	alarmNamePrefix, stateValue string,
+	alarmNamePrefix, stateValue, actionPrefix string,
 	include bool,
 ) []MetricAlarm {
 	if !include {
@@ -195,15 +371,10 @@ func (b *InMemoryBackend) collectMetricAlarms(
 	var result []MetricAlarm
 
 	for _, alarm := range b.alarms.All() {
-		if len(nameSet) > 0 && !nameSet[alarm.AlarmName] {
-			continue
-		}
-
-		if alarmNamePrefix != "" && !strings.HasPrefix(alarm.AlarmName, alarmNamePrefix) {
-			continue
-		}
-
-		if stateValue != "" && alarm.StateValue != stateValue {
+		if !alarmMatchesDescribeFilter(
+			alarm.AlarmName, alarm.StateValue, nameSet, alarmNamePrefix, stateValue, actionPrefix,
+			alarm.AlarmActions, alarm.OKActions, alarm.InsufficientDataActions,
+		) {
 			continue
 		}
 
@@ -221,7 +392,7 @@ func (b *InMemoryBackend) collectMetricAlarms(
 // Caller must hold b.mu (read lock).
 func (b *InMemoryBackend) collectCompositeAlarms(
 	nameSet map[string]bool,
-	alarmNamePrefix, stateValue string,
+	alarmNamePrefix, stateValue, actionPrefix string,
 	include bool,
 ) []CompositeAlarm {
 	if !include {
@@ -231,15 +402,10 @@ func (b *InMemoryBackend) collectCompositeAlarms(
 	var result []CompositeAlarm
 
 	for _, alarm := range b.compositeAlarms.All() {
-		if len(nameSet) > 0 && !nameSet[alarm.AlarmName] {
-			continue
-		}
-
-		if alarmNamePrefix != "" && !strings.HasPrefix(alarm.AlarmName, alarmNamePrefix) {
-			continue
-		}
-
-		if stateValue != "" && alarm.StateValue != stateValue {
+		if !alarmMatchesDescribeFilter(
+			alarm.AlarmName, alarm.StateValue, nameSet, alarmNamePrefix, stateValue, actionPrefix,
+			alarm.AlarmActions, alarm.OKActions, alarm.InsufficientDataActions,
+		) {
 			continue
 		}
 

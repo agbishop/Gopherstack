@@ -27,7 +27,25 @@ const maxEmitHop = 1
 type emission struct {
 	Code      string
 	Mechanism string
-	Pos       token.Pos
+	// EnclosingFunc is the name of the hop-1 callee whose OWN body this
+	// emission was found in ("" at hop 0, the op's own root) -- lets
+	// report.go's rollup detection (gopherstack-s0dw) tell a "sentinel
+	// reference" deep in a constructor's body apart from one sitting
+	// directly in an operation's own code, without re-parsing anything.
+	EnclosingFunc string
+	Pos           token.Pos
+	// WeakLabel is true when Code was resolved via the ambiguous "Type"
+	// composite-literal field label specifically (isCodeFieldLabel's
+	// comment already flags the risk: AWS Query's <Error><Type>Sender
+	// </Type></Error> fault-type discriminator shares this field name with
+	// iam/ecs's own per-op code field). Confirmed during gopherstack-zofv's
+	// validation pass: this exact label produced ZERO class A findings
+	// anywhere in the corpus, but produced Client/Sender/CNAME/GROUP/USER/
+	// ... (real API data, never a code) at 25+ sites once nothing else
+	// filtered its output -- so it is trusted for class A (its accidental
+	// AllCodes cross-check has never let one of these through) but never
+	// for the orphan class, which has no such backstop.
+	WeakLabel bool
 }
 
 // walkOpEmissions finds every emission reachable from roots (hop 0 each
@@ -47,7 +65,7 @@ func walkOpEmissions(roots []opRoot, idx *pkgIndex, cls *classifiers) []emission
 	out := make([]emission, 0, len(roots))
 
 	for _, r := range roots {
-		out = append(out, scanBodyEmissions(r.Body, idx, effective, 0, visited)...)
+		out = append(out, scanBodyEmissions(r.Body, idx, effective, 0, visited, "")...)
 	}
 
 	return filterUnreachable(dedupEmissions(out), roots, idx, cls)
@@ -189,7 +207,9 @@ func mergeMapperTable(table, out map[string]string, conflict map[string]bool) {
 
 // localSentinelOverrides scans hop0Roots' OWN bodies (never recursing) for
 // a call to a known override function, reading the actual sentinel argument
-// passed at that call site.
+// passed at that call site -- and, for a respondAsConflictCode-shaped
+// override (CodeParamIndex >= 0), the actual CODE argument too, since that
+// helper's own body never contains the literal at all.
 func localSentinelOverrides(hop0Roots []opRoot, idx *pkgIndex, overrides map[string]overrideFunc) map[string]string {
 	out := map[string]string{}
 
@@ -215,8 +235,12 @@ func localSentinelOverrides(hop0Roots []opRoot, idx *pkgIndex, overrides map[str
 			}
 
 			id, ok := call.Args[ov.ParamIndex].(*ast.Ident)
-			if ok && idx.Sentinels[id.Name] {
-				out[id.Name] = ov.Code
+			if !ok || !idx.Sentinels[id.Name] {
+				return true
+			}
+
+			if code, codeOK := resolveOverrideCallCode(call, ov, idx); codeOK {
+				out[id.Name] = code
 			}
 
 			return true
@@ -224,6 +248,26 @@ func localSentinelOverrides(hop0Roots []opRoot, idx *pkgIndex, overrides map[str
 	}
 
 	return out
+}
+
+// resolveOverrideCallCode returns the code an override call site actually
+// renders: the helper's own fixed Code, or, when CodeParamIndex is >= 0, the
+// code-shaped literal (or package-level const) passed as THAT call's own
+// argument -- a call site passing anything else there (a variable, a
+// computed expression) resolves to nothing, matching this tool's standing
+// "silent miss over false finding" discipline elsewhere in this package: the
+// operation falls back to the package-wide sentinel table rather than being
+// suppressed on a guess.
+func resolveOverrideCallCode(call *ast.CallExpr, ov overrideFunc, idx *pkgIndex) (string, bool) {
+	if ov.CodeParamIndex < 0 {
+		return ov.Code, true
+	}
+
+	if ov.CodeParamIndex >= len(call.Args) {
+		return "", false
+	}
+
+	return firstCodeLiteral(call.Args[ov.CodeParamIndex], idx, 0)
 }
 
 func dedupEmissions(in []emission) []emission {
@@ -244,12 +288,16 @@ func dedupEmissions(in []emission) []emission {
 	return out
 }
 
+// enclosingFunc names the hop-1 callee body being walked ("" at hop 0) --
+// stamped onto every emission found in it (emission.EnclosingFunc's own doc
+// comment).
 func scanBodyEmissions(
 	body *ast.BlockStmt,
 	idx *pkgIndex,
 	cls *classifiers,
 	hop int,
 	visited map[*ast.BlockStmt]bool,
+	enclosingFunc string,
 ) []emission {
 	if body == nil || visited[body] {
 		return nil
@@ -260,7 +308,10 @@ func scanBodyEmissions(
 	var out []emission
 
 	ast.Inspect(body, func(n ast.Node) bool {
-		out = append(out, nodeEmissions(n, cls)...)
+		for _, e := range nodeEmissions(n, idx, cls) {
+			e.EnclosingFunc = enclosingFunc
+			out = append(out, e)
+		}
 
 		if hop < maxEmitHop {
 			out = append(out, recurseCallEmissions(n, idx, cls, hop, visited)...)
@@ -272,12 +323,12 @@ func scanBodyEmissions(
 	return out
 }
 
-func nodeEmissions(n ast.Node, cls *classifiers) []emission {
+func nodeEmissions(n ast.Node, idx *pkgIndex, cls *classifiers) []emission {
 	switch v := n.(type) {
 	case *ast.ReturnStmt:
 		return returnStmtEmissions(v, cls)
 	case *ast.CallExpr:
-		return callExprEmissions(v, cls)
+		return callExprEmissions(v, idx, cls)
 	case *ast.CompositeLit:
 		return compositeLitEmissions(v)
 	case *ast.AssignStmt:
@@ -309,10 +360,10 @@ func returnStmtEmissions(ret *ast.ReturnStmt, cls *classifiers) []emission {
 // (services/networkmanager's notFoundError/validationError shape) and the
 // direct-literal mechanisms this repo also uses outside the sentinel-mapper
 // pattern (awserr.New/Newf).
-func callExprEmissions(call *ast.CallExpr, cls *classifiers) []emission {
+func callExprEmissions(call *ast.CallExpr, idx *pkgIndex, cls *classifiers) []emission {
 	var out []emission
 
-	if name, ok := calleeSimpleName(call.Fun); ok {
+	if name, ok := calleeSimpleName(call.Fun); ok && !bareBuiltinCall(call.Fun, name, idx) {
 		if code, known := cls.Funcs[name]; known {
 			out = append(out, emission{Code: code, Mechanism: "constructor classifier: " + name, Pos: call.Pos()})
 		}
@@ -332,6 +383,41 @@ func calleeSimpleName(fn ast.Expr) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// isPredeclaredFuncIdent reports whether name is one of Go's predeclared
+// function identifiers (language spec, "Predeclared identifiers").
+func isPredeclaredFuncIdent(name string) bool {
+	switch name {
+	case "append", "cap", "clear", "close", "complex", "copy", "delete", "imag",
+		"len", "make", "max", "min", "new", "panic", "print", "println", "real", "recover":
+		return true
+	default:
+		return false
+	}
+}
+
+// bareBuiltinCall reports whether fn is Go's builtin, not a same-named
+// package method (gopherstack-bfb3): services/forecast's InMemoryBackend.delete
+// method and the builtin delete(map, key) it calls internally share the
+// identifier "delete", and cls.Funcs indexes by bare name alone. A method
+// can only be invoked through a selector (b.delete(...)) or a method value
+// -- never as a bare unqualified identifier -- so a bare call to a
+// predeclared name resolves to a declared function only when the package
+// itself declares a receiver-less func of that name (idx.Funcs) shadowing
+// the builtin at package scope; otherwise it can only be the builtin.
+func bareBuiltinCall(fn ast.Expr, name string, idx *pkgIndex) bool {
+	if _, selector := fn.(*ast.SelectorExpr); selector {
+		return false
+	}
+
+	if !isPredeclaredFuncIdent(name) {
+		return false
+	}
+
+	_, shadowed := idx.Funcs[name]
+
+	return !shadowed
 }
 
 // awserrLiteralEmissions covers services/ecs's own direct mechanism:
@@ -413,7 +499,12 @@ func compositeLitEmissions(cl *ast.CompositeLit) []emission {
 			continue
 		}
 
-		out = append(out, emission{Code: v, Mechanism: "composite literal field: " + id.Name, Pos: lit.Pos()})
+		out = append(out, emission{
+			Code:      v,
+			Mechanism: "composite literal field: " + id.Name,
+			Pos:       lit.Pos(),
+			WeakLabel: strings.EqualFold(id.Name, "type"),
+		})
 	}
 
 	return out
@@ -534,7 +625,7 @@ func recurseCallEmissions(
 	var out []emission
 
 	for _, fd := range calleeFuncDecls(call.Fun, idx) {
-		out = append(out, scanBodyEmissions(fd.Body, idx, cls, hop+1, visited)...)
+		out = append(out, scanBodyEmissions(fd.Body, idx, cls, hop+1, visited, fd.Name.Name)...)
 	}
 
 	return out

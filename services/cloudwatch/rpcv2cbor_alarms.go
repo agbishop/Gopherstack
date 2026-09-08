@@ -67,6 +67,9 @@ func (h *Handler) cborDescribeAlarms(input cbor.Map, c *echo.Context) error {
 	stateValue := cborStr(input, keyStateValue)
 	nextToken := cborStr(input, "NextToken")
 	maxRecords := int(cborInt32(input, "MaxRecords"))
+	actionPrefix := cborStr(input, "ActionPrefix")
+	childrenOfAlarmName := cborStr(input, "ChildrenOfAlarmName")
+	parentsOfAlarmName := cborStr(input, "ParentsOfAlarmName")
 
 	metricPage, compositePage, logPage, err := h.Backend.DescribeAlarms(
 		alarmNames,
@@ -75,8 +78,15 @@ func (h *Handler) cborDescribeAlarms(input cbor.Map, c *echo.Context) error {
 		stateValue,
 		nextToken,
 		maxRecords,
+		actionPrefix,
+		childrenOfAlarmName,
+		parentsOfAlarmName,
 	)
 	if err != nil {
+		if errors.Is(err, ErrValidation) {
+			return h.cborError(c, http.StatusBadRequest, "InvalidParameterValueException", err.Error())
+		}
+
 		return h.cborError(c, http.StatusInternalServerError, "InternalFailure", err.Error())
 	}
 

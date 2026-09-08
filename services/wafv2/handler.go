@@ -62,6 +62,30 @@ var (
 	errInvalidRequest = errors.New("invalid request")
 )
 
+// requireIDNameScopeLockToken validates the Id/Name/Scope/LockToken members every
+// Update*/Delete* op in the WebACL/IPSet/RuleGroup/RegexPatternSet families marks
+// required (wafv2@v1.77.3 validators.go, e.g. validateOpUpdateWebACLInput). LockToken
+// is required so an omitted token can't silently bypass optimistic locking.
+func requireIDNameScopeLockToken(id, name, scope, lockToken string) error {
+	if id == "" {
+		return fmt.Errorf("%w: Id is required", errInvalidRequest)
+	}
+
+	if name == "" {
+		return fmt.Errorf("%w: Name is required", errInvalidRequest)
+	}
+
+	if scope == "" {
+		return fmt.Errorf("%w: Scope is required", errInvalidRequest)
+	}
+
+	if lockToken == "" {
+		return fmt.Errorf("%w: LockToken is required", errInvalidRequest)
+	}
+
+	return nil
+}
+
 // dispatchFn is the signature every WAFv2 operation handler is normalized to for
 // registration in the dispatch table.
 type dispatchFn = func(context.Context, []byte) ([]byte, error)

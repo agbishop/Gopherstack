@@ -339,6 +339,50 @@ func TestStartSpeechSynthesisTaskS3AndSnsValidation(t *testing.T) {
 	}
 }
 
+// TestStartSpeechSynthesisTaskSampleRateNarrowerThanSynthesizeSpeech verifies
+// that StartSpeechSynthesisTask rejects SampleRate=44100/48000 for
+// mp3/ogg_vorbis, even though SynthesizeSpeech accepts them for the same
+// formats. api_op_StartSpeechSynthesisTask.go's SampleRate doc comment lists
+// only "8000, 16000, 22050, and 24000" for mp3/ogg_vorbis;
+// api_op_SynthesizeSpeech.go's lists "8000, 16000, 22050, 24000, 44100 and
+// 48000" for the same two formats -- a real, per-operation difference, not a
+// shared constraint.
+func TestStartSpeechSynthesisTaskSampleRateNarrowerThanSynthesizeSpeech(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		outputFmt  string
+		sampleRate string
+	}{
+		{name: "mp3_44100_rejected", outputFmt: "mp3", sampleRate: "44100"},
+		{name: "mp3_48000_rejected", outputFmt: "mp3", sampleRate: "48000"},
+		{name: "ogg_vorbis_44100_rejected", outputFmt: "ogg_vorbis", sampleRate: "44100"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := polly.NewInMemoryBackend()
+
+			_, err := backend.SynthesizeSpeech(polly.SynthesisOptions{
+				Text: "hello", VoiceID: "Joanna", OutputFormat: tc.outputFmt, SampleRate: tc.sampleRate,
+			})
+			require.NoError(t, err, "SynthesizeSpeech accepts this SampleRate for this format")
+
+			_, err = backend.StartSpeechSynthesisTask(
+				polly.SynthesisOptions{
+					Text: "hello", VoiceID: "Joanna", OutputFormat: tc.outputFmt, SampleRate: tc.sampleRate,
+				},
+				"bucket", "", "",
+			)
+			require.Error(t, err, "StartSpeechSynthesisTask must reject this SampleRate for this format")
+			assert.ErrorIs(t, err, polly.ErrInvalidSampleRate)
+		})
+	}
+}
+
 // TestStartSpeechSynthesisTaskSSMLTextLimit verifies that
 // StartSpeechSynthesisTask enforces the SSML-specific 200,000-total-character
 // limit (vs 100,000 for plain text) per

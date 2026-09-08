@@ -151,6 +151,24 @@ func (h *Handler) validateMemoryAndTimeout(c *echo.Context, memorySize, timeout 
 	return true
 }
 
+// validateImageURIResolves reports whether imageURI resolves against a real
+// ECR backend, writing an InvalidParameterValueException matching AWS's
+// CreateFunction/UpdateFunctionCode message ("Source image <uri> does not
+// exist. Provide a valid source image.") and returning false when it does
+// not. When h.Backend has no ImageURIResolver (or no ECRResolver is wired
+// in via cli.go's wireLambdaECR), every ImageUri is accepted.
+func (h *Handler) validateImageURIResolves(c *echo.Context, imageURI string) bool {
+	ir, ok := h.Backend.(ImageURIResolver)
+	if !ok || ir.ResolveImageURI(imageURI) {
+		return true
+	}
+
+	_ = h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException",
+		fmt.Sprintf("Source image %s does not exist. Provide a valid source image.", imageURI))
+
+	return false
+}
+
 // validateCreateFunctionCode validates the Code field based on PackageType.
 func (h *Handler) validateCreateFunctionCode(c *echo.Context, input *CreateFunctionInput) bool {
 	if input.Code == nil {
@@ -159,11 +177,17 @@ func (h *Handler) validateCreateFunctionCode(c *echo.Context, input *CreateFunct
 		return false
 	}
 
-	if input.PackageType == PackageTypeImage && input.Code.ImageURI == "" {
-		_ = h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException",
-			"Code.ImageUri is required for Image package type")
+	if input.PackageType == PackageTypeImage {
+		if input.Code.ImageURI == "" {
+			_ = h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException",
+				"Code.ImageUri is required for Image package type")
 
-		return false
+			return false
+		}
+
+		if !h.validateImageURIResolves(c, input.Code.ImageURI) {
+			return false
+		}
 	}
 
 	if input.PackageType == PackageTypeZip {
@@ -524,38 +548,63 @@ func (h *Handler) applyFunctionCodeUpdate(
 	fn *FunctionConfiguration,
 	input *UpdateFunctionCodeInput,
 ) bool {
+	var ok bool
 	if fn.PackageType == PackageTypeImage || fn.PackageType == "" {
-		if input.ImageURI == "" {
-			_ = h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException",
-				"ImageUri is required for Image package type")
-
-			return false
-		}
-
-		fn.ImageURI = input.ImageURI
+		ok = h.applyImageCodeUpdate(c, fn, input)
 	} else {
-		if input.ZipFile == nil && (input.S3Bucket == "" || input.S3Key == "") {
-			_ = h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException",
-				"ZipFile or S3Bucket+S3Key is required for Zip package type")
+		ok = h.applyZipCodeUpdate(c, fn, input)
+	}
 
-			return false
-		}
-
-		fn.ZipData = input.ZipFile
-		fn.S3BucketCode = input.S3Bucket
-		fn.S3KeyCode = input.S3Key
-
-		if len(fn.ZipData) > 0 {
-			fn.CodeSize = int64(len(fn.ZipData))
-			sum := sha256.Sum256(fn.ZipData)
-			fn.CodeSha256 = base64.StdEncoding.EncodeToString(sum[:])
-		}
+	if !ok {
+		return false
 	}
 
 	if len(input.Architectures) > 0 {
 		fn.Architectures = input.Architectures
 	} else if len(fn.Architectures) == 0 {
 		fn.Architectures = []string{"x86_64"}
+	}
+
+	return true
+}
+
+// applyImageCodeUpdate is applyFunctionCodeUpdate's Image-package-type branch.
+func (h *Handler) applyImageCodeUpdate(
+	c *echo.Context, fn *FunctionConfiguration, input *UpdateFunctionCodeInput,
+) bool {
+	if input.ImageURI == "" {
+		_ = h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException",
+			"ImageUri is required for Image package type")
+
+		return false
+	}
+
+	if !h.validateImageURIResolves(c, input.ImageURI) {
+		return false
+	}
+
+	fn.ImageURI = input.ImageURI
+
+	return true
+}
+
+// applyZipCodeUpdate is applyFunctionCodeUpdate's Zip-package-type branch.
+func (h *Handler) applyZipCodeUpdate(c *echo.Context, fn *FunctionConfiguration, input *UpdateFunctionCodeInput) bool {
+	if input.ZipFile == nil && (input.S3Bucket == "" || input.S3Key == "") {
+		_ = h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException",
+			"ZipFile or S3Bucket+S3Key is required for Zip package type")
+
+		return false
+	}
+
+	fn.ZipData = input.ZipFile
+	fn.S3BucketCode = input.S3Bucket
+	fn.S3KeyCode = input.S3Key
+
+	if len(fn.ZipData) > 0 {
+		fn.CodeSize = int64(len(fn.ZipData))
+		sum := sha256.Sum256(fn.ZipData)
+		fn.CodeSha256 = base64.StdEncoding.EncodeToString(sum[:])
 	}
 
 	return true

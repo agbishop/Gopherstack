@@ -317,6 +317,18 @@ func (b *InMemoryBackend) StopChannel(name string) error {
 // ConfigureLogsForChannel sets log types on a channel and persists them so
 // they are queryable back from Describe/List/CreateChannel's LogConfiguration.
 func (b *InMemoryBackend) ConfigureLogsForChannel(channelName string, logTypes []string) (string, []string, error) {
+	// LogTypes is "This member is required" (api_op_ConfigureLogsForChannel.go)
+	// and LogType is a single-value enum, AS_RUN (types/enums.go).
+	if len(logTypes) == 0 {
+		return "", nil, fmt.Errorf("%w: LogTypes required", ErrInvalidParameter)
+	}
+
+	for _, lt := range logTypes {
+		if lt != logTypeAsRun {
+			return "", nil, fmt.Errorf("%w: LogTypes must be %s", ErrInvalidParameter, logTypeAsRun)
+		}
+	}
+
 	b.mu.Lock("ConfigureLogsForChannel")
 	defer b.mu.Unlock()
 

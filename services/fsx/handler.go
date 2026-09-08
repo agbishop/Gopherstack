@@ -320,6 +320,10 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err 
 		return c.JSON(http.StatusBadRequest, errorResponse("IncompatibleParameterError", err.Error()))
 	case errors.Is(err, ErrInvalidNetworkSettings):
 		return c.JSON(http.StatusBadRequest, errorResponse("InvalidNetworkSettings", err.Error()))
+	case errors.Is(err, ErrDataRepositoryTaskExecuting):
+		return c.JSON(http.StatusBadRequest, errorResponse("DataRepositoryTaskExecuting", err.Error()))
+	case errors.Is(err, ErrMissingFileCacheConfiguration):
+		return c.JSON(http.StatusBadRequest, errorResponse("MissingFileCacheConfiguration", err.Error()))
 	case errors.Is(err, awserr.ErrInvalidParameter):
 		// BadRequest is real FSx's generic client-error code (see
 		// types/errors.go in the SDK); there is no "ValidationError"

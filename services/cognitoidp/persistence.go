@@ -72,6 +72,7 @@ type userSnapshot struct {
 	UpdatedAt            string            `json:"updatedAt,omitempty"`
 	ConfirmCodeExpiresAt string            `json:"confirmCodeExpiresAt,omitempty"`
 	LastAuthTime         string            `json:"lastAuthTime,omitempty"`
+	TempPasswordIssuedAt string            `json:"tempPasswordIssuedAt,omitempty"`
 	Attributes           map[string]string `json:"attributes,omitempty"`
 	Sub                  string            `json:"sub,omitempty"`
 	Username             string            `json:"username,omitempty"`
@@ -220,11 +221,17 @@ func buildUserSnapshot(u *User) *userSnapshot {
 		lastAuth = u.LastAuthTime.UTC().Format("2006-01-02T15:04:05Z")
 	}
 
+	var tempPasswordIssuedAt string
+	if !u.TempPasswordIssuedAt.IsZero() {
+		tempPasswordIssuedAt = u.TempPasswordIssuedAt.UTC().Format("2006-01-02T15:04:05Z")
+	}
+
 	return &userSnapshot{
 		CreatedAt:            u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:            u.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		ConfirmCodeExpiresAt: codeExpiry,
 		LastAuthTime:         lastAuth,
+		TempPasswordIssuedAt: tempPasswordIssuedAt,
 		Attributes:           u.Attributes,
 		Sub:                  u.Sub,
 		Username:             u.Username,
@@ -594,6 +601,7 @@ func restoreUsersFromSnapshot(userSnapshots []*userSnapshot) []*User {
 		updatedAt, _ := time.Parse("2006-01-02T15:04:05Z", us.UpdatedAt)
 		codeExpiry, _ := time.Parse("2006-01-02T15:04:05Z", us.ConfirmCodeExpiresAt)
 		lastAuth, _ := time.Parse("2006-01-02T15:04:05Z", us.LastAuthTime)
+		tempPasswordIssuedAt, _ := time.Parse("2006-01-02T15:04:05Z", us.TempPasswordIssuedAt)
 
 		if updatedAt.IsZero() {
 			updatedAt = createdAt
@@ -604,6 +612,7 @@ func restoreUsersFromSnapshot(userSnapshots []*userSnapshot) []*User {
 			UpdatedAt:            updatedAt,
 			ConfirmCodeExpiresAt: codeExpiry,
 			LastAuthTime:         lastAuth,
+			TempPasswordIssuedAt: tempPasswordIssuedAt,
 			Attributes:           us.Attributes,
 			Sub:                  us.Sub,
 			Username:             us.Username,

@@ -110,3 +110,14 @@ func (b *InMemoryBackend) InstanceProfileByARNCount() int {
 
 	return b.instanceProfilesByARN.Len()
 }
+
+// HasEndpointSchemas reports whether the endpointSchemas side map still
+// holds an entry for arn in region. Used only in tests.
+func (b *InMemoryBackend) HasEndpointSchemas(region, arn string) bool {
+	b.mu.RLock("HasEndpointSchemas")
+	defer b.mu.RUnlock()
+
+	_, ok := b.endpointSchemasStoreRO(region)[arn]
+
+	return ok
+}

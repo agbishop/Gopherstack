@@ -2232,6 +2232,7 @@ func wireDNSRegistrars(cli *CLI, dnsSrv *gopherDNS.Server) {
 	wireOpenSearchDNS(cli.openSearchHandler, dnsSrv)
 	wireElastiCacheDNS(cli.elasticacheHandler, dnsSrv)
 	wireEC2DNS(cli.ec2Handler, dnsSrv)
+	wireServiceDiscoveryDNS(cli.servicediscoveryHandler, dnsSrv)
 }
 
 // buildEchoServer creates and configures the Echo HTTP server.
@@ -2297,8 +2298,7 @@ func buildHTTPErrorHandler() func(*echo.Context, error) {
 
 		message := err.Error()
 
-		var httpErr *echo.HTTPError
-		if errors.As(err, &httpErr) {
+		if httpErr, ok := errors.AsType[*echo.HTTPError](err); ok {
 			message = httpErr.Message
 		}
 
@@ -2422,10 +2422,8 @@ func buildSnapshotHandler(m *persistence.Manager) echo.HandlerFunc {
 		}
 
 		resp := snapshotResponse{
-			snapshotBundle: snapshotBundle{
-				Format:   snapshotBundleFormat,
-				Services: services,
-			},
+			Format:   snapshotBundleFormat,
+			Services: services,
 			Exported: len(services),
 			Status:   "ok",
 		}
@@ -2890,6 +2888,11 @@ func wireMessagingAndEventingIntegrations(byName map[string]service.Registerable
 		byName["Lambda"],
 		byName["EventBridge"],
 	)
+
+	// Wire SES identity notification topics and configuration-set event
+	// destinations to SNS, so bounce/complaint/delivery outcomes are
+	// actually published instead of silently validated-and-stored.
+	wireSESSNS(byName["SES"], byName["SNS"])
 }
 
 // wireStepFunctionsIntegrations wires Step Functions' Lambda Task and
@@ -2931,6 +2934,9 @@ func wireAPIGatewayIntegrations(byName map[string]service.Registerable) {
 	// Wire API Gateway → Lambda proxy integration.
 	wireAPIGatewayLambda(byName["APIGateway"], byName["APIGatewayV2"], byName["Lambda"])
 
+	// Wire API Gateway → SQS/SNS for AWS integrations (gopherstack-is2a).
+	wireAPIGatewaySQSSNS(byName["APIGateway"], byName["SQS"], byName["SNS"])
+
 	// Wire API Gateway → Cognito for JWT signature verification.
 	wireAPIGatewayCognito(byName["APIGateway"], byName["APIGatewayV2"], byName["CognitoIDP"])
 
@@ -2968,6 +2974,10 @@ func wireComputeAndObservabilityIntegrations(appCtx *service.AppContext, byName 
 		byName["CloudWatch"], byName["EC2"], byName["Autoscaling"],
 	)
 
+	// Wire FIS "aws:cloudwatch:alarm" stop conditions → CloudWatch's
+	// alarm-state-change subscription (gopherstack-x842, gopherstack-9939).
+	wireFISStopConditions(byName["FIS"], byName["CloudWatch"])
+
 	// Wire Auto Scaling → EC2 so scale-out launches real (mock) EC2 instances
 	// and scale-in terminates them there too, instead of Auto Scaling
 	// fabricating instance IDs with no EC2-side record.
@@ -2978,6 +2988,11 @@ func wireComputeAndObservabilityIntegrations(appCtx *service.AppContext, byName 
 	// being stored and echoed with no effect on DescribeTargetHealth.
 	wireAutoScalingELBv2(byName["Autoscaling"], byName["ELBv2"])
 
+	// Wire Auto Scaling → classic ELB so LoadBalancerNames membership changes
+	// register/deregister real ELB instances, instead of LoadBalancerNames
+	// being stored and echoed with no effect on DescribeInstanceHealth.
+	wireAutoScalingELB(byName["Autoscaling"], byName["ELB"])
+
 	// Wire ECS → ELBv2 so tasks belonging to a service with LoadBalancers
 	// configured register/deregister as real ELBv2 targets as they
 	// reach/leave RUNNING, instead of Service.LoadBalancers being stored and
@@ -2986,6 +3001,42 @@ func wireComputeAndObservabilityIntegrations(appCtx *service.AppContext, byName 
 
 	// Wire CloudWatch Logs → Lambda log delivery.
 	wireLambdaCWLogs(byName["Lambda"], byName["CloudWatchLogs"])
+
+	// Wire CloudWatch Logs → Firehose so destinations with
+	// CloudWatchLoggingOptions.Enabled deliver failure events to the
+	// configured log group/stream, instead of CloudWatchLoggingOptions
+	// being validated and stored with no effect.
+	wireFirehoseCWLogs(byName["Firehose"], byName["CloudWatchLogs"])
+
+	// Wire CloudWatch Logs → ECS so an awslogs-driver container's log
+	// group/stream become discoverable, instead of LogConfiguration being
+	// validated, stored, and echoed with no effect (gopherstack-sv5q).
+	// Partial: no container output is forwarded yet — ECS's Docker client
+	// has no ContainerLogs plumbing.
+	wireEcsCWLogs(byName["ECS"], byName["CloudWatchLogs"])
+
+	// Wire Route 53 → Cloud Map so DNS_PUBLIC/DNS_PRIVATE namespaces get a
+	// real hosted zone, instead of a synthetic HostedZoneId matching no
+	// real route53 zone.
+	wireServiceDiscoveryRoute53(byName["ServiceDiscovery"], byName["Route53"])
+
+	// Wire Athena → Glue so a GLUE-type DataCatalog reads real Glue databases/tables
+	// instead of Athena's internal simulation.
+	wireAthenaGlue(byName["Athena"], byName["Glue"])
+
+	// Wire Athena → S3 so a succeeded query execution's result is actually written
+	// to ResultConfiguration.OutputLocation instead of only being stored/echoed.
+	wireAthenaS3(byName["Athena"], byName["S3"])
+
+	// Wire S3 → Lambda so a function deployed from Code.S3Bucket/S3Key
+	// actually starts instead of failing with ErrLambdaUnavailable: S3 code
+	// delivery requires S3 integration.
+	wireLambdaS3(byName["Lambda"], byName["S3"])
+
+	// Wire ECR → Lambda so Code.ImageUri on an Image package-type
+	// CreateFunction/UpdateFunctionCode is validated against real ECR state
+	// instead of accepted unconditionally.
+	wireLambdaECR(byName["Lambda"], byName["ECR"])
 
 	// Wire Timestream Query → Timestream Write's shared tag store, so
 	// CreateScheduledQuery's Tags reach TagResource/ListTagsForResource --
@@ -3023,6 +3074,13 @@ func wireComputeAndObservabilityIntegrations(appCtx *service.AppContext, byName 
 	// real EC2 state, and HTTPS/SSL listeners validate SSLCertificateId
 	// against real ACM/IAM certificates, instead of accepting any string.
 	wireELBCrossService(byName["ELB"], byName["EC2"], byName["ACM"], byName["IAM"])
+	wireELBv2CrossService(byName["ELBv2"], byName["EC2"], byName["ACM"], byName["IAM"])
+
+	// Wire EFS → EC2 so CreateMountTarget validates its SubnetId against
+	// real EC2 state and enforces the documented "one VPC, one mount target
+	// per Availability Zone" placement rule, instead of accepting any subnet
+	// ID and deriving a synthetic AZ/VPC that never conflicts.
+	wireEFSCrossService(byName["EFS"], byName["EC2"])
 }
 
 // directConnectEC2ResolverAdapter adapts the EC2 backend to the
@@ -3153,6 +3211,30 @@ func (a *networkManagerEC2ResolverAdapter) TransitGatewayRouteTableForAttachment
 	return "", false
 }
 
+// CustomerGatewayArnsForTransitGateway answers networkmanager's
+// DeregisterTransitGateway cascade from the EC2 VpnConnection table, which is
+// where AssociateCustomerGateway's own doc says the linkage lives ("use the
+// DescribeVpnConnections EC2 API and filter by transit-gateway-id") --
+// CustomerGatewayAssociation itself carries no transit-gateway member.
+func (a *networkManagerEC2ResolverAdapter) CustomerGatewayArnsForTransitGateway(
+	transitGatewayArn string,
+) []string {
+	tgwID := arnResourceID(transitGatewayArn)
+
+	var out []string
+
+	for _, vc := range a.backend.DescribeVpnConnections(nil) {
+		if vc.TransitGatewayID != tgwID || vc.CustomerGatewayID == "" {
+			continue
+		}
+
+		out = append(out, "arn:aws:ec2:"+a.backend.Region+":"+a.backend.AccountID+
+			":customer-gateway/"+vc.CustomerGatewayID)
+	}
+
+	return out
+}
+
 func (a *networkManagerEC2ResolverAdapter) TransitGatewayRoutes(
 	routeTableID string,
 ) []networkmanagerbackend.EC2TransitGatewayRoute {
@@ -3244,6 +3326,10 @@ func (a *elbEC2ResolverAdapter) SubnetExists(id string) bool {
 	return len(a.backend.DescribeSubnets([]string{id})) > 0
 }
 
+func (a *elbEC2ResolverAdapter) InstanceExists(id string) bool {
+	return len(a.backend.DescribeInstances([]string{id}, "")) > 0
+}
+
 // elbCertificateResolverAdapter adapts the ACM and IAM backends to the
 // elb.CertificateResolver interface. AWS accepts either an ACM or an IAM
 // server-certificate ARN for SSLCertificateId (see elb.CertificateResolver's
@@ -3308,6 +3394,128 @@ func wireELBCrossService(elbReg, ec2Reg, acmReg, iamReg service.Registerable) {
 	}
 }
 
+// elbv2CertificateResolverAdapter adapts the ACM and IAM backends to the
+// elbv2.CertificateResolver interface. Unlike elb.CertificateResolver, elbv2's
+// backend methods take no context.Context (see services/elbv2/store.go), so
+// this adapter calls the ACM/IAM backends with context.Background() rather
+// than forwarding a caller context.
+type elbv2CertificateResolverAdapter struct {
+	acmBackend *acmbackend.InMemoryBackend
+	iamBackend *iambackend.InMemoryBackend
+}
+
+func (a *elbv2CertificateResolverAdapter) ResolveCertificate(certARN string) bool {
+	if a.acmBackend != nil {
+		if _, err := a.acmBackend.DescribeCertificate(context.Background(), certARN); err == nil {
+			return true
+		}
+	}
+
+	if a.iamBackend != nil {
+		certs, err := a.iamBackend.ListServerCertificates("")
+		if err == nil {
+			for _, c := range certs {
+				if c.Arn == certARN {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+func (a *elbv2CertificateResolverAdapter) AddInUseBy(certARN, resourceARN string) {
+	if a.acmBackend != nil {
+		a.acmBackend.AddInUseBy(context.Background(), certARN, resourceARN)
+	}
+}
+
+func (a *elbv2CertificateResolverAdapter) RemoveInUseBy(certARN, resourceARN string) {
+	if a.acmBackend != nil {
+		a.acmBackend.RemoveInUseBy(context.Background(), certARN, resourceARN)
+	}
+}
+
+// wireELBv2CrossService wires the ELBv2 backend to EC2 (SecurityGroups/Subnets
+// existence, CreateLoadBalancer) and ACM/IAM (CertificateArn existence and
+// InUseBy usage reporting on listener certificate attach/detach) -- see
+// elbv2.EC2Resolver/elbv2.CertificateResolver's doc comments.
+func wireELBv2CrossService(elbv2Reg, ec2Reg, acmReg, iamReg service.Registerable) {
+	elbv2H, ok := elbv2Reg.(*elbv2backend.Handler)
+	if !ok {
+		return
+	}
+
+	elbv2Bk, bkOk := elbv2H.Backend.(*elbv2backend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	if ec2H, ec2Ok := ec2Reg.(*ec2backend.Handler); ec2Ok {
+		elbv2Bk.SetEC2Resolver(&elbEC2ResolverAdapter{backend: ec2H.Backend})
+	}
+
+	var acmBk *acmbackend.InMemoryBackend
+	if acmH, acmOk := acmReg.(*acmbackend.Handler); acmOk {
+		acmBk = acmH.Backend
+	}
+
+	var iamBk *iambackend.InMemoryBackend
+	if iamH, iamOk := iamReg.(*iambackend.Handler); iamOk {
+		iamBk, _ = iamH.Backend.(*iambackend.InMemoryBackend)
+	}
+
+	if acmBk != nil || iamBk != nil {
+		elbv2Bk.SetCertificateResolver(&elbv2CertificateResolverAdapter{acmBackend: acmBk, iamBackend: iamBk})
+	}
+}
+
+// efsEC2ResolverAdapter adapts the EC2 backend to the efs.EC2Resolver interface.
+type efsEC2ResolverAdapter struct {
+	backend ec2backend.Backend
+}
+
+func (a *efsEC2ResolverAdapter) SubnetExists(id string) bool {
+	return len(a.backend.DescribeSubnets([]string{id})) > 0
+}
+
+func (a *efsEC2ResolverAdapter) SubnetVPC(id string) string {
+	subnets := a.backend.DescribeSubnets([]string{id})
+	if len(subnets) == 0 {
+		return ""
+	}
+
+	return subnets[0].VPCID
+}
+
+func (a *efsEC2ResolverAdapter) SubnetAZ(id string) string {
+	subnets := a.backend.DescribeSubnets([]string{id})
+	if len(subnets) == 0 {
+		return ""
+	}
+
+	return subnets[0].AvailabilityZone
+}
+
+// wireEFSCrossService wires the EFS backend to EC2 so CreateMountTarget
+// validates its SubnetId against real EC2 state and enforces the
+// documented "one VPC, one mount target per Availability Zone" placement
+// rule -- see efs.EC2Resolver's doc comment.
+func wireEFSCrossService(efsReg, ec2Reg service.Registerable) {
+	efsH, ok := efsReg.(*efsbackend.Handler)
+	if !ok {
+		return
+	}
+
+	ec2H, ok := ec2Reg.(*ec2backend.Handler)
+	if !ok {
+		return
+	}
+
+	efsH.Backend.SetEC2Resolver(&efsEC2ResolverAdapter{backend: ec2H.Backend})
+}
+
 // wireCWLogsMetricEmitters wires CloudWatch Logs metric filters to emit
 // CloudWatch metric data points. The repeated identical calls are preserved
 // verbatim from before this decomposition; collapsing them is a behavior
@@ -3370,12 +3578,32 @@ func wireCWLogsMetricEmitters(byName map[string]service.Registerable) {
 // SecretsManager's Lambda rotation invoker and KMS encryption, and IoT rule
 // action dispatch.
 func wireStorageAndSecretsIntegrations(byName map[string]service.Registerable) {
+	// Wire CloudWatch → Firehose so a PutMetricStream/CreateMetricStream
+	// delivery stream actually receives matched metric data instead of
+	// accepting the stream and never delivering anything (gopherstack-vjmc).
+	wireCloudWatchFirehose(byName["CloudWatch"], byName["Firehose"])
+
 	// Wire Firehose → S3 and Lambda for actual record delivery and transformation.
 	wireFirehoseDelivery(byName["Firehose"], byName["S3"], byName["Lambda"])
+
+	// Wire Firehose → Kinesis so a KinesisStreamAsSource delivery stream actually
+	// polls and ingests records instead of accepting the stream and never
+	// delivering anything (gopherstack-o4ny).
+	wireFirehoseKinesisSource(byName["Firehose"], byName["Kinesis"])
+
+	// Wire Firehose → Redshift Data so a Redshift destination's COPY command
+	// actually executes after S3 staging instead of logging a WARN and never
+	// running it (gopherstack-lgwb).
+	wireFirehoseRedshift(byName["Firehose"], byName["RedshiftData"])
 
 	// Wire DynamoDB → S3 so ImportTable reads source objects and
 	// ExportTableToPointInTime writes real export data.
 	wireDynamoDBS3(byName["DynamoDB"], byName["S3"])
+
+	// Wire DynamoDB → Kinesis so EnableKinesisStreamingDestination's stream
+	// actually receives forwarded table mutations instead of accepting the
+	// destination and never delivering anything (gopherstack-eouu).
+	wireDynamoDBKinesis(byName["DynamoDB"], byName["Kinesis"])
 
 	// Wire MGN → S3 so StartImport reads its caller-supplied S3 object and
 	// actually creates SourceServers.
@@ -3389,6 +3617,11 @@ func wireStorageAndSecretsIntegrations(byName map[string]service.Registerable) {
 	// OutputLocation output (job.txt/results/result_manifest.txt) instead of
 	// only serving results via GetJobOutput.
 	wireGlacierS3(byName["Glacier"], byName["S3"])
+
+	// Wire S3 Control → S3 so PutAccessPointConfigurationForObjectLambda
+	// actually reaches GetObject instead of accepting the config and never
+	// invoking the Lambda transform (gopherstack-6o0r).
+	wireS3ControlObjectLambda(byName["S3Control"], byName["S3"])
 
 	// Wire Lambda invoker → SecretsManager rotation.
 	wireSecretsManagerLambda(byName["SecretsManager"], byName["Lambda"])
@@ -3413,6 +3646,33 @@ func wireStorageAndSecretsIntegrations(byName map[string]service.Registerable) {
 	// Wire AppConfig → AppConfigData so a completed deployment's
 	// configuration becomes observable through GetLatestConfiguration polling.
 	wireAppConfigDeployments(byName["AppConfig"], byName["AppConfigData"])
+
+	// Wire CloudTrail → S3 so CreateTrail/UpdateTrail validate the configured
+	// bucket exists and logging trails actually deliver log files to it,
+	// instead of S3BucketName being stored/echoed with no validation and no
+	// delivery (gopherstack-g9b4).
+	wireCloudTrailS3(byName["CloudTrail"], byName["S3"])
+
+	// Wire Textract/Rekognition → S3 so a Document/Image/Video S3Object that
+	// doesn't exist in the wired S3 backend surfaces InvalidS3ObjectException,
+	// instead of every request being processed regardless of whether the
+	// referenced object exists (gopherstack-eshx).
+	wireTextractS3(byName["Textract"], byName["S3"])
+	wireRekognitionS3(byName["Rekognition"], byName["S3"])
+
+	// Wire Backup → S3 so StartBackupJob validates an S3-typed ResourceArn
+	// names a bucket that actually exists, instead of accepting any
+	// non-empty ResourceArn regardless of whether it resolves to a real
+	// resource (gopherstack-0o0q).
+	wireBackupS3(byName["Backup"], byName["S3"])
+
+	// Wire CodePipeline → CodeBuild/Lambda so a Build/CodeBuild action's
+	// ProjectName and an Invoke/Lambda action's FunctionName actually reach
+	// their backend, instead of every non-Approval action being marked
+	// Succeeded unconditionally with no cross-service call at all
+	// (gopherstack-cb9l).
+	wireCodePipelineCodeBuild(byName["CodePipeline"], byName["CodeBuild"])
+	wireCodePipelineLambda(byName["CodePipeline"], byName["Lambda"])
 }
 
 // wireAppConfigDeployments wires the AppConfigData backend as AppConfig's
@@ -3442,14 +3702,17 @@ func wireAppConfigDeployments(appconfigReg, appconfigdataReg service.Registerabl
 }
 
 // wireAppSyncAndStreamsIntegrations wires AppSync's Lambda and DynamoDB
-// resolvers, DynamoDB Streams to the DynamoDB backend, and CloudFront
-// KeyValueStore to the CloudFront backend.
+// resolvers, AppSync's Cognito/OIDC JWT verification, DynamoDB Streams to the
+// DynamoDB backend, and CloudFront KeyValueStore to the CloudFront backend.
 func wireAppSyncAndStreamsIntegrations(byName map[string]service.Registerable) {
 	// Wire AppSync → Lambda for LAMBDA resolver execution.
 	wireAppSyncLambda(byName["AppSync"], byName["Lambda"])
 
 	// Wire AppSync → DynamoDB for AMAZON_DYNAMODB resolver execution.
 	wireAppSyncDynamoDB(byName["AppSync"], byName["DynamoDB"])
+
+	// Wire AppSync → Cognito for AMAZON_COGNITO_USER_POOLS/OPENID_CONNECT JWT signature verification.
+	wireAppSyncCognito(byName["AppSync"], byName["CognitoIDP"])
 
 	// Wire DynamoDB Streams → DynamoDB backend so streams share the same in-memory data.
 	wireDynamoDBStreams(byName["DynamoDB"], byName["DynamoDBStreams"])
@@ -3963,8 +4226,22 @@ func wireSNSToLambdaFirehose(snsReg, lambdaReg, firehoseReg, sqsReg service.Regi
 	if sqsH, sqsOk := sqsReg.(*sqsbackend.Handler); sqsOk {
 		if sqsBk, bkOk := sqsH.Backend.(*sqsbackend.InMemoryBackend); bkOk {
 			snsBk.SetSQSSender(&sqsSenderAdapter{backend: sqsBk})
+
+			// Wire the DLQ existence checker so SetSubscriptionAttributes
+			// rejects a RedrivePolicy naming a nonexistent SQS queue, matching
+			// real SNS instead of silently accepting it.
+			snsBk.SetSQSChecker(&sqsQueueCheckerAdapter{backend: sqsBk})
 		}
 	}
+}
+
+// sqsQueueCheckerAdapter adapts the SQS backend to the sns.SQSQueueChecker interface.
+type sqsQueueCheckerAdapter struct {
+	backend *sqsbackend.InMemoryBackend
+}
+
+func (a *sqsQueueCheckerAdapter) QueueExists(_ context.Context, queueARN string) (bool, error) {
+	return a.backend.QueueExists(queueARN), nil
 }
 
 // snsFirehosePutterAdapter adapts the Firehose backend to the sns.FirehosePutter
@@ -4113,6 +4390,21 @@ func (a *sqsSenderAdapter) SendMessageToQueue(
 	_, err := a.backend.SendMessage(&sqsbackend.SendMessageInput{
 		QueueURL:    queueURL,
 		MessageBody: messageBody,
+	})
+
+	return err
+}
+
+// SendMessageToFIFOQueue adapts the SQS backend to the scheduler.SQSFIFOSender interface.
+func (a *sqsSenderAdapter) SendMessageToFIFOQueue(
+	_ context.Context,
+	queueARN, messageBody, messageGroupID string,
+) error {
+	queueURL := arnToSQSQueueURL(queueARN)
+	_, err := a.backend.SendMessage(&sqsbackend.SendMessageInput{
+		QueueURL:       queueURL,
+		MessageBody:    messageBody,
+		MessageGroupID: messageGroupID,
 	})
 
 	return err
@@ -4381,9 +4673,49 @@ type s3SNSPublisherAdapter struct {
 
 func (a *s3SNSPublisherAdapter) PublishToTopic(
 	_ context.Context,
-	topicARN, message, _ string,
+	topicARN, message, subject string,
 ) error {
-	_, err := a.backend.Publish(topicARN, message, "", "", nil)
+	_, err := a.backend.Publish(topicARN, message, subject, "", nil)
+
+	return err
+}
+
+// wireSESSNS connects the SES backend to SNS so identity notification
+// topics (SetIdentityNotificationTopic) and configuration-set event
+// destinations (CreateConfigurationSetEventDestination) actually publish
+// bounce/complaint/delivery notifications, instead of only being validated
+// and stored (gopherstack-y6rv).
+func wireSESSNS(sesReg, snsReg service.Registerable) {
+	sesH, ok := sesReg.(*sesbackend.Handler)
+	if !ok {
+		return
+	}
+
+	sesBk, sesBkOk := sesH.Backend.(*sesbackend.InMemoryBackend)
+	if !sesBkOk {
+		return
+	}
+
+	snsH, snsOk := snsReg.(*snsbackend.Handler)
+	if !snsOk {
+		return
+	}
+
+	snsBk, snsBkOk := snsH.Backend.(*snsbackend.InMemoryBackend)
+	if !snsBkOk {
+		return
+	}
+
+	sesBk.SetSNSPublisher(&sesSNSPublisherAdapter{backend: snsBk})
+}
+
+// sesSNSPublisherAdapter adapts the SNS backend to the ses.SNSPublisher interface.
+type sesSNSPublisherAdapter struct {
+	backend *snsbackend.InMemoryBackend
+}
+
+func (a *sesSNSPublisherAdapter) PublishToTopic(topicARN, message string) error {
+	_, err := a.backend.Publish(topicARN, message, "Amazon SES Notification", "", nil)
 
 	return err
 }
@@ -4649,6 +4981,28 @@ func wireAPIGatewayLambda(apigwReg, apigwv2Reg, lambdaReg service.Registerable) 
 	}
 }
 
+// wireAPIGatewaySQSSNS connects the API Gateway handler to SQS and SNS so that AWS
+// integrations targeting sqs (SendMessage) or sns (Publish) reach the real target
+// service instead of always invoking Lambda (gopherstack-is2a).
+func wireAPIGatewaySQSSNS(apigwReg, sqsReg, snsReg service.Registerable) {
+	apigwH, ok := apigwReg.(*apigwbackend.Handler)
+	if !ok {
+		return
+	}
+
+	if sqsH, ok2 := sqsReg.(*sqsbackend.Handler); ok2 {
+		if sqsBk, ok3 := sqsH.Backend.(*sqsbackend.InMemoryBackend); ok3 {
+			apigwH.SetSQSSender(&sqsSenderAdapter{backend: sqsBk})
+		}
+	}
+
+	if snsH, ok2 := snsReg.(*snsbackend.Handler); ok2 {
+		if snsBk, ok3 := snsH.Backend.(*snsbackend.InMemoryBackend); ok3 {
+			apigwH.SetSNSPublisher(&snsPublisherAdapter{backend: snsBk})
+		}
+	}
+}
+
 // wireAPIGatewayCognito wires the Cognito JWKS provider into both API Gateway handlers
 // so that Cognito JWT authorizers verify token signatures rather than skipping them.
 func wireAPIGatewayCognito(apigwReg, apigwv2Reg, cognitoReg service.Registerable) {
@@ -4784,12 +5138,18 @@ func wireStepFunctionsServiceIntegrations(
 	if ecsH, ecsOk := ecsReg.(*ecsbackend.Handler); ecsOk {
 		if ecsBk, ecsBkOk := ecsH.Backend.(*ecsbackend.InMemoryBackend); ecsBkOk {
 			sfnBk.SetECSIntegration(ecsBk)
+			// gopherstack-tdp6: poll RunTask's task(s) to STOPPED for the
+			// ".sync" integration pattern instead of dispatching fire-and-forget.
+			sfnBk.SetECSSyncWaiter(sfnbackend.NewECSSyncWaiter(ecsBk))
 		}
 	}
 
 	if glueH, glueOk := glueReg.(*gluebackend.Handler); glueOk {
 		if glueBk, glueBkOk := glueH.Backend.(*gluebackend.InMemoryBackend); glueBkOk {
 			sfnBk.SetGlueIntegration(glueBk)
+			// gopherstack-tdp6: poll StartJobRun's JobRunState to a terminal
+			// state for the ".sync" integration pattern.
+			sfnBk.SetGlueSyncWaiter(sfnbackend.NewGlueSyncWaiter(glueBk))
 		}
 	}
 
@@ -4827,16 +5187,22 @@ func wireKinesisLambda(kinesisReg, lambdaReg service.Registerable) {
 	}
 }
 
-// kinesisReaderAdapter adapts the Kinesis backend to the lambda.KinesisReader interface.
+// kinesisReaderAdapter adapts the Kinesis backend to the lambda.KinesisReader
+// interface. streamARN (a full Kinesis stream ARN, not a bare name --
+// event_source_poller.go now passes it through unextracted) carries the
+// stream's actual region, which GetShardIDs/GetShardIterator need attached
+// to the context so a stream outside the account default region resolves
+// correctly instead of silently missing (gopherstack-qowd). GetRecords needs
+// no region: the shard iterator token returned by GetShardIterator already
+// embeds it.
 type kinesisReaderAdapter struct {
 	backend *kinesisbackend.InMemoryBackend
 }
 
-func (a *kinesisReaderAdapter) GetShardIDs(streamName string) ([]string, error) {
-	out, err := a.backend.DescribeStream(
-		context.Background(),
-		&kinesisbackend.DescribeStreamInput{StreamName: streamName},
-	)
+func (a *kinesisReaderAdapter) GetShardIDs(streamARN string) ([]string, error) {
+	ctx, name := kinesisbackend.ContextAndNameFromStreamARN(context.Background(), streamARN)
+
+	out, err := a.backend.DescribeStream(ctx, &kinesisbackend.DescribeStreamInput{StreamName: name})
 	if err != nil {
 		return nil, err
 	}
@@ -4850,10 +5216,12 @@ func (a *kinesisReaderAdapter) GetShardIDs(streamName string) ([]string, error) 
 }
 
 func (a *kinesisReaderAdapter) GetShardIterator(
-	streamName, shardID, iteratorType, startingSeqNum string,
+	streamARN, shardID, iteratorType, startingSeqNum string,
 ) (string, error) {
-	out, err := a.backend.GetShardIterator(context.Background(), &kinesisbackend.GetShardIteratorInput{
-		StreamName:             streamName,
+	ctx, name := kinesisbackend.ContextAndNameFromStreamARN(context.Background(), streamARN)
+
+	out, err := a.backend.GetShardIterator(ctx, &kinesisbackend.GetShardIteratorInput{
+		StreamName:             name,
 		ShardID:                shardID,
 		ShardIteratorType:      iteratorType,
 		StartingSequenceNumber: startingSeqNum,
@@ -5305,6 +5673,40 @@ func wireCloudWatchInfraActions(cwReg, ec2Reg, asgReg service.Registerable) {
 	}
 }
 
+// fisAlarmStateSubscriber pins the compile-time check that CloudWatch's
+// InMemoryBackend satisfies fisbackend.AlarmStateSubscriber structurally, with
+// no adapter needed: both sides of the interface are designed in this repo, so
+// their SubscribeAlarmStateChange signatures are kept identical on purpose.
+var _ fisbackend.AlarmStateSubscriber = (*cwbackend.InMemoryBackend)(nil)
+
+// wireFISStopConditions connects FIS experiment stop conditions to CloudWatch's
+// alarm-state-change subscription, so an experiment stops when the alarm named
+// by its "aws:cloudwatch:alarm" stop condition transitions to ALARM
+// (gopherstack-x842, gopherstack-9939). Without this wiring, stop conditions are
+// validated and stored but experiments never react to the alarm they name.
+func wireFISStopConditions(fisReg, cwReg service.Registerable) {
+	type alarmStateSubscriberSetter interface {
+		SetAlarmStateSubscriber(fisbackend.AlarmStateSubscriber)
+	}
+
+	setter, ok := fisReg.(alarmStateSubscriberSetter)
+	if !ok {
+		return
+	}
+
+	cwH, ok := cwReg.(*cwbackend.Handler)
+	if !ok {
+		return
+	}
+
+	cwBk, ok := cwH.Backend.(*cwbackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	setter.SetAlarmStateSubscriber(cwBk)
+}
+
 // cwEC2ActionerAdapter adapts the EC2 backend to the cloudwatch.EC2InstanceActioner interface.
 type cwEC2ActionerAdapter struct {
 	backend *ec2backend.InMemoryBackend
@@ -5423,6 +5825,67 @@ func wireAutoScalingELBv2(asgReg, elbv2Reg service.Registerable) {
 	asgBk.SetELBv2Registrar(&autoscalingELBv2RegistrarAdapter{
 		elbv2TargetRegistrarAdapter{backend: elbv2Bk},
 	})
+}
+
+// wireAutoScalingELB wires Auto Scaling to the classic ELB backend so
+// instances added to or removed from a group's LoadBalancerNames (via
+// scale-out/in, TerminateInstanceInAutoScalingGroup, Attach/DetachInstances,
+// and Attach/DetachLoadBalancers) register/deregister as real classic ELB
+// instances, instead of LoadBalancerNames being stored and echoed with no
+// effect on ELB DescribeInstanceHealth.
+func wireAutoScalingELB(asgReg, elbReg service.Registerable) {
+	asgH, ok := asgReg.(*autoscalingbackend.Handler)
+	if !ok {
+		return
+	}
+
+	asgBk, ok := asgH.Backend.(*autoscalingbackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	elbH, ok := elbReg.(*elbbackend.Handler)
+	if !ok {
+		return
+	}
+
+	elbBk, ok := elbH.Backend.(*elbbackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	asgBk.SetELBRegistrar(&autoscalingELBRegistrarAdapter{backend: elbBk})
+}
+
+// autoscalingELBRegistrarAdapter adapts the classic ELB backend to the
+// autoscaling.ELBInstanceRegistrar interface.
+type autoscalingELBRegistrarAdapter struct {
+	backend *elbbackend.InMemoryBackend
+}
+
+func (a *autoscalingELBRegistrarAdapter) RegisterInstances(
+	ctx context.Context, loadBalancerName string, instanceIDs []string,
+) error {
+	_, err := a.backend.RegisterInstancesWithLoadBalancer(ctx, loadBalancerName, toELBInstances(instanceIDs))
+
+	return err
+}
+
+func (a *autoscalingELBRegistrarAdapter) DeregisterInstances(
+	ctx context.Context, loadBalancerName string, instanceIDs []string,
+) error {
+	_, err := a.backend.DeregisterInstancesFromLoadBalancer(ctx, loadBalancerName, toELBInstances(instanceIDs))
+
+	return err
+}
+
+func toELBInstances(instanceIDs []string) []elbbackend.Instance {
+	out := make([]elbbackend.Instance, len(instanceIDs))
+	for i, id := range instanceIDs {
+		out[i] = elbbackend.Instance{InstanceID: id}
+	}
+
+	return out
 }
 
 // autoscalingELBv2RegistrarAdapter adapts the ELBv2 backend to the
@@ -5592,11 +6055,10 @@ type cwLambdaInvokerAdapter struct {
 
 func (a *cwLambdaInvokerAdapter) InvokeFunction(
 	ctx context.Context,
-	name string,
-	_ string,
+	name, invocationType string,
 	payload []byte,
 ) ([]byte, int, error) {
-	return a.backend.InvokeFunction(ctx, name, lambdabackend.InvocationTypeEvent, payload)
+	return a.backend.InvokeFunction(ctx, name, invocationType, payload)
 }
 
 // wireLambdaCWLogs connects the Lambda backend to CloudWatch Logs so that
@@ -5617,6 +6079,446 @@ func wireLambdaCWLogs(lambdaReg, cwlogsReg service.Registerable) {
 			lambdaBk.SetCWLogsBackend(&cwLogsAdapter{backend: cwlogsBk})
 		}
 	}
+}
+
+// wireFirehoseCWLogs connects the Firehose backend to CloudWatch Logs so destinations with
+// CloudWatchLoggingOptions.Enabled actually deliver delivery-failure events to the
+// configured log group/stream, instead of only logging locally. cwLogsAdapter already
+// matches firehose.CWLogsBackend's shape (identical to lambda.CWLogsBackend), so it is
+// reused rather than defining a second adapter type.
+func wireFirehoseCWLogs(firehoseReg, cwlogsReg service.Registerable) {
+	firehoseH, ok := firehoseReg.(*firehosebackend.Handler)
+	if !ok {
+		return
+	}
+
+	firehoseBk, bkOk := firehoseH.Backend.(*firehosebackend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	if cwlogsH, cwlogsOk := cwlogsReg.(*cwlogsbackend.Handler); cwlogsOk {
+		if cwlogsBk, cwBkOk := cwlogsH.Backend.(*cwlogsbackend.InMemoryBackend); cwBkOk {
+			firehoseBk.SetCWLogsBackend(&cwLogsAdapter{backend: cwlogsBk})
+		}
+	}
+}
+
+// wireEcsCWLogs connects the ECS backend to CloudWatch Logs so an
+// awslogs-driver container's log group/stream are created and discoverable
+// when its task starts (gopherstack-sv5q). cwLogsAdapter already matches
+// ecs.CWLogsBackend's shape, so it is reused rather than defining a new one.
+func wireEcsCWLogs(ecsReg, cwlogsReg service.Registerable) {
+	ecsH, ok := ecsReg.(*ecsbackend.Handler)
+	if !ok {
+		return
+	}
+
+	ecsBk, bkOk := ecsH.Backend.(*ecsbackend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	if cwlogsH, cwlogsOk := cwlogsReg.(*cwlogsbackend.Handler); cwlogsOk {
+		if cwlogsBk, cwBkOk := cwlogsH.Backend.(*cwlogsbackend.InMemoryBackend); cwBkOk {
+			ecsBk.SetCWLogsBackend(&cwLogsAdapter{backend: cwlogsBk})
+		}
+	}
+}
+
+// wireAthenaGlue connects the Athena backend to Glue so a GLUE-type DataCatalog reads
+// real Glue databases/tables instead of Athena's internal simulation (gopherstack-yabd).
+func wireAthenaGlue(athenaReg, glueReg service.Registerable) {
+	athenaH, ok := athenaReg.(*athenabackend.Handler)
+	if !ok {
+		return
+	}
+
+	athenaBk, bkOk := athenaH.Backend.(*athenabackend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	glueH, glueOk := glueReg.(*gluebackend.Handler)
+	if !glueOk {
+		return
+	}
+
+	glueBk, glueBkOk := glueH.Backend.(*gluebackend.InMemoryBackend)
+	if !glueBkOk {
+		return
+	}
+
+	athenaBk.SetGlueMetadataSource(&athenaGlueAdapter{backend: glueBk})
+}
+
+// wireAthenaS3 connects the Athena backend to S3 so a succeeded query execution's
+// result is actually written as an object under ResultConfiguration.OutputLocation,
+// instead of only being stored/echoed (gopherstack-zgfq). s3.InMemoryBackend's
+// PutObject already matches athena.S3Storer's shape, so no adapter is needed.
+func wireAthenaS3(athenaReg, s3Reg service.Registerable) {
+	athenaH, ok := athenaReg.(*athenabackend.Handler)
+	if !ok {
+		return
+	}
+
+	athenaBk, bkOk := athenaH.Backend.(*athenabackend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	s3H, s3Ok := s3Reg.(*s3backend.S3Handler)
+	if !s3Ok {
+		return
+	}
+
+	s3Bk, s3BkOk := s3H.Backend.(*s3backend.InMemoryBackend)
+	if !s3BkOk {
+		return
+	}
+
+	athenaBk.SetS3Backend(s3Bk)
+}
+
+// wireCloudTrailS3 connects the CloudTrail backend to S3 so CreateTrail/
+// UpdateTrail validate the configured bucket exists and a logging trail's
+// recorded management events are actually delivered as log files, instead
+// of S3BucketName being stored/echoed with no validation and no delivery
+// (gopherstack-g9b4). s3.InMemoryBackend already satisfies cloudtrail.S3Backend
+// directly, so no adapter is needed.
+func wireCloudTrailS3(cloudtrailReg, s3Reg service.Registerable) {
+	ctH, ok := cloudtrailReg.(*cloudtrailbackend.Handler)
+	if !ok {
+		return
+	}
+
+	s3H, s3Ok := s3Reg.(*s3backend.S3Handler)
+	if !s3Ok {
+		return
+	}
+
+	s3Bk, s3BkOk := s3H.Backend.(*s3backend.InMemoryBackend)
+	if !s3BkOk {
+		return
+	}
+
+	ctH.Backend.SetS3Backend(s3Bk)
+}
+
+// wireBackupS3 connects the Backup backend to S3 so StartBackupJob validates
+// an S3-typed ResourceArn names a bucket that actually exists, instead of
+// accepting any non-empty ResourceArn regardless of whether it resolves to a
+// real resource (gopherstack-0o0q). s3.InMemoryBackend already satisfies
+// backup.S3Backend directly, so no adapter is needed.
+func wireBackupS3(backupReg, s3Reg service.Registerable) {
+	backupH, ok := backupReg.(*backupbackend.Handler)
+	if !ok {
+		return
+	}
+
+	s3H, s3Ok := s3Reg.(*s3backend.S3Handler)
+	if !s3Ok {
+		return
+	}
+
+	s3Bk, s3BkOk := s3H.Backend.(*s3backend.InMemoryBackend)
+	if !s3BkOk {
+		return
+	}
+
+	backupH.Backend.SetS3Backend(s3Bk)
+}
+
+// wireCodePipelineCodeBuild connects the CodePipeline backend to CodeBuild so
+// a Build/CodeBuild action's ProjectName actually starts a build and fails
+// the action when the project doesn't exist, instead of every non-Approval
+// action being marked Succeeded unconditionally with no cross-service call
+// at all (gopherstack-cb9l). codebuild.InMemoryBackend's StartBuild takes a
+// codebuild-specific StartBuildConfig, so codepipelineCodeBuildAdapter
+// supplies the zero value CodePipeline's Build action has no per-run
+// overrides for.
+func wireCodePipelineCodeBuild(codepipelineReg, codebuildReg service.Registerable) {
+	cpH, ok := codepipelineReg.(*codepipelinebackend.Handler)
+	if !ok {
+		return
+	}
+
+	cbH, cbOk := codebuildReg.(*codebuildbackend.Handler)
+	if !cbOk {
+		return
+	}
+
+	cpH.Backend.SetCodeBuildBackend(&codepipelineCodeBuildAdapter{backend: cbH.Backend})
+}
+
+// codepipelineCodeBuildAdapter adapts the CodeBuild backend to the
+// codepipeline.CodeBuildStarter interface.
+type codepipelineCodeBuildAdapter struct {
+	backend *codebuildbackend.InMemoryBackend
+}
+
+func (a *codepipelineCodeBuildAdapter) StartBuild(projectName string) error {
+	_, err := a.backend.StartBuild(projectName, codebuildbackend.StartBuildConfig{})
+
+	return err
+}
+
+// wireCodePipelineLambda connects the CodePipeline backend to Lambda so an
+// Invoke/Lambda action's FunctionName is actually invoked and fails the
+// action on an invocation error, instead of every non-Approval action being
+// marked Succeeded unconditionally with no cross-service call at all
+// (gopherstack-cb9l). lambda.InMemoryBackend's InvokeFunction already
+// satisfies codepipeline.LambdaInvoker directly (InvocationType is aliased
+// to string), so no adapter is needed.
+func wireCodePipelineLambda(codepipelineReg, lambdaReg service.Registerable) {
+	cpH, ok := codepipelineReg.(*codepipelinebackend.Handler)
+	if !ok {
+		return
+	}
+
+	lambdaH, lambdaOk := lambdaReg.(*lambdabackend.Handler)
+	if !lambdaOk {
+		return
+	}
+
+	lambdaBk, bkOk := lambdaH.Backend.(*lambdabackend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	cpH.Backend.SetLambdaBackend(lambdaBk)
+}
+
+// wireTextractS3 connects the Textract backend to S3 so a Document/
+// DocumentLocation naming an S3Object that doesn't exist surfaces
+// InvalidS3ObjectException, instead of every request being processed
+// regardless of whether the referenced object exists (gopherstack-eshx).
+// s3.InMemoryBackend already satisfies textract.S3Backend directly, so no
+// adapter is needed.
+func wireTextractS3(textractReg, s3Reg service.Registerable) {
+	trH, ok := textractReg.(*textractbackend.Handler)
+	if !ok {
+		return
+	}
+
+	trBk, trBkOk := trH.Backend.(*textractbackend.InMemoryBackend)
+	if !trBkOk {
+		return
+	}
+
+	s3H, s3Ok := s3Reg.(*s3backend.S3Handler)
+	if !s3Ok {
+		return
+	}
+
+	s3Bk, s3BkOk := s3H.Backend.(*s3backend.InMemoryBackend)
+	if !s3BkOk {
+		return
+	}
+
+	trBk.SetS3Backend(s3Bk)
+}
+
+// wireRekognitionS3 connects the Rekognition backend to S3 so an Image/
+// Video/Input naming an S3Object that doesn't exist surfaces
+// InvalidS3ObjectException, instead of every request being processed
+// regardless of whether the referenced object exists (gopherstack-eshx).
+// s3.InMemoryBackend already satisfies rekognition.S3Backend directly, so no
+// adapter is needed.
+func wireRekognitionS3(rekognitionReg, s3Reg service.Registerable) {
+	rH, ok := rekognitionReg.(*rekognitionbackend.Handler)
+	if !ok {
+		return
+	}
+
+	rBk, rBkOk := rH.Backend.(*rekognitionbackend.InMemoryBackend)
+	if !rBkOk {
+		return
+	}
+
+	s3H, s3Ok := s3Reg.(*s3backend.S3Handler)
+	if !s3Ok {
+		return
+	}
+
+	s3Bk, s3BkOk := s3H.Backend.(*s3backend.InMemoryBackend)
+	if !s3BkOk {
+		return
+	}
+
+	rBk.SetS3Backend(s3Bk)
+}
+
+// athenaGlueAdapter adapts the Glue backend to the athena.GlueMetadataSource interface.
+type athenaGlueAdapter struct {
+	backend *gluebackend.InMemoryBackend
+}
+
+func (a *athenaGlueAdapter) GetDatabase(name string) (*athenabackend.GlueDatabase, error) {
+	d, err := a.backend.GetDatabase(name)
+	if err != nil {
+		return nil, err
+	}
+
+	return athenaGlueDatabase(d), nil
+}
+
+func (a *athenaGlueAdapter) GetDatabases() []*athenabackend.GlueDatabase {
+	dbs := a.backend.GetDatabases()
+	out := make([]*athenabackend.GlueDatabase, 0, len(dbs))
+
+	for _, d := range dbs {
+		out = append(out, athenaGlueDatabase(d))
+	}
+
+	return out
+}
+
+func (a *athenaGlueAdapter) GetTable(dbName, tableName string) (*athenabackend.GlueTable, error) {
+	t, err := a.backend.GetTable(dbName, tableName)
+	if err != nil {
+		return nil, err
+	}
+
+	return athenaGlueTable(t), nil
+}
+
+func (a *athenaGlueAdapter) GetTables(dbName string) ([]*athenabackend.GlueTable, error) {
+	tables, err := a.backend.GetTables(dbName)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]*athenabackend.GlueTable, 0, len(tables))
+	for _, t := range tables {
+		out = append(out, athenaGlueTable(t))
+	}
+
+	return out, nil
+}
+
+func athenaGlueDatabase(d *gluebackend.Database) *athenabackend.GlueDatabase {
+	return &athenabackend.GlueDatabase{
+		Name:        d.Name,
+		Description: d.Description,
+		Parameters:  d.Parameters,
+	}
+}
+
+func athenaGlueTable(t *gluebackend.Table) *athenabackend.GlueTable {
+	cols := make([]athenabackend.Column, 0, len(t.StorageDescriptor.Columns))
+	for _, c := range t.StorageDescriptor.Columns {
+		cols = append(cols, athenabackend.Column{Name: c.Name, Type: c.Type, Comment: c.Comment})
+	}
+
+	partKeys := make([]athenabackend.Column, 0, len(t.PartitionKeys))
+	for _, c := range t.PartitionKeys {
+		partKeys = append(partKeys, athenabackend.Column{Name: c.Name, Type: c.Type, Comment: c.Comment})
+	}
+
+	return &athenabackend.GlueTable{
+		Name:          t.Name,
+		Parameters:    t.Parameters,
+		Columns:       cols,
+		PartitionKeys: partKeys,
+		CreateTime:    t.CreateTime,
+	}
+}
+
+// wireLambdaS3 connects the Lambda backend to S3 so a function deployed from
+// a Code.S3Bucket/S3Key zip can actually fetch its code, instead of
+// startZipContainer always returning ErrLambdaUnavailable for S3-sourced
+// code. sfnbackend.NewS3Integration already adapts an s3.StorageBackend to
+// GetObjectBytes(ctx, bucket, key) -- the exact shape lambda.S3CodeFetcher
+// needs -- so it is reused here rather than writing a new adapter.
+func wireLambdaS3(lambdaReg, s3Reg service.Registerable) {
+	lambdaH, ok := lambdaReg.(*lambdabackend.Handler)
+	if !ok {
+		return
+	}
+
+	lambdaBk, bkOk := lambdaH.Backend.(*lambdabackend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	s3H, s3Ok := s3Reg.(*s3backend.S3Handler)
+	if !s3Ok {
+		return
+	}
+
+	lambdaBk.SetS3CodeFetcher(sfnbackend.NewS3Integration(s3H.Backend))
+}
+
+// wireLambdaECR connects the Lambda backend to ECR so Code.ImageUri on an
+// Image package-type CreateFunction/UpdateFunctionCode is validated against
+// real ECR state -- see lambdaECRResolverAdapter and lambda.ECRResolver's
+// doc comment (gopherstack-zkp9).
+func wireLambdaECR(lambdaReg, ecrReg service.Registerable) {
+	lambdaH, ok := lambdaReg.(*lambdabackend.Handler)
+	if !ok {
+		return
+	}
+
+	lambdaBk, bkOk := lambdaH.Backend.(*lambdabackend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	ecrH, ecrOk := ecrReg.(*ecrbackend.Handler)
+	if !ecrOk {
+		return
+	}
+
+	ecrBk, ecrBkOk := ecrH.Backend.(*ecrbackend.InMemoryBackend)
+	if !ecrBkOk {
+		return
+	}
+
+	lambdaBk.SetECRResolver(&lambdaECRResolverAdapter{backend: ecrBk})
+}
+
+// lambdaECRResolverAdapter adapts the ECR backend to the lambda.ECRResolver
+// interface, parsing the repository and tag-or-digest out of an ECR-style
+// image URI. A URI whose host does not look like an ECR endpoint (e.g. a
+// public Docker Hub image) is accepted unvalidated: real AWS only validates
+// Code.ImageUri against ECR when it is in fact an ECR reference.
+type lambdaECRResolverAdapter struct {
+	backend *ecrbackend.InMemoryBackend
+}
+
+func (a *lambdaECRResolverAdapter) ResolveImage(imageURI string) bool {
+	repo, id, ok := parseECRImageURI(imageURI)
+	if !ok {
+		return true
+	}
+
+	_, err := a.backend.DescribeImages(context.Background(), repo, []ecrbackend.ImageIdentifier{id})
+
+	return err == nil
+}
+
+// parseECRImageURI splits an ECR-style image URI
+// (<acct>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag> or
+// .../<repo>@<digest>) into a repository name and image identifier. A
+// repository name may itself contain slashes, so only the host segment and
+// the final "@" (digest) or ":" (tag) separator are treated as structural.
+// ok is false when the host segment doesn't look like an ECR endpoint.
+func parseECRImageURI(imageURI string) (string, ecrbackend.ImageIdentifier, bool) {
+	host, rest, found := strings.Cut(imageURI, "/")
+	if !found || !strings.Contains(host, ".dkr.ecr.") {
+		return "", ecrbackend.ImageIdentifier{}, false
+	}
+
+	if idx := strings.LastIndex(rest, "@"); idx >= 0 {
+		return rest[:idx], ecrbackend.ImageIdentifier{ImageDigest: rest[idx+1:]}, true
+	}
+
+	if idx := strings.LastIndex(rest, ":"); idx >= 0 {
+		return rest[:idx], ecrbackend.ImageIdentifier{ImageTag: rest[idx+1:]}, true
+	}
+
+	return rest, ecrbackend.ImageIdentifier{}, true
 }
 
 // wireTimestreamQueryTags connects the Timestream Query backend to
@@ -5932,6 +6834,25 @@ func wireAppSyncLambda(appSyncReg, lambdaReg service.Registerable) {
 		if lambdaBk, bk2Ok := lambdaH.Backend.(*lambdabackend.InMemoryBackend); bk2Ok {
 			appSyncBk.SetLambdaInvoker(lambdaBk)
 		}
+	}
+}
+
+// wireAppSyncCognito connects the AppSync backend to Cognito's JWKS provider
+// so AMAZON_COGNITO_USER_POOLS and OPENID_CONNECT GraphQL auth verify JWT
+// signatures instead of only checking their config exists.
+func wireAppSyncCognito(appSyncReg, cognitoReg service.Registerable) {
+	appSyncH, ok := appSyncReg.(*appsyncbackend.Handler)
+	if !ok {
+		return
+	}
+
+	appSyncBk, bkOk := appSyncH.Backend.(*appsyncbackend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	if cognitoH, cogOk := cognitoReg.(*cognitoidpbackend.Handler); cogOk {
+		appSyncBk.SetJWKSProvider(cognitoH.Backend)
 	}
 }
 
@@ -11505,6 +12426,101 @@ func wireEC2DNS(ec2Reg service.Registerable, dns ec2backend.DNSRegistrar) {
 	}
 }
 
+// wireServiceDiscoveryDNS sets the DNS registrar on the Cloud Map backend so
+// RegisterInstance produces resolvable DNS records for DNS_PUBLIC/DNS_PRIVATE
+// namespaces (HTTP namespaces have no DNS and are left alone).
+func wireServiceDiscoveryDNS(sdReg service.Registerable, dns servicediscoverybackend.DNSRegistrar) {
+	if sdReg == nil || dns == nil {
+		return
+	}
+
+	sdH, ok := sdReg.(*servicediscoverybackend.Handler)
+	if !ok {
+		return
+	}
+
+	sdBk, ok := sdH.Backend.(*servicediscoverybackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	sdBk.SetDNSRegistrar(dns)
+}
+
+// wireServiceDiscoveryRoute53 connects the Cloud Map backend to Route 53 so DNS_PUBLIC/
+// DNS_PRIVATE namespaces get a real hosted zone (see servicediscovery.HostedZoneCreator)
+// instead of a synthetic HostedZoneId matching no real zone (gopherstack-chmx).
+func wireServiceDiscoveryRoute53(sdReg, r53Reg service.Registerable) {
+	sdH, ok := sdReg.(*servicediscoverybackend.Handler)
+	if !ok {
+		return
+	}
+
+	sdBk, bkOk := sdH.Backend.(*servicediscoverybackend.InMemoryBackend)
+	if !bkOk {
+		return
+	}
+
+	r53H, r53Ok := r53Reg.(*route53backend.Handler)
+	if !r53Ok {
+		return
+	}
+
+	r53Bk, r53BkOk := r53H.Backend.(*route53backend.InMemoryBackend)
+	if !r53BkOk {
+		return
+	}
+
+	sdBk.SetHostedZoneCreator(&sdHostedZoneAdapter{backend: r53Bk})
+}
+
+// sdHostedZoneAdapter adapts the Route53 backend to the servicediscovery.HostedZoneCreator
+// interface.
+type sdHostedZoneAdapter struct {
+	backend *route53backend.InMemoryBackend
+}
+
+func (a *sdHostedZoneAdapter) CreateHostedZone(
+	name, callerRef, comment string,
+	private bool,
+	vpcID, vpcRegion string,
+) (string, error) {
+	hz, err := a.backend.CreateHostedZone(name, callerRef, comment, private, "", vpcID, vpcRegion)
+	if err != nil {
+		return "", err
+	}
+
+	return hz.ID, nil
+}
+
+// wireCloudWatchFirehose connects the CloudWatch backend to Firehose so that a
+// metric stream's matched data is actually delivered to its configured
+// delivery stream. firehose.InMemoryBackend satisfies cloudwatch.FirehosePutter
+// directly, so no adapter is needed.
+func wireCloudWatchFirehose(cwReg, firehoseReg service.Registerable) {
+	cwH, ok := cwReg.(*cwbackend.Handler)
+	if !ok {
+		return
+	}
+
+	cwBk, ok := cwH.Backend.(*cwbackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	firehoseH, ok := firehoseReg.(*firehosebackend.Handler)
+	if !ok {
+		return
+	}
+
+	fhBk, ok := firehoseH.Backend.(*firehosebackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	cwBk.SetFirehosePutter(fhBk)
+}
+
 // wireFirehoseDelivery connects the Firehose backend to S3 and Lambda so that
 // buffered records are delivered to the configured S3 bucket, and optionally
 // transformed by a Lambda function before delivery.
@@ -11531,6 +12547,80 @@ func wireFirehoseDelivery(firehoseReg, s3Reg, lambdaReg service.Registerable) {
 	}
 }
 
+// wireFirehoseKinesisSource connects the Firehose backend to Kinesis so that a
+// delivery stream created with KinesisStreamAsSource actually polls its source
+// stream and ingests records, instead of accepting the stream and silently
+// dropping ingestion forever.
+func wireFirehoseKinesisSource(firehoseReg, kinesisReg service.Registerable) {
+	firehoseH, ok := firehoseReg.(*firehosebackend.Handler)
+	if !ok {
+		return
+	}
+
+	fhBk, fhOk := firehoseH.Backend.(*firehosebackend.InMemoryBackend)
+	if !fhOk {
+		return
+	}
+
+	kinesisH, ok := kinesisReg.(*kinesisbackend.Handler)
+	if !ok {
+		return
+	}
+
+	kinesisBk, ok := kinesisH.Backend.(*kinesisbackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	fhBk.SetKinesisBackend(&kinesisStreamReaderAdapter{backend: kinesisBk})
+}
+
+// wireFirehoseRedshift connects the Firehose backend to Redshift Data so that
+// a Redshift destination's COPY command, built after S3 staging, actually
+// executes via the real Redshift Data API instead of logging a WARN and
+// never running it.
+func wireFirehoseRedshift(firehoseReg, redshiftdataReg service.Registerable) {
+	firehoseH, ok := firehoseReg.(*firehosebackend.Handler)
+	if !ok {
+		return
+	}
+
+	fhBk, ok := firehoseH.Backend.(*firehosebackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	redshiftdataH, ok := redshiftdataReg.(*redshiftdatabackend.Handler)
+	if !ok {
+		return
+	}
+
+	redshiftdataBk, ok := redshiftdataH.Backend.(*redshiftdatabackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	fhBk.SetRedshiftDataBackend(&firehoseRedshiftDataExecutorAdapter{backend: redshiftdataBk})
+}
+
+// firehoseRedshiftDataExecutorAdapter adapts the Redshift Data backend's
+// full ExecuteStatement (cluster/workgroup/secret/session-shaped) to
+// firehose.RedshiftDataExecutor's narrow (sql, clusterIdentifier, database,
+// dbUser) shape.
+type firehoseRedshiftDataExecutorAdapter struct {
+	backend *redshiftdatabackend.InMemoryBackend
+}
+
+func (a *firehoseRedshiftDataExecutorAdapter) ExecuteStatement(
+	ctx context.Context, sql, clusterIdentifier, database, dbUser string,
+) error {
+	_, err := a.backend.ExecuteStatement(
+		ctx, sql, clusterIdentifier, "", database, dbUser, "", "", false, "", nil, "",
+	)
+
+	return err
+}
+
 // wireDynamoDBS3 connects the DynamoDB backend to the S3 backend so that
 // ImportTable can read source objects and ExportTableToPointInTime can write
 // export data to S3.
@@ -11553,6 +12643,34 @@ func wireDynamoDBS3(ddbReg, s3Reg service.Registerable) {
 	if ddbBk, ddbBkOk := ddbH.Backend.(*ddbbackend.InMemoryDB); ddbBkOk {
 		ddbBk.SetS3Backend(s3Bk)
 	}
+}
+
+// wireDynamoDBKinesis connects the DynamoDB backend to Kinesis so a table's
+// EnableKinesisStreamingDestination destination actually receives forwarded
+// mutation records instead of accepting the destination and never delivering
+// anything.
+func wireDynamoDBKinesis(ddbReg, kinesisReg service.Registerable) {
+	ddbH, ok := ddbReg.(*ddbbackend.DynamoDBHandler)
+	if !ok {
+		return
+	}
+
+	ddbBk, ok := ddbH.Backend.(*ddbbackend.InMemoryDB)
+	if !ok {
+		return
+	}
+
+	kinesisH, ok := kinesisReg.(*kinesisbackend.Handler)
+	if !ok {
+		return
+	}
+
+	kinesisBk, ok := kinesisH.Backend.(*kinesisbackend.InMemoryBackend)
+	if !ok {
+		return
+	}
+
+	ddbBk.SetKinesisEmitter(&ddbKinesisEmitterAdapter{backend: kinesisBk})
 }
 
 // wireMGNS3 connects the MGN backend to the S3 backend so StartImport can
@@ -11625,6 +12743,26 @@ func wireGlacierS3(glacierReg, s3Reg service.Registerable) {
 	}
 
 	glBk.SetS3Backend(s3Bk)
+}
+
+// wireS3ControlObjectLambda connects the S3 Control backend to S3 so a
+// completed PutAccessPointConfigurationForObjectLambda resolves its
+// SupportingAccessPoint to the underlying bucket and configures GetObject to
+// actually invoke the Lambda transform, instead of accepting the config and
+// never reaching S3 (gopherstack-6o0r). s3backend.S3Handler satisfies
+// s3controlbackend.ObjectLambdaConfigSink directly, so no adapter is needed.
+func wireS3ControlObjectLambda(s3controlReg, s3Reg service.Registerable) {
+	s3cH, ok := s3controlReg.(*s3controlbackend.Handler)
+	if !ok || s3cH.Backend == nil {
+		return
+	}
+
+	s3H, ok := s3Reg.(*s3backend.S3Handler)
+	if !ok {
+		return
+	}
+
+	s3cH.Backend.SetObjectLambdaConfigSink(s3H)
 }
 
 // iotAnalyticsThingRegistryAdapter adapts the IoT backend's DescribeThing to the
@@ -11706,22 +12844,95 @@ func wireIoTAnalyticsCrossService(iotaReg, lambdaReg, iotReg service.Registerabl
 	iotaBk.SetThingShadowStore(&iotAnalyticsThingShadowAdapter{backend: iotBk})
 }
 
-// kinesisAnalyticsStreamReaderAdapter adapts the Kinesis backend's real
-// ListShards/GetShardIterator/GetRecords (ctx+typed-struct shaped, see
-// services/kinesis/records.go and shards.go) to
-// kinesisanalyticsbackend.KinesisStreamReader's narrow (streamName string, limit int) shape
-// DiscoverInputSchema samples through (services/kinesisanalytics/discover_schema.go).
-type kinesisAnalyticsStreamReaderAdapter struct {
+// ddbKinesisStreamRecordData mirrors the "dynamodb" node of the JSON payload
+// AWS's DynamoDB Kinesis streaming destination writes per record.
+type ddbKinesisStreamRecordData struct {
+	Keys                        map[string]any `json:"Keys,omitempty"`
+	NewImage                    map[string]any `json:"NewImage,omitempty"`
+	OldImage                    map[string]any `json:"OldImage,omitempty"`
+	SequenceNumber              string         `json:"SequenceNumber,omitempty"`
+	StreamViewType              string         `json:"StreamViewType,omitempty"`
+	ApproximateCreationDateTime int64          `json:"ApproximateCreationDateTime,omitempty"`
+	SizeBytes                   int64          `json:"SizeBytes,omitempty"`
+}
+
+// ddbKinesisStreamRecord mirrors the top-level JSON payload AWS's DynamoDB
+// Kinesis streaming destination writes per record.
+type ddbKinesisStreamRecord struct {
+	EventID      string                     `json:"eventID,omitempty"`
+	EventName    string                     `json:"eventName,omitempty"`
+	EventSource  string                     `json:"eventSource,omitempty"`
+	RecordFormat string                     `json:"recordFormat,omitempty"`
+	TableName    string                     `json:"tableName,omitempty"`
+	Dynamodb     ddbKinesisStreamRecordData `json:"dynamodb"`
+}
+
+// ddbKinesisEmitterAdapter adapts the Kinesis backend to DynamoDB's
+// KinesisEmitter interface so a table's EnableKinesisStreamingDestination
+// destination actually receives forwarded mutation records.
+// EmitDynamoDBStreamRecord must return promptly (it may be called while the
+// caller holds table locks), so the PutRecord call runs in a goroutine.
+type ddbKinesisEmitterAdapter struct {
 	backend *kinesisbackend.InMemoryBackend
 }
 
-// kaTrimHorizonIteratorType is the only shard-iterator starting point DiscoverInputSchema's
-// sampling needs (it just wants some records, not a caller-specified position). Not
-// kinesisbackend.iteratorTypeTrimHorizon -- that constant is unexported (services/kinesis/
-// models.go:40).
-const kaTrimHorizonIteratorType = "TRIM_HORIZON"
+func (a *ddbKinesisEmitterAdapter) EmitDynamoDBStreamRecord(
+	streamARN, tableName string, record ddbmodels.StreamRecord,
+) {
+	parts := strings.Split(streamARN, "/")
+	streamName := parts[len(parts)-1]
 
-func (a *kinesisAnalyticsStreamReaderAdapter) ListShards(streamName string) ([]string, error) {
+	partitionKey := tableName
+	if keys, err := json.Marshal(record.Keys); err == nil {
+		partitionKey = string(keys)
+	}
+
+	go func() {
+		data, err := json.Marshal(ddbKinesisStreamRecord{
+			EventID:      record.EventID,
+			EventName:    record.EventName,
+			EventSource:  "aws:dynamodb",
+			RecordFormat: "application/json",
+			TableName:    tableName,
+			Dynamodb: ddbKinesisStreamRecordData{
+				Keys:                        record.Keys,
+				NewImage:                    record.NewImage,
+				OldImage:                    record.OldImage,
+				SequenceNumber:              record.SequenceNumber,
+				StreamViewType:              record.StreamViewType,
+				ApproximateCreationDateTime: record.ApproximateCreationDateTime,
+				SizeBytes:                   record.SizeBytes,
+			},
+		})
+		if err != nil {
+			return
+		}
+
+		_, _ = a.backend.PutRecord(context.Background(), &kinesisbackend.PutRecordInput{
+			StreamName:   streamName,
+			PartitionKey: partitionKey,
+			Data:         data,
+		})
+	}()
+}
+
+// kinesisStreamReaderAdapter adapts the Kinesis backend's real
+// ListShards/GetShardIterator/GetRecords (ctx+typed-struct shaped, see
+// services/kinesis/records.go and shards.go) to the narrow (streamName string, limit int)
+// shape shared by kinesisanalyticsbackend.KinesisStreamReader (DiscoverInputSchema sampling,
+// services/kinesisanalytics/discover_schema.go) and firehose.KinesisReader
+// (KinesisStreamAsSource polling, services/firehose/kinesis_source.go).
+type kinesisStreamReaderAdapter struct {
+	backend *kinesisbackend.InMemoryBackend
+}
+
+// kinesisTrimHorizonIteratorType is the only shard-iterator starting point both consumers of
+// kinesisStreamReaderAdapter need (they just want records from the start, not a
+// caller-specified position). Not kinesisbackend.iteratorTypeTrimHorizon -- that constant is
+// unexported (services/kinesis/models.go:40).
+const kinesisTrimHorizonIteratorType = "TRIM_HORIZON"
+
+func (a *kinesisStreamReaderAdapter) ListShards(streamName string) ([]string, error) {
 	out, err := a.backend.ListShards(context.Background(), &kinesisbackend.ListShardsInput{StreamName: streamName})
 	if err != nil {
 		return nil, err
@@ -11735,11 +12946,11 @@ func (a *kinesisAnalyticsStreamReaderAdapter) ListShards(streamName string) ([]s
 	return ids, nil
 }
 
-func (a *kinesisAnalyticsStreamReaderAdapter) GetShardIterator(streamName, shardID string) (string, error) {
+func (a *kinesisStreamReaderAdapter) GetShardIterator(streamName, shardID string) (string, error) {
 	out, err := a.backend.GetShardIterator(context.Background(), &kinesisbackend.GetShardIteratorInput{
 		StreamName:        streamName,
 		ShardID:           shardID,
-		ShardIteratorType: kaTrimHorizonIteratorType,
+		ShardIteratorType: kinesisTrimHorizonIteratorType,
 	})
 	if err != nil {
 		return "", err
@@ -11748,7 +12959,7 @@ func (a *kinesisAnalyticsStreamReaderAdapter) GetShardIterator(streamName, shard
 	return out.ShardIterator, nil
 }
 
-func (a *kinesisAnalyticsStreamReaderAdapter) GetRecords(
+func (a *kinesisStreamReaderAdapter) GetRecords(
 	shardIterator string,
 	limit int,
 ) ([][]byte, string, error) {
@@ -11773,7 +12984,7 @@ func (a *kinesisAnalyticsStreamReaderAdapter) GetRecords(
 // s3backend.InMemoryBackend.GetObject satisfies kinesisanalyticsbackend.S3ObjectReader
 // directly (same real SDK types, no adapter -- the same no-adapter pairing as cloudwatch's
 // FirehosePutter/firehose.InMemoryBackend). Kinesis needs
-// kinesisAnalyticsStreamReaderAdapter to bridge onto KinesisStreamReader's narrow shape.
+// kinesisStreamReaderAdapter to bridge onto KinesisStreamReader's narrow shape.
 func wireKinesisAnalyticsCrossService(kaReg, kinesisReg, s3Reg service.Registerable) {
 	kaH, ok := kaReg.(*kinesisanalyticsbackend.Handler)
 	if !ok {
@@ -11787,7 +12998,7 @@ func wireKinesisAnalyticsCrossService(kaReg, kinesisReg, s3Reg service.Registera
 
 	if kinesisH, kOk := kinesisReg.(*kinesisbackend.Handler); kOk {
 		if kinesisBk, kbkOk := kinesisH.Backend.(*kinesisbackend.InMemoryBackend); kbkOk {
-			kaBk.SetKinesisStreamReader(&kinesisAnalyticsStreamReaderAdapter{backend: kinesisBk})
+			kaBk.SetKinesisStreamReader(&kinesisStreamReaderAdapter{backend: kinesisBk})
 		}
 	}
 
@@ -12456,7 +13667,9 @@ func wireSchedulerMessaging(
 
 	if sqsH, ok := sqsReg.(*sqsbackend.Handler); ok {
 		if sqsBk, ok2 := sqsH.Backend.(*sqsbackend.InMemoryBackend); ok2 {
-			runner.SetSQSSender(&sqsSenderAdapter{backend: sqsBk})
+			adapter := &sqsSenderAdapter{backend: sqsBk}
+			runner.SetSQSSender(adapter)
+			runner.SetSQSFIFOSender(adapter)
 		}
 	}
 

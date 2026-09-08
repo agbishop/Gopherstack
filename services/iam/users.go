@@ -238,8 +238,10 @@ func (b *InMemoryBackend) ResolvePrincipal(
 	}, true
 }
 
-// GetPoliciesForUser returns the policy documents for all policies attached to the named user.
-// Policies that are referenced but not found in the backend are silently skipped.
+// GetPoliciesForUser returns the policy documents for all policies that apply to the
+// named user: its own managed and inline policies, plus managed and inline policies
+// inherited from every group the user belongs to. Policies that are referenced but not
+// found in the backend are silently skipped.
 func (b *InMemoryBackend) GetPoliciesForUser(userName string) ([]string, error) {
 	b.mu.RLock("GetPoliciesForUser")
 	defer b.mu.RUnlock()
@@ -249,8 +251,28 @@ func (b *InMemoryBackend) GetPoliciesForUser(userName string) ([]string, error) 
 	}
 
 	arns := b.userPolicies[userName]
-	docs := make([]string, 0, len(arns))
+	inline := b.userInlinePolicies[userName]
+	docs := make([]string, 0, len(arns)+len(inline))
 
+	docs = b.appendManagedPolicyDocsLocked(docs, arns)
+	docs = appendInlinePolicyDocs(docs, inline)
+
+	for groupName, members := range b.groupMembers {
+		if !slices.Contains(members, userName) {
+			continue
+		}
+
+		docs = b.appendManagedPolicyDocsLocked(docs, b.groupPolicies[groupName])
+		docs = appendInlinePolicyDocs(docs, b.groupInlinePolicies[groupName])
+	}
+
+	return docs, nil
+}
+
+// appendManagedPolicyDocsLocked appends the policy documents for each managed
+// policy ARN to docs, skipping ARNs the backend no longer has a document for.
+// Caller must hold b.mu (read-locked is sufficient).
+func (b *InMemoryBackend) appendManagedPolicyDocsLocked(docs []string, arns []string) []string {
 	for _, policyArn := range arns {
 		policy, exists := b.getPolicyByARNLocked(policyArn)
 		if !exists || policy.PolicyDocument == "" {
@@ -260,7 +282,18 @@ func (b *InMemoryBackend) GetPoliciesForUser(userName string) ([]string, error) 
 		docs = append(docs, policy.PolicyDocument)
 	}
 
-	return docs, nil
+	return docs
+}
+
+// appendInlinePolicyDocs appends each non-empty inline policy document to docs.
+func appendInlinePolicyDocs(docs []string, inline map[string]string) []string {
+	for _, doc := range inline {
+		if doc != "" {
+			docs = append(docs, doc)
+		}
+	}
+
+	return docs
 }
 
 // PutUserPolicy creates or replaces an inline policy on a user.

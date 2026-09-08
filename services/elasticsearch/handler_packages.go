@@ -327,7 +327,14 @@ func (h *Handler) handleListDomainsForPackage(w http.ResponseWriter, r *http.Req
 
 func (h *Handler) handleListPackagesForDomain(w http.ResponseWriter, r *http.Request) {
 	domainName := pathID(r.URL.Path, elasticsearchDomainPackages+"/", "/packages")
-	packages := h.Backend.ListPackagesForDomain(h.reqContext(r), domainName)
+
+	packages, err := h.Backend.ListPackagesForDomain(h.reqContext(r), domainName)
+	if err != nil {
+		h.writeOperationError(r, w, err)
+
+		return
+	}
+
 	result := make([]domainPackageJSON, 0, len(packages))
 	for _, pkg := range packages {
 		result = append(result, domainPackageJSON{

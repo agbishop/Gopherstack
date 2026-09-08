@@ -397,6 +397,8 @@ func (b *InMemoryBackend) DeleteSubnet(id string) error {
 	b.deindexSubnetLocked(id, subnet.VPCID)
 	b.subnets.Delete(id)
 	delete(b.tags, id)
+	delete(b.subnetCIDRReservations, id)
+	delete(b.subnetCIDRAssociations, id)
 
 	return nil
 }

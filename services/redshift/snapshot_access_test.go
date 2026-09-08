@@ -580,7 +580,7 @@ func TestBackend_RevokeSnapshotAccess(t *testing.T) {
 		{
 			name: "success",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin")
+				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin", nil, "")
 				_, _ = b.CreateClusterSnapshot("snap1", "c1")
 				_, _ = b.AuthorizeSnapshotAccess("snap1", "acc1")
 			},
@@ -612,7 +612,7 @@ func TestBackend_RevokeSnapshotAccess(t *testing.T) {
 		{
 			name: "account_not_found",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin")
+				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin", nil, "")
 				_, _ = b.CreateClusterSnapshot("snap2", "c1")
 			},
 			snapshotID: "snap2",
@@ -668,7 +668,7 @@ func TestBackend_ModifyClusterSnapshot(t *testing.T) {
 		{
 			name: "success",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin")
+				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin", nil, "")
 				_, _ = b.CreateClusterSnapshot("snap1", "c1")
 			},
 			snapshotID:      "snap1",
@@ -689,7 +689,7 @@ func TestBackend_ModifyClusterSnapshot(t *testing.T) {
 		{
 			name: "omitted_retention_period_leaves_existing_value_unchanged",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("c2", "dc2.large", "dev", "admin")
+				_, _ = b.CreateCluster("c2", "dc2.large", "dev", "admin", nil, "")
 				_, _ = b.CreateClusterSnapshot("snap2", "c2")
 
 				retained := 30
@@ -704,7 +704,7 @@ func TestBackend_ModifyClusterSnapshot(t *testing.T) {
 		{
 			name: "explicit_negative_one_sets_indefinite_retention",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("c3", "dc2.large", "dev", "admin")
+				_, _ = b.CreateCluster("c3", "dc2.large", "dev", "admin", nil, "")
 				_, _ = b.CreateClusterSnapshot("snap3", "c3")
 
 				retained := 30

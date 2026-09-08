@@ -10,12 +10,21 @@ import (
 
 // CreateResourceShare records a resource-share request for the given job ID.
 // Sets ShareStatus = "SHARED" on the job and populates LastShareDetails.
-func (b *InMemoryBackend) CreateResourceShare(jobID string) (string, error) {
+// JobId and SupportCaseId are both "This member is required" on
+// CreateResourceShareInput (aws-sdk-go-v2 mediaconvert
+// api_op_CreateResourceShare.go), and the SDK's own client-side validator
+// (validators.go validateOpCreateResourceShareInput) rejects a request
+// missing either before it is ever sent.
+func (b *InMemoryBackend) CreateResourceShare(jobID, supportCaseID string) (string, error) {
 	b.mu.Lock("CreateResourceShare")
 	defer b.mu.Unlock()
 
 	if jobID == "" {
 		return "", fmt.Errorf("%w: jobId is required", ErrValidation)
+	}
+
+	if supportCaseID == "" {
+		return "", fmt.Errorf("%w: supportCaseId is required", ErrValidation)
 	}
 
 	j, ok := b.jobs.Get(jobID)

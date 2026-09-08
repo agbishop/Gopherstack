@@ -422,6 +422,9 @@ func (h *Handler) handleError(ctx context.Context, c *echo.Context, action strin
 		errors.Is(reqErr, ErrLookupTableAlreadyExists):
 		errType = "ResourceAlreadyExistsException"
 		statusCode = http.StatusConflict
+	case errors.Is(reqErr, ErrDeliveryDestinationInUse), errors.Is(reqErr, ErrDeliverySourceInUse):
+		errType = "ConflictException"
+		statusCode = http.StatusConflict
 	case errors.Is(reqErr, ErrSubscriptionFilterLimitExceed):
 		errType = "LimitExceededException"
 		statusCode = http.StatusBadRequest

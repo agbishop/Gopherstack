@@ -15,6 +15,10 @@ import (
 func (h *Handler) handleRemoveAttributes(c *echo.Context, appID, attributeType string) error {
 	body, _ := httputils.ReadBody(c.Request())
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	var req removeAttributesRequest
 	if len(body) > 0 {
 		if jsonErr := json.Unmarshal(body, &req); jsonErr != nil {

@@ -33,7 +33,7 @@ ops:
   DisableRegion: {wire: ok, errors: fixed, state: ok, persist: ok, note: "same bug/fix as GetRegionOptStatus/EnableRegion. Same immediate-terminal-state simplification as EnableRegion (DISABLING) -- see gaps."}
   GetPrimaryEmail: {wire: ok, errors: ok, state: ok, persist: ok, note: "AccountId required, re-confirmed against validators.go's validateOpGetPrimaryEmailInput"}
   StartPrimaryEmailUpdate: {wire: ok, errors: fixed, state: ok, persist: ok, note: "AccountId/PrimaryEmail required, re-confirmed against validators.go. BUG FIXED: now returns ConflictException when PrimaryEmail equals the account's current primaryEmail -- types.ConflictException's doc comment (types/errors.go) names 'change an account's root user email to an email address which is already in use' as a trigger, and deserializers.go's awsRestjson1_deserializeOpErrorStartPrimaryEmailUpdate models ConflictException for this op; the one email this single-account backend can ever know is 'already in use' is its own current primaryEmail. Cross-account email collision remains unmodeled -- see gaps."}
-  AcceptPrimaryEmailUpdate: {wire: ok, errors: ok, state: ok, persist: ok, note: "AccountId/Otp/PrimaryEmail required, re-confirmed against validators.go and serializers.go's exact wire field names (AccountId/Otp/PrimaryEmail)"}
+  AcceptPrimaryEmailUpdate: {wire: ok, errors: ok, state: ok, persist: ok, note: "AccountId/Otp/PrimaryEmail required, re-confirmed against validators.go and serializers.go's exact wire field names (AccountId/Otp/PrimaryEmail). gopherstack-e7v7 (2026-09-07): audited OTP expiry/replay/invalidation -- no fixable defect found, no TTL added (see Notes)."}
   GetAccountInformation: {wire: ok, errors: ok, state: ok, persist: ok, note: "re-confirmed real op (exists in aws-sdk-go-v2/service/account@v1.34.0, added after the aws-sdk-go v1 classic SDK's July-2024 feature freeze, which is why the v1 SDK vendored in this repo's module cache doesn't have it). Flat response confirmed via serializer (no wrapper). AccountCreatedDate confirmed ISO8601 (smithytime.ParseDateTime in deserializers.go), not epoch -- RFC3339 in account_info.go is correct."}
   PutAccountName: {wire: ok, errors: ok, state: ok, persist: ok, note: "re-confirmed real op, AccountId optional/AccountName required per validators.go"}
   GetPrimaryEmailUpdateStatus: {wire: ok, errors: ok, state: ok, persist: ok, note: "new. AccountId optional (no validateOp* func in validators.go, unlike Get/StartPrimaryEmail/AcceptPrimaryEmailUpdate). Response {Status, UpdatedAt}; UpdatedAt confirmed epoch-seconds (smithytime.ParseEpochSeconds in deserializers.go) -- NOT ISO8601 like AccountCreatedDate, uses awstime.Epoch. Modeled errors AccessDenied/InternalServer/ResourceNotFound/TooManyRequests/Validation. ResourceNotFoundException fires when no update was ever started."}
@@ -384,3 +384,112 @@ Zero code changes; measured false-positive rate for this service: 33/33
 0/53 -- a reminder the estimate is a campaign average, not a per-service
 guarantee, and that a shared classification helper with many callers is
 exactly where this tool's caller-agnostic reachability model breaks down.
+
+## 2026-09-07 pass (gopherstack-e7v7: primary-email OTP expiry audit)
+
+Filed title-only, empty description: "account: primary-email OTP has no expiry; the SDK
+states no TTL for AcceptPrimaryEmailUpdate so a duration cannot be derived from it." Re-derived
+the specifics against both oracles instead of taking the title at face value.
+
+**Both oracles checked; neither states a TTL. Verdict: WONTFIX, not fabricated.**
+
+- Go SDK (`aws-sdk-go-v2/service/account@v1.35.4`): read `api_op_StartPrimaryEmailUpdate.go`,
+  `api_op_AcceptPrimaryEmailUpdate.go`, `types/types.go`, `types/enums.go`, `types/errors.go`
+  in full. `AcceptPrimaryEmailUpdateInput.Otp`'s doc comment
+  (`api_op_AcceptPrimaryEmailUpdate.go:51-52`) is exactly `"The OTP code sent to the
+  PrimaryEmail specified on the StartPrimaryEmailUpdate API call."` -- no duration, no
+  "expires", no "valid for". Case-insensitive grep of every `.go`/doc comment in the module for
+  `expir|valid|minute|hour|TTL|within` turned up only unrelated hits (`ValidationException`
+  identifiers, `EnableRegion`/`DisableRegion`'s "takes a few minutes... several hours" region
+  propagation prose, `GetAccountInformation`'s "Valid values: ..." enum line) -- none about the
+  OTP.
+- botocore (`~/.local/lib/python3.14/site-packages/botocore/data/account/2021-02-01/service-2.json.gz`,
+  botocore 1.43.56): `Otp` shape is `{"type": "string", "pattern": "[a-zA-Z0-9]{6}", "sensitive":
+  true}` -- a 6-character alphanumeric pattern and a sensitivity flag, no TTL member or
+  documentation field anywhere on the shape. `StartPrimaryEmailUpdateResponse`/
+  `AcceptPrimaryEmailUpdateResponse` are both just `{Status}` -- no `ExpiresAt`/`ValidUntil`
+  field either request could carry one on. A full recursive walk of every string value in the
+  parsed JSON model (every operation doc, every shape doc, every member doc) for
+  `expir|valid|minute|hour|TTL|within` matched only `ValidationException` shape/error names, the
+  `EnableRegion`/`DisableRegion` region-propagation-time prose, `ContactInformation.StateOrRegion`
+  ("within the United States"), and `ContactInformation.PhoneNumber` ("will be validated") -- none
+  about the OTP. Note: this botocore pin's model has only 15 operations (missing
+  `GetPrimaryEmailUpdateStatus`, present in the Go SDK's 16) -- older than the pinned Go SDK, but
+  both `StartPrimaryEmailUpdate`/`AcceptPrimaryEmailUpdate`/`Otp` are present in it, so this gap
+  doesn't affect this question.
+- Both oracles are silent. Per the standing rule for this class of finding: inventing a duration
+  from silence is fabrication, not parity work. Not fixed. `simOTP`
+  (`store.go:57`, `const simOTP = "123456"`) also satisfies botocore's `[a-zA-Z0-9]{6}` pattern,
+  for what it's worth -- the fixed value was never a shape violation.
+
+**Checked independently for a *different*, real defect (replay/non-invalidation/attempt-limiting/
+wrong-error-type) rather than assuming the filed title names the only possible problem. Found
+none:**
+
+- **Single-use, confirmed correct**: `AcceptPrimaryEmailUpdate` (`account_info.go:55-74`) clears
+  both `b.pendingEmail` and `b.pendingOTP` on a successful accept (`account_info.go:68-69`), and
+  the entry guard `if b.pendingEmail == "" { return errNoPendingUpdate }` (`account_info.go:59-61`)
+  means a second Accept with the same OTP/email after a success returns
+  `ResourceNotFoundException` (`errNoPendingUpdate`, `errors.go:18`), not a silent re-accept. No
+  replay bug.
+- **Re-Start invalidation, confirmed correct**: a second `StartPrimaryEmailUpdate` for a different
+  target email overwrites `b.pendingEmail`/`b.pendingOTP` (`account_info.go:41-42`) unconditionally.
+  Because `AcceptPrimaryEmailUpdate` requires `email == b.pendingEmail` (`account_info.go:63`), an
+  Accept for the first (now-superseded) target email fails with `ValidationException`
+  (`errInvalidOTP`) even though the OTP string itself is unchanged (it's always the fixed
+  `simOTP` constant). The prior pending request is correctly unreachable, not left live.
+- **Attempt limiting**: neither oracle documents a max-attempts/lockout behavior for
+  `AcceptPrimaryEmailUpdate` (see the same doc-prose walk above), and no comparable gopherstack
+  service invents one where the SDK is silent -- e.g. `services/cognitoidp/mfa.go:115` explicitly
+  documents the opposite convention ("Do not consume the session on a wrong code: the caller may
+  retry until it expires"). Not adding one here would be consistent, not a gap.
+- **Wrong-OTP/no-pending-update error types, confirmed correct**: `errInvalidOTP` is
+  `ValidationException` (`errors.go:19`) and `errNoPendingUpdate` is `ResourceNotFoundException`
+  (`errors.go:18`); both are members of `AcceptPrimaryEmailUpdate`'s modeled error set
+  (`ResourceNotFoundException`, `AccessDeniedException`, `ValidationException`,
+  `ConflictException`, `TooManyRequestsException`, `InternalServerException` -- confirmed in both
+  oracles' operation error lists). Already covered by
+  `TestHandler_PrimaryEmail_AcceptInvalidOTP`'s `wrong_otp`/`no_pending` subtests
+  (`handler_account_info_test.go:141-176`), which assert 400/404 respectively.
+
+**Zero code changes, zero new tests.** This pass is a negative result: the filed title's premise
+("no TTL derivable from the SDK") checked out against both oracles, and the four alternate-defect
+hypotheses this pass specifically went looking for (replay, non-invalidation, attempt limiting,
+wrong error type) were each independently traced through `account_info.go` and found already
+correct, not newly fixed. `go test -race ./services/account/...` and
+`golangci-lint run ./services/account/...` both still pass (unchanged).
+
+## 2026-09-08: writeError nil-on-write fall-through sweep (gopherstack-246v) -- clean
+
+Part of the 12-service sweep for the elasticache class bug (gopherstack-8haq): a helper
+that rejects a request via the local response writer and *returns* that writer's result
+hands a caller doing `if err != nil { return err }` a `nil`, since the writer returns nil
+after a successful write -- the rejection is silently skipped and the operation continues.
+
+**Base writer**: `writeError` (`handler.go:640`) returns `c.JSON(status, ...)` directly --
+nil on a successful write, matching the vulnerable shape's precondition. `writeBackendError`
+(`handler.go:653`) wraps it, `return writeError(...)` at every branch.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script parsed every non-test `.go` file,
+found every function with a `return`-statement whose result is a bare call to `writeError`,
+then fixed-point-expanded that set to any function bare-returning a call to an
+already-found member (this is how `writeBackendError` and all 16 `handleXxx` op handlers
+were discovered as capable of propagating the nil-after-write value) -- 19 such functions.
+Cross-referenced against dispatch: `Handler()` returns `h.route(c)` directly; `route`
+resolves `operationHandlers` (a flat `map[string]handlerFunc`, 16 entries, one per op) and
+returns `fn(h, c, body)` directly -- confirmed by reading `route`, no intermediate
+`if err != nil` anywhere in the dispatch path. All 16 `handleXxx` functions are therefore
+dispatch targets, safe by construction; `writeBackendError` is the only non-dispatch helper
+in the discovered set.
+
+Every call site of both `writeError` and `writeBackendError` across the package (47 total)
+was enumerated and classified: **all 47 are `return writeError(...)` / `return
+writeBackendError(...)` direct returns. Zero stored-then-checked sites, zero `_ =`
+discards.** Independently confirmed by grepping every non-test-file occurrence of
+`writeError(`/`writeBackendError(` outside their own definitions: every one is immediately
+preceded by `return` on the same line -- no `if err := writeError(...); err != nil` or
+bare-assignment shape exists anywhere in this package.
+
+**No instance of the broken shape exists in account.** No code changed. Gates re-run for
+the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/account/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/account/...` ok.

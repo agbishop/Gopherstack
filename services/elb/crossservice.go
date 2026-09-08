@@ -2,17 +2,18 @@ package elb
 
 import "context"
 
-// EC2Resolver lets this backend validate SecurityGroups/Subnets passed to
-// ApplySecurityGroupsToLoadBalancer/AttachLoadBalancerToSubnets against the
-// real services/ec2 backend, mirroring services/directconnect's
-// EC2GatewayResolver (services/directconnect/store.go) and
-// services/networkmanager's EC2Resolver. Wired in by cli.go's
-// wireComputeAndObservabilityIntegrations. A nil resolver (the default)
-// accepts every security-group/subnet id unvalidated -- e.g. isolated unit
-// tests with no EC2 backend wired.
+// EC2Resolver lets this backend validate SecurityGroups/Subnets/instance ids
+// passed to ApplySecurityGroupsToLoadBalancer/AttachLoadBalancerToSubnets/
+// RegisterInstancesWithLoadBalancer against the real services/ec2 backend,
+// mirroring services/directconnect's EC2GatewayResolver
+// (services/directconnect/store.go) and services/networkmanager's
+// EC2Resolver. Wired in by cli.go's wireComputeAndObservabilityIntegrations.
+// A nil resolver (the default) accepts every security-group/subnet/instance
+// id unvalidated -- e.g. isolated unit tests with no EC2 backend wired.
 type EC2Resolver interface {
 	SecurityGroupExists(id string) bool
 	SubnetExists(id string) bool
+	InstanceExists(id string) bool
 }
 
 // CertificateResolver lets this backend validate an HTTPS/SSL listener's

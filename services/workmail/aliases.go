@@ -5,6 +5,15 @@ import (
 	"sort"
 )
 
+// maxAliasesPerUser is AWS's documented, non-adjustable quota ("Maximum
+// number of aliases per user | 100. This is a hard quota and can't be
+// changed.", docs.aws.amazon.com/workmail/latest/adminguide/
+// workmail_limits.html). Documentation-sourced, not verified against the
+// pinned SDK (no wire-visible quota field exists to check it against).
+// Applied per entity (user/group/resource), matching the per-entity alias
+// bookkeeping this backend already keeps -- not per organization.
+const maxAliasesPerUser = 100
+
 // --- Aliases ---
 
 // CreateAlias creates an email alias for an entity.
@@ -30,6 +39,10 @@ func (b *InMemoryBackend) CreateAlias(orgID, entityID, alias string) error {
 		actualID = r.ResourceID
 	} else {
 		return fmt.Errorf("%w: entity %q not found", ErrNotFound, entityID)
+	}
+
+	if len(b.aliases[orgID][actualID]) >= maxAliasesPerUser {
+		return fmt.Errorf("%w: entity %q already has %d aliases", ErrLimitExceeded, entityID, maxAliasesPerUser)
 	}
 
 	b.aliases[orgID][actualID] = append(b.aliases[orgID][actualID], alias)

@@ -70,6 +70,7 @@ type EC2SecurityGroup struct {
 
 // ClusterSecurityGroup represents a Redshift cluster security group.
 type ClusterSecurityGroup struct {
+	Tags                     map[string]string  `json:"tags,omitempty"`
 	ClusterSecurityGroupName string             `json:"clusterSecurityGroupName"`
 	Description              string             `json:"description"`
 	IPRanges                 []IPRange          `json:"ipRanges"`
@@ -330,36 +331,45 @@ type SnapshotCopyConfig struct {
 	RetentionPeriod       int    `json:"retentionPeriod"`
 }
 
-// ClusterPendingModifiedValues holds changes queued for the next maintenance window.
+// ClusterPendingModifiedValues holds changes queued for the next maintenance
+// window. Fields mirror the real types.PendingModifiedValues (redshift@v1.65.4
+// types/types.go:1491) subset this backend models.
 type ClusterPendingModifiedValues struct {
-	NodeType      string `json:"nodeType,omitempty"`
-	NumberOfNodes int    `json:"numberOfNodes,omitempty"`
-	Encrypted     bool   `json:"encrypted,omitempty"`
+	NodeType           string `json:"nodeType,omitempty"`
+	ClusterVersion     string `json:"clusterVersion,omitempty"`
+	NumberOfNodes      int    `json:"numberOfNodes,omitempty"`
+	Encrypted          bool   `json:"encrypted,omitempty"`
+	PubliclyAccessible bool   `json:"publiclyAccessible,omitempty"`
 }
 
 // Cluster represents a Redshift cluster.
 type Cluster struct {
 	Tags                        *tags.Tags                    `json:"tags,omitempty"`
 	PendingModifiedValues       *ClusterPendingModifiedValues `json:"pendingModifiedValues,omitempty"`
-	MasterUsername              string                        `json:"masterUsername"`
-	PreferredMaintenanceWindow  string                        `json:"preferredMaintenanceWindow,omitempty"`
+	SnapshotScheduleState       string                        `json:"snapshotScheduleState,omitempty"`
+	ClusterIdentifier           string                        `json:"clusterIdentifier"`
 	ClusterType                 string                        `json:"clusterType"`
 	Endpoint                    string                        `json:"endpoint"`
 	Status                      string                        `json:"status"`
 	DBName                      string                        `json:"dbName"`
-	ClusterIdentifier           string                        `json:"clusterIdentifier"`
+	PreferredMaintenanceWindow  string                        `json:"preferredMaintenanceWindow,omitempty"`
 	VpcID                       string                        `json:"vpcId,omitempty"`
-	KmsKeyID                    string                        `json:"kmsKeyId,omitempty"`
+	MasterUsername              string                        `json:"masterUsername"`
 	NodeType                    string                        `json:"nodeType"`
-	SnapshotScheduleState       string                        `json:"snapshotScheduleState,omitempty"`
 	SnapshotScheduleIdentifier  string                        `json:"snapshotScheduleIdentifier,omitempty"`
-	CatalogArn                  string                        `json:"catalogArn,omitempty"`
+	KmsKeyID                    string                        `json:"kmsKeyId,omitempty"`
+	ClusterVersion              string                        `json:"clusterVersion,omitempty"`
 	LakehouseRegistrationStatus string                        `json:"lakehouseRegistrationStatus,omitempty"`
+	ClusterParameterGroupName   string                        `json:"clusterParameterGroupName,omitempty"`
+	CatalogArn                  string                        `json:"catalogArn,omitempty"`
+	ClusterSecurityGroups       []string                      `json:"clusterSecurityGroups,omitempty"`
+	VpcSecurityGroupIDs         []string                      `json:"vpcSecurityGroupIds,omitempty"`
 	IamRoles                    []string                      `json:"iamRoles,omitempty"`
 	Port                        int                           `json:"port"`
 	NumberOfNodes               int                           `json:"numberOfNodes"`
 	Encrypted                   bool                          `json:"encrypted"`
 	EnhancedVpcRouting          bool                          `json:"enhancedVpcRouting"`
+	PubliclyAccessible          bool                          `json:"publiclyAccessible,omitempty"`
 }
 
 // ClusterCredentials holds temporary cluster credentials.

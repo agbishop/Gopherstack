@@ -84,6 +84,47 @@ func TestDescribePackages_PaginationOrderIsReproducible(t *testing.T) {
 	}
 }
 
+// TestOpenSearchHandler_DeletePackage_RejectedWhileAssociated locks real
+// AWS's DeletePackage doc comment: "The package can't be associated with
+// any OpenSearch Service domain".
+func TestOpenSearchHandler_DeletePackage_RejectedWhileAssociated(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+
+	createTestDomain(t, h, "delpkg-domain")
+
+	pkgResp := doRequest(t, h, http.MethodPost, "/2021-01-01/packages",
+		map[string]any{"PackageName": "delpkg-pkg", "PackageType": "TXT-DICTIONARY"})
+
+	var pkgOut map[string]any
+	require.NoError(t, json.NewDecoder(pkgResp.Body).Decode(&pkgOut))
+	pkgResp.Body.Close()
+
+	pkgDetails, ok := pkgOut["PackageDetails"].(map[string]any)
+	require.True(t, ok)
+	pkgID, ok := pkgDetails["PackageID"].(string)
+	require.True(t, ok)
+
+	assocResp := doRequest(t, h, http.MethodPost,
+		"/2021-01-01/packages/associate/"+pkgID+"/delpkg-domain", nil)
+	assocResp.Body.Close()
+	require.Equal(t, http.StatusOK, assocResp.StatusCode)
+
+	delResp := doRequest(t, h, http.MethodDelete, "/2021-01-01/packages/"+pkgID, nil)
+	defer delResp.Body.Close()
+	assert.Equal(t, http.StatusConflict, delResp.StatusCode)
+
+	dissocResp := doRequest(t, h, http.MethodPost,
+		"/2021-01-01/packages/dissociate/"+pkgID+"/delpkg-domain", nil)
+	dissocResp.Body.Close()
+	require.Equal(t, http.StatusOK, dissocResp.StatusCode)
+
+	delResp2 := doRequest(t, h, http.MethodDelete, "/2021-01-01/packages/"+pkgID, nil)
+	defer delResp2.Body.Close()
+	assert.Equal(t, http.StatusOK, delResp2.StatusCode)
+}
+
 func TestOpenSearchHandler_DissociatePackage(t *testing.T) {
 	t.Parallel()
 

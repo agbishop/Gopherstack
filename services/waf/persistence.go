@@ -33,12 +33,13 @@ const wafSnapshotVersion = 1
 // plain maps -- see store_setup.go's file doc comment for why they do not fit
 // store.Table's keyed-by-identity-value shape.
 type backendSnapshot struct {
-	Tables             map[string]json.RawMessage   `json:"tables"`
-	ChangeTokens       map[string]string            `json:"changeTokens"`
-	RuleGroupRules     map[string][]ActivatedRule   `json:"ruleGroupRules"`
-	PermissionPolicies map[string]string            `json:"permissionPolicies"`
-	Tags               map[string]map[string]string `json:"tags"`
-	Version            int                          `json:"version"`
+	Tables                 map[string]json.RawMessage   `json:"tables"`
+	ChangeTokens           map[string]string            `json:"changeTokens"`
+	RuleGroupRules         map[string][]ActivatedRule   `json:"ruleGroupRules"`
+	PermissionPolicies     map[string]string            `json:"permissionPolicies"`
+	Tags                   map[string]map[string]string `json:"tags"`
+	OutstandingChangeToken string                       `json:"outstandingChangeToken,omitempty"`
+	Version                int                          `json:"version"`
 }
 
 func ensureNonNilMaps(s *backendSnapshot) {
@@ -72,12 +73,13 @@ func (b *InMemoryBackend) Snapshot(ctx context.Context) []byte {
 	}
 
 	return persistence.MarshalSnapshot(ctx, "waf", backendSnapshot{
-		Version:            wafSnapshotVersion,
-		Tables:             tables,
-		ChangeTokens:       b.changeTokens,
-		RuleGroupRules:     b.ruleGroupRules,
-		PermissionPolicies: b.permissionPolicies,
-		Tags:               b.tags,
+		Version:                wafSnapshotVersion,
+		Tables:                 tables,
+		ChangeTokens:           b.changeTokens,
+		RuleGroupRules:         b.ruleGroupRules,
+		PermissionPolicies:     b.permissionPolicies,
+		Tags:                   b.tags,
+		OutstandingChangeToken: b.outstandingChangeToken,
 	})
 }
 
@@ -104,6 +106,7 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 
 		b.registry.ResetAll()
 		b.changeTokens = make(map[string]string)
+		b.outstandingChangeToken = ""
 		b.ruleGroupRules = make(map[string][]ActivatedRule)
 		b.permissionPolicies = make(map[string]string)
 		b.tags = make(map[string]map[string]string)
@@ -121,6 +124,7 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 	b.ruleGroupRules = s.RuleGroupRules
 	b.permissionPolicies = s.PermissionPolicies
 	b.tags = s.Tags
+	b.outstandingChangeToken = s.OutstandingChangeToken
 
 	return nil
 }

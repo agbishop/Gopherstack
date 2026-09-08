@@ -141,7 +141,7 @@ func TestInMemoryBackend_DeleteApplication(t *testing.T) {
 				_, _ = b.CreateApplication(context.Background(), "del-app", "", nil)
 			}
 
-			err := b.DeleteApplication(context.Background(), tt.appName)
+			err := b.DeleteApplication(context.Background(), tt.appName, false)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -157,6 +157,46 @@ func TestInMemoryBackend_DeleteApplication(t *testing.T) {
 			assert.Empty(t, apps)
 		})
 	}
+}
+
+// TestInMemoryBackend_DeleteApplication_ClearsManagedActionHistory verifies
+// that the DeleteApplication cascade -- which force-terminates the
+// application's environments rather than calling TerminateEnvironment
+// directly -- still clears their managed action history. Otherwise
+// recreating an environment with the same (user-chosen, reusable) name under
+// a recreated application inherits the terminated environment's stale
+// history.
+func TestInMemoryBackend_DeleteApplication_ClearsManagedActionHistory(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	ctx := context.Background()
+
+	_, err := b.CreateApplication(ctx, "my-app", "", nil)
+	require.NoError(t, err)
+
+	_, err = b.CreateEnvironment(ctx, "my-app", "my-env", "", "", nil,
+		elasticbeanstalk.CreateEnvironmentParams{})
+	require.NoError(t, err)
+
+	b.AddManagedActionHistory(ctx, "my-env", "action-1", "InstanceRefresh", "ghost action", "Succeeded")
+	require.NotEmpty(t, b.DescribeEnvironmentManagedActionHistory(ctx, "my-env"))
+
+	err = b.DeleteApplication(ctx, "my-app", true)
+	require.NoError(t, err)
+
+	_, err = b.CreateApplication(ctx, "my-app", "", nil)
+	require.NoError(t, err)
+
+	_, err = b.CreateEnvironment(ctx, "my-app", "my-env", "", "", nil,
+		elasticbeanstalk.CreateEnvironmentParams{})
+	require.NoError(t, err)
+
+	assert.Empty(
+		t,
+		b.DescribeEnvironmentManagedActionHistory(ctx, "my-env"),
+		"recreated environment must not inherit the deleted application's terminated environment's managed action history",
+	)
 }
 
 // TestInMemoryBackend_UpdateApplication_BumpsDateUpdated verifies that UpdateApplication

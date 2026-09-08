@@ -587,3 +587,79 @@ func TestAutomationRulesV2(t *testing.T) {
 		})
 	}
 }
+
+// gopherstack-1qf: automation rules were pure CRUD -- Criteria/Actions were
+// stored and echoed back but never evaluated against imported findings.
+// AWS documents that BatchImportFindings itself cannot set
+// Note/UserDefinedFields/VerificationState/Workflow "since they're managed
+// by Security Hub customers/automation rules" (findings.go's
+// findingCustomerManagedFields doc comment) -- automation rules are the
+// mechanism that manages them, so a rule's FINDING_FIELDS_UPDATE action must
+// actually apply on import for that architecture to have any real effect.
+func TestBatchImportFindings_AutomationRuleFires(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		criteriaTitle string
+		wantSeverity  string
+	}{
+		{
+			name:          "matching_finding_severity_updated_by_rule",
+			criteriaTitle: "Test finding",
+			wantSeverity:  "CRITICAL",
+		},
+		{
+			name:          "non_matching_finding_untouched",
+			criteriaTitle: "some other title entirely",
+			wantSeverity:  "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			doRequest(t, h, http.MethodPost, "/accounts", map[string]any{"EnableDefaultStandards": false})
+
+			doRequest(t, h, http.MethodPost, "/automationrules/create", map[string]any{
+				"RuleName":   "escalate-test-findings",
+				"RuleOrder":  1,
+				"RuleStatus": "ENABLED",
+				"IsTerminal": true,
+				"Criteria": map[string]any{
+					"Title": []map[string]any{
+						{"Value": tc.criteriaTitle, "Comparison": "EQUALS"},
+					},
+				},
+				"Actions": []map[string]any{
+					{
+						"Type": "FINDING_FIELDS_UPDATE",
+						"FindingFieldsUpdate": map[string]any{
+							"Severity": map[string]any{"Label": "CRITICAL"},
+						},
+					},
+				},
+			})
+
+			rec := doRequest(t, h, http.MethodPost, "/findings/import", map[string]any{
+				"Findings": []any{securityhub.ValidFinding(nil)},
+			})
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			rec = doRequest(t, h, http.MethodPost, "/findings", map[string]any{"Filters": map[string]any{}})
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var resp struct {
+				Findings []map[string]any `json:"Findings"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			require.Len(t, resp.Findings, 1)
+
+			severity, _ := resp.Findings[0]["Severity"].(map[string]any)
+			gotLabel, _ := severity["Label"].(string)
+			assert.Equal(t, tc.wantSeverity, gotLabel)
+		})
+	}
+}

@@ -52,12 +52,12 @@ func (b *InMemoryBackend) StartMedicalTranscriptionJob(
 		return nil, fmt.Errorf("%w: MedicalTranscriptionJobName is required", ErrValidation)
 	}
 
-	if err := validateLanguageCode(input.LanguageCode); err != nil {
-		return nil, err
-	}
-
 	if input.LanguageCode == "" {
 		return nil, fmt.Errorf("%w: LanguageCode is required", ErrValidation)
+	}
+
+	if input.LanguageCode != "en-US" {
+		return nil, fmt.Errorf("%w: LanguageCode must be en-US for medical transcription jobs", ErrValidation)
 	}
 
 	if err := validateMedicalSpecialty(input.Specialty); err != nil {

@@ -21,6 +21,22 @@ func (b *InMemoryBackend) ListTagsForResource(arn string) (map[string]string, er
 	return nil, fmt.Errorf("%w: resource %s not found", ErrResourceNotFound, arn)
 }
 
+// mergedTagCount returns how many distinct keys existing and incoming would
+// have combined -- used to enforce the 50-tag-per-resource quota on the
+// post-merge total, not the incoming request alone (TooManyTagsException:
+// "the maximum number of tags that can be applied to a resource is 50").
+func mergedTagCount(existing, incoming map[string]string) int {
+	count := len(existing)
+
+	for k := range incoming {
+		if _, ok := existing[k]; !ok {
+			count++
+		}
+	}
+
+	return count
+}
+
 // TagResource adds tags to a resource (namespace or service).
 func (b *InMemoryBackend) TagResource(arn string, tags map[string]string) error {
 	b.mu.Lock("TagResource")
@@ -28,6 +44,10 @@ func (b *InMemoryBackend) TagResource(arn string, tags map[string]string) error 
 
 	if nsMatches := b.namespacesByARN.Get(arn); len(nsMatches) > 0 {
 		ns := nsMatches[0]
+		if mergedTagCount(ns.Tags, tags) > maxTagCount {
+			return fmt.Errorf("%w: resource %s would have more than %d tags", ErrTooManyTags, arn, maxTagCount)
+		}
+
 		if ns.Tags == nil {
 			ns.Tags = make(map[string]string)
 		}
@@ -39,6 +59,10 @@ func (b *InMemoryBackend) TagResource(arn string, tags map[string]string) error 
 
 	if svcMatches := b.servicesByARN.Get(arn); len(svcMatches) > 0 {
 		svc := svcMatches[0]
+		if mergedTagCount(svc.Tags, tags) > maxTagCount {
+			return fmt.Errorf("%w: resource %s would have more than %d tags", ErrTooManyTags, arn, maxTagCount)
+		}
+
 		if svc.Tags == nil {
 			svc.Tags = make(map[string]string)
 		}

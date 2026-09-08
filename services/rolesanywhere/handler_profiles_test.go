@@ -364,3 +364,31 @@ func TestHandler_Profile_NoTagsFieldOnResponse(t *testing.T) {
 	p := resp["profile"].(map[string]any)
 	assert.NotContains(t, p, "tags")
 }
+
+// TestHandler_ListProfiles_PageSizeQueryParam proves ListProfiles honors
+// "pageSize", the real AWS wire query param every List operation's
+// serializer emits (see
+// aws-sdk-go-v2/service/rolesanywhere/serializers.go's
+// awsRestjson1_serializeOpHttpBindingsListProfilesInput, which calls
+// encoder.SetQuery("pageSize")) -- not the fictional "maxResults" this
+// handler previously looked for instead.
+func TestHandler_ListProfiles_PageSizeQueryParam(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	for i := range 3 {
+		doREST(t, h, http.MethodPost, "/profiles", map[string]any{
+			"name":     "page-profile-" + string(rune('a'+i)),
+			"roleArns": []string{"arn:aws:iam::123456789012:role/MyRole"},
+		})
+	}
+
+	rec := doREST(t, h, http.MethodGet, "/profiles?pageSize=1", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	items, _ := resp["profiles"].([]any)
+	assert.Len(t, items, 1, "pageSize=1 must truncate the page to 1 item")
+}

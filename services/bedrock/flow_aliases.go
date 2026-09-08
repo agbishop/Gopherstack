@@ -123,10 +123,12 @@ func (b *InMemoryBackend) DeleteFlowAlias(flowID, aliasID string) error {
 
 	key := flowAliasKey(flowID, aliasID)
 
-	if _, ok := b.flowAliases.Get(key); !ok {
+	fa, ok := b.flowAliases.Get(key)
+	if !ok {
 		return fmt.Errorf("%w: flow alias %q not found", ErrNotFound, aliasID)
 	}
 
+	delete(b.agentTags, fa.FlowAliasArn)
 	b.flowAliases.Delete(key)
 
 	return nil

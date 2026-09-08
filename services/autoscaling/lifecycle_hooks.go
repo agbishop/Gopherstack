@@ -59,8 +59,17 @@ func (b *InMemoryBackend) DeleteLifecycleHook(groupName, hookName string) error 
 		return fmt.Errorf("%w: lifecycle hook %q not found", ErrLifecycleHookNotFound, hookName)
 	}
 
-	b.cleanupHookTimers(groupName, hookName)
+	b.resolveOutstandingHookActions(groupName, hookName)
 	b.lifecycleHooks.Delete(key)
+
+	// A launching ABANDON resolved above terminates-and-replaces the instance
+	// (applyLifecycleResult), and the replacement is re-gated via
+	// gateNewLaunchInstances/firstHookInChain -- which, since hookName was
+	// still registered during the call above, can re-arm it right back onto
+	// the hook now being deleted. Resolve once more now that hookName is
+	// actually gone, so firstHookInChain skips it and the replacement isn't
+	// stranded the same way.
+	b.resolveOutstandingHookActions(groupName, hookName)
 
 	return nil
 }
@@ -225,6 +234,37 @@ func (b *InMemoryBackend) DescribeLifecycleHooks(groupName string, hookNames []s
 	})
 
 	return result, nil
+}
+
+// resolveOutstandingHookActions completes, rather than silently cancels, any
+// pending lifecycle action gated by hookName before the hook is deleted --
+// api_op_DeleteLifecycleHook.go: "If there are any outstanding lifecycle
+// actions, they are completed first (ABANDON for launching instances,
+// CONTINUE for terminating instances)". Must run before hookName is removed
+// from b.lifecycleHooks (applyLifecycleResult's chain lookup needs to still
+// find it), and with b.mu held (write lock).
+func (b *InMemoryBackend) resolveOutstandingHookActions(groupName, hookName string) {
+	var toResolve []*pendingHookAction
+
+	b.pendingHookTokens.Range(func(action *pendingHookAction) bool {
+		if action.GroupName == groupName && action.HookName == hookName {
+			toResolve = append(toResolve, action)
+		}
+
+		return true
+	})
+
+	for _, action := range toResolve {
+		action.timer.Stop()
+		b.pendingHookTokens.Delete(action.Token)
+
+		result := lifecycleActionAbandon
+		if action.Transition == transitionTerminating {
+			result = lifecycleActionContinue
+		}
+
+		b.applyLifecycleResult(action, result)
+	}
 }
 
 // cleanupHookTimers cancels and removes pending hook actions for a group/hook.

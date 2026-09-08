@@ -27,6 +27,11 @@ func partitionEntryKeyFn(v *Partition) string {
 	return partitionKey(v.DatabaseName, v.TableName, v.Values)
 }
 
+// partitionTableIndexKeyFn groups partitions by owning table for
+// InMemoryBackend.GetPartitions, so it can look up one table's partitions
+// directly instead of scanning every partition in the backend.
+func partitionTableIndexKeyFn(v *Partition) string { return tableKey(v.DatabaseName, v.TableName) }
+
 // tableVersionEntryKeyFn derives the composite db|table|versionID key from a
 // TableVersion's own nested Table pointer. It tolerates a nil Table (rather
 // than panicking) because AddTableVersionInternal is the only writer and, for
@@ -148,9 +153,10 @@ func formTypeKeyFn(v *FormType) string { return v.ID }
 //   - jobRuns / workflowRuns / schemaVersions / sessionStatements /
 //     crawlHistory: one-to-many (map[string][]*T) history/list fields, not
 //     the map[string]*T shape store.Table replaces.
-//   - jobRunReadyAt / jobRunDoneAt / crawlerReadyAt: ephemeral lifecycle-timer
-//     bookkeeping (ready/done rather than resource state), not persisted, and
-//     not map[string]*T.
+//   - jobRunReadyAt / jobRunDoneAt / jobRunTimeoutAt / jobRunStopAt /
+//     crawlerReadyAt: ephemeral lifecycle-timer bookkeeping (ready/done/
+//     timeout/stop rather than resource state), not persisted, and not
+//     map[string]*T.
 //   - iterableFormItems: a nested per-asset, per-iterable-form-name collection
 //     (map[string]map[string]map[string]*iterableFormItemRecord), not the
 //     map[string]*T shape store.Table replaces -- see the field's doc comment
@@ -183,6 +189,7 @@ var tableRegistrations = []func(*InMemoryBackend){
 	},
 	func(b *InMemoryBackend) {
 		b.partitions = store.Register(b.registry, "partitions", store.New(partitionEntryKeyFn))
+		b.partitionsByTable = b.partitions.AddIndex("partitionsByTable", partitionTableIndexKeyFn)
 	},
 	func(b *InMemoryBackend) {
 		b.tableVersions = store.Register(b.registry, "tableVersions", store.New(tableVersionEntryKeyFn))

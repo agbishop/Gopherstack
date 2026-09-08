@@ -9,20 +9,41 @@ import (
 )
 
 type storedFileCache struct {
-	CreationTime         time.Time         `json:"creationTime"`
-	Tags                 map[string]string `json:"tags"`
-	FileCacheID          string            `json:"fileCacheId"`
-	FileCacheType        string            `json:"fileCacheType"`
-	FileCacheTypeVersion string            `json:"fileCacheTypeVersion,omitempty"`
-	Lifecycle            string            `json:"lifecycle"`
-	ResourceARN          string            `json:"resourceArn"`
-	SubnetIDs            []string          `json:"subnetIds,omitempty"`
-	StorageCapacityGiB   int32             `json:"storageCapacityGiB,omitempty"`
+	CreationTime                     time.Time         `json:"creationTime"`
+	Tags                             map[string]string `json:"tags"`
+	FileCacheID                      string            `json:"fileCacheId"`
+	FileCacheType                    string            `json:"fileCacheType"`
+	FileCacheTypeVersion             string            `json:"fileCacheTypeVersion,omitempty"`
+	Lifecycle                        string            `json:"lifecycle"`
+	ResourceARN                      string            `json:"resourceArn"`
+	LustreDeploymentType             string            `json:"lustreDeploymentType,omitempty"`
+	LustreMountName                  string            `json:"lustreMountName,omitempty"`
+	LustreWeeklyMaintenanceStartTime string            `json:"lustreWeeklyMaintenanceStartTime,omitempty"`
+	SubnetIDs                        []string          `json:"subnetIds,omitempty"`
+	StorageCapacityGiB               int32             `json:"storageCapacityGiB,omitempty"`
+	LustreMetadataStorageCapacity    int32             `json:"lustreMetadataStorageCapacity,omitempty"`
+	LustrePerUnitStorageThroughput   int32             `json:"lustrePerUnitStorageThroughput,omitempty"`
+}
+
+// lustreConfiguration builds the FileCacheLustreConfiguration response block.
+// CreateFileCache requires LustreConfiguration (see applyFileCacheLustreConfig),
+// so this is always non-nil once a file cache exists.
+func (c *storedFileCache) lustreConfiguration() *FileCacheLustreConfiguration {
+	return &FileCacheLustreConfiguration{
+		MetadataConfiguration: &FileCacheLustreMetadataConfiguration{
+			StorageCapacity: c.LustreMetadataStorageCapacity,
+		},
+		DeploymentType:             c.LustreDeploymentType,
+		MountName:                  c.LustreMountName,
+		WeeklyMaintenanceStartTime: c.LustreWeeklyMaintenanceStartTime,
+		PerUnitStorageThroughput:   c.LustrePerUnitStorageThroughput,
+	}
 }
 
 func (c *storedFileCache) toPublic() *FileCache {
 	return &FileCache{
 		CreationTime:         epochTime(c.CreationTime),
+		LustreConfiguration:  c.lustreConfiguration(),
 		FileCacheID:          c.FileCacheID,
 		FileCacheType:        c.FileCacheType,
 		FileCacheTypeVersion: c.FileCacheTypeVersion,
@@ -39,6 +60,7 @@ func (c *storedFileCache) toPublic() *FileCache {
 func (c *storedFileCache) toPublicCreating() *FileCacheCreating {
 	return &FileCacheCreating{
 		CreationTime:         epochTime(c.CreationTime),
+		LustreConfiguration:  c.lustreConfiguration(),
 		FileCacheID:          c.FileCacheID,
 		FileCacheType:        c.FileCacheType,
 		FileCacheTypeVersion: c.FileCacheTypeVersion,
@@ -50,12 +72,67 @@ func (c *storedFileCache) toPublicCreating() *FileCacheCreating {
 	}
 }
 
+// createFileCacheLustreConfigurationInput mirrors
+// CreateFileCacheLustreConfiguration (fsx@v1.68.4 types/types.go:574).
+// DeploymentType, MetadataConfiguration, and PerUnitStorageThroughput are
+// required members on the real SDK type.
+type createFileCacheLustreConfigurationInput struct {
+	MetadataConfiguration      *createFileCacheLustreMetadataInput `json:"MetadataConfiguration"`
+	PerUnitStorageThroughput   *int32                              `json:"PerUnitStorageThroughput,omitempty"`
+	DeploymentType             string                              `json:"DeploymentType,omitempty"`
+	WeeklyMaintenanceStartTime string                              `json:"WeeklyMaintenanceStartTime,omitempty"`
+}
+
+// createFileCacheLustreMetadataInput mirrors
+// FileCacheLustreMetadataConfiguration (fsx@v1.68.4 types/types.go:2550).
+// StorageCapacity is a required member on the real SDK type.
+type createFileCacheLustreMetadataInput struct {
+	StorageCapacity *int32 `json:"StorageCapacity,omitempty"`
+}
+
 type createFileCacheInput struct {
-	FileCacheType        string   `json:"FileCacheType"`
-	FileCacheTypeVersion string   `json:"FileCacheTypeVersion"`
-	Tags                 []Tag    `json:"Tags,omitempty"`
-	SubnetIDs            []string `json:"SubnetIds"`
-	StorageCapacityGiB   int32    `json:"StorageCapacity,omitempty"`
+	LustreConfiguration  *createFileCacheLustreConfigurationInput `json:"LustreConfiguration"`
+	FileCacheType        string                                   `json:"FileCacheType"`
+	FileCacheTypeVersion string                                   `json:"FileCacheTypeVersion"`
+	Tags                 []Tag                                    `json:"Tags,omitempty"`
+	SubnetIDs            []string                                 `json:"SubnetIds"`
+	StorageCapacityGiB   int32                                    `json:"StorageCapacity,omitempty"`
+}
+
+// applyFileCacheLustreConfig validates and applies cfg onto c.
+// LustreConfiguration is a required CreateFileCacheInput member in effect
+// (FileCacheType is always LUSTRE, and real AWS's MissingFileCacheConfiguration
+// exception -- "A cache configuration is required for this operation." --
+// covers exactly this case), matching the CreateFileSystem
+// per-type-config-block-required pattern (see applyWindowsConfig et al. in
+// file_systems.go): an absent block returns MissingFileCacheConfiguration, a
+// present-but-incomplete block returns BadRequest.
+func applyFileCacheLustreConfig(c *storedFileCache, cfg *createFileCacheLustreConfigurationInput) error {
+	if cfg == nil {
+		return ErrMissingFileCacheConfiguration
+	}
+
+	if cfg.DeploymentType == "" {
+		return fmt.Errorf("%w: LustreConfiguration.DeploymentType is required", ErrValidation)
+	}
+
+	if cfg.MetadataConfiguration == nil || cfg.MetadataConfiguration.StorageCapacity == nil {
+		return fmt.Errorf(
+			"%w: LustreConfiguration.MetadataConfiguration.StorageCapacity is required", ErrValidation,
+		)
+	}
+
+	if cfg.PerUnitStorageThroughput == nil {
+		return fmt.Errorf("%w: LustreConfiguration.PerUnitStorageThroughput is required", ErrValidation)
+	}
+
+	c.LustreDeploymentType = cfg.DeploymentType
+	c.LustreWeeklyMaintenanceStartTime = cfg.WeeklyMaintenanceStartTime
+	c.LustreMetadataStorageCapacity = *cfg.MetadataConfiguration.StorageCapacity
+	c.LustrePerUnitStorageThroughput = *cfg.PerUnitStorageThroughput
+	c.LustreMountName = generateLustreMountName()
+
+	return nil
 }
 
 // CreateFileCache creates a file cache. FileCacheTypeVersion and SubnetIds
@@ -80,7 +157,7 @@ func (b *InMemoryBackend) CreateFileCache(input *createFileCacheInput) (*FileCac
 		return nil, fmt.Errorf("%w: SubnetIds is required", ErrValidation)
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
@@ -102,6 +179,10 @@ func (b *InMemoryBackend) CreateFileCache(input *createFileCacheInput) (*FileCac
 		ResourceARN:          arn,
 		SubnetIDs:            input.SubnetIDs,
 		StorageCapacityGiB:   input.StorageCapacityGiB,
+	}
+
+	if err := applyFileCacheLustreConfig(c, input.LustreConfiguration); err != nil {
+		return nil, err
 	}
 
 	b.fileCaches.Put(c)

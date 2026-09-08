@@ -12,27 +12,28 @@ const (
 
 // InMemoryBackend is the in-memory implementation of StorageBackend for WAF Classic.
 type InMemoryBackend struct {
-	mu                    *lockmetrics.RWMutex
-	registry              *store.Registry
-	changeTokens          map[string]string // token → status
-	webACLs               *store.Table[WebACL]
-	rules                 *store.Table[Rule]
-	rateBasedRules        *store.Table[RateBasedRule]
-	ipSets                *store.Table[IPSet]
-	byteMatchSets         *store.Table[ByteMatchSet]
-	sizeConstraintSets    *store.Table[SizeConstraintSet]
-	sqlInjectionMatchSets *store.Table[SqlInjectionMatchSet]
-	xssMatchSets          *store.Table[XssMatchSet]
-	geoMatchSets          *store.Table[GeoMatchSet]
-	regexPatternSets      *store.Table[RegexPatternSet]
-	regexMatchSets        *store.Table[RegexMatchSet]
-	ruleGroups            *store.Table[RuleGroup]
-	ruleGroupRules        map[string][]ActivatedRule // ruleGroupId → activated rules
-	loggingConfigs        *store.Table[LoggingConfiguration]
-	permissionPolicies    map[string]string            // resourceArn → policy JSON
-	tags                  map[string]map[string]string // arn → tags
-	accountID             string
-	region                string
+	mu                     *lockmetrics.RWMutex
+	registry               *store.Registry
+	changeTokens           map[string]string // token → status
+	outstandingChangeToken string            // last PROVISIONED, unconsumed token; "" if none
+	webACLs                *store.Table[WebACL]
+	rules                  *store.Table[Rule]
+	rateBasedRules         *store.Table[RateBasedRule]
+	ipSets                 *store.Table[IPSet]
+	byteMatchSets          *store.Table[ByteMatchSet]
+	sizeConstraintSets     *store.Table[SizeConstraintSet]
+	sqlInjectionMatchSets  *store.Table[SqlInjectionMatchSet]
+	xssMatchSets           *store.Table[XssMatchSet]
+	geoMatchSets           *store.Table[GeoMatchSet]
+	regexPatternSets       *store.Table[RegexPatternSet]
+	regexMatchSets         *store.Table[RegexMatchSet]
+	ruleGroups             *store.Table[RuleGroup]
+	ruleGroupRules         map[string][]ActivatedRule // ruleGroupId → activated rules
+	loggingConfigs         *store.Table[LoggingConfiguration]
+	permissionPolicies     map[string]string            // resourceArn → policy JSON
+	tags                   map[string]map[string]string // arn → tags
+	accountID              string
+	region                 string
 }
 
 // NewInMemoryBackend constructs a new InMemoryBackend.
@@ -130,6 +131,7 @@ func (b *InMemoryBackend) Reset() {
 
 	b.registry.ResetAll()
 	b.changeTokens = make(map[string]string)
+	b.outstandingChangeToken = ""
 	b.ruleGroupRules = make(map[string][]ActivatedRule)
 	b.permissionPolicies = make(map[string]string)
 	b.tags = make(map[string]map[string]string)

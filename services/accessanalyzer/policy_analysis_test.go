@@ -124,13 +124,44 @@ func TestCheckAccessNotGrantedLogic(t *testing.T) {
 			},
 			wantResult: "PASS",
 		},
+		{
+			// NotAction "s3:PutObject" grants every OTHER action, including
+			// s3:GetObject -- gopherstack-xyu4 regression, previously
+			// NotAction was ignored and this statement was treated as
+			// granting nothing, giving a confident, wrong PASS.
+			name: "not_action_grants_other_actions_fails",
+			policy: `{"Version":"2012-10-17","Statement":[` +
+				`{"Effect":"Allow","NotAction":"s3:PutObject","Resource":"*"}]}`,
+			accesses:   []accessanalyzer.AccessSpec{{Actions: []string{getObj}, Resources: []string{"*"}}},
+			wantResult: "FAIL",
+		},
+		{
+			name: "not_action_excluded_action_passes",
+			policy: `{"Version":"2012-10-17","Statement":[` +
+				`{"Effect":"Allow","NotAction":"s3:GetObject","Resource":"*"}]}`,
+			accesses:   []accessanalyzer.AccessSpec{{Actions: []string{getObj}, Resources: []string{"*"}}},
+			wantResult: "PASS",
+		},
+		{
+			// NotResource excludes only "other-bucket"; bucketWildcard is
+			// still covered, so this grants access to it -- same NotAction
+			// bug, mirrored for NotResource.
+			name: "not_resource_grants_other_resources_fails",
+			policy: `{"Version":"2012-10-17","Statement":[` +
+				`{"Effect":"Allow","Action":"s3:GetObject","NotResource":"arn:aws:s3:::other-bucket/*"}]}`,
+			accesses: []accessanalyzer.AccessSpec{
+				{Actions: []string{getObj}, Resources: []string{bucketWildcard}},
+			},
+			wantResult: "FAIL",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			res := accessanalyzer.CheckAccessNotGranted(tt.policy, tt.accesses)
+			res, err := accessanalyzer.CheckAccessNotGranted(tt.policy, tt.accesses)
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, res.Result)
 
 			if tt.wantResult == "FAIL" {
@@ -138,6 +169,34 @@ func TestCheckAccessNotGrantedLogic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCheckAccessNotGrantedMalformedPolicy proves a syntactically invalid
+// policyDocument is reported as ErrMalformedPolicy rather than silently
+// parsed as an empty policy (gopherstack-x9ff: previously parsePolicy
+// swallowed the json.Unmarshal error, so garbage input reported PASS
+// regardless of the requested access).
+func TestCheckAccessNotGrantedMalformedPolicy(t *testing.T) {
+	t.Parallel()
+
+	_, err := accessanalyzer.CheckAccessNotGranted("not-json", []accessanalyzer.AccessSpec{
+		{Actions: []string{"s3:GetObject"}, Resources: []string{"*"}},
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, accessanalyzer.ErrMalformedPolicy)
+}
+
+// TestCheckAccessNotGrantedEmptyPolicyNotMalformed proves an empty/absent
+// policyDocument still parses as a valid empty policy (PASS), not an error --
+// gopherstack-x9ff is about garbage input, not absent input.
+func TestCheckAccessNotGrantedEmptyPolicyNotMalformed(t *testing.T) {
+	t.Parallel()
+
+	res, err := accessanalyzer.CheckAccessNotGranted("", []accessanalyzer.AccessSpec{
+		{Actions: []string{"s3:GetObject"}, Resources: []string{"*"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "PASS", res.Result)
 }
 
 // TestCheckNoNewAccessLogic covers CheckNoNewAccess diff logic.
@@ -186,18 +245,60 @@ func TestCheckNoNewAccessLogic(t *testing.T) {
 			newPol:     policyAllow("s3:GetObject", "*"),
 			wantResult: "PASS",
 		},
+		{
+			// existing grants every action except PutObject via NotAction;
+			// the new policy's explicit GetObject grant is therefore already
+			// covered. gopherstack-xyu4 regression: previously NotAction was
+			// ignored on the existing-policy side too, so this reported a
+			// FAIL (new access) even though existing already granted it.
+			name: "existing_not_action_already_covers_new_grant_passes",
+			existing: `{"Version":"2012-10-17","Statement":[` +
+				`{"Effect":"Allow","NotAction":"s3:PutObject","Resource":"*"}]}`,
+			newPol:     policyAllow("s3:GetObject", "*"),
+			wantResult: "PASS",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			res := accessanalyzer.CheckNoNewAccess(tt.existing, tt.newPol)
+			res, err := accessanalyzer.CheckNoNewAccess(tt.existing, tt.newPol)
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, res.Result)
 
 			if tt.wantResult == "FAIL" {
 				assert.NotEmpty(t, res.Reasons)
 			}
+		})
+	}
+}
+
+// TestCheckNoNewAccessMalformedPolicy proves a syntactically invalid
+// existingPolicyDocument or newPolicyDocument is reported as
+// ErrMalformedPolicy rather than silently parsed as an empty policy
+// (gopherstack-x9ff).
+func TestCheckNoNewAccessMalformedPolicy(t *testing.T) {
+	t.Parallel()
+
+	valid := policyEmpty()
+
+	tests := []struct {
+		existing string
+		newPol   string
+		name     string
+	}{
+		{name: "malformed_existing", existing: "not-json", newPol: valid},
+		{name: "malformed_new", existing: valid, newPol: "not-json"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := accessanalyzer.CheckNoNewAccess(tt.existing, tt.newPol)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, accessanalyzer.ErrMalformedPolicy)
 		})
 	}
 }
@@ -258,7 +359,8 @@ func TestCheckNoPublicAccessLogic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			res := accessanalyzer.CheckNoPublicAccess(tt.policy)
+			res, err := accessanalyzer.CheckNoPublicAccess(tt.policy)
+			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, res.Result)
 
 			if tt.wantResult == "FAIL" {
@@ -266,6 +368,17 @@ func TestCheckNoPublicAccessLogic(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCheckNoPublicAccessMalformedPolicy proves a syntactically invalid
+// policyDocument is reported as ErrMalformedPolicy rather than silently
+// parsed as an empty (therefore never-public) policy (gopherstack-x9ff).
+func TestCheckNoPublicAccessMalformedPolicy(t *testing.T) {
+	t.Parallel()
+
+	_, err := accessanalyzer.CheckNoPublicAccess("not-json")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, accessanalyzer.ErrMalformedPolicy)
 }
 
 // TestValidatePolicyLogic covers ValidatePolicy structural validation.

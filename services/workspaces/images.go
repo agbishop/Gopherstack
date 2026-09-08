@@ -114,13 +114,22 @@ func (b *InMemoryBackend) CreateWorkspaceImage(
 	return img, nil
 }
 
-// DeleteWorkspaceImage removes an image.
+// DeleteWorkspaceImage removes an image. Returns errImageInUse when a bundle
+// still references the image: "To delete an image, you must first delete any
+// bundles that are associated with the image" (api_op_DeleteWorkspaceImage.go
+// doc comment).
 func (b *InMemoryBackend) DeleteWorkspaceImage(imageID string) error {
 	b.mu.Lock("DeleteWorkspaceImage")
 	defer b.mu.Unlock()
 
 	if !b.images.Has(imageID) {
 		return errImageNotFound
+	}
+
+	for _, bun := range b.customBundles.All() {
+		if bun.ImageID == imageID {
+			return errImageInUse
+		}
 	}
 
 	b.images.Delete(imageID)

@@ -290,24 +290,37 @@ func TestHandler_CancelJob_NonCancellable(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		preStatus  string
-		wantStatus int
+		name          string
+		preStatus     string
+		wantJobStatus string
+		wantStatus    int
 	}{
 		{
-			name:       "cancel_submitted_succeeds",
-			preStatus:  "SUBMITTED",
-			wantStatus: http.StatusOK,
+			name:          "cancel_submitted_succeeds",
+			preStatus:     "SUBMITTED",
+			wantJobStatus: "FAILED",
+			wantStatus:    http.StatusOK,
 		},
 		{
-			name:       "cancel_running_fails",
-			preStatus:  "RUNNING",
-			wantStatus: http.StatusBadRequest,
+			// AWS: "Jobs that progressed to the STARTING or RUNNING state
+			// aren't canceled. However, the API operation still succeeds,
+			// even if no job is canceled." (api_op_CancelJob.go)
+			name:          "cancel_running_is_a_noop_that_still_succeeds",
+			preStatus:     "RUNNING",
+			wantJobStatus: "RUNNING",
+			wantStatus:    http.StatusOK,
 		},
 		{
-			name:       "cancel_succeeded_fails",
-			preStatus:  "SUCCEEDED",
-			wantStatus: http.StatusBadRequest,
+			name:          "cancel_starting_is_a_noop_that_still_succeeds",
+			preStatus:     "STARTING",
+			wantJobStatus: "STARTING",
+			wantStatus:    http.StatusOK,
+		},
+		{
+			name:          "cancel_succeeded_fails",
+			preStatus:     "SUCCEEDED",
+			wantJobStatus: "SUCCEEDED",
+			wantStatus:    http.StatusBadRequest,
 		},
 	}
 
@@ -357,6 +370,16 @@ func TestHandler_CancelJob_NonCancellable(t *testing.T) {
 				"reason": "test",
 			})
 			assert.Equal(t, tt.wantStatus, rec.Code)
+
+			describeRec := post(t, h, "/v1/describejobs", map[string]any{"jobs": []string{jobID}})
+			require.Equal(t, http.StatusOK, describeRec.Code)
+
+			var describeOut map[string]any
+			mustUnmarshal(t, describeRec, &describeOut)
+			jobs, _ := describeOut["jobs"].([]any)
+			require.Len(t, jobs, 1)
+			job, _ := jobs[0].(map[string]any)
+			assert.Equal(t, tt.wantJobStatus, job["status"])
 		})
 	}
 }

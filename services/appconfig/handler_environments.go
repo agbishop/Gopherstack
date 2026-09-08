@@ -114,9 +114,18 @@ func (h *Handler) handleDeleteEnvironment(
 	c *echo.Context,
 	applicationID, environmentID string,
 ) error {
-	if err := h.Backend.DeleteEnvironment(applicationID, environmentID); err != nil {
+	if rejected, err := rejectInvalidDeletionProtectionCheck(c); rejected {
+		return err
+	}
+
+	check := c.Request().Header.Get(deletionProtectionCheckHeader)
+	if err := h.Backend.DeleteEnvironment(applicationID, environmentID, check); err != nil {
 		if errors.Is(err, awserr.ErrNotFound) {
 			return notFoundResponse(c, err)
+		}
+
+		if errors.Is(err, awserr.ErrConflict) {
+			return conflictResponse(c, err)
 		}
 
 		return internalServerErrorResponse(c, err)

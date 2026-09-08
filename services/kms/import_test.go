@@ -460,7 +460,7 @@ func TestGetParametersForImport_InvalidWrappingAlgorithm_Rejected(t *testing.T) 
 		WrappingAlgorithm: "INVALID_ALGO",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ValidationException")
+	assert.Contains(t, err.Error(), "UnsupportedOperationException")
 }
 
 func TestGetParametersForImport_InvalidWrappingKeySpec_Rejected(t *testing.T) {
@@ -473,7 +473,7 @@ func TestGetParametersForImport_InvalidWrappingKeySpec_Rejected(t *testing.T) {
 		WrappingKeySpec: "ECC_NIST_P256",
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ValidationException")
+	assert.Contains(t, err.Error(), "UnsupportedOperationException")
 }
 
 func TestGetParametersForImport_ValidWrappingAlgorithms(t *testing.T) {

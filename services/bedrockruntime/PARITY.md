@@ -6,9 +6,26 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: bedrockruntime
 sdk_module: aws-sdk-go-v2/service/bedrockruntime@v1.57.1   # unchanged this pass; re-verified against go.mod pin
-last_audit_commit: a37fc3e38                                # HEAD when the 2026-08-20 wrapper-key sweep was written
-last_audit_date: 2026-08-20
-overall: A            # 2026-08-20: fixed ApplyGuardrailOutput's top-level Action -- gopherstack sent the fabricated
+last_audit_commit: 861de3270 # set on commit -- 2026-09-04 parity sweep, see below
+last_audit_date: 2026-09-04
+overall: A            # 2026-09-04: fixed two real bugs. (1) ListAsyncInvokes silently ignored
+                      # submitTimeAfter/submitTimeBefore/sortOrder (ListAsyncInvokesInput fields,
+                      # httpQuery-bound in serializers.go's
+                      # awsRestjson1_serializeOpHttpBindingsListAsyncInvokesInput) -- every request matched
+                      # every invocation and always returned ascending order regardless of what the caller
+                      # asked for. Now parsed (parseListAsyncInvokesFilter, handler_async_invoke.go) and
+                      # applied (matchesAsyncInvokeFilter/descending sort, async_invoke.go). Proven via
+                      # TestHandler_ListAsyncInvokes_SubmitTimeFilters and
+                      # TestHandler_ListAsyncInvokes_SortOrder (hand-neutered/confirmed-failing/restored).
+                      # (2) Handler.StartWorker hardcoded a 1-hour janitor interval while
+                      # defaultAsyncInvokeCompletionDelay (janitor.go) is 5s -- in a real running server (not
+                      # AdvanceAsyncInvokesForTest-driven tests), an InProgress invocation could sit
+                      # unadvanced for up to an hour instead of ~5s, unlike sibling services/bedrock's
+                      # janitor, which matches its interval to its own completion delay. Fixed:
+                      # StartWorker now passes defaultAsyncInvokeCompletionDelay as the interval. Proven via
+                      # TestStartWorker_AdvancesAsyncInvoke_NearCompletionDelay (synctest, hand-neutered to
+                      # time.Hour/confirmed-failing/restored). Grade held at A.
+                      # 2026-08-20: fixed ApplyGuardrailOutput's top-level Action -- gopherstack sent the fabricated
                       # enum value "BLOCKED" where the real types.GuardrailAction enum only has "NONE"/
                       # "GUARDRAIL_INTERVENED" (types/enums.go:161-166 in the pinned SDK); see ApplyGuardrail op note.
                       # Also added two real-SDK-client round-trip tests (wire_sdk_roundtrip_test.go) proving the
@@ -29,14 +46,14 @@ ops:
   ConverseStream: {wire: ok, errors: ok, state: ok, persist: n/a, note: "fixed this pass: contentBlockStart event no longer sends a fabricated 'start':{'text':''} field -- types.ContentBlockStart's union has only image/toolResult/toolUse variants (verified against deserializeDocumentContentBlockStart in the real SDK), no 'text' member exists, so a plain-text content block must omit 'start' entirely rather than emit a non-existent union tag. Event names (messageStart/contentBlockStart/contentBlockDelta/contentBlockStop/messageStop/metadata) and their field shapes (contentBlockIndex/delta.text/stopReason/usage/metrics.latencyMs) verified against awsRestjson1_deserializeEventStreamConverseStreamOutput -- all correct, unchanged"}
   CountTokens: {wire: ok, errors: ok, state: ok, persist: n/a, note: "unchanged this pass -- previously fixed request body wire shape ({input:{invokeModel:{body}}} / {input:{converse:{...}}}) re-verified still correct"}
   ApplyGuardrail: {wire: ok, errors: ok, state: ok, persist: n/a, note: "fixed 2026-08-07 pass: assessments was ALWAYS an empty array, including when action=BLOCKED -- a disguised no-op (PARITY.md previously and incorrectly claimed 'assessments... reflect the real input content', which was false: only outputs did). Now a BLOCKED action reports a types.GuardrailWordPolicyAssessment-shaped wordPolicy.customWords entry naming the matched keyword, matching the real GuardrailAssessment union's required member shapes. FIXED 2026-08-20 (real bug, this pass): the top-level response field 'action' was the literal string \"BLOCKED\", which is not a member of ApplyGuardrailOutput.Action's real type, types.GuardrailAction (verified: aws-sdk-go-v2/service/bedrockruntime@v1.57.1/types/enums.go:161-166 -- exactly two values, GuardrailActionNone=\"NONE\" and GuardrailActionGuardrailIntervened=\"GUARDRAIL_INTERVENED\"). \"BLOCKED\" is a real value but belongs to a DIFFERENT enum at a DIFFERENT nesting level -- types.GuardrailWordPolicyAction (enums.go:835-840), used correctly by assessments[].wordPolicy.customWords[].action. The same literal constant was being reused for both the outer op-level decision and the inner per-word-policy-hit decision; Go does not reject an out-of-enum string at JSON-decode time (GuardrailAction is a plain string type), so this produced no client error -- any real caller branching on resp.Action (e.g. `if action == types.GuardrailActionGuardrailIntervened`) would silently treat every BLOCKED call as unblocked. Fixed via a new topLevelGuardrailAction() mapping function (handler_guardrails.go) so the outer 'action' key and the inner wordPolicy action stay independently correct. Proven both ways: TestApplyGuardrail_ActionEnum_SDKRoundTrip (wire_sdk_roundtrip_test.go) asserts out.Action == types.GuardrailActionGuardrailIntervened via the real SDK client; hand-revert (cp method) reproduced the exact real-world symptom -- types.GuardrailAction(\"BLOCKED\"), an unmatched enum value the client received with no error. Pre-existing unit tests in handler_guardrails_test.go asserted the wrong wire value (\"BLOCKED\" at the top level) and were corrected to \"GUARDRAIL_INTERVENED\" alongside the fix; the nested wordPolicy.customWords[].action assertion (still \"BLOCKED\") was left unchanged since it was already correct."}
-  StartAsyncInvoke: {wire: ok, errors: ok, state: ok, persist: ok}
+  StartAsyncInvoke: {wire: ok, errors: ok, state: ok, persist: ok, note: "2026-09-04: AsyncInvokeStatus's Failed value (types/enums.go) is declared and read (buildAsyncInvokeResponse's isTerminal/failureMessage handling, models.go) but no code path in this service ever sets it -- the janitor only ever advances InProgress -> Completed. Flagged, not fixed: a deterministic trigger would have to be invented (no real StartAsyncInvokeInput field models a designed-to-fail request), and this service's own gaps list already rejects fabricating mock behavior beyond what's directly evidenced by the SDK docs. See gaps."}
   GetAsyncInvoke: {wire: fixed, errors: ok, state: ok, persist: ok, note: "2026-08-21 (gopherstack-y1zn): buildAsyncInvokeResponse emitted a \"tags\" key whenever Tags was non-empty; neither GetAsyncInvokeOutput nor AsyncInvokeSummary (bedrockruntime@v1.57.1 types/api_op_GetAsyncInvoke.go) has a Tags member, and this service has no TagResource/ListTagsForResource op at all -- real AWS gives no way to read an async invoke's tags back, ever. Removed. Proven via raw-body assertion (TestGetAsyncInvoke_NoInventedTagsKey_RealClient), hand-reverted/confirmed-failing/restored/md5sum-verified."}
-  ListAsyncInvokes: {wire: fixed, errors: ok, state: ok, persist: ok, note: "2026-08-21 (gopherstack-y1zn): shares buildAsyncInvokeResponse with GetAsyncInvoke; same tags-key fix applies to each summary entry."}
+  ListAsyncInvokes: {wire: fixed, errors: ok, state: ok, persist: ok, note: "2026-08-21 (gopherstack-y1zn): shares buildAsyncInvokeResponse with GetAsyncInvoke; same tags-key fix applies to each summary entry. FIXED 2026-09-04 (real bug, this pass): submitTimeAfter/submitTimeBefore/sortOrder (ListAsyncInvokesInput fields, httpQuery-bound -- serializers.go's awsRestjson1_serializeOpHttpBindingsListAsyncInvokesInput) were never read by handleListAsyncInvokes -- every request silently matched every invocation regardless of the time-range filters, and results always came back ascending regardless of sortOrder. sortBy is still not dispatched, deliberately: SortAsyncInvocationBy (types/enums.go) has exactly one value, SubmissionTime, which is already the only order ListAsyncInvokes ever sorts by. Fixed via parseListAsyncInvokesFilter/matchesAsyncInvokeFilter (handler_async_invoke.go/async_invoke.go) plus a descending sort branch. Proven via TestHandler_ListAsyncInvokes_SubmitTimeFilters and TestHandler_ListAsyncInvokes_SortOrder (hand-neutered to `false && ...`/confirmed-failing/restored)."}
   InvokeGuardrailChecks: {wire: partial, errors: ok, state: partial, persist: n/a, note: "NEW this pass (POST /guardrail-checks/invoke, confirmed from serializers.go's awsRestjson1_serializeOpInvokeGuardrailChecks path literal; field-diffed contentFilter/promptAttack/sensitiveInformation config+result shapes against types.go/deserializers.go). Does NOT reference a stored 'bedrock'-service guardrail resource -- Checks is supplied inline in the request, so there is no guardrailIdentifier and nothing in the separate bedrock control-plane backend to consult (confirmed unreachable/inapplicable here, not silently ignored). contentFilter/promptAttack: no real ML classifier exists, so each requested group is present (matches whether the caller asked for it) but its 'results' array is honestly EMPTY rather than carrying a fabricated severityScore per category -- this is a genuine wire-completeness gap (real AWS always returns one entry per requested category) traded deliberately against the alternative of inventing classifier output; wire: partial reflects this. sensitiveInformation: genuinely evaluated via literal, deterministic pattern/format detectors (see handler_guardrail_checks.go's piiDetectors) for EMAIL/PHONE/IP_ADDRESS/URL/AWS_ACCESS_KEY/MAC_ADDRESS/US_SOCIAL_SECURITY_NUMBER/CREDIT_DEBIT_CARD_NUMBER (the last Luhn-checksum validated); every other GuardrailChecksSensitiveInformationEntityType value requires free-text NER or a jurisdiction-specific checksum not implemented, and is honestly never matched -- not fabricated. confidenceScore is always exactly 1.0 for a detected entity (a deterministic pattern hit, not an invented probability). usage.*.textUnits is always 0, matching the same not-metered precedent ApplyGuardrail already established for its usage block."}
 families:
   model-path-routing: {status: ok, note: "unchanged this pass; extractModelID/ExtractResource ARN-embedded-slash fix from the prior audit re-verified still correct"}
   guardrail-path-routing: {status: ok, note: "unchanged this pass"}
-  async-invoke: {status: ok, note: "unchanged this pass; StartAsyncInvoke/GetAsyncInvoke/ListAsyncInvokes wire shapes, idempotency, janitor advance/sweep, and persistence re-verified against StartAsyncInvokeInput/GetAsyncInvokeOutput/AsyncInvokeSummary -- all required members present, no fabricated fields"}
+  async-invoke: {status: ok, note: "2026-09-04: fixed two real bugs, see StartAsyncInvoke/ListAsyncInvokes op notes -- (1) ListAsyncInvokes' submitTimeAfter/submitTimeBefore/sortOrder filters were parsed nowhere, (2) StartWorker's janitor ran on a 1-hour tick while defaultAsyncInvokeCompletionDelay is 5s, so a real running server (not test-helper-driven) left InProgress invocations unadvanced for up to an hour. StartAsyncInvoke/GetAsyncInvoke wire shapes, idempotency, and persistence re-verified against StartAsyncInvokeInput/GetAsyncInvokeOutput/AsyncInvokeSummary -- all required members present, no fabricated fields"}
   error-codes: {status: ok, note: "unchanged this pass; resolveErrorType/fallback confirmed to map to the REAL modeled 'InternalServerException' (not a fabricated 'InternalFailure') at all 9 handler.go/handler_*.go call sites -- re-verified, not a regression"}
   event-stream-chunk-payload: {status: ok, note: "NEW this pass (see InvokeModelWithResponseStream/InvokeModelWithBidirectionalStream op notes): the 'chunk' event's payload must be the smithy PayloadPart/BidirectionalOutputPayloadPart document shape {\"bytes\":\"<base64>\"}, not the raw response JSON. This was the highest-impact bug found this audit -- it broke response-body delivery for every real aws-sdk-go-v2 client streaming call against gopherstack, silently (no error, just an empty Body on the client side)."}
   chaos-fault-injection: {status: ok, note: "2026-08-07 (gopherstack-ayfw): ChaosServiceName was \"bedrockruntime\", but real Bedrock Runtime signs every request with SigV4 service name \"bedrock\" (verified: aws-sdk-go-v2/service/bedrockruntime@v1.57.1 auth.go's serviceAuthOptions, unconditional for every operation) -- the same signing name the sibling services/bedrock control-plane handler already declares. pkgs/chaos's Middleware extracts the fault-matching service string straight from the real Authorization header's SigV4 credential scope, so the old value could never match real client traffic; a fault rule created from the chaos dashboard's own GET /targets discovery (which surfaced \"bedrockruntime\") would silently never fire. Fixed to \"bedrock\" -- getTargets already merges entries sharing one signing name across handlers (its own doc comment cites S3/S3 Control as precedent), so this needed no pkgs/chaos change. New chaos_test.go proves both the fix (a \"bedrock\"-targeted rule now intercepts a real InvokeModel call before the handler runs) and the regression it fixes (a \"bedrockruntime\"-targeted rule does not). This resolves the bd issue's premise -- once the service name matches, the existing generic mechanism already supports injecting ModelError/ModelNotReady/Throttling/ServiceUnavailable (or any other) error code/status for InvokeModel/Converse/any op; see gaps for the one remaining, out-of-scope refinement (ModelErrorException's extra OriginalStatusCode/ResourceName members)."}
@@ -47,9 +64,10 @@ gaps:
   - "StartAsyncInvoke does not validate the real, client-side-required 'modelInput' body member is present -- deliberately not added: the real aws-sdk-go-v2 client enforces this required struct field before ever constructing the HTTP request (addOpStartAsyncInvokeValidationMiddleware), so no real SDK-driven caller can produce a request that omits it; adding server-side validation for it would only add risk (touches ~8 existing test bodies) for a scenario no real client can trigger"
   - "InvokeGuardrailChecks' contentFilter (VIOLENCE/HATE/SEXUAL/MISCONDUCT/INSULTS) and promptAttack (JAILBREAK/PROMPT_INJECTION/PROMPT_LEAKAGE) checks always return an empty results list for a requested group instead of one severityScore entry per requested category: gopherstack has no real ML content/prompt-injection classifier, and a per-category score would be pure fabrication. Documented, not hidden -- see the op note above."
   - "InvokeGuardrailChecks' sensitiveInformation check only genuinely detects EMAIL/PHONE/IP_ADDRESS/URL/AWS_ACCESS_KEY/MAC_ADDRESS/US_SOCIAL_SECURITY_NUMBER/CREDIT_DEBIT_CARD_NUMBER (literal, deterministic formats). Every other GuardrailChecksSensitiveInformationEntityType (NAME, ADDRESS, AGE, PASSWORD, DRIVER_ID, LICENSE_PLATE, AWS_SECRET_KEY, and the various bank/tax/passport/health-ID entity types) requires free-text NER or a jurisdiction-specific checksum this backend does not implement, so those types are honestly never matched rather than fabricated."
+  - "DISCLOSED, NOT FIXED (2026-09-04): AsyncInvokeStatusFailed (models.go) and AsyncInvoke.FailureMessage are declared and consumed in the response builder (buildAsyncInvokeResponse's isTerminal/failureMessage branches, handler_async_invoke.go) but no code path in this service ever produces them -- the janitor (janitor.go's advanceAsyncInvokes) only ever transitions InProgress -> Completed, never -> Failed, and AdvanceAsyncInvokesForTest mirrors that. Real AWS clearly models this transition: GetAsyncInvokeOutput.FailureMessage's doc comment is 'An error message' (api_op_GetAsyncInvoke.go) and AsyncInvokeStatus.Values() (types/enums.go) lists exactly {InProgress, Completed, Failed}, so a real async invocation genuinely can end up Failed. NOT changed this pass: making it reachable would require inventing a deterministic mock trigger (e.g. a magic modelId/s3Uri marker, mirroring services/bedrock/agents.go's missing-FoundationModel-triggers-FAILED precedent or this file's own guardrail-keyword convention) -- there is no SDK-documented condition gopherstack can honestly key off of, since StartAsyncInvoke's only content field (modelInput) is deliberately unparsed (see the modelInput gap above). Flagging for the next auditor: AsyncInvokeStatusFailed is dead code today, not merely rare."
   - "DISCLOSED, NOT FIXED (2026-08-20): GetAsyncInvoke's not-found path (handler_async_invoke.go's handleGetAsyncInvoke -> handleError) returns wire code 'ResourceNotFoundException' (HTTP 404) for an unknown invocationArn. Verified against the pinned SDK: awsRestjson1_deserializeOpErrorGetAsyncInvoke's (deserializers.go:796-859) declared error set is exactly {AccessDeniedException, InternalServerException, ThrottlingException, ValidationException} -- no ResourceNotFoundException case, unlike 8 of this service's other 11 ops (ApplyGuardrail, Converse, ConverseStream, CountTokens, InvokeModel, InvokeModelWithBidirectionalStream, InvokeModelWithResponseStream, StartAsyncInvoke all declare it; ListAsyncInvokes also lacks it). A real aws-sdk-go-v2 client hitting this exact response therefore cannot produce a typed *types.ResourceNotFoundException via errors.As -- it falls through to the generic default case (smithy.GenericAPIError, which still carries the correct Code/Message strings, so plain ErrorCode()-string matching still works; only the typed-exception idiom breaks). NOT changed this pass: it is genuinely unclear whether this reflects real AWS's documented behavior (GetAsyncInvoke's smithy model may simply omit a not-found error AWS's live API does throw, an SDK-codegen/model gap outside gopherstack's control) or whether real AWS truly never signals not-found this way for this specific operation (in which case ValidationException, the only remotely-fitting code left in the declared set, would be the correct replacement). Existing tests (TestHandler_GetAsyncInvoke's '404 for unknown ARN' case, TestAsyncInvoke_GetNotFound) assume the current 404/ResourceNotFoundException shape and were left as-is. Flagging with exact file:line citations for the next auditor rather than guessing at a behavioral change with no way to confirm it against live AWS."
 deferred: []
-leaks: {status: clean, note: "unchanged this pass; janitor (RunJanitor/StartWorker/Shutdown) uses context-bounded worker.Group with proper cancel+done-channel wiring; no goroutine leaks found. No new goroutines/locks introduced by this pass's fixes (all pure request/response shape changes)."}
+leaks: {status: clean, note: "2026-09-04: re-verified; janitor (RunJanitor/StartWorker/Shutdown) uses context-bounded worker.Group with proper cancel+done-channel wiring, no goroutine leaks found. Model-invoke and stream handlers (InvokeModel/InvokeModelWithResponseStream/InvokeModelWithBidirectionalStream/ConverseStream) write synchronously to the response and spawn no per-request goroutines, so there is nothing there to leak on client disconnect. Fixed this pass: StartWorker's janitor interval (see async-invoke family) -- not a leak, but the same worker-lifecycle surface. No new goroutines/locks introduced."}
 ---
 
 ## Notes
@@ -294,4 +312,100 @@ in the response when truncated. Proven with
 client across two 10-item pages of 25 seeded invocations and asserts the
 pages are disjoint; fails against the unfixed handler (`should have 10
 item(s), but has 25`), hand-reverted and confirmed.
+
+## 2026-09-06: AsyncInvokeStatus Failed confirmed unreachable by construction (gopherstack-0c1r)
+
+`buildAsyncInvokeResponse` (`handler_async_invoke.go`) has terminal-state
+handling for `AsyncInvokeStatusFailed`/`FailureMessage`, and
+`AsyncInvokeStatus.Values()` (bedrockruntime@v1.57.1 types/enums.go) lists
+`InProgress`, `Completed`, `Failed`, but nothing in this backend ever sets
+`Failed`. Re-audited per gopherstack-0c1r rather than re-asserting the prior
+pass's conclusion; found no reason to overturn it. Checked, in order:
+
+1. **The `services/bedrock/agents.go` missing-FoundationModel precedent.**
+   `advanceAgentStatus` fails an agent only when `ag.FoundationModel == ""`.
+   That is legitimate because `CreateAgentInput.FoundationModel` is
+   genuinely optional in the SDK (no "This member is required" doc comment,
+   `api_op_CreateAgent.go:119`) — an agent can really be created without
+   one, and `PrepareAgent` legitimately has nothing to compile. The
+   analogous field in `bedrockruntime`, `StartAsyncInvokeInput.ModelId`, is
+   the opposite: marked required (`api_op_StartAsyncInvoke.go:44-47`,
+   "This member is required"), and this backend already rejects
+   `modelID == ""` synchronously (`async_invoke.go` `StartAsyncInvoke`,
+   `ErrValidation`). The precedent's condition ("required field left empty,
+   caught at a later async step") has no equivalent here — the empty case
+   is already caught synchronously, before any invocation exists to later
+   fail.
+
+2. **`StartAsyncInvokeInput`'s full field list**
+   (`api_op_StartAsyncInvoke.go:42-65`): `ModelId *string` (required),
+   `ModelInput document.Interface` (required, opaque smithy document —
+   deliberately unparsed, documented in `handler_async_invoke.go`'s
+   `startAsyncInvokeInput` comment), `OutputDataConfig
+   types.AsyncInvokeOutputDataConfig` (required), `ClientRequestToken
+   *string`, `Tags []types.Tag`. `OutputDataConfig` resolves to
+   `AsyncInvokeS3OutputDataConfig{S3Uri *string (required), BucketOwner
+   *string, KmsKeyId *string}` (types/types.go:64-78) — an S3 URI string,
+   `BucketOwner`, and a KMS key ID, none of which this backend can verify
+   are real/reachable (no S3/KMS bucket-existence or key-existence
+   cross-check exists anywhere in this backend, and inventing one would be
+   the same kind of fabrication the issue warns against). No doc comment on
+   any of these three fields describes bucket/key validation as an async
+   failure mode; `S3Uri`'s only documented constraint is the `s3://` prefix,
+   already enforced synchronously in `StartAsyncInvoke`
+   (`strings.HasPrefix` check). `ModelInput` is confirmed the only
+   content field with no wire-decodable schema — nothing changed here.
+
+3. **`GetAsyncInvokeOutput.FailureMessage`'s doc comment**
+   (`api_op_GetAsyncInvoke.go:69-70`): `"An error message."` — no
+   elaboration on what conditions produce it. No evidence here either way.
+
+4. **Error extraction, both ops** (raw, `[A-Za-z0-9]+`, from
+   `bedrockruntime@v1.57.1/deserializers.go`):
+
+   `deserializeOpErrorStartAsyncInvoke`: `UnknownError`,
+   `AccessDeniedException`, `ConflictException`, `InternalServerException`,
+   `ResourceNotFoundException`, `ServiceQuotaExceededException`,
+   `ServiceUnavailableException`, `ThrottlingException`,
+   `ValidationException`.
+
+   `deserializeOpErrorGetAsyncInvoke`: `UnknownError`,
+   `AccessDeniedException`, `InternalServerException`,
+   `ThrottlingException`, `ValidationException`.
+
+   This is the decisive evidence. `StartAsyncInvoke` declares
+   `ResourceNotFoundException` in its own error set — the one error code
+   that would plausibly fire for "ModelId names a model that doesn't
+   exist." Its presence there means AWS rejects an unknown `ModelId`
+   *synchronously*, as a direct `StartAsyncInvoke` error, before an
+   `AsyncInvoke` resource is ever created — not as a `Failed` status
+   discovered later via `GetAsyncInvoke`. `GetAsyncInvoke`'s own error set
+   has no `ResourceNotFoundException`-shaped signal about invocation
+   content either (its `ResourceNotFoundException`-free list only covers
+   "the ARN itself doesn't exist", already handled by this backend's
+   existing `ErrNotFound` path). So the one candidate this repo's own
+   precedent pattern would suggest (`ModelId` naming an unknown model, by
+   analogy to bedrock's missing-`FoundationModel` check) is contradicted by
+   the SDK's own error taxonomy: it is modeled as a synchronous rejection,
+   not an async terminal state. Using it to drive `Failed` would be wrong,
+   not just unproven.
+
+**Verdict: confirmed, not overturned.** No SDK-evidenced precondition
+exists that `StartAsyncInvoke`/`GetAsyncInvoke` validates or requires whose
+violation AWS surfaces as an async `Failed` rather than a synchronous
+error. `AsyncInvokeStatusFailed` and the `FailureMessage`-population branch
+in `buildAsyncInvokeResponse` remain unreachable by construction, in the
+same class as gopherstack-h3th's five unreachable-by-construction status
+constants and gopherstack-glw7's unrepresentable clause. No code changed.
+
+What would change this answer: a documented AWS failure mode for async
+invocations (a user-guide page, a re-read of a newer SDK's doc comments, or
+an observed real API failure report) that ties a specific `StartAsyncInvoke`
+input condition to a later `Failed` status rather than a synchronous error
+— e.g. if AWS ever added a `ModelNotReadyException`-style deferred-failure
+code to `GetAsyncInvoke`'s error set, or documented that S3 write failures
+at completion time populate `FailureMessage`. Absent that, fabricating a
+trigger (time-based, random, or a test-only backdoor) is explicitly out of
+scope per gopherstack-0c1r and would be worse than leaving the constant
+unreachable.
 

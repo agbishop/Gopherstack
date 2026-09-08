@@ -196,6 +196,56 @@ func TestStartSpeechSynthesisStreamValidationExceptionTaxonomy(t *testing.T) {
 	}
 }
 
+// TestStartSpeechSynthesisStreamRequiresGenerativeEngine verifies that
+// StartSpeechSynthesisStream rejects every Engine value other than
+// "generative" -- per api_op_StartSpeechSynthesisStream.go's Engine doc
+// comment ("Currently, only the generative engine is supported"), unlike
+// SynthesizeSpeech/StartSpeechSynthesisTask, which accept all 4 Engine values
+// and default an unset one to "standard".
+func TestStartSpeechSynthesisStreamRequiresGenerativeEngine(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		voice  string
+		engine string
+	}{
+		{name: "standard_rejected", voice: "Joanna", engine: "standard"},
+		{name: "neural_rejected", voice: "Joanna", engine: "neural"},
+		{name: "long_form_rejected", voice: "Danielle", engine: "long-form"},
+		{name: "unset_engine_rejected", voice: "Joanna", engine: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var body bytes.Buffer
+			encoder := eventstream.NewEncoder()
+			message := eventstream.Message{Payload: []byte(`{"Text":"hello","TextType":"text"}`)}
+			message.Headers.Set(":event-type", eventstream.StringValue("TextEvent"))
+			require.NoError(t, encoder.Encode(&body, message))
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/synthesisStream", &body)
+			req.Header.Set("X-Amzn-Outputformat", "mp3")
+			req.Header.Set("X-Amzn-Voiceid", tc.voice)
+			if tc.engine != "" {
+				req.Header.Set("X-Amzn-Engine", tc.engine)
+			}
+
+			rec := httptest.NewRecorder()
+			ctx := echo.New().NewContext(req, rec)
+			require.NoError(t, newHandler().Handler()(ctx))
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+
+			var out map[string]string
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+			assert.Equal(t, "ValidationException", out["__type"])
+		})
+	}
+}
+
 func TestSynthesizeSpeechFormats(t *testing.T) {
 	t.Parallel()
 

@@ -2,6 +2,7 @@ package cloudformation_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -265,4 +266,51 @@ func TestDriftDetection_PerResource(t *testing.T) {
 	assert.Equal(t, "IN_SYNC", drift.StackResourceDriftStatus)
 	assert.NotEmpty(t, drift.StackID)
 	assert.NotEmpty(t, drift.ResourceType)
+}
+
+// TestDeleteStack_ClearsDriftMaps verifies DeleteStack clears
+// resourceDriftStatus and resourceDriftDetail, not just driftDetections --
+// both are populated by DetectStackDrift/DetectStackResourceDrift, keyed by
+// StackID, and persisted verbatim in Snapshot(), so leaving them behind grows
+// the snapshot without bound on create/delete churn.
+func TestDeleteStack_ClearsDriftMaps(t *testing.T) {
+	t.Parallel()
+
+	template := `{
+		"AWSTemplateFormatVersion": "2010-09-09",
+		"Resources": {
+			"MyBucket": {"Type": "AWS::S3::Bucket", "Properties": {"BucketName": "drift-delete-bucket"}}
+		}
+	}`
+
+	b := newBackend()
+	stack, err := b.CreateStack(context.Background(), "drift-delete", template, nil,
+		cloudformation.StackOptions{})
+	require.NoError(t, err)
+	otherStack, err := b.CreateStack(context.Background(), "drift-delete-sibling", template, nil,
+		cloudformation.StackOptions{})
+	require.NoError(t, err)
+
+	_, err = b.DetectStackDrift("drift-delete")
+	require.NoError(t, err)
+	_, err = b.DetectStackResourceDrift("drift-delete", "MyBucket")
+	require.NoError(t, err)
+	_, err = b.DetectStackDrift("drift-delete-sibling")
+	require.NoError(t, err)
+	_, err = b.DetectStackResourceDrift("drift-delete-sibling", "MyBucket")
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeleteStack(context.Background(), "drift-delete"))
+
+	var probe struct {
+		ResourceDriftStatus map[string]map[string]string `json:"resourceDriftStatus"`
+		ResourceDriftDetail map[string]map[string]any    `json:"resourceDriftDetail"`
+	}
+	require.NoError(t, json.Unmarshal(b.Snapshot(context.Background()), &probe))
+	assert.NotContains(t, probe.ResourceDriftStatus, stack.StackID)
+	assert.NotContains(t, probe.ResourceDriftDetail, stack.StackID)
+	assert.Contains(t, probe.ResourceDriftStatus, otherStack.StackID,
+		"deleting one stack must not disturb another stack's drift status")
+	assert.Contains(t, probe.ResourceDriftDetail, otherStack.StackID,
+		"deleting one stack must not disturb another stack's drift detail")
 }

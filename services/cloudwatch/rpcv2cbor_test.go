@@ -1181,6 +1181,32 @@ func TestCBOR_PutMetricData_WithStatisticValues(t *testing.T) {
 	assert.InDelta(t, 10.0, float64(dp["SampleCount"].(cbor.Float64)), 1e-9)
 }
 
+// TestCBOR_PutMetricData_TimestampOutOfRange verifies real AWS behaviour
+// (api_op_PutMetricData.go: "You can specify time stamps that are as much as
+// two weeks before the current date, and as much as 2 hours after the
+// current day and time.") -- a Timestamp outside that window must fail with
+// 400 InvalidParameterValueException, not fall through to a 500 as an
+// unmapped error.
+func TestCBOR_PutMetricData_TimestampOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	h := newCBORHandler()
+	tooOld := float64(time.Now().UTC().Add(-15 * 24 * time.Hour).Unix())
+	body := cbor.Map{
+		"Namespace": cbor.String("TestNS"),
+		"MetricData": cbor.List{
+			cbor.Map{
+				"MetricName": cbor.String("Latency"),
+				"Value":      cbor.Float64(123.0),
+				"Timestamp":  cbor.Tag{ID: 1, Value: cbor.Float64(tooOld)},
+			},
+		},
+	}
+	rec := postCBOR(t, h, "PutMetricData", body)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "InvalidParameterValueException", rec.Header().Get("X-Amzn-Errortype"))
+}
+
 func TestCBOR_GetMetricStatistics_WithDimensions(t *testing.T) {
 	t.Parallel()
 
@@ -1472,7 +1498,7 @@ func TestCBOR_PutMetricAlarm_Dimensions_Stored(t *testing.T) {
 			rec := postCBOR(t, h, "PutMetricAlarm", body)
 			require.Equal(t, http.StatusOK, rec.Code)
 
-			page, _, _, err := b.DescribeAlarms([]string{"dim-alarm"}, nil, "", "", "", 0)
+			page, _, _, err := b.DescribeAlarms([]string{"dim-alarm"}, nil, "", "", "", 0, "", "", "")
 			require.NoError(t, err)
 			require.Len(t, page.Data, 1)
 

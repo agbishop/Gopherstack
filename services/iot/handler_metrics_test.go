@@ -1,6 +1,7 @@
 package iot_test
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -76,6 +77,46 @@ func TestUpdateFleetMetricExpectedVersion(t *testing.T) {
 			})
 
 			require.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}
+
+// DeleteFleetMetricInput.ExpectedVersion (iot@v1.77.4/api_op_DeleteFleetMetric.go:39-40),
+// expectedVersion is a QUERY parameter
+// (awsRestjson1_serializeOpHttpBindingsDeleteFleetMetricInput), and its
+// deserializeOpError switch declares a VersionConflictException case.
+func TestDeleteFleetMetricExpectedVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		expectedVer int
+		wantStatus  int
+	}{
+		{"matching_version_succeeds", 1, http.StatusOK},
+		{"stale_version_conflicts", 99, http.StatusConflict},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newIoTHandler(t)
+			iotOK(t, h, http.MethodPut, "/fleet-metric/my-metric", map[string]any{
+				"queryString": "SELECT * FROM 'iot/+/data'",
+				"period":      300,
+			})
+
+			path := fmt.Sprintf("/fleet-metric/my-metric?expectedVersion=%d", tt.expectedVer)
+			rec := iotRequest(t, h, http.MethodDelete, path, nil)
+
+			require.Equal(t, tt.wantStatus, rec.Code, "body: %s", rec.Body.String())
+
+			if tt.wantStatus == http.StatusOK {
+				iotExpectError(t, h, "/fleet-metric/my-metric")
+			} else {
+				iotOK(t, h, http.MethodGet, "/fleet-metric/my-metric", nil)
+			}
 		})
 	}
 }

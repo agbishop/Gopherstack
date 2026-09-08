@@ -218,7 +218,8 @@ func TestAsyncInvocationInferenceIDPreserved(t *testing.T) {
 
 			h := newTestHandler(t)
 			rec := doRequestWithHeaders(
-				t, h, http.MethodPost, "/endpoints/ep/async-invocations", nil, tt.headers,
+				t, h, http.MethodPost, "/endpoints/ep/async-invocations",
+				map[string]any{"data": "payload"}, tt.headers,
 			)
 
 			require.Equal(t, http.StatusAccepted, rec.Code)
@@ -321,6 +322,75 @@ func TestBackendRecordAsyncFailureLocationDerivation(t *testing.T) {
 
 			assert.Equal(t, tt.wantFailureLoc, inv.FailureLocation)
 			assert.NotEqual(t, inv.OutputLocation, inv.FailureLocation)
+		})
+	}
+}
+
+// TestAsyncInvocation_BodyInputLocationMutualExclusion verifies the real
+// AWS constraint documented on InvokeEndpointAsyncInput.Body ("Body and
+// InputLocation are mutually exclusive. Provide exactly one of them.") --
+// unenforceable client-side (only EndpointName is a required member per
+// validators.go's validateOpInvokeEndpointAsyncInput), so it must be
+// enforced server-side. Neither field, or both, must be rejected with
+// ValidationError; exactly one of them must succeed.
+func TestAsyncInvocation_BodyInputLocationMutualExclusion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		headers    map[string]string
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "neither_body_nor_input_location_rejected",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "both_body_and_input_location_rejected",
+			body: "payload",
+			headers: map[string]string{
+				"X-Amzn-Sagemaker-Inputlocation": "s3://bucket/key",
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "body_only_accepted",
+			body:       "payload",
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name: "input_location_only_accepted",
+			headers: map[string]string{
+				"X-Amzn-Sagemaker-Inputlocation": "s3://bucket/key",
+			},
+			wantStatus: http.StatusAccepted,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var body any
+			if tt.body != "" {
+				body = tt.body
+			}
+
+			h := newTestHandler(t)
+			rec := doRequestWithHeaders(
+				t, h, http.MethodPost, "/endpoints/my-endpoint/async-invocations",
+				body, tt.headers,
+			)
+
+			require.Equal(t, tt.wantStatus, rec.Code)
+
+			if tt.wantStatus == http.StatusBadRequest {
+				var out map[string]string
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+				assert.Equal(t, "ValidationError", out["__type"])
+				assert.Contains(t, out["message"], "mutually exclusive")
+			}
 		})
 	}
 }

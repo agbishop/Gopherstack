@@ -208,6 +208,9 @@ func TestUpdateRuleGroup_RejectsDuplicateRuleId(t *testing.T) {
 		"inserting the same RuleId twice into a RuleGroup must be rejected: "+
 			"a duplicate RuleId in the group breaks ListActivatedRulesInRuleGroup's "+
 			"RuleId-marker pagination")
+	assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()),
+		"real AWS WAF models a duplicate-insert as \"nothing to do\" "+
+			"(types/errors.go WAFInvalidOperationException), not WAFInvalidParameterException")
 
 	rec = wafDo(t, h, "ListActivatedRulesInRuleGroup", map[string]any{"RuleGroupId": rgID})
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -215,6 +218,65 @@ func TestUpdateRuleGroup_RejectsDuplicateRuleId(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listResp))
 	activated, _ := listResp["ActivatedRules"].([]any)
 	assert.Len(t, activated, 1, "group must still contain only the one successfully-inserted rule")
+}
+
+func wafActivateRuleUpdate(action, ruleID string, priority int) map[string]any {
+	return map[string]any{
+		"Action": action,
+		"ActivatedRule": map[string]any{
+			"RuleId":   ruleID,
+			"Priority": priority,
+			"Type":     "REGULAR",
+			"Action":   map[string]any{"Type": "BLOCK"},
+		},
+	}
+}
+
+func TestUpdateRuleGroup_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		ruleID := wafCreateRule(t, h, "NoOpRuleInsert")
+		rgID := wafCreateRuleGroup(t, h, "NoOpGroupInsert")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateRuleGroup", map[string]any{
+			"ChangeToken": token,
+			"RuleGroupId": rgID,
+			"Updates":     []map[string]any{wafActivateRuleUpdate("INSERT", ruleID, 1)},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateRuleGroup", map[string]any{
+			"ChangeToken": token,
+			"RuleGroupId": rgID,
+			"Updates":     []map[string]any{wafActivateRuleUpdate("INSERT", ruleID, 2)},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		ruleID := wafCreateRule(t, h, "NoOpRuleDelete")
+		rgID := wafCreateRuleGroup(t, h, "NoOpGroupDelete")
+
+		// The group never contained ruleID, so this DELETE is itself a no-op.
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateRuleGroup", map[string]any{
+			"ChangeToken": token,
+			"RuleGroupId": rgID,
+			"Updates":     []map[string]any{wafActivateRuleUpdate("DELETE", ruleID, 1)},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
 }
 
 func TestListSubscribedRuleGroups(t *testing.T) {

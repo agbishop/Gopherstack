@@ -217,7 +217,8 @@ func TestElasticsearch_PersistenceSnapshotRestore(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, []string{"pkg-domain"}, domains)
 
-				domainPkgs := b.ListPackagesForDomain(ctx, "pkg-domain")
+				domainPkgs, err := b.ListPackagesForDomain(ctx, "pkg-domain")
+				require.NoError(t, err)
 				require.Len(t, domainPkgs, 1)
 				assert.Equal(t, "my-dict", domainPkgs[0].Name)
 			},

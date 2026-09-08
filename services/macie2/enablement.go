@@ -48,12 +48,32 @@ func (b *InMemoryBackend) EnableMacie(_, frequency, status string) error {
 	return nil
 }
 
-// DisableMacie disables Macie for the account.
+// DisableMacie disables Macie and, per its own doc comment ("deletes all
+// settings and resources for a Macie account" -- api_op_DisableMacie.go:11),
+// clears every classification/discovery resource this account owns.
+// Cross-account relationships (members, administrator, invitations, org
+// config, automated-discovery account list) survive: those track
+// organization structure, not this account's own Macie settings.
 func (b *InMemoryBackend) DisableMacie() error {
 	b.mu.Lock("DisableMacie")
 	defer b.mu.Unlock()
 
 	b.session = nil
+	b.classificationJobs.Reset()
+	b.findings.Reset()
+	b.findingsFilters.Reset()
+	b.customDataIDs.Reset()
+	b.allowLists.Reset()
+	b.s3Buckets.Reset()
+	b.classScopes.Reset()
+	b.resourceProfiles.Reset()
+	b.sensitivityTemplates.Reset()
+	b.resourceDetections = make(map[string][]ResourceProfileDetection)
+	b.revealConfig = nil
+	b.classExportConfig = nil
+	b.findingsPubConfig = nil
+	b.autoDiscoveryConfig = &AutoDiscoveryConfig{Status: statusDisabled}
+	b.tags = make(map[string]map[string]string)
 
 	return nil
 }

@@ -100,7 +100,7 @@ func TestBackend_GetClusterCredentials(t *testing.T) {
 		{
 			name: "success",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin")
+				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin", nil, "")
 			},
 			clusterID: "c1",
 			dbUser:    "alice",

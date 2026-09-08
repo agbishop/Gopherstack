@@ -42,14 +42,17 @@ func TestPutJobFailureResult_StoresFailureDetails(t *testing.T) {
 }
 
 // TestPutThirdPartyJobFailureResult_StoresFailureDetails is the same proof
-// for the third-party job path, which delegates to the same backend method.
+// for the third-party job path, which stores the same status/failure details
+// once the clientToken matches the job's issued ClientID.
 func TestPutThirdPartyJobFailureResult_StoresFailureDetails(t *testing.T) {
 	t.Parallel()
 
 	h := codepipeline.NewHandler(codepipeline.NewInMemoryBackend("123456789012", "us-east-1"))
 	client := newTestCodePipelineClient(t, h)
 
-	h.Backend.AddJobInternal(&codepipeline.Job{ID: "tp-job-fail-wire", Nonce: "n", Status: "InProgress"})
+	h.Backend.AddJobInternal(&codepipeline.Job{
+		ID: "tp-job-fail-wire", Nonce: "n", Status: "InProgress", ClientID: "token-abc",
+	})
 
 	_, err := client.PutThirdPartyJobFailureResult(t.Context(), &cpsdk.PutThirdPartyJobFailureResultInput{
 		JobId:       aws.String("tp-job-fail-wire"),

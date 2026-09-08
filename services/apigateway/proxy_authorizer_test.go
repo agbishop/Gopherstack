@@ -569,7 +569,7 @@ func TestProxy_IntegrationResponseParams_IntegrationHeaderEcho(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	// The header should be set (resolved from integration.response.header.X-Amzn-Requestid → name).
-	assert.NotEmpty(t, rec.Header().Get("X-Request-Id"))
+	assert.NotEmpty(t, rec.Header().Get("X-Request-ID"))
 }
 
 // --- API Key enforcement tests ---

@@ -415,6 +415,58 @@ func TestInMemoryBackend_CertificateAuthorityValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "updateCA on a PENDING_CERTIFICATE CA returns InvalidStateException",
+			run: func(t *testing.T, b *acmpca.InMemoryBackend) {
+				t.Helper()
+
+				// SUBORDINATE CAs start in PENDING_CERTIFICATE state (no auto-sign);
+				// per api_op_UpdateCertificateAuthority.go: "Your private CA must be
+				// in the ACTIVE or DISABLED state before you can update it."
+				ca, err := b.CreateCertificateAuthority(
+					context.Background(),
+					"SUBORDINATE",
+					acmpca.CertificateAuthorityConfiguration{
+						Subject: acmpca.CertificateAuthoritySubject{CommonName: "Pending CA"},
+					},
+				)
+				require.NoError(t, err)
+				require.Equal(t, "PENDING_CERTIFICATE", ca.Status)
+
+				err = b.UpdateCertificateAuthority(context.Background(), ca.ARN, "ACTIVE")
+				require.ErrorIs(t, err, acmpca.ErrInvalidState)
+
+				got, err := b.DescribeCertificateAuthority(context.Background(), ca.ARN)
+				require.NoError(t, err)
+				assert.Equal(t, "PENDING_CERTIFICATE", got.Status)
+			},
+		},
+		{
+			name: "updateCA on a DELETED-but-restorable CA returns InvalidStateException",
+			run: func(t *testing.T, b *acmpca.InMemoryBackend) {
+				t.Helper()
+
+				ca, err := b.CreateCertificateAuthority(
+					context.Background(),
+					"ROOT",
+					acmpca.CertificateAuthorityConfiguration{
+						Subject: acmpca.CertificateAuthoritySubject{CommonName: "CA"},
+					},
+				)
+				require.NoError(t, err)
+				require.NoError(t, b.UpdateCertificateAuthority(context.Background(), ca.ARN, "DISABLED"))
+				require.NoError(t, b.DeleteCertificateAuthority(context.Background(), ca.ARN, 7))
+
+				// Attempting to update straight back to ACTIVE must fail: only
+				// RestoreCertificateAuthority may bring a DELETED CA back (to DISABLED).
+				err = b.UpdateCertificateAuthority(context.Background(), ca.ARN, "ACTIVE")
+				require.ErrorIs(t, err, acmpca.ErrInvalidState)
+
+				got, err := b.DescribeCertificateAuthority(context.Background(), ca.ARN)
+				require.NoError(t, err)
+				assert.Equal(t, "DELETED", got.Status)
+			},
+		},
+		{
 			name: "updateCA with invalid status returns error",
 			run: func(t *testing.T, b *acmpca.InMemoryBackend) {
 				t.Helper()

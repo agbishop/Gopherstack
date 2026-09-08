@@ -3,6 +3,7 @@ package medialive
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/page"
 )
@@ -40,9 +41,15 @@ func (b *InMemoryBackend) DescribeOffering(offeringID string) (*Offering, error)
 
 // --- Reservation operations ---
 
-// PurchaseOffering creates a Reservation from an Offering.
+// PurchaseOffering creates a Reservation from an Offering. start is the
+// caller's requested term start (PurchaseOfferingInput.Start, ISO-8601); an
+// empty string means "now", matching the SDK doc ("If no value is given,
+// the default is now"). A non-empty start must fall within the SDK's
+// documented window -- "between the first day of the current month and one
+// year from now" -- both ends read as inclusive and both relative to the
+// request time (b.now()), not any fixed date.
 func (b *InMemoryBackend) PurchaseOffering(
-	offeringID, name string,
+	offeringID, name, start string,
 	count int32,
 	renewalSettings RenewalSettings,
 	tags map[string]string,
@@ -64,6 +71,24 @@ func (b *InMemoryBackend) PurchaseOffering(
 	if count <= 0 {
 		count = 1
 	}
+	now := b.now()
+	startTime := now
+	if start != "" {
+		parsed, err := time.Parse(time.RFC3339, start)
+		if err != nil {
+			return nil, fmt.Errorf("%w: start %q is not RFC3339", ErrInvalidParameter, start)
+		}
+		startTime = parsed.UTC()
+		lower := firstOfMonthUTC(now)
+		upper := now.AddDate(1, 0, 0)
+		if startTime.Before(lower) || startTime.After(upper) {
+			return nil, fmt.Errorf(
+				"%w: start %q must be between the first day of the current month (%s) and one year from now (%s)",
+				ErrInvalidParameter, start, lower.Format(time.RFC3339), upper.Format(time.RFC3339),
+			)
+		}
+	}
+	endTime := addOfferingTerm(startTime, off.Duration, off.DurationUnits)
 	id := newID()
 	r := &storedReservation{
 		Tags:                  copyTags(tags),
@@ -80,8 +105,8 @@ func (b *InMemoryBackend) PurchaseOffering(
 		UsagePrice:            off.UsagePrice,
 		Duration:              off.Duration,
 		DurationUnits:         off.DurationUnits,
-		Start:                 "2024-01-01T00:00:00Z",
-		End:                   "2025-01-01T00:00:00Z",
+		Start:                 startTime.Format(time.RFC3339),
+		End:                   endTime.Format(time.RFC3339),
 		Region:                b.region,
 		State:                 "ACTIVE",
 		Count:                 count,
@@ -89,6 +114,24 @@ func (b *InMemoryBackend) PurchaseOffering(
 	b.reservations.Put(r)
 
 	return r.toReservation(), nil
+}
+
+// firstOfMonthUTC returns 00:00:00 UTC on the first day of t's UTC month.
+func firstOfMonthUTC(t time.Time) time.Time {
+	y, m, _ := t.Date()
+
+	return time.Date(y, m, 1, 0, 0, 0, 0, time.UTC)
+}
+
+// addOfferingTerm adds a lease term to t. OfferingDurationUnits
+// (medialive/types/enums.go) declares exactly one value, MONTHS, so no
+// other unit is handled.
+func addOfferingTerm(t time.Time, duration int32, units string) time.Time {
+	if units != offeringDurationMonths {
+		return t
+	}
+
+	return t.AddDate(0, int(duration), 0)
 }
 
 // ReservationFilter mirrors the ResourceSpecification-backed
@@ -160,13 +203,33 @@ func (b *InMemoryBackend) DescribeReservation(reservationID string) (*Reservatio
 	return r.toReservation(), nil
 }
 
-// DeleteReservation cancels a reservation.
+// effectiveState derives ACTIVE vs EXPIRED from the reservation term. There is
+// no expiry ticker, so a stored State alone would leave EXPIRED unreachable and
+// DeleteReservation permanently refusing.
+func (r *storedReservation) effectiveState() string {
+	if r.State != "ACTIVE" {
+		return r.State
+	}
+
+	end, err := time.Parse(time.RFC3339, r.End)
+	if err == nil && time.Now().After(end) {
+		return "EXPIRED"
+	}
+
+	return r.State
+}
+
+// DeleteReservation cancels a reservation. api_op_DeleteReservation.go
+// describes the op as deleting an expired reservation.
 func (b *InMemoryBackend) DeleteReservation(reservationID string) (*Reservation, error) {
 	b.mu.Lock("DeleteReservation")
 	defer b.mu.Unlock()
 	r, ok := b.reservations.Get(reservationID)
 	if !ok {
 		return nil, fmt.Errorf("%w: reservation %s not found", ErrNotFound, reservationID)
+	}
+	if r.effectiveState() != "EXPIRED" {
+		return nil, fmt.Errorf("%w: reservation must be expired before deleting", ErrConflict)
 	}
 	r.State = "CANCELED"
 	out := r.toReservation()

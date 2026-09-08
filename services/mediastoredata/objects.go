@@ -46,6 +46,16 @@ func (b *InMemoryBackend) PutObject(
 		return nil, fmt.Errorf("%w: %q", ErrInvalidUploadAvailability, uploadAvailability)
 	}
 
+	maxSize := maxObjectSizeStandard
+	if uploadAvailability == "STREAMING" {
+		maxSize = maxObjectSizeStreaming
+	}
+
+	if len(body) > maxSize {
+		return nil, fmt.Errorf("%w: object size %d exceeds the %d-byte limit for %s upload availability",
+			ErrObjectTooLarge, len(body), maxSize, uploadAvailability)
+	}
+
 	b.mu.Lock("PutObject")
 	defer b.mu.Unlock()
 

@@ -38,6 +38,14 @@ func (b *InMemoryBackend) RegisterInstancesWithLoadBalancer(
 		}
 	}
 
+	if b.ec2Resolver != nil {
+		for _, inst := range instances {
+			if !b.ec2Resolver.InstanceExists(inst.InstanceID) {
+				return nil, fmt.Errorf("%w: %s", ErrInvalidInstance, inst.InstanceID)
+			}
+		}
+	}
+
 	existing := make(map[string]bool, len(lb.Instances))
 	for _, inst := range lb.Instances {
 		existing[inst.InstanceID] = true

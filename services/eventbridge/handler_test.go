@@ -341,7 +341,14 @@ func TestHandler_ResourceLimitExceededMapsTo400(t *testing.T) {
 	// 201st via handler should return 400.
 	rec := auditMakeRequest(t, h, e, "CreateEventBus", map[string]any{"Name": "bus-overflow"})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Body.String(), "ResourceLimitExceededException")
+	// CHANGED (orphan-code sweep, gopherstack-yatn): this assertion previously
+	// checked for "ResourceLimitExceededException", which is not a real
+	// eventbridge SDK error code -- CreateEventBus's own deserializeOpError
+	// switch (eventbridge@v1.48.4 deserializers.go) declares
+	// LimitExceededException, not this. The old assertion just confirmed the
+	// bug, not correct behavior; see TestCreateEventBus_AccountLimit_RealClient
+	// for the real-client proof.
+	assert.Contains(t, rec.Body.String(), "LimitExceededException")
 }
 
 // TestHandler_GetSupportedOperationsExcludesPolicyOps verifies GetEventBusPolicy

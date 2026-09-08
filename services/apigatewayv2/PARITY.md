@@ -1,9 +1,86 @@
 ---
 service: apigatewayv2
 sdk_module: aws-sdk-go-v2/service/apigatewayv2@v1.37.4
-last_audit_commit: e50f52dce
-last_audit_date: 2026-08-28
-overall: A            # write-only-state sweep pass (this pass, 2026-08-28). Existing
+last_audit_commit: ca3a1e21f
+last_audit_date: 2026-09-08
+overall: A            # 2026-09-08 (gopherstack-wsvb, P1): enforceRouteThrottle/enforceRouteAuth
+                       # (http_proxy.go) and enforceIAMAuth/enforceRequestAuthorizer/
+                       # finishAuthDecision (authorizers.go) rejected a request by writing its
+                       # 429/401/403 via writeErr and returning that call's result -- c.JSON
+                       # returns nil after a successful write, so applyRouteControls' and
+                       # handleHTTPAPIProxy's "if ctrlErr != nil" checks never fired and a
+                       # throttled or unauthorized (JWT/CUSTOM/AWS_IAM) request was forwarded to
+                       # the real integration anyway, even though the client already received a
+                       # 429/401/403. Same class as elasticache (gopherstack-8haq) and pinpoint
+                       # (gopherstack-246v). Fixed with the pinpoint raw-unwritten-error pattern:
+                       # every enforce* helper in the chain now returns one of a small set of
+                       # unwritten sentinel errors (errRoute{Unauthorized,Forbidden,ExplicitDeny,
+                       # MissingAuthToken,AuthConfigInvalid}, errors.go), and a single new
+                       # writeRouteControlRejection maps and writes the response exactly once, at
+                       # handleHTTPAPIProxy -- no sentinel-plus-inline-write shape (elasticache's
+                       # errResponseWritten) was introduced; the fan-out didn't warrant it.
+                       # enforceRouteThrottle's fail-open default branch (an unexpected backend
+                       # error still returns nil, allowing the request) is preserved unchanged --
+                       # a separate, deliberate design decision, not part of this bug. New and
+                       # strengthened tests prove the integration was NOT invoked, not just that
+                       # the right status code came back -- a status-only assertion passes against
+                       # this bug, since c.JSON's first WriteHeader call wins the response and the
+                       # integration's later write only corrupts the body underneath it. Covers
+                       # every write site in the chain: route throttled
+                       # (TestHTTPAPIProxy_RouteThrottle_TooManyRequests, strengthened), JWT
+                       # authorizer missing (new
+                       # TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration), JWT
+                       # validation failure (TestHTTPAPIProxy_JWTAuthorizer, strengthened),
+                       # AWS_IAM unsigned request (TestRouteAuth_AWSIAM, strengthened), and the
+                       # CUSTOM/REQUEST authorizer paths found to share the same shape: missing
+                       # authorizerId, missing identity source, and explicit/implicit deny in both
+                       # the simple-response and IAM-policy-response shapes (all in
+                       # handler_authorizers_test.go, strengthened). See Notes.
+                       # ---- prior pass's note follows ----
+                       # route-throttle enforcement pass (this pass, 2026-09-06, gopherstack-dv44).
+                       # RouteSettings/DefaultRouteSettings.Throttling{Rate,Burst}Limit were
+                       # stored (CreateStage/UpdateStage) and echoed back, but handleHTTPAPIProxy
+                       # dispatched straight to the integration with no limiter ever consulted --
+                       # a configured limit had zero effect. Fixed: a new per-(api,stage,routeKey)
+                       # token-bucket limiter (throttle.go), enforced in applyRouteControls before
+                       # the route authorizer (mirrors apigateway v1's gopherstack-91f2 stage-
+                       # throttle-before-authorizer precedence), returning AWS's real 429
+                       # TooManyRequestsException shape. RouteSettings[routeKey] fully replaces
+                       # DefaultRouteSettings when present (not merged), matching v1's
+                       # MethodSettings "*/*" override convention; a zero/unset
+                       # ThrottlingRateLimit means unlimited, also matching v1. Bucket state is
+                       # ephemeral (not persisted, like v1's usageTracker) and is evicted on
+                       # DeleteStage, DeleteAPI (cascade), DeleteRoute, and UpdateRoute route-key
+                       # rename, closing the same ghost-row class v1 closed for DeleteStage.
+                       # ---- prior pass's note follows ----
+                       # data-plane sweep pass (2026-09-04, gopherstack-vli). Focused
+                       # on the data plane (handleProxy/handleHTTPAPIProxy/invokeWSRoute), not
+                       # re-covered here: control-plane wire-shape/pagination/leak ground already
+                       # swept by prior passes below. Found and fixed three real bugs: (1)
+                       # handleProxy never checked the URL's stage-name segment against the
+                       # backend at all -- any string, including a stage that was never created
+                       # via CreateStage, routed straight through to the live route/integration
+                       # (proxy.go); now gated with a GetStage check returning 404 before protocol
+                       # dispatch, closing this for both HTTP and WebSocket APIs. (2)
+                       # CreateIntegration/UpdateIntegration accepted AWS/HTTP/MOCK integration
+                       # types on HTTP-protocol APIs with no protocol check at all, even though
+                       # api_op_CreateIntegration.go's IntegrationType doc comment states each of
+                       # those three is "Supported only for WebSocket APIs" -- an HTTP API could
+                       # accept e.g. MOCK at CreateIntegration time and only fail opaquely (500)
+                       # at invoke time; now rejected with BadRequestException at Create/Update.
+                       # (3) invokeWSRoute (WebSocket data plane) recognized only AWS_PROXY and
+                       # rejected every other integration type with ErrUnsupportedType --
+                       # including MOCK, a genuinely valid WebSocket integration type whose SDK
+                       # doc comment says it is "a 'loopback' endpoint without invoking any
+                       # backend"; a $connect route on a MOCK integration therefore always failed
+                       # with 403 Forbidden. Now MOCK short-circuits to success without invoking
+                       # anything, matching the doc verbatim. See Notes #16-18 and the per-
+                       # integration-type verdict table in the audit report. Deliberately NOT
+                       # fixed (see gaps): a stage only gates on *existing*, not on ever having
+                       # been deployed (DeploymentId != "") or on serving a point-in-time
+                       # snapshot rather than the API's live current config -- see gaps for why.
+                       # ---- prior pass's note follows ----
+                       # write-only-state sweep pass (2026-08-28). Existing
                        # wire_field_fixes_test.go (ListRoutingRules wrapper key, Portal
                        # PublishStatus) was a PARTIAL prior pass, not a finished one -- per this
                        # campaign's protocol, treated as a signal to dig deeper rather than skip.
@@ -101,10 +178,10 @@ ops:
   GetRoutes: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateRoute: {wire: ok, errors: fixed, state: fixed, persist: ok, note: "was mutating RouteKey before validating AuthorizationType, so a rejected update (bad auth type) could still leave a changed route key -- fixed by validating the whole input before mutating anything, see Notes #13. Also now rejects a route-key change on a quick-create $default route (gopherstack-2tx, see Notes #14)."}
   DeleteRoute: {wire: ok, errors: ok, state: ok, persist: ok}
-  CreateIntegration: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "was missing tlsConfig, hardcoded 29000ms ceiling/default for HTTP APIs (should be 30000ms), no connectionType default/validation (fixed by a prior pass). This pass: credentialsArn was ALSO entirely absent -- fixed, see Notes #7."}
+  CreateIntegration: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "was missing tlsConfig, hardcoded 29000ms ceiling/default for HTTP APIs (should be 30000ms), no connectionType default/validation (fixed by a prior pass). credentialsArn was ALSO entirely absent -- fixed, see Notes #7. This pass (gopherstack-vli): AWS/HTTP/MOCK integrationType were accepted on HTTP-protocol APIs with no protocol check at all, though each is 'Supported only for WebSocket APIs' per the SDK doc comment -- fixed, see Notes #16."}
   GetIntegration: {wire: fixed, errors: ok, state: ok, persist: ok, note: "credentialsArn fix, see Notes #7"}
   GetIntegrations: {wire: fixed, errors: ok, state: ok, persist: ok, note: "same Integration shape fix as GetIntegration"}
-  UpdateIntegration: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "same protocol-aware timeout + connectionType validation applied (prior pass); credentialsArn fixed this pass, see Notes #7"}
+  UpdateIntegration: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "same protocol-aware timeout + connectionType validation applied (prior pass); credentialsArn fixed this pass, see Notes #7. This pass (gopherstack-vli): same AWS/HTTP/MOCK-on-HTTP-API rejection as CreateIntegration, see Notes #16."}
   DeleteIntegration: {wire: ok, errors: ok, state: ok, persist: ok}
   CreateIntegrationResponse: {wire: ok, errors: ok, state: ok, persist: ok}
   GetIntegrationResponse: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -125,7 +202,7 @@ ops:
   DeleteRouteSettings: {wire: ok, errors: ok, state: ok, persist: ok}
   DeleteRouteRequestParameter: {wire: ok, errors: ok, state: ok, persist: ok}
   DeleteCorsConfiguration: {wire: ok, errors: ok, state: ok, persist: ok}
-  CreateDeployment: {wire: ok, errors: ok, state: ok, persist: ok, note: "autoDeploy interaction verified"}
+  CreateDeployment: {wire: ok, errors: ok, state: fixed, persist: fixed, note: "autoDeploy interaction verified. FIXED 2026-09-06 (gopherstack-cfr1): now snapshots the API's current routes and integrations onto the created Deployment (internal-only fields, not on the wire) -- see gaps and Notes #19."}
   GetDeployment: {wire: ok, errors: ok, state: ok, persist: ok}
   GetDeployments: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateDeployment: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -191,11 +268,47 @@ gaps:
     for failOnWarnings to escalate into an error. Not fabricating warning-generation heuristics to
     manufacture an effect -- see the existing trap note on API.ImportInfo/Warnings below. bd:
     gopherstack-jni0, narrowed to these two residual items."
+  - "Stage deployment gates only on the stage EXISTING (gopherstack-vli), not on having ever
+    been deployed to. Real AWS: 'Deployments are an immutable snapshot of the API, and to make
+    your API callable, you must create a stage and deploy an API snapshot into it' (AWS docs,
+    apigateway/latest/developerguide/http-api-stages.html -- weaker evidence than the SDK, since
+    data-plane invoke behavior isn't part of the modeled control-plane wire shapes). Two distinct
+    gaps were disclosed here: (1) a stage that exists but has stage.DeploymentID == \"\" (created,
+    never auto- or manually deployed) still serves live traffic -- only a stage that was NEVER
+    CREATED is rejected (see Notes #16-18); genuinely gating on DeploymentID=='' risks
+    over-rejecting, since it's unclear whether real AWS performs an implicit initial deployment
+    when CreateStage's autoDeploy=true and the API already has routes (gopherstack's CreateStage
+    does not call autoDeployLocked itself -- only route/integration/API mutations do) -- left
+    open, unchanged. (2) FIXED 2026-09-06 (gopherstack-cfr1) for the HTTP API data plane only:
+    handleHTTPAPIProxy previously always read the API's LIVE current routes/integrations via
+    h.Backend.GetRoutes/GetIntegration regardless of which deployment a stage was nominally
+    pinned to, so an autoDeploy=false stage saw route/integration edits with no new deployment
+    required. CreateDeployment and autoDeployLocked (deployments.go) now copy the API's current
+    routes and integrations onto the created Deployment (Deployment.Routes/Integrations, internal
+    only -- json:\"-\", not part of the real GetDeploymentOutput wire shape); handleHTTPAPIProxy
+    resolves routes/integrations from the stage's pinned deployment snapshot when
+    stage.DeploymentID != \"\", falling back to live state (unchanged behavior) when the stage has
+    no deployment yet or its pinned deployment was since deleted -- avoiding the DeploymentID=='' 
+    gating question above rather than resolving it. See Notes #19. Residual, disclosed rather than
+    guessed at: WebSocket routing (invokeWSRoute) is unaffected -- it doesn't even thread
+    stageName through, a separate, larger gap; a route's AuthorizerID is captured by the route
+    snapshot, but the referenced Authorizer's own definition (e.g. JWT issuer/audience) is still
+    resolved live via h.Backend.GetAuthorizer, since autoDeployLocked has never triggered on
+    authorizer or CORS mutations either (a pre-existing, separate incompleteness, not newly
+    introduced); CORS headers (Api.CorsConfiguration) are similarly still resolved live, since
+    they don't affect route/integration matching. apigateway (v1, bd gopherstack-fum) has the
+    identical bug and was deliberately left unfixed this pass -- v1's data plane matches against a
+    resource TREE via a cached routingTrie (proxy_routing.go), not v2's flat route/integration
+    lists, and also lacks v2's autoDeploy/AutoDeployed model entirely (v1 has no auto-deployment
+    concept, only explicit CreateDeployment), so the same fix shape does not carry over; scoped as
+    its own, larger effort."
 deferred:
   - "2026-08-23 (manifest harvest): UpdatePortal's real UpdatePortalInput (aws-sdk-go-v2/service/apigatewayv2@v1.37.4's api_op_UpdatePortal.go) has optional Authorization/EndpointConfiguration/PortalContent members letting a caller replace a portal's auth config, domain/cert config, or displayed content post-creation -- gopherstack's UpdatePortalInput (models.go) has no fields for any of the three, so a real client sending them gets no error but no effect either. All three are already-modeled types (used by CreatePortal) and Create's existing validateCreatePortal{Authorization,EndpointConfiguration,Content} helpers look reusable for a nil-check-and-replace Update path; not implemented this pass to keep the fix scoped to the three accept-and-drop bugs found and closed alongside this note (IncludedPortalProductArns/RumAppMonitorName/LastPublished(Description), see the family's ops-table note) -- newly disclosed, not previously known."
   - PortalProduct / ProductPage / ProductRestEndpointPage field-level wire audit still not re-verified field-by-field against botocore (only Portal itself got a field-level audit this pass -- see the family's ops-table note)
   - ImportApi/ReimportApi basepath=split; failOnWarnings real effect (see gaps, bd gopherstack-jni0)
   - Quick-create DeleteRoute/DeleteStage/DeleteIntegration rejection (see gaps, bd gopherstack-2tx)
+  - DeploymentID=="" gating for a never-deployed stage (see gaps, bd gopherstack-vli) -- per-deployment route/integration snapshotting itself was fixed 2026-09-06 (gopherstack-cfr1, see gaps and Notes #19)
+  - apigateway (v1)'s identical live-routing-vs-deployment-snapshot bug (bd gopherstack-fum) -- deliberately not fixed alongside v2's; v1's resource-tree/routingTrie data plane and lack of an autoDeploy model make it a distinctly larger effort, not a copy of this fix
 leaks: {status: clean, note: "portalProductSharingPolicies cleanup on DeletePortalProduct already covered by leak_internal_test.go from a prior sweep; authorizerCache entries are now purged on DeleteAuthorizer/DeleteApi (bd gopherstack-wmh, fixed and closed this pass -- see Notes #11), not merely TTL-bounded; no goroutines/janitors in this package"}
 ---
 
@@ -415,8 +528,126 @@ Genuine bugs found and fixed in the `gopherstack-0xs7` follow-up pass (confirmed
     test, `TestExtractOperation_SDKRouteTable` in `handler_paths_sdk_diff_test.go` (one subtest per
     op), rather than left as a one-off audit.
 
+Genuine bugs found and fixed in the data-plane sweep (`gopherstack-vli`, this pass, 2026-09-04;
+confirmed against `aws-sdk-go-v2/service/apigatewayv2@v1.37.4/api_op_CreateIntegration.go`):
+
+16. **`buildIntegration`/`UpdateIntegration` accepted `AWS`/`HTTP`/`MOCK` integrationType on
+    HTTP-protocol APIs with no protocol check at all.** `api_op_CreateIntegration.go`'s
+    `IntegrationType` doc comment states, verbatim, for each of the three: `AWS: ... Supported
+    only for WebSocket APIs.`; `HTTP: ... Supported only for WebSocket APIs.`; `MOCK: ...
+    Supported only for WebSocket APIs.` -- only `AWS_PROXY`/`HTTP_PROXY` are valid on HTTP APIs.
+    `buildIntegration`'s `validTypes` map accepted all five regardless of the API's
+    `protocolType`, and `applyIntegrationIdentityUpdate` set `i.IntegrationType` from
+    `UpdateIntegrationInput` with the same no-check pattern. Concretely: `CreateIntegration`
+    with `integrationType: MOCK` on an HTTP API previously succeeded (201), and only failed
+    opaquely (500 `Unsupported integration type`) the first time a client actually invoked the
+    route -- an "accepted but never done" bug (a request that should have been rejected at
+    Create/Update time with `BadRequestException` instead silently created broken state).
+    Fixed via `validateIntegrationTypeForProtocol` (`integrations.go`), called from both
+    `buildIntegration` (covers `CreateIntegration` and quick-create, which never generates these
+    three types itself so is unaffected) and `UpdateIntegration`. Test:
+    `TestHandler_CreateIntegration_InvalidType` (`handler_integrations_test.go`) now covers both
+    directions (HTTP API rejects AWS/HTTP/MOCK; WebSocket API accepts HTTP/MOCK).
+
+17. **`invokeWSRoute` (the WebSocket data plane) rejected `MOCK` integrations with
+    `ErrUnsupportedType`, even though MOCK is a real, valid WebSocket integration type.**
+    `api_op_CreateIntegration.go`: `MOCK: for integrating the route or method request with API
+    Gateway as a "loopback" endpoint without invoking any backend. Supported only for WebSocket
+    APIs.` A `$connect` route (or any other) backed by a MOCK integration therefore always failed
+    -- for `$connect` specifically, `handleWebSocketProxy` maps any `invokeWSRoute` error to a
+    403 Forbidden, so a client's WebSocket handshake was rejected outright for a configuration
+    real AWS explicitly supports and documents as a no-op success. Fixed: `invokeWSRoute` now
+    short-circuits `MOCK` to `nil` (success, no backend invocation) before the AWS_PROXY check,
+    implementing exactly what the doc comment describes -- not a fabricated response shape, since
+    "no backend invoked" has no payload to construct. `AWS`/`HTTP` (the two remaining WebSocket-
+    only custom-integration types, which require Velocity-Template-style request/response mapping
+    the emulator has no engine for) remain `ErrUnsupportedType` -- left as a disclosed, structural
+    gap rather than a guessed template-execution implementation. Test:
+    `TestInvokeWSRoute_MockIntegrationIsLoopback` (`proxy_internal_test.go`, white-box: calls
+    `invokeWSRoute` directly since WebSocket upgrade isn't needed to exercise this code path).
+
+18. **`handleProxy` never checked the URL's stage-name segment against the backend at all.**
+    Both data-plane entry points (`/v2proxy/{apiId}/{stageName}/...` and
+    `/restapis/{apiId}/{stageName}/_user_request_/...`) parse a `stageName` out of the URL and
+    pass it to `handleProxy`, which used it only to best-effort look up stage variables
+    (`handleHTTPAPIProxy`'s `if stage, err := h.Backend.GetStage(...); err == nil` -- errors
+    silently ignored) and, for WebSocket APIs, didn't even pass `stageName` to
+    `handleWebSocketProxy` at all. This meant ANY string in the URL's stage-name slot --
+    including a stage name that was never created via `CreateStage` -- still routed a request
+    through to the API's live route/integration and executed it. Confirmed AWS requires a
+    deployed stage to invoke an API ("Deployments are an immutable snapshot of the API, and to
+    make your API callable, you must create a stage and deploy an API snapshot into it" -- AWS
+    public documentation, weaker evidence than the pinned SDK since data-plane invoke behavior
+    isn't part of apigatewayv2's modeled control-plane wire shapes). Fixed: `handleProxy` now
+    calls `h.Backend.GetStage(apiID, stageName)` before the protocol switch and returns 404
+    (`{"message":"Not Found"}` via the existing `writeErr` helper, matching the JSON shape real
+    HTTP APIs return for an unmatched route) if the stage doesn't exist, for both HTTP and
+    WebSocket protocols in one chokepoint. This closes the "nonexistent stage still serves
+    traffic" case but deliberately does NOT gate on the stage having ever been deployed
+    (`DeploymentID != ""`) or on serving a deployment-time snapshot rather than live state -- see
+    gaps for why those two are disclosed but left open. Test:
+    `TestHTTPAPIProxy_NonexistentStage_NotFound` (`http_proxy_test.go`). This fix also required
+    updating the shared `doProxyRequest` test helper to provision a `$default` stage before
+    issuing a data-plane request (`ensureDefaultStage`) -- every existing proxy test had been
+    unknowingly relying on the absence of this check, since none of them called `CreateStage`.
+
+19. **`handleHTTPAPIProxy` never froze a per-deployment routing snapshot -- an `autoDeploy=false`
+    stage saw route/integration edits with no new deployment (gopherstack-cfr1).** `CreateDeployment`
+    and `autoDeployLocked` (`deployments.go`) created a `Deployment` record with no capture of the
+    API's routes/integrations at all, and `handleHTTPAPIProxy` (`http_proxy.go:124,146` pre-fix)
+    called `h.Backend.GetRoutes(apiID)`/`h.Backend.GetIntegration(apiID, integrationID)` on every
+    request regardless of which deployment a stage was nominally pinned to -- an `autoDeploy=true`
+    and an `autoDeploy=false` stage were indistinguishable at the data plane; both always served
+    the API's live current state. Fixed: `Deployment` gained internal-only `Routes []Route` /
+    `Integrations []Integration` fields (`json:"-"` -- not part of the real `GetDeploymentOutput`
+    wire shape, verified against `aws-sdk-go-v2/service/apigatewayv2`'s `api_op_GetDeployment.go`).
+    `CreateDeployment` and `autoDeployLocked` now both call a shared `snapshotRoutingLocked`
+    helper to copy the API's current routes/integrations onto the deployment they create.
+    `handleHTTPAPIProxy` resolves the routes to match against, and the integration a matched
+    route's target names, via new `resolveHTTPAPIRoutes`/`resolveHTTPAPIIntegration` helpers: when
+    `stage.DeploymentID != ""` and that deployment still exists, both resolve from its frozen
+    snapshot; otherwise (no deployment yet, or the pinned deployment was since deleted) both fall
+    back to the API's live state, unchanged from pre-fix behavior -- deliberately sidestepping the
+    `DeploymentID==""` gating question left open in gaps (#2) rather than resolving it. Persisted
+    via `deploymentSnapshot`'s new `Routes []routeSnapshot`/`Integrations []integrationSnapshot`
+    fields (`persistence.go`), reusing the existing `routeSnapshot`/`integrationSnapshot` DTOs so
+    the nested entries round-trip identically to the top-level route/integration tables; additive
+    fields, no `apigatewayv2SnapshotVersion` bump. Scope, disclosed not guessed at: a route's
+    `AuthorizerID` is captured by the route snapshot, but the *referenced* `Authorizer`'s own
+    definition is still resolved live via `h.Backend.GetAuthorizer` -- `autoDeployLocked` has
+    never triggered on authorizer or CORS mutations either, a pre-existing incompleteness this fix
+    didn't introduce or widen. WebSocket routing (`invokeWSRoute`) is untouched -- it doesn't even
+    take a `stageName` parameter, a separate, larger gap. apigateway v1's identical bug
+    (`bd gopherstack-fum`) was left unfixed: v1 has no `autoDeploy` model, and its data plane
+    matches a resource TREE via a cached `routingTrie` (`proxy_routing.go`), not v2's flat
+    route/integration lists -- the same fix shape does not transfer. Tests:
+    `TestHTTPAPIProxy_DeploymentSnapshot` (table over `autoDeploy` true/false, asserting through
+    the proxy path -- not the stored record -- that an `autoDeploy=false` stage keeps serving a
+    stale integration after an edit until a fresh `CreateDeployment`, while `autoDeploy=true`
+    reflects the edit immediately) and `TestHTTPAPIProxy_NoDeploymentYet_ServesLiveState` (a stage
+    that exists but was never deployed still serves live state, not a 500). The pre-existing
+    `TestAutoDeploy_RouteAndIntegrationChangesDeploy` (`handler_deployments_test.go`) was left
+    unchanged rather than extended: it already covered the deployment *record* correctly
+    (`autoDeployLocked` firing per stage), a genuinely separate concern from the proxy *routing*
+    bug this note fixes.
+
 Traps for the next auditor (don't re-flag):
 
+- Every data-plane proxy test now depends on `doProxyRequest` (`http_proxy_test.go`) calling
+  `ensureDefaultStage` first, which POSTs `/v2/apis/{apiId}/stages` and tolerates a 409 (idempotent
+  across repeat calls with the same apiID in one test). Don't "clean this up" by removing it or
+  by making `createAPI`/`buildHTTPAPIWithLambda` auto-create a stage instead -- `createAPI` is
+  shared by ~50+ control-plane tests across the package that don't want a stage as a side effect,
+  and quick-create APIs (`CreateApi` with `routeKey`+`target`) already get their own `$default`
+  stage from `quickCreateLocked`, so `ensureDefaultStage`'s 409-tolerance is load-bearing there.
+- Per-integration-type data-plane verdict (this pass, gopherstack-vli): HTTP API AWS_PROXY
+  (`invokeHTTPAPILambda`) and HTTP_PROXY/HTTP (`forwardHTTPAPIHTTPIntegration`) both genuinely
+  execute. HTTP API MOCK/AWS/HTTP are now correctly NOT ACCEPTED at CreateIntegration (Notes #16;
+  previously accepted-but-never-done). WebSocket AWS_PROXY genuinely executes (`invokeWSRoute`).
+  WebSocket MOCK is now a genuine no-op success/loopback (Notes #17). WebSocket AWS/HTTP (custom,
+  template-mapped integrations) remain ACCEPTED BUT NEVER EXECUTE -- `invokeWSRoute` still returns
+  `ErrUnsupportedType` for them; implementing real VTL-style template execution is a structural
+  gap, not fixed this pass (no test asserts otherwise; don't assume these work).
 - `arnResourceType` (single `type/id` suffix) intentionally does NOT handle Stage ARNs — Stage
   tagging goes through the separate `parseStageARN` (4-segment `apis/{id}/stages/{name}`) checked
   *before* falling through to `arnResourceType` in `TagResource`/`UntagResource`/`GetTags`. This
@@ -587,3 +818,133 @@ Verdict: zero real bugs. Every moved finding traces to either the
 determinism fix (safe direction, now resolved) or a separate, pre-existing
 `reqfielddiff` blind spot (`Decode` not in `decodeCallVerbs`) that reading
 the actual source -- rather than trusting either tool -- neutralizes.
+
+## 2026-09-08: route-throttle/authorization nil-on-write fall-through fix (gopherstack-wsvb, P1) -- found and fixed
+
+Part of the sweep following the elasticache fix (gopherstack-8haq) and the pinpoint audit
+(gopherstack-246v). `writeErr`/`writeErrType` (errors.go) write the JSON error body via
+`c.JSON` and return its result, which is nil after a successful write. `enforceRouteThrottle`
+and `enforceRouteAuth` (http_proxy.go) rejected a request via `return writeErr(...)`, so
+`applyRouteControls`' and `handleHTTPAPIProxy`'s `if ctrlErr != nil` checks never fired and a
+throttled or unauthorized request was forwarded to the real integration anyway, even though
+the client had already received the 429/401/403. The same shape was independently present in
+`enforceIAMAuth`, `enforceRequestAuthorizer`, and `finishAuthDecision` (authorizers.go), all
+reached from `enforceRouteAuth`'s AWS_IAM/CUSTOM branches -- same call chain, same bug.
+
+**Tests first.** Following gopherstack-246v's lesson that a status-only assertion passes
+against this bug (echo's `Response.WriteHeader` is a no-op after the first call, so the
+committed rejection status stays on the wire even when the integration is invoked
+underneath it -- only the body gets corrupted, or in this package's case, since the mock
+integration Lambda usually still returns a clean `{"statusCode":200,...}` envelope that
+`writeHTTPAPILambdaResponse` writes into the already-committed response, the body). Every
+test below therefore asserts a mock Lambda invocation counter, not just the response status.
+Confirmed each FAILS against unmodified code before fixing (verbatim, `go test -race
+./services/apigatewayv2/...`):
+
+```
+=== NAME  TestHTTPAPIProxy_RouteThrottle_TooManyRequests
+    http_proxy_throttle_test.go:64:
+        Error Trace:    /home/agbishop/gopherstack/services/apigatewayv2/http_proxy_throttle_test.go:64
+        Error:          Not equal:
+                        expected: 1
+                        actual  : 2
+        Test:           TestHTTPAPIProxy_RouteThrottle_TooManyRequests
+        Messages:       a throttled request must not reach the integration (gopherstack-wsvb)
+--- FAIL: TestHTTPAPIProxy_RouteThrottle_TooManyRequests (0.00s)
+
+=== NAME  TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration
+    http_proxy_test.go:574:
+        Error Trace:    /home/agbishop/gopherstack/services/apigatewayv2/http_proxy_test.go:574
+        Error:          Not equal:
+                        expected: 0
+                        actual  : 1
+        Test:           TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration
+        Messages:       a JWT route with an unresolvable authorizerId must not reach the integration (gopherstack-wsvb)
+--- FAIL: TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration (0.00s)
+
+=== NAME  TestHTTPAPIProxy_JWTAuthorizer
+    http_proxy_test.go:513: Error Trace ... expected: 0, actual: 1, Messages: a missing JWT must not reach the integration
+    http_proxy_test.go:519: Error Trace ... expected: 0, actual: 2, Messages: an invalid JWT must not reach the integration
+--- FAIL: TestHTTPAPIProxy_JWTAuthorizer (0.00s)
+
+=== NAME  TestRouteAuth_AWSIAM/unsigned_request_rejected
+    handler_authorizers_test.go:653: Error Trace ... expected: 0, actual: 1
+--- FAIL: TestRouteAuth_AWSIAM (0.00s)
+    --- FAIL: TestRouteAuth_AWSIAM/unsigned_request_rejected (0.00s)
+    --- PASS: TestRouteAuth_AWSIAM/sigv4_signed_allowed (0.00s)
+    --- PASS: TestRouteAuth_AWSIAM/presigned_query_allowed (0.00s)
+```
+
+The CUSTOM/REQUEST-authorizer paths (`enforceRequestAuthorizer`/`finishAuthDecision`,
+authorizers.go), reached from the same `enforceRouteAuth` call chain, share the identical
+shape and were also caught pre-fix, each an existing test strengthened from a status-only
+assertion to also assert non-invocation (see "modified pre-existing tests" below):
+
+```
+--- FAIL: TestRequestAuthorizer_SimpleResponse (0.00s)
+    --- PASS: TestRequestAuthorizer_SimpleResponse/simple_allow (0.00s)
+    --- FAIL: TestRequestAuthorizer_SimpleResponse/simple_deny (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+
+--- FAIL: TestRequestAuthorizer_IAMPolicyResponse (0.00s)
+    --- PASS: TestRequestAuthorizer_IAMPolicyResponse/policy_allow_wildcard (0.00s)
+    --- FAIL: TestRequestAuthorizer_IAMPolicyResponse/policy_explicit_deny (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+    --- FAIL: TestRequestAuthorizer_IAMPolicyResponse/policy_no_matching_resource_implicit_deny (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+
+--- FAIL: TestRequestAuthorizer_MissingIdentitySource (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+
+--- FAIL: TestRequestAuthorizer_MissingAuthorizerRejected (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+```
+
+Echo's own instrumentation independently corroborates the double write on several of these
+runs, logged alongside the failures above: `{"level":"ERROR","msg":"echo: response already
+written to client"}`.
+
+**Fix.** Following the pinpoint pattern (handler_templates.go's `applyTemplateUpdate`), not
+elasticache's `errResponseWritten` sentinel-plus-inline-write shape -- the fan-out here (two
+`http_proxy.go` enforce helpers plus three `authorizers.go` helpers, all funneling into one
+`applyRouteControls` and one `handleHTTPAPIProxy`) doesn't warrant a sentinel. Every helper in
+the chain (`enforceRouteThrottle`, `enforceRouteAuth`, `enforceIAMAuth`,
+`enforceRequestAuthorizer`, `finishAuthDecision`) now returns a raw, unwritten error: either
+the existing `ErrThrottled`, or one of five new package-private sentinels in errors.go
+(`errRouteUnauthorized`, `errRouteForbidden`, `errRouteExplicitDeny`,
+`errRouteMissingAuthToken`, `errRouteAuthConfigInvalid`). A single new
+`writeRouteControlRejection` (errors.go) maps each to its AWS-accurate status/body and writes
+it exactly once, called only at `handleHTTPAPIProxy`'s `applyRouteControls` check.
+`enforceRouteThrottle`'s `default:` branch (an unexpected backend enforcement error) still
+returns nil and allows the request through -- that fail-open behavior is preserved unchanged;
+it's a separate, deliberate design decision from this bug, not part of it.
+
+**Modified pre-existing tests** (all strengthened from a status-only assertion to also assert
+the integration was not invoked -- exactly the class of assertion that let this bug hide):
+`TestHTTPAPIProxy_RouteThrottle_TooManyRequests`, `TestHTTPAPIProxy_JWTAuthorizer`,
+`TestRouteAuth_AWSIAM`, `TestRequestAuthorizer_SimpleResponse`,
+`TestRequestAuthorizer_IAMPolicyResponse`, `TestRequestAuthorizer_MissingIdentitySource`,
+`TestRequestAuthorizer_MissingAuthorizerRejected`. `setupRequestAuthAPI`
+(handler_authorizers_test.go) gained a second atomic counter, `integrationCalls`, alongside
+its existing `authCalls`, distinguishing the two Lambdas the same way the existing mock
+already did by ARN substring (`auth-fn` vs the route's own integration function) -- it just
+wasn't being counted before. `TestRequestAuthorizer_CachingTTL` (already passing pre-fix, not
+a bug site) also gained an `integrationCalls` assertion for completeness since the counter
+was threaded through its call site anyway.
+
+**New test**: `TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration`
+(http_proxy_test.go) -- a JWT route whose `authorizerId` doesn't resolve to a stored
+authorizer, the JWT-authorizer counterpart of `TestRequestAuthorizer_MissingAuthorizerRejected`
+(CUSTOM).
+
+**Scope check**: grepped every `writeErr`/`writeErrType`/`c.JSON`/`c.String` call site in the
+package (~180) against every checked `if xErr := h.foo(...); xErr != nil` call site (~10).
+Outside the enforcement chain above, every other writer call is either the final `return` of
+its own echo-registered handler (never re-checked by another function in this package) or an
+already-safe direct passthrough (`return writeErr(...)`/`return c.JSON(...)`, not stored and
+rechecked). No other instance of this shape exists in `services/apigatewayv2/`.
+
+**Verification**: `golangci-lint run ./services/apigatewayv2/...` → 0 issues.
+`go test -race ./services/apigatewayv2/...` → ok. Full `go test ./services/...` → ok, 169
+packages, zero failures (`services/stepfunctions`, owned by another concurrent change, also
+passed unaffected).

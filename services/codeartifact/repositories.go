@@ -236,9 +236,11 @@ func (b *InMemoryBackend) AssociateExternalConnection(
 // --- Repository permissions policy methods ---
 
 // DeleteRepositoryPermissionsPolicy removes the permissions policy from a repository.
+// policyRevision, when non-empty, must match the existing policy's revision
+// (see checkPolicyRevision).
 func (b *InMemoryBackend) DeleteRepositoryPermissionsPolicy(
 	ctx context.Context,
-	domainName, repoName string,
+	domainName, repoName, policyRevision string,
 ) (*RepositoryPermissionsPolicy, error) {
 	region := getRegion(ctx, b.region)
 
@@ -254,6 +256,9 @@ func (b *InMemoryBackend) DeleteRepositoryPermissionsPolicy(
 	if !ok {
 		return nil, fmt.Errorf("%w: no permissions policy found for repository %s", ErrNotFound, repoName)
 	}
+	if err := checkPolicyRevision(policyRevision, pol.Revision); err != nil {
+		return nil, err
+	}
 	cp := *pol
 	b.repositoryPolicies.Delete(regionKey(region, key))
 
@@ -261,9 +266,14 @@ func (b *InMemoryBackend) DeleteRepositoryPermissionsPolicy(
 }
 
 // PutRepositoryPermissionsPolicy stores a permissions policy for a repository.
+// policyRevision, when non-empty, must match the existing policy's revision
+// (see checkPolicyRevision); a repository with no existing policy accepts any
+// policyRevision, matching PutRepositoryPermissionsPolicyInput's own
+// semantics of locking against a policy that must already exist to have a
+// revision.
 func (b *InMemoryBackend) PutRepositoryPermissionsPolicy(
 	ctx context.Context,
-	domainName, repoName, document string,
+	domainName, repoName, document, policyRevision string,
 ) (*RepositoryPermissionsPolicy, error) {
 	region := getRegion(ctx, b.region)
 
@@ -273,6 +283,12 @@ func (b *InMemoryBackend) PutRepositoryPermissionsPolicy(
 	r, ok := b.repositories.Get(regionKey(region, repoKey(domainName, repoName)))
 	if !ok {
 		return nil, fmt.Errorf("%w: repository %s not found in domain %s", ErrNotFound, repoName, domainName)
+	}
+
+	if existing, hasPolicy := b.repositoryPolicies.Get(regionKey(region, repoKey(domainName, repoName))); hasPolicy {
+		if err := checkPolicyRevision(policyRevision, existing.Revision); err != nil {
+			return nil, err
+		}
 	}
 
 	pol := &RepositoryPermissionsPolicy{

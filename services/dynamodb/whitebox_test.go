@@ -1,6 +1,7 @@
 package dynamodb
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	streamstypes "github.com/aws/aws-sdk-go-v2/service/dynamodbstreams/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/blackbirdworks/gopherstack/services/dynamodb/models"
 )
 
 // newWhiteboxStreamsDB creates an InMemoryDB with a single test table for stream tests.
@@ -175,4 +178,62 @@ func TestStreams_GetRecords_ExpiredIteratorException(t *testing.T) {
 	var apiErr *Error
 	require.ErrorAs(t, err, &apiErr)
 	assert.Equal(t, "com.amazonaws.dynamodb.v20120810#ExpiredIteratorException", apiErr.Type)
+}
+
+// TestStreams_JanitorSweep_PreservesRecordsUnder24Hours is a regression guard:
+// AWS's TrimmedDataAccessException doc says records are only subject to
+// removal once their age "exceeds" the 24 hour retention limit
+// (aws-sdk-go-v2/service/dynamodbstreams/types/errors.go). A prior version of
+// sweepTableStreamRecordsLocked, once >=50% of the ring was tombstoned,
+// discarded the *entire* ring buffer and set streamTrimSeq past every
+// record -- including ones still under 24h old -- making them wrongly
+// unreadable via GetRecords.
+func TestStreams_JanitorSweep_PreservesRecordsUnder24Hours(t *testing.T) {
+	t.Parallel()
+
+	db := newWhiteboxStreamsDB(t)
+	ctx := t.Context()
+
+	require.NoError(t, db.EnableStream(ctx, "StreamsTestTable", "KEYS_ONLY"))
+
+	table, ok := db.GetTable("StreamsTestTable")
+	require.True(t, ok)
+
+	now := time.Now()
+	old := now.Add(-25 * time.Hour).Unix()
+
+	table.mu.Lock("test-setup")
+	for i := range 3 {
+		table.streamSeq++
+		table.StreamRecords = append(table.StreamRecords, models.StreamRecord{
+			EventID:                     fmt.Sprintf("old-%d", i),
+			SequenceNumber:              seqNumString(table.streamSeq),
+			ApproximateCreationDateTime: old,
+		})
+	}
+	table.streamSeq++
+	freshSeq := table.streamSeq
+	table.StreamRecords = append(table.StreamRecords, models.StreamRecord{
+		EventID:                     "fresh",
+		SequenceNumber:              seqNumString(freshSeq),
+		ApproximateCreationDateTime: now.Unix(),
+	})
+	table.mu.Unlock()
+
+	j := NewJanitor(db, Settings{JanitorInterval: time.Hour})
+	j.SweepOnce(ctx)
+
+	iterOut, err := db.GetShardIterator(ctx, &dynamodbstreams.GetShardIteratorInput{
+		StreamArn:         aws.String(table.StreamARN),
+		ShardId:           aws.String(StreamShardID),
+		ShardIteratorType: streamstypes.ShardIteratorTypeTrimHorizon,
+	})
+	require.NoError(t, err)
+
+	recOut, err := db.GetRecords(ctx, &dynamodbstreams.GetRecordsInput{
+		ShardIterator: iterOut.ShardIterator,
+	})
+	require.NoError(t, err)
+	require.Len(t, recOut.Records, 1, "sweep must not discard the record still under 24h old")
+	assert.Equal(t, "fresh", aws.ToString(recOut.Records[0].EventID))
 }

@@ -215,6 +215,14 @@ func ShiftTestTimestampForTest(anchor time.Time, legacy string) string {
 	return anchor.Add(t.Sub(legacyTestEpoch)).Format(time.RFC3339)
 }
 
+// TotalMetricsForTest exposes the running totalMetrics counter (#60) for tests.
+func (b *InMemoryBackend) TotalMetricsForTest() int {
+	b.mu.RLock("TotalMetricsForTest")
+	defer b.mu.RUnlock()
+
+	return b.totalMetrics
+}
+
 // StoreDatumForTest stores a MetricDatum directly, bypassing PutMetricData's
 // write-time Timestamp-acceptance-window check (real CloudWatch only enforces
 // that window at write time; a datapoint legitimately written within the

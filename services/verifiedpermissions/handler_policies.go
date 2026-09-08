@@ -466,30 +466,29 @@ func (h *Handler) handleUpdatePolicy(_ context.Context, in *updatePolicyInput) (
 		return nil, err
 	}
 
-	if (in.Definition.Static == nil) == (in.Definition.TemplateLinked == nil) {
-		return nil, fmt.Errorf("%w: definition must contain exactly one of static or templateLinked", errInvalidRequest)
+	// Real AWS's UpdatePolicyDefinition union has only a "static" member
+	// (UpdatePolicyDefinitionMemberStatic) -- templateLinked isn't a valid
+	// member here at all. The op doc is explicit: "You can directly update
+	// only static policies. To change a template-linked policy, you must
+	// update the template instead, using UpdatePolicyTemplate."
+	if in.Definition.TemplateLinked != nil {
+		return nil, fmt.Errorf(
+			"%w: definition.templateLinked is not valid for UpdatePolicy; use UpdatePolicyTemplate instead",
+			errInvalidRequest,
+		)
 	}
 
-	var params UpdatePolicyParams
+	if in.Definition.Static == nil {
+		return nil, fmt.Errorf("%w: definition.static is required", errInvalidRequest)
+	}
 
-	if in.Definition.Static != nil {
-		if in.Definition.Static.Statement == "" {
-			return nil, fmt.Errorf("%w: definition.static.statement is required", errInvalidRequest)
-		}
+	if in.Definition.Static.Statement == "" {
+		return nil, fmt.Errorf("%w: definition.static.statement is required", errInvalidRequest)
+	}
 
-		params.Statement = in.Definition.Static.Statement
-		params.Description = in.Definition.Static.Description
-	} else {
-		tl := in.Definition.TemplateLinked
-		if tl.Principal != nil {
-			params.PrincipalEntityType = tl.Principal.EntityType
-			params.PrincipalEntityID = tl.Principal.EntityID
-		}
-
-		if tl.Resource != nil {
-			params.ResourceEntityType = tl.Resource.EntityType
-			params.ResourceEntityID = tl.Resource.EntityID
-		}
+	params := UpdatePolicyParams{
+		Statement:   in.Definition.Static.Statement,
+		Description: in.Definition.Static.Description,
 	}
 
 	p, err := h.Backend.UpdatePolicy(resolvedID, in.PolicyID, params)

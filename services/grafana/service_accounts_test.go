@@ -46,6 +46,26 @@ func TestServiceAccountLifecycle(t *testing.T) {
 	require.Empty(t, after.ServiceAccounts)
 }
 
+func TestCreateWorkspaceServiceAccount_PreV9Workspace_Conflict(t *testing.T) {
+	t.Parallel()
+
+	_, client := newTestHandlerAndClient(t)
+
+	in := minimalCreateWorkspaceInput()
+	in.GrafanaVersion = aws.String("8.4")
+	id := createActiveWorkspace(t, client, in)
+
+	_, err := client.CreateWorkspaceServiceAccount(t.Context(), &grafanasdk.CreateWorkspaceServiceAccountInput{
+		WorkspaceId: aws.String(id),
+		Name:        aws.String("automation"),
+		GrafanaRole: types.RoleEditor,
+	})
+	require.Error(t, err)
+
+	var ce *types.ConflictException
+	require.ErrorAs(t, err, &ce)
+}
+
 func TestCreateWorkspaceServiceAccount_DuplicateName_Conflict(t *testing.T) {
 	t.Parallel()
 

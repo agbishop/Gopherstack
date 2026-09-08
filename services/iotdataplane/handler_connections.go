@@ -178,7 +178,11 @@ type listSubscriptionsResponse struct {
 	Subscriptions []subscriptionSummaryResponse `json:"subscriptions"`
 }
 
-// handleListSubscriptions processes GET /connections/{clientId}/subscriptions requests.
+// handleListSubscriptions processes GET /connections/{clientId}/subscriptions
+// requests. Pagination: maxResults (default 20, the documented
+// ListSubscriptionsInput.MaxResults default) and nextToken -- both real query
+// params confirmed via awsRestjson1_serializeOpHttpBindingsListSubscriptionsInput
+// (aws-sdk-go-v2/service/iotdataplane@v1.35.4's serializers.go).
 func (h *Handler) handleListSubscriptions(c *echo.Context) error {
 	clientID := extractConnectionClientID(c.Request().URL.Path)
 	if clientID == "" {
@@ -190,15 +194,31 @@ func (h *Handler) handleListSubscriptions(c *echo.Context) error {
 		return h.handleError(c, err)
 	}
 
-	out := make([]subscriptionSummaryResponse, 0, len(subs))
-	for _, s := range subs {
+	filters := make([]string, len(subs))
+	for i, s := range subs {
+		filters[i] = s.TopicFilter
+	}
+
+	q := c.Request().URL.Query()
+	startIdx := findCursorIndex(filters, q.Get("nextToken"))
+	pageSize := parsePageSize(q, defaultSubscriptionsPageSize)
+	end := min(startIdx+pageSize, len(subs))
+	page := subs[startIdx:end]
+
+	out := make([]subscriptionSummaryResponse, 0, len(page))
+	for _, s := range page {
 		out = append(
 			out,
 			subscriptionSummaryResponse{TopicFilter: s.TopicFilter, Qos: int32(s.QoS)},
 		)
 	}
 
-	return c.JSON(http.StatusOK, listSubscriptionsResponse{Subscriptions: out})
+	resp := listSubscriptionsResponse{Subscriptions: out}
+	if end < len(subs) {
+		resp.NextToken = filters[end]
+	}
+
+	return c.JSON(http.StatusOK, resp)
 }
 
 // sendDirectMessageResponse mirrors SendDirectMessageOutput's JSON shape

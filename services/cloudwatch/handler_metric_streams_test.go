@@ -1,6 +1,7 @@
 package cloudwatch_test
 
 import (
+	"encoding/xml"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,6 +13,13 @@ import (
 	"github.com/blackbirdworks/gopherstack/services/cloudwatch"
 )
 
+// TestHandler_DeleteMetricStream_CleansUpTags previously only asserted the
+// PUT/DELETE HTTP status codes and never called TagResource or
+// ListTagsForResource, so it never actually exercised the tag-cleanup claim
+// in its own name. Strengthened to tag the stream by its real (region+account
+// qualified) ARN, as a real client would, and assert the tag is gone after
+// delete -- this is the exact ARN handleDeleteMetricStream must match to
+// clean up the right map entry.
 func TestHandler_DeleteMetricStream_CleansUpTags(t *testing.T) {
 	t.Parallel()
 
@@ -21,10 +29,32 @@ func TestHandler_DeleteMetricStream_CleansUpTags(t *testing.T) {
 		"&FirehoseArn=arn:aws:firehose:us-east-1:123:deliverystream/ds" +
 		"&RoleArn=arn:aws:iam::123:role/r&OutputFormat=json"
 	rec := postForm(t, h, streamBody)
-	assert.Equal(t, 200, rec.Code)
+	require.Equal(t, 200, rec.Code)
+
+	var putResp struct {
+		Result struct {
+			Arn string `xml:"Arn"`
+		} `xml:"PutMetricStreamResult"`
+	}
+	require.NoError(t, xml.Unmarshal(rec.Body.Bytes(), &putResp))
+	streamARN := putResp.Result.Arn
+	require.NotEmpty(t, streamARN)
+
+	rec = postForm(t, h, "Action=TagResource&ResourceARN="+url.QueryEscape(streamARN)+
+		"&Tags.member.1.Key=env&Tags.member.1.Value=prod")
+	require.Equal(t, 200, rec.Code, "tag stream: %s", rec.Body.String())
+
+	rec = postForm(t, h, "Action=ListTagsForResource&ResourceARN="+url.QueryEscape(streamARN))
+	require.Equal(t, 200, rec.Code)
+	require.Contains(t, rec.Body.String(), "prod", "tag should be visible before delete")
 
 	rec = postForm(t, h, "Action=DeleteMetricStream&Name=my-stream")
 	assert.Equal(t, 200, rec.Code, "delete stream: %s", rec.Body.String())
+
+	rec = postForm(t, h, "Action=ListTagsForResource&ResourceARN="+url.QueryEscape(streamARN))
+	require.Equal(t, 200, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "prod",
+		"tags for the deleted metric stream's real ARN must not survive delete (ghost row)")
 }
 
 // ---------------------------------------------------------------------------

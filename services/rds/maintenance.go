@@ -54,7 +54,7 @@ func (b *InMemoryBackend) ApplyPendingMaintenanceAction(
 	// Validate that the referenced resource exists (instance or cluster).
 	if _, ok := b.instances.Get(normalizeID(id)); !ok {
 		if _, ok2 := b.clusters.Get(normalizeID(id)); !ok2 {
-			return "", fmt.Errorf("%w: resource %s not found", ErrInstanceNotFound, resourceID)
+			return "", fmt.Errorf("%w: resource %s not found", ErrResourceNotFound, resourceID)
 		}
 	}
 

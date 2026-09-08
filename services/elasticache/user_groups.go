@@ -231,7 +231,3 @@ func (b *InMemoryBackend) CreateUserGroupValidated(
 
 	return b.withAssignedReplicationGroupIDs(region, ug), nil
 }
-
-// ----------------------------------------
-// DeleteUserSafe — checks group membership
-// ----------------------------------------

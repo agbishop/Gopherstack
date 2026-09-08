@@ -102,7 +102,8 @@ func (b *InMemoryBackend) ListBatchLoadTasks(statusFilter string) []BatchLoadTas
 	return out
 }
 
-// ResumeBatchLoadTask resumes a batch load task that is in PENDING_RESUME or FAILED status.
+// ResumeBatchLoadTask resumes a batch load task that is in PROGRESS_STOPPED or FAILED status.
+// Pinned SDK documents no precondition (gopherstack-3geb); matches the guard below.
 func (b *InMemoryBackend) ResumeBatchLoadTask(taskID string) error {
 	b.mu.Lock("ResumeBatchLoadTask")
 	defer b.mu.Unlock()

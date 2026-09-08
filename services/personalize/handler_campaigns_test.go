@@ -2,6 +2,7 @@ package personalize_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -105,6 +106,48 @@ func TestPersonalize_Campaign_ConfigAndLatestUpdate(t *testing.T) {
 	assert.Equal(t, newSvArn, update["solutionVersionArn"])
 	assert.Equal(t, "ACTIVE", update["status"])
 	assert.NotEmpty(t, update["creationDateTime"])
+}
+
+// TestPersonalize_Campaign_LatestSolutionVersionFormat locks that
+// CreateCampaign and UpdateCampaign accept the documented
+// SolutionArn/$LATEST shorthand for solutionVersionArn
+// (api_op_CreateCampaign.go field doc on SolutionVersionArn: "To specify the
+// latest solution version of your solution, specify the ARN of your
+// solution in SolutionArn/$LATEST format.") and resolve it to the solution's
+// actual latest version.
+func TestPersonalize_Campaign_LatestSolutionVersionFormat(t *testing.T) {
+	t.Parallel()
+
+	h := personalizeHandler(t)
+	svArn := personalizeCreateSolutionVersion(t, h, "latest-sol")
+	solArn := svArn[:strings.LastIndex(svArn, "/")]
+
+	rec := personalizeDo(t, h, "CreateCampaign", map[string]any{
+		"name":               "latest-campaign",
+		"solutionVersionArn": solArn + "/$LATEST",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	campArn := personalizeUnmarshal(t, rec)["campaignArn"].(string)
+
+	rec = personalizeDo(t, h, "DescribeCampaign", map[string]any{"campaignArn": campArn})
+	require.Equal(t, http.StatusOK, rec.Code)
+	c := personalizeUnmarshal(t, rec)["campaign"].(map[string]any)
+	assert.Equal(t, svArn, c["solutionVersionArn"])
+
+	newSvArn := personalizeDo(t, h, "CreateSolutionVersion", map[string]any{"solutionArn": solArn})
+	require.Equal(t, http.StatusOK, newSvArn.Code)
+	latestSvArn := personalizeUnmarshal(t, newSvArn)["solutionVersionArn"].(string)
+	require.NotEqual(t, svArn, latestSvArn)
+
+	rec = personalizeDo(t, h, "UpdateCampaign", map[string]any{
+		"campaignArn":        campArn,
+		"solutionVersionArn": solArn + "/$LATEST",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = personalizeDo(t, h, "DescribeCampaign", map[string]any{"campaignArn": campArn})
+	c = personalizeUnmarshal(t, rec)["campaign"].(map[string]any)
+	assert.Equal(t, latestSvArn, c["solutionVersionArn"])
 }
 
 // --- EventTracker ---

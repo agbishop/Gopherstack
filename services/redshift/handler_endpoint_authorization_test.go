@@ -112,7 +112,7 @@ func TestBackend_AuthorizeEndpointAccess(t *testing.T) {
 		{
 			name: "success_no_vpcs",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("ea-cluster", "", "", "")
+				_, _ = b.CreateCluster("ea-cluster", "", "", "", nil, "")
 			},
 			clusterID: "ea-cluster",
 			grantee:   "111111111111",
@@ -121,7 +121,7 @@ func TestBackend_AuthorizeEndpointAccess(t *testing.T) {
 		{
 			name: "success_with_vpcs",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("ea-cluster-vpcs", "", "", "")
+				_, _ = b.CreateCluster("ea-cluster-vpcs", "", "", "", nil, "")
 			},
 			clusterID: "ea-cluster-vpcs",
 			grantee:   "222222222222",
@@ -148,7 +148,7 @@ func TestBackend_AuthorizeEndpointAccess(t *testing.T) {
 		{
 			name: "duplicate",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("dup-ea-cluster", "", "", "")
+				_, _ = b.CreateCluster("dup-ea-cluster", "", "", "", nil, "")
 				_, _ = b.AuthorizeEndpointAccess("dup-ea-cluster", "333333333333", nil)
 			},
 			clusterID: "dup-ea-cluster",
@@ -196,7 +196,7 @@ func TestAuthorizeEndpointAccess_AllowedAllVPCsWhenEmpty(t *testing.T) {
 	b := redshift.NewInMemoryBackend("000000000000", "us-east-1")
 	h := redshift.NewHandler(b)
 
-	_, err := b.CreateCluster("ea-cluster", "dc2.large", "dev", "admin")
+	_, err := b.CreateCluster("ea-cluster", "dc2.large", "dev", "admin", nil, "")
 	require.NoError(t, err)
 
 	rec := postRedshiftForm(t, h,
@@ -218,7 +218,7 @@ func TestAuthorizeEndpointAccess_DuplicateReturnsError(t *testing.T) {
 	b := redshift.NewInMemoryBackend("000000000000", "us-east-1")
 	h := redshift.NewHandler(b)
 
-	_, err := b.CreateCluster("ea-dup-cluster", "dc2.large", "dev", "admin")
+	_, err := b.CreateCluster("ea-dup-cluster", "dc2.large", "dev", "admin", nil, "")
 	require.NoError(t, err)
 
 	body := "Action=AuthorizeEndpointAccess&Version=2012-12-01" +

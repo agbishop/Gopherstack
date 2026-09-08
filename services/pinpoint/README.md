@@ -7,11 +7,16 @@
 
 | Metric | Value |
 | --- | --- |
-| PARITY entries audited | 48 (48 ok) |
+| PARITY entries audited | 49 (49 ok) |
 | Feature families | 19 (19 ok) |
-| Known gaps | none |
+| Known gaps | 2 |
 | Deferred items | 3 |
 | Resource leaks | clean |
+
+### Known gaps
+
+- gopherstack-coib: PutEvents' documented per-individual-event size quota (1,000 KB) is not enforced -- only its request-level 4 MB quota is. See the gopherstack-coib Notes section.
+- gopherstack-coib: PayloadTooLargeException size checks are wired for the 39 ops that both model the exception (digit-safe-extracted from deserializers.go: 113 of 122 ops) and have an observable non-trivial request body in this handler. The other 74 modeled ops (GET/DELETE with an empty body) and TagResource/UntagResource/ListTagsForResource/Create{Email,InApp,Push,Sms,Voice}Template (the 9 ops that don't model the exception at all) are left unenforced -- see Notes.
 
 ### Deferred
 

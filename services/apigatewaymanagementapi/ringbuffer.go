@@ -1,7 +1,5 @@
 package apigatewaymanagementapi
 
-import "encoding/json"
-
 // messageRing is a fixed-capacity circular buffer of PostedMessage values.
 // Push is O(1); when full, the oldest entry is overwritten. Snapshot returns
 // a flat slice in arrival order so callers can iterate as if it were a list.
@@ -51,28 +49,4 @@ func (r *messageRing) snapshot() []PostedMessage {
 func (r *messageRing) reset() {
 	r.head = 0
 	r.size = 0
-}
-
-// MarshalJSON serialises the buffer as a flat array of messages so on-disk
-// snapshots remain stable and human-readable.
-func (r *messageRing) MarshalJSON() ([]byte, error) {
-	return json.Marshal(r.snapshot())
-}
-
-// UnmarshalJSON rebuilds the buffer from a flat array.
-func (r *messageRing) UnmarshalJSON(data []byte) error {
-	var msgs []PostedMessage
-	if err := json.Unmarshal(data, &msgs); err != nil {
-		return err
-	}
-
-	r.items = make([]PostedMessage, max(maxMessagesPerConnection, len(msgs)))
-	r.head = 0
-	r.size = 0
-
-	for _, m := range msgs {
-		r.push(m)
-	}
-
-	return nil
 }

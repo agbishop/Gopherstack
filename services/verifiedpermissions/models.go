@@ -195,16 +195,12 @@ type CreatePolicyParams struct {
 	ClientToken         string // idempotency token, see InMemoryBackend.checkClientToken
 }
 
-// UpdatePolicyParams holds parameters for updating a policy.
+// UpdatePolicyParams holds parameters for updating a static policy. Real
+// AWS's UpdatePolicy can only update static policies; there is no
+// TEMPLATE_LINKED variant.
 type UpdatePolicyParams struct {
-	// For STATIC updates:
 	Statement   string
 	Description string
-	// For TEMPLATE_LINKED principal/resource updates (template id is immutable):
-	PrincipalEntityType string
-	PrincipalEntityID   string
-	ResourceEntityType  string
-	ResourceEntityID    string
 }
 
 // IdentitySourceConfig holds full identity source configuration for create/update.

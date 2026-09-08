@@ -218,6 +218,57 @@ func TestStartTaskLifecycle_ObservableIntermediateStates(t *testing.T) {
 	}
 }
 
+func TestStopTask_DuringStartDelay_DoesNotResurrect(t *testing.T) {
+	t.Parallel()
+
+	b := NewInMemoryBackend("123456789012", "us-east-1", nil)
+	b.SetStartDelay(time.Millisecond)
+
+	tdArn := registerSimpleTaskDef(t, b, "lc-app", "nginx")
+	if _, err := b.CreateCluster(CreateClusterInput{ClusterName: "lc"}); err != nil {
+		t.Fatalf("CreateCluster: %v", err)
+	}
+
+	tasks, err := b.RunTask(RunTaskInput{Cluster: "lc", TaskDefinition: tdArn, Count: 1})
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+
+	arn := tasks[0].TaskArn
+	if tasks[0].LastStatus != statusProvisioning {
+		t.Fatalf("initial status = %q, want PROVISIONING", tasks[0].LastStatus)
+	}
+
+	// StopTask fires while the task is still tracked in the start pipeline
+	// (registered by RunTask above) and stopDelay is unset, so this takes the
+	// fast path straight to STOPPED.
+	stopped, err := b.StopTask("lc", arn, "user requested")
+	if err != nil {
+		t.Fatalf("StopTask: %v", err)
+	}
+	if stopped.LastStatus != statusStopped {
+		t.Fatalf("StopTask status = %q, want STOPPED", stopped.LastStatus)
+	}
+
+	// Drive the lifecycle stepper as the reconciler would on later ticks. A
+	// leftover start-pipeline entry must not resurrect the stopped task.
+	future := time.Now().Add(time.Hour)
+	b.stepTaskLifecycle(future)
+	b.stepTaskLifecycle(future.Add(time.Second))
+
+	if got := taskStatus(t, b, arn); got != statusStopped {
+		t.Fatalf("status after lifecycle steps = %q, want STOPPED (task was resurrected)", got)
+	}
+
+	b.mu.RLock("test")
+	_, tracked := b.lifecycle[arn]
+	b.mu.RUnlock()
+
+	if tracked {
+		t.Error("stopped task still tracked in lifecycle map")
+	}
+}
+
 func TestStepTaskLifecycle_RespectsDelay(t *testing.T) {
 	t.Parallel()
 

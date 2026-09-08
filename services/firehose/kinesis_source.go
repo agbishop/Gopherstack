@@ -18,7 +18,7 @@ const (
 // launchKinesisPoller starts one goroutine per shard for the given Kinesis source stream.
 // It stores the cancel func in b.pollerCancel[region][streamName] so DeleteDeliveryStream can stop it.
 func (b *InMemoryBackend) launchKinesisPoller(region, firehoseStream, kinesisStreamARN string) {
-	ctx, cancel := context.WithCancel(b.svcCtx) //nolint:gosec // existing issue.
+	ctx, cancel := context.WithCancel(b.svcCtx)
 
 	func() {
 		b.mu.Lock("launchKinesisPoller")

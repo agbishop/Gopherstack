@@ -192,6 +192,50 @@ func TestScanServiceDir_ECSTwelfthCodeAlsoFixed(t *testing.T) {
 	}
 }
 
+// TestClassify_GenericListNeverOverridesRealServiceCode is gopherstack-udkm's
+// confirmation for this tool: unlike cmd/errtargetaudit's per-operation
+// declared set, classify's gt.codes is already the service-wide union
+// (built the same way as errtargetaudit's AllCodes -- see
+// serviceGroundTruth's doc comment), and this tool only ever asks "is this
+// code real ANYWHERE in this service's own SDK" -- never "for THIS
+// operation" (that's errtargetaudit's job, gopherstack-o46l's class). So a
+// code present in gt.codes is excluded because it's real, and whether it
+// also happens to sit in genericProtocolCodes changes nothing: no source
+// change was needed here. This locks that in.
+func TestClassify_GenericListNeverOverridesRealServiceCode(t *testing.T) {
+	t.Parallel()
+
+	const code = "ValidationException"
+
+	gt := &serviceGroundTruth{codes: map[string]bool{code: true}}
+	cands := []candidate{{File: "f.go", Line: 1, Code: code, Mechanism: mechStdlibErr}}
+
+	findings := classify(cands, gt)
+
+	require.Empty(t, findings,
+		"a code real in gt.codes must never be reported, generic-list membership notwithstanding")
+}
+
+// TestClassify_GenericListOnlyExcusesWhenAbsentFromServiceCodes is the
+// module-conditional half: a genuinely generic code THIS service's own
+// resolved module never declares anywhere (gt.codes lacks it) stays
+// excused, while a fabricated code -- absent from both gt.codes and the
+// generic list -- is still flagged.
+func TestClassify_GenericListOnlyExcusesWhenAbsentFromServiceCodes(t *testing.T) {
+	t.Parallel()
+
+	gt := &serviceGroundTruth{codes: map[string]bool{}}
+	cands := []candidate{
+		{File: "f.go", Line: 1, Code: "Throttling", Mechanism: mechStdlibErr},
+		{File: "f.go", Line: 2, Code: "TotallyFabricatedException", Mechanism: mechStdlibErr},
+	}
+
+	findings := classify(cands, gt)
+
+	require.Len(t, findings, 1)
+	require.Equal(t, "TotallyFabricatedException", findings[0].Code)
+}
+
 // TestScanServiceDir_SkipsNoGroundTruth confirms ec2 -- whose OWN pinned
 // SDK module models zero error codes at all (see moduleCodes's doc
 // comment) -- never produces a CONFIDENT finding, matching commit
@@ -235,4 +279,52 @@ func TestScanServiceDir_SkipsNoGroundTruth(t *testing.T) {
 			f,
 		)
 	}
+}
+
+// TestScanServiceDir_PersonalizeInternalServerException is the real
+// false positive gopherstack-oshm's InternalServerException addition to
+// genericProtocolCodes fixes: personalize's two resolved modules
+// (personalize, personalizeruntime -- test-file imports make it 2, so any
+// finding here demotes to needs-review, never confident) model
+// InternalServerException nowhere in either's types/errors.go or
+// deserializers.go (confirmed by grep against both pinned modules), yet
+// handler.go emits it as a literal genuine unexpected-failure fallback
+// twice. InternalServerException is real AWS nomenclature -- modeled
+// per-op in 51 of the pinned SDK's other service modules, including mgn
+// (cmd/errtargetaudit/genericcodes.go's citation for the same code) --
+// personalize just isn't one of the 51, which is a "real code, wrong
+// service" gap outside this tool's own class B scope, not evidence the
+// code is fabricated.
+func TestScanServiceDir_PersonalizeInternalServerExceptionReported(t *testing.T) {
+	t.Parallel()
+
+	repoRoot, err := repoRootDir()
+	require.NoError(t, err)
+
+	cache, err := gomodcacheDir(repoRoot)
+	require.NoError(t, err)
+
+	goModVersions, err := loadGoModVersions(filepath.Join(repoRoot, "go.mod"))
+	require.NoError(t, err)
+
+	findings, err := scanServiceDir(
+		filepath.Join(repoRoot, "services", "personalize"),
+		repoRoot,
+		cache,
+		goModVersions,
+	)
+	require.NoError(t, err)
+
+	var got int
+
+	for _, f := range findings {
+		if f.Code == "InternalServerException" {
+			got++
+		}
+	}
+
+	require.Positive(t, got,
+		"personalize@v1.50.4 declares no server-fault type at all, so its "+
+			"InternalServerException emissions must be reported, not suppressed "+
+			"by genericProtocolCodes (gopherstack-oshm)")
 }

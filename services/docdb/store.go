@@ -188,6 +188,10 @@ func (b *InMemoryBackend) snapshotAttributesPut(v *DBClusterSnapshotAttributesRe
 	b.snapshotAttributes.Put(v)
 }
 
+func (b *InMemoryBackend) snapshotAttributesDelete(region, id string) {
+	b.snapshotAttributes.Delete(regionKey(region, id))
+}
+
 // The following lazy per-region store helper returns the tags map for the
 // given region, creating it on first use. Callers must hold b.mu. tags
 // remains a raw map -- see the InMemoryBackend doc comment for why.

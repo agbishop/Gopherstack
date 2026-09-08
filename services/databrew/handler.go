@@ -273,7 +273,9 @@ func (h *Handler) handleError(c *echo.Context, err error) error {
 	case errors.Is(err, ErrNotFound):
 		status, code = http.StatusNotFound, errCodeResourceNotFound
 	case errors.Is(err, ErrAlreadyExists):
-		status, code = http.StatusConflict, "ConflictException"
+		status, code = http.StatusConflict, errCodeConflict
+	case errors.Is(err, ErrConflict):
+		status, code = http.StatusConflict, errCodeConflict
 	case errors.Is(err, ErrValidation):
 		status, code = http.StatusBadRequest, errCodeValidation
 	case errors.Is(err, errUnknownAction):

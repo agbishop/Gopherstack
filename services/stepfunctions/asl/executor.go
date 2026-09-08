@@ -66,6 +66,13 @@ var (
 	ErrUnsupportedGlueAction               = errors.New("unsupported Glue action")
 	ErrUnsupportedEventBridgeAction        = errors.New("unsupported EventBridge action")
 	ErrUnsupportedIntegration              = errors.New("unsupported service integration")
+	// ErrSyncPatternUnsupported is returned when a Task state's Resource carries a
+	// ".sync" suffix for a service that AWS does not support the "Run a Job" pattern
+	// for. Per the Step Functions Developer Guide's integration pattern support table
+	// (docs.aws.amazon.com/step-functions/latest/dg/connect-to-resource.html),
+	// Lambda, SQS, SNS, DynamoDB, and EventBridge are Request-Response/waitForTaskToken
+	// only -- ".sync" is "Not supported" for all of them.
+	ErrSyncPatternUnsupported = errors.New(".sync integration pattern is not supported for this resource")
 )
 
 const (
@@ -152,10 +159,54 @@ type ECSIntegration interface {
 	SFNRunTask(ctx context.Context, input map[string]any) (any, error)
 }
 
+// ECSSyncPoll is one poll observation of a ".sync" ECS RunTask integration.
+type ECSSyncPoll struct {
+	// Result is ECS's own description of the completed task(s), matching
+	// DescribeTasks's response shape rather than RunTask's start-call
+	// response -- real Step Functions' .sync pattern returns the service's
+	// description of the finished job, not the start response. Only valid
+	// once Done is true.
+	Result        any
+	FailureReason string
+	Done          bool
+	Failed        bool
+}
+
+// ECSSyncWaiter lets a ".sync" ECS Task state poll the task(s) started by
+// SFNRunTask until they reach ECS's terminal STOPPED status, instead of
+// advancing as soon as RunTask returns (gopherstack-tdp6). It is optional
+// and independent of ECSIntegration: when unset, ".sync" ECS Task states
+// stay fire-and-forget, matching pre-tdp6 behavior.
+type ECSSyncWaiter interface {
+	// SFNPollSyncTask reports whether the task(s) started by a prior
+	// SFNRunTask call are done. runTaskResult is exactly SFNRunTask's
+	// return value.
+	SFNPollSyncTask(ctx context.Context, runTaskResult any) (ECSSyncPoll, error)
+}
+
 // GlueIntegration handles Step Functions Glue service integration.
 type GlueIntegration interface {
 	// SFNStartJobRun starts a Glue job run and returns the JobRunId.
 	SFNStartJobRun(ctx context.Context, jobName string, arguments map[string]string) (string, error)
+}
+
+// GlueSyncPoll is one poll observation of a ".sync" Glue StartJobRun integration.
+type GlueSyncPoll struct {
+	// Result is Glue's own description of the completed job run, matching
+	// GetJobRun's response shape ({"JobRun": ...}) rather than
+	// StartJobRun's start-call response. Only valid once Done is true.
+	Result        any
+	FailureReason string
+	Done          bool
+	Failed        bool
+}
+
+// GlueSyncWaiter lets a ".sync" Glue Task state poll a job run's JobRunState
+// until it reaches a terminal state, instead of advancing as soon as
+// StartJobRun returns (gopherstack-tdp6). Optional and independent of
+// GlueIntegration: when unset, ".sync" Glue Task states stay fire-and-forget.
+type GlueSyncWaiter interface {
+	SFNPollSyncJobRun(ctx context.Context, jobName, runID string) (GlueSyncPoll, error)
 }
 
 // EventBridgeIntegration handles Step Functions EventBridge service integration.
@@ -287,7 +338,9 @@ type Executor struct {
 	sns            SNSIntegration
 	dynamodb       DynamoDBIntegration
 	ecs            ECSIntegration
+	ecsSyncWaiter  ECSSyncWaiter
 	glue           GlueIntegration
+	glueSyncWaiter GlueSyncWaiter
 	eventbridge    EventBridgeIntegration
 	history        HistoryRecorder
 	mapRunNotifier MapRunNotifier
@@ -350,7 +403,9 @@ func (e *Executor) newSubExecutor(sm *StateMachine) *Executor {
 		sns:            e.sns,
 		dynamodb:       e.dynamodb,
 		ecs:            e.ecs,
+		ecsSyncWaiter:  e.ecsSyncWaiter,
 		glue:           e.glue,
+		glueSyncWaiter: e.glueSyncWaiter,
 		eventbridge:    e.eventbridge,
 		history:        e.history,
 		activity:       e.activity,
@@ -464,8 +519,14 @@ func (e *Executor) SetTaskTokenCallbackInvoker(invoker TaskTokenCallbackInvoker)
 // SetECSIntegration configures the ECS integration for Task states.
 func (e *Executor) SetECSIntegration(ecs ECSIntegration) { e.ecs = ecs }
 
+// SetECSSyncWaiter configures ".sync" pattern polling for ECS Task states.
+func (e *Executor) SetECSSyncWaiter(w ECSSyncWaiter) { e.ecsSyncWaiter = w }
+
 // SetGlueIntegration configures the Glue integration for Task states.
 func (e *Executor) SetGlueIntegration(glue GlueIntegration) { e.glue = glue }
+
+// SetGlueSyncWaiter configures ".sync" pattern polling for Glue Task states.
+func (e *Executor) SetGlueSyncWaiter(w GlueSyncWaiter) { e.glueSyncWaiter = w }
 
 // SetEventBridgeIntegration configures the EventBridge integration for Task states.
 func (e *Executor) SetEventBridgeIntegration(eb EventBridgeIntegration) { e.eventbridge = eb }
@@ -489,8 +550,7 @@ func (e *Executor) Execute(
 
 	output, err := e.runStates(ctx, executionARN, e.sm.States, e.sm.StartAt, input)
 	if err != nil {
-		var failErr *FailError
-		if errors.As(err, &failErr) {
+		if failErr, ok := errors.AsType[*FailError](err); ok {
 			return &ExecutionResult{Error: failErr.ErrCode, Cause: failErr.Cause, Failed: true}, nil
 		}
 
@@ -1129,6 +1189,10 @@ func (e *Executor) recordTaskFailed(executionARN, stateName, resource, errCode, 
 
 // invokeTask performs the actual task invocation.
 func (e *Executor) invokeTask(ctx context.Context, state *State, input any, heartbeatSeconds int) (any, error) {
+	if err := checkSyncPatternSupported(state.Resource); err != nil {
+		return nil, err
+	}
+
 	if isActivityResource(state.Resource) {
 		return e.invokeActivityTask(ctx, state, input, heartbeatSeconds)
 	}
@@ -1400,10 +1464,50 @@ func (e *Executor) invokeECSTask(ctx context.Context, state *State, input any) (
 	case "runTask":
 		m, _ := input.(map[string]any)
 
-		return e.ecs.SFNRunTask(ctx, m)
+		result, err := e.ecs.SFNRunTask(ctx, m)
+		if err != nil {
+			return nil, err
+		}
+
+		if !isSyncPattern(state.Resource) || e.ecsSyncWaiter == nil {
+			return result, nil
+		}
+
+		return e.waitForECSSync(ctx, result)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedECSAction, action)
 	}
+}
+
+// waitForECSSync polls e.ecsSyncWaiter until the task(s) started by runTask
+// reach a terminal state, or ctx ends first (its own cancellation, or the
+// Task state's TimeoutSeconds deadline -- runTaskAttempt already derives
+// ctx's deadline from that, the same bound every other Task type uses). A
+// job that never completes and has no TimeoutSeconds set blocks only as
+// long as ctx allows, exactly like every other unbounded Task integration
+// in this executor.
+func (e *Executor) waitForECSSync(ctx context.Context, runTaskResult any) (any, error) {
+	var poll ECSSyncPoll
+
+	err := pollUntilDone(ctx, func() (bool, error) {
+		p, pollErr := e.ecsSyncWaiter.SFNPollSyncTask(ctx, runTaskResult)
+		if pollErr != nil {
+			return false, pollErr
+		}
+
+		poll = p
+
+		return p.Done, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if poll.Failed {
+		return nil, &FailError{ErrCode: errCodeStatesTaskFailed, Cause: poll.FailureReason}
+	}
+
+	return poll.Result, nil
 }
 
 // invokeGlueTask invokes a Glue action as a Task state.
@@ -1432,9 +1536,68 @@ func (e *Executor) invokeGlueTask(ctx context.Context, state *State, input any) 
 			return nil, err
 		}
 
-		return map[string]any{"JobRunId": runID}, nil
+		result := map[string]any{"JobRunId": runID}
+
+		if !isSyncPattern(state.Resource) || e.glueSyncWaiter == nil {
+			return result, nil
+		}
+
+		return e.waitForGlueSync(ctx, jobName, runID)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrUnsupportedGlueAction, action)
+	}
+}
+
+// waitForGlueSync polls e.glueSyncWaiter until the job run reaches a
+// terminal JobRunState; see waitForECSSync for the bounding rationale.
+func (e *Executor) waitForGlueSync(ctx context.Context, jobName, runID string) (any, error) {
+	var poll GlueSyncPoll
+
+	err := pollUntilDone(ctx, func() (bool, error) {
+		p, pollErr := e.glueSyncWaiter.SFNPollSyncJobRun(ctx, jobName, runID)
+		if pollErr != nil {
+			return false, pollErr
+		}
+
+		poll = p
+
+		return p.Done, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if poll.Failed {
+		return nil, &FailError{ErrCode: errCodeStatesTaskFailed, Cause: poll.FailureReason}
+	}
+
+	return poll.Result, nil
+}
+
+// syncPollInterval is how often a ".sync" Task state re-checks job status.
+const syncPollInterval = 25 * time.Millisecond
+
+// pollUntilDone calls poll every syncPollInterval until it reports done, or
+// ctx is done first. The first check happens immediately, before any wait.
+func pollUntilDone(ctx context.Context, poll func() (done bool, err error)) error {
+	ticker := time.NewTicker(syncPollInterval)
+	defer ticker.Stop()
+
+	for {
+		done, err := poll()
+		if err != nil {
+			return err
+		}
+
+		if done {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -1488,6 +1651,32 @@ func isWaitForTaskTokenResource(resource string) bool {
 	_, pattern := parseServiceIntegrationResource(resource)
 
 	return pattern == "waitForTaskToken"
+}
+
+func isSyncPattern(resource string) bool {
+	_, pattern := parseServiceIntegrationResource(resource)
+
+	return pattern == "sync"
+}
+
+// checkSyncPatternSupported rejects a ".sync" Resource for a service that AWS
+// documents as not supporting the "Run a Job" pattern (see
+// ErrSyncPatternUnsupported). Real Step Functions rejects these at
+// CreateStateMachine; gopherstack does not validate definitions at creation
+// time, so this is enforced at Task execution instead, alongside the existing
+// per-service "unsupported action" checks.
+func checkSyncPatternSupported(resource string) error {
+	_, pattern := parseServiceIntegrationResource(resource)
+	if pattern != "sync" {
+		return nil
+	}
+
+	if isLambdaResource(resource) || isSQSResource(resource) || isSNSResource(resource) ||
+		isDynamoDBResource(resource) || isEventBridgeResource(resource) {
+		return fmt.Errorf("%w: %q", ErrSyncPatternUnsupported, resource)
+	}
+
+	return nil
 }
 
 func parseServiceIntegrationResource(resource string) (string, string) {
@@ -3130,8 +3319,7 @@ func catchesError(errorEquals []string, err error) bool {
 }
 
 func stepFunctionsErrorCode(err error) string {
-	var failErr *FailError
-	if errors.As(err, &failErr) {
+	if failErr, ok := errors.AsType[*FailError](err); ok {
 		return failErr.ErrCode
 	}
 
@@ -3158,8 +3346,7 @@ func stepFunctionsErrorCode(err error) string {
 // Fail state or a wrapped service-integration failure); other errors have no
 // separate code/cause split, so the full message is used as the cause.
 func stepFunctionsErrorCause(err error) string {
-	var failErr *FailError
-	if errors.As(err, &failErr) {
+	if failErr, ok := errors.AsType[*FailError](err); ok {
 		return failErr.Cause
 	}
 

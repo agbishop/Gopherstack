@@ -84,12 +84,12 @@ func TestRedshiftDataBatchStatementRegionIsolation(t *testing.T) {
 	ctxWest := ctxRegion("us-west-2")
 
 	_, err := backend.BatchExecuteStatement(
-		ctxEast, []string{"SELECT 1", "SELECT 2"}, "", "", "east-db", "", "", "", false, "", nil, "",
+		ctxEast, []string{"SELECT 1", "SELECT 2"}, "cluster-a", "", "east-db", "", "", "", false, "", nil, "",
 	)
 	require.NoError(t, err)
 
 	_, err = backend.BatchExecuteStatement(
-		ctxWest, []string{"SELECT 3"}, "", "", "west-db", "", "", "", false, "", nil, "",
+		ctxWest, []string{"SELECT 3"}, "cluster-b", "", "west-db", "", "", "", false, "", nil, "",
 	)
 	require.NoError(t, err)
 

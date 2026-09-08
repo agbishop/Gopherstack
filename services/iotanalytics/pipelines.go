@@ -80,6 +80,10 @@ func (b *InMemoryBackend) CreatePipeline(
 		return nil, err
 	}
 
+	if err := validatePipelineActivities(activities); err != nil {
+		return nil, err
+	}
+
 	b.mu.Lock("CreatePipeline")
 	defer b.mu.Unlock()
 
@@ -119,8 +123,18 @@ func (b *InMemoryBackend) DescribePipeline(name string) (*Pipeline, error) {
 	return clonePipeline(p), nil
 }
 
-// UpdatePipeline updates a pipeline's activities and last update time.
+// UpdatePipeline updates a pipeline's activities and last update time. A nil activities
+// slice leaves the pipeline's existing activities unchanged (a real client always sends
+// PipelineActivities -- it is a required UpdatePipelineInput member -- so this is only
+// reachable via a raw HTTP caller omitting the field); a non-nil slice must satisfy the same
+// 2-25/channel+datastore shape CreatePipeline enforces.
 func (b *InMemoryBackend) UpdatePipeline(name string, activities []PipelineActivity) error {
+	if activities != nil {
+		if err := validatePipelineActivities(activities); err != nil {
+			return err
+		}
+	}
+
 	b.mu.Lock("UpdatePipeline")
 	defer b.mu.Unlock()
 
@@ -169,9 +183,13 @@ func (b *InMemoryBackend) ListPipelines() []*Pipeline {
 	return result
 }
 
-// AddPipelineInternal seeds a pipeline by name (test helper).
+// AddPipelineInternal seeds a pipeline by name (test helper) with the minimal
+// channel+datastore activity pair CreatePipeline requires.
 func (b *InMemoryBackend) AddPipelineInternal(name string) *Pipeline {
-	p, _ := b.CreatePipeline(b.svcCtx, name, nil, nil)
+	p, _ := b.CreatePipeline(b.svcCtx, name, nil, []PipelineActivity{
+		{Channel: &PipelineChannelActivity{Name: "channel", ChannelName: name + "_channel"}},
+		{Datastore: &PipelineDatastoreActivity{Name: "datastore", DatastoreName: name + "_datastore"}},
+	})
 
 	return p
 }

@@ -1,12 +1,14 @@
 package appconfig
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v5"
 
+	"github.com/blackbirdworks/gopherstack/pkgs/awserr"
 	"github.com/blackbirdworks/gopherstack/pkgs/config"
 	"github.com/blackbirdworks/gopherstack/pkgs/httputils"
 	"github.com/blackbirdworks/gopherstack/pkgs/logger"
@@ -1010,6 +1012,44 @@ func notFoundResponse(c *echo.Context, err error) error {
 	c.Response().Header().Set(amznErrorTypeHeader, "ResourceNotFoundException")
 
 	return c.JSON(http.StatusNotFound, map[string]string{keyMessageField: err.Error()})
+}
+
+// deletionProtectionCheckHeader is where DeleteEnvironmentInput/
+// DeleteConfigurationProfileInput.DeletionProtectionCheck actually lives on
+// the wire: a header, not the body or query string (appconfig@v1.48.4
+// serializers.go:1121 and :1268).
+const deletionProtectionCheckHeader = "X-Amzn-Deletion-Protection-Check"
+
+// validDeletionProtectionChecks are the only values types.DeletionProtectionCheck
+// accepts (appconfig@v1.48.4 types/enums.go:93-95).
+var validDeletionProtectionChecks = map[string]bool{ //nolint:gochecknoglobals // compile-time constant map
+	"BYPASS":          true,
+	"APPLY":           true,
+	"ACCOUNT_DEFAULT": true,
+}
+
+// rejectInvalidDeletionProtectionCheck validates the DeletionProtectionCheck
+// header on DeleteEnvironment/DeleteConfigurationProfile, if present, writing
+// a BadRequestException response and reporting rejected=true for a value
+// outside the enum.
+//
+// It does not enforce deletion protection itself: doing so needs a record of
+// recent appconfigdata GetLatestConfiguration calls this backend has no way
+// to produce (see PARITY.md's deletion_protection_check gap). BYPASS, APPLY,
+// and ACCOUNT_DEFAULT are therefore all accepted and all behave like an
+// absent header -- deletes are never blocked -- but a value real AppConfig
+// would reject is no longer silently accepted.
+func rejectInvalidDeletionProtectionCheck(c *echo.Context) (bool, error) {
+	value := c.Request().Header.Get(deletionProtectionCheckHeader)
+	if value == "" || validDeletionProtectionChecks[value] {
+		return false, nil
+	}
+
+	respErr := badRequestResponse(c, fmt.Errorf(
+		"%w: DeletionProtectionCheck %q is not a recognized value", awserr.ErrInvalidParameter, value,
+	))
+
+	return true, respErr
 }
 
 func badRequestResponse(c *echo.Context, err error) error {

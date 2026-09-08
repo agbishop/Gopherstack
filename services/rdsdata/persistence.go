@@ -3,6 +3,7 @@ package rdsdata
 import (
 	"context"
 	"maps"
+	"time"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/logger"
 	"github.com/blackbirdworks/gopherstack/pkgs/persistence"
@@ -105,6 +106,7 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 	}
 
 	ensureNonNilMaps(&snap)
+	backfillTransactionTimestamps(snap.Transactions)
 
 	b.transactions = make(map[string]*store.Table[Transaction])
 	for region, items := range snap.Transactions {
@@ -131,6 +133,27 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 	}
 
 	return nil
+}
+
+// backfillTransactionTimestamps stamps CreatedAt/LastActivityAt with now for
+// any transaction restored from a pre-CreatedAt/LastActivityAt (v1) snapshot,
+// where those fields decode as the zero time.Time. Without this, the Janitor
+// (janitor.go) would immediately reap a freshly restored transaction as
+// 24-hour-stale.
+func backfillTransactionTimestamps(txsByRegion map[string][]*Transaction) {
+	now := time.Now()
+
+	for _, txs := range txsByRegion {
+		for _, tx := range txs {
+			if tx.CreatedAt.IsZero() {
+				tx.CreatedAt = now
+			}
+
+			if tx.LastActivityAt.IsZero() {
+				tx.LastActivityAt = now
+			}
+		}
+	}
 }
 
 // ensureNonNilMaps initialises nil maps in the snapshot to empty maps.

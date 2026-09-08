@@ -16,6 +16,8 @@ var (
 	ErrExperimentNotFound = awserr.New("ResourceNotFound", awserr.ErrNotFound)
 	// ErrExperimentAlreadyExists is returned when an experiment already exists.
 	ErrExperimentAlreadyExists = awserr.New("ResourceInUse", awserr.ErrConflict)
+	// ErrExperimentInUse is returned when deleting an experiment that still has trials.
+	ErrExperimentInUse = awserr.New("ResourceInUse", awserr.ErrConflict)
 )
 
 // Experiment represents a SageMaker Experiment. CreatedBy/LastModifiedBy
@@ -156,6 +158,15 @@ func (b *InMemoryBackend) DeleteExperiment(ctx context.Context, name string) (*E
 	e, ok := store.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("%w: experiment %q not found", ErrExperimentNotFound, name)
+	}
+
+	for _, tr := range b.trialsStore(region).All() {
+		if tr.ExperimentName == name {
+			return nil, fmt.Errorf(
+				"%w: experiment %q still has trial %q associated with it",
+				ErrExperimentInUse, name, tr.TrialName,
+			)
+		}
 	}
 
 	cp := cloneExperiment(e)

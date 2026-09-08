@@ -156,7 +156,7 @@ func TestBackend_MRAP_Operations(t *testing.T) {
 			case "policy":
 				err := b.PutMultiRegionAccessPointPolicy("acct1", mrapName, `{"Version":"2012-10-17"}`)
 				if tt.wantErr {
-					require.Error(t, err)
+					require.ErrorContains(t, err, "NoSuchMultiRegionAccessPoint")
 				} else {
 					require.NoError(t, err)
 				}
@@ -398,6 +398,7 @@ func TestHandler_PutMultiRegionAccessPointPolicy(t *testing.T) {
 		{
 			name:       "put_policy_missing",
 			wantStatus: http.StatusNotFound,
+			wantBody:   "NoSuchMultiRegionAccessPoint",
 			body: "<PutMultiRegionAccessPointPolicyRequest>" +
 				`<Details><Name>nonexistent</Name><Policy>{"Version":"2012-10-17"}</Policy></Details>` +
 				"</PutMultiRegionAccessPointPolicyRequest>",
@@ -499,12 +500,12 @@ func TestSubmitMRAPRoutes(t *testing.T) {
 func TestSubmitMRAPRoutes_Backend(t *testing.T) {
 	t.Parallel()
 
-	t.Run("submit on missing MRAP is idempotent", func(t *testing.T) {
+	t.Run("submit on missing MRAP returns NoSuchMultiRegionAccessPoint", func(t *testing.T) {
 		t.Parallel()
 
 		b := s3control.NewInMemoryBackend()
 		err := b.SubmitMultiRegionAccessPointRoutes("acct1", "missing", "routes")
-		require.NoError(t, err)
+		require.ErrorContains(t, err, "NoSuchMultiRegionAccessPoint")
 	})
 
 	t.Run("submit and retrieve routes", func(t *testing.T) {
@@ -519,6 +520,31 @@ func TestSubmitMRAPRoutes_Backend(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "route-data", routes)
 	})
+}
+
+// TestHandler_SubmitMultiRegionAccessPointRoutes_MissingMRAP locks in
+// gopherstack-l498: SubmitMultiRegionAccessPointRoutes previously wrote
+// route data for any MRAP name, real or not, unlike its sibling
+// PutMultiRegionAccessPointPolicy which 404s. Drives the real PATCH route
+// so a handler-mapping regression (backend returns the right sentinel but
+// the handler swallows or remaps it) would also be caught.
+func TestHandler_SubmitMultiRegionAccessPointRoutes_MissingMRAP(t *testing.T) {
+	t.Parallel()
+
+	h := newTestS3ControlHandler(t)
+
+	body := `<SubmitMultiRegionAccessPointRoutesRequest>` +
+		`<RouteUpdates><Route><Bucket>b1</Bucket><TrafficDialPercentage>100</TrafficDialPercentage></Route></RouteUpdates>` +
+		`</SubmitMultiRegionAccessPointRoutesRequest>`
+
+	rec := doS3Request(t, h, http.MethodPatch, "/v20180820/mrap/instances/nonexistent/routes", body)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Body.String(), "NoSuchMultiRegionAccessPoint")
+	assert.Equal(
+		t, 0, s3control.MRAPRoutesCount(h.Backend),
+		"the rejected submit must not have stored a routes row as a side effect",
+	)
 }
 
 func TestSubmitMRAPRoutes_Table(t *testing.T) {
@@ -551,6 +577,7 @@ func TestSubmitMRAPRoutes_Table(t *testing.T) {
 
 			b := s3control.NewInMemoryBackend()
 			h := s3control.NewHandler(b)
+			b.CreateMultiRegionAccessPoint("000000000000", tt.mrap, "")
 
 			body := `<SubmitMultiRegionAccessPointRoutesRequest>` +
 				`<RouteUpdates>` + tt.routes + `</RouteUpdates>` +
@@ -789,4 +816,66 @@ func TestListMultiRegionAccessPoints_Pagination(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHandler_PutMultiRegionAccessPointPolicy_MRAPExistence locks in
+// gopherstack-0c0d: PutMultiRegionAccessPointPolicy on a missing MRAP
+// returned the unrelated ErrNotFound sentinel ("NoSuchPublicAccessBlockConfiguration",
+// s3control's public-access-block error) instead of errMRAPNotFound
+// ("NoSuchMultiRegionAccessPoint"), the sentinel every other MRAP op in
+// this file uses. PutMultiRegionAccessPointPolicy's SDK deserializer
+// (deserializers.go, awsRestxml_deserializeOpErrorPutMultiRegionAccessPointPolicy)
+// declares no modeled error -- its switch has only a bare default -- so
+// there is no SDK-declared code to defer to; errMRAPNotFound is the
+// established, defensible answer for a missing MRAP in this file.
+func TestHandler_PutMultiRegionAccessPointPolicy_MRAPExistence(t *testing.T) {
+	t.Parallel()
+
+	const putPath = "/v20180820/async-requests/mrap/put-policy/token1"
+	const policy = `{"Version":"2012-10-17"}`
+
+	t.Run("missing MRAP returns NoSuchMultiRegionAccessPoint", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestS3ControlHandler(t)
+
+		rec := doS3Request(t, h, http.MethodPost, putPath,
+			"<PutMultiRegionAccessPointPolicyRequest>"+
+				`<Details><Name>nonexistent</Name><Policy>`+policy+`</Policy></Details>`+
+				"</PutMultiRegionAccessPointPolicyRequest>",
+		)
+
+		assert.Equal(t, http.StatusNotFound, rec.Code)
+		body := rec.Body.String()
+		assert.Contains(t, body, "NoSuchMultiRegionAccessPoint")
+		assert.NotContains(t, body, "NoSuchPublicAccessBlockConfiguration")
+	})
+
+	t.Run("existing MRAP stores the policy, readable back via GetMultiRegionAccessPointPolicy", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestS3ControlHandler(t)
+		h.Backend.CreateMultiRegionAccessPoint("acct1", "mymrap", "")
+
+		putRec := doS3Request(t, h, http.MethodPost, putPath,
+			"<PutMultiRegionAccessPointPolicyRequest>"+
+				`<Details><Name>mymrap</Name><Policy>`+policy+`</Policy></Details>`+
+				"</PutMultiRegionAccessPointPolicyRequest>",
+		)
+		require.Equal(t, http.StatusOK, putRec.Code)
+
+		getRec := doS3Request(t, h, http.MethodGet, "/v20180820/mrap/instances/mymrap/policy", "")
+		require.Equal(t, http.StatusOK, getRec.Code)
+
+		var out struct {
+			XMLName xml.Name `xml:"GetMultiRegionAccessPointPolicyResult"`
+			Policy  struct {
+				Established struct {
+					Policy string `xml:"Policy"`
+				} `xml:"Established"`
+			} `xml:"Policy"`
+		}
+		require.NoError(t, xml.Unmarshal(getRec.Body.Bytes(), &out))
+		assert.JSONEq(t, policy, out.Policy.Established.Policy)
+	})
 }

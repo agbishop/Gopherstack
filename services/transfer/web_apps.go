@@ -98,6 +98,7 @@ func (b *InMemoryBackend) DeleteWebApp(webAppID string) error {
 	}
 
 	b.webApps.Delete(webAppID)
+	delete(b.tagsStore, webAppARN(b.accountID, b.region, webAppID))
 
 	return nil
 }

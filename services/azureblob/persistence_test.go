@@ -46,6 +46,48 @@ func TestSnapshotRestore_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestRestore_EtagSeqReseeded is a regression test: etagSeq (store.go) is
+// process-local, not part of backendSnapshot, so a naive Restore leaves it at
+// its zero value. That reintroduces the exact collision
+// TestInMemoryBackend_PutBlobOverwrites/identical_content_still_changes_etag
+// guards against in-process -- the first Put Blob after Restore reused seq=1,
+// the same value the pre-restore process's first-ever Put Blob used, so
+// overwriting a blob with byte-identical content right after a restore
+// reproduced the pre-restart ETag exactly.
+func TestRestore_EtagSeqReseeded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "identical_overwrite_after_restore_gets_new_etag", data: "same-bytes"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+
+			b := azureblob.NewInMemoryBackend()
+			require.NoError(t, b.CreateContainer("c1"))
+			before, err := b.PutBlob("c1", "blob1", []byte(tt.data), "")
+			require.NoError(t, err, tt.name)
+
+			snap := b.Snapshot(ctx)
+
+			restored := azureblob.NewInMemoryBackend()
+			require.NoError(t, restored.Restore(ctx, snap), tt.name)
+
+			after, err := restored.PutBlob("c1", "blob1", []byte(tt.data), "")
+			require.NoError(t, err, tt.name)
+
+			assert.NotEqual(t, before.ETag, after.ETag, tt.name)
+		})
+	}
+}
+
 func TestRestore_IncompatibleVersionStartsEmpty(t *testing.T) {
 	t.Parallel()
 

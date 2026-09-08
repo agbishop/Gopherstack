@@ -107,4 +107,43 @@ var (
 	// Serverless namespace/workgroup (ErrorCode() "InvalidNamespaceFault",
 	// verified against InvalidNamespaceFault in types/errors.go).
 	ErrInvalidNamespace = errors.New("InvalidNamespaceFault")
+	// ErrSecurityGroupInvalidState is returned by DeleteClusterSecurityGroup
+	// when the target is the default security group (ErrorCode()
+	// "InvalidClusterSecurityGroupState", verified against
+	// InvalidClusterSecurityGroupStateFault in types/errors.go and this op's
+	// own declared error switch, awsAwsquery_deserializeOpErrorDeleteClusterSecurityGroup
+	// in deserializers.go).
+	ErrSecurityGroupInvalidState = errors.New("InvalidClusterSecurityGroupState")
+	// ErrParameterGroupInvalidState is returned by DeleteClusterParameterGroup
+	// when the target is a default parameter group (ErrorCode()
+	// "InvalidClusterParameterGroupState", verified against
+	// InvalidClusterParameterGroupStateFault in types/errors.go and this op's
+	// own declared error switch, awsAwsquery_deserializeOpErrorDeleteClusterParameterGroup
+	// in deserializers.go).
+	ErrParameterGroupInvalidState = errors.New("InvalidClusterParameterGroupState")
+	// ErrSnapshotHasAuthorizedAccounts is returned by DeleteClusterSnapshot
+	// when other accounts still have restore access to the snapshot
+	// (ErrorCode() "InvalidClusterSnapshotState", verified against
+	// InvalidClusterSnapshotStateFault in types/errors.go and this op's own
+	// declared error switch, awsAwsquery_deserializeOpErrorDeleteClusterSnapshot
+	// in deserializers.go). Per api_op_DeleteClusterSnapshot.go, the snapshot
+	// must be in the available state with no other users authorized to
+	// access it, and other accounts' authorizations must be revoked before
+	// the snapshot can be deleted.
+	ErrSnapshotHasAuthorizedAccounts = errors.New("InvalidClusterSnapshotState")
+	// ErrClusterInvalidState is returned by ModifyCluster when the target
+	// cluster is not in the "available" state (ErrorCode() "InvalidClusterState",
+	// verified against InvalidClusterStateFault in types/errors.go -- "The
+	// specified cluster is not in the available state" -- and this op's own
+	// declared error switch, awsAwsquery_deserializeOpErrorModifyCluster in
+	// deserializers.go). Deliberately distinct from ErrResizeNotCancellable and
+	// ErrNamespaceRegistrationInvalidClusterState, which carry the same wire
+	// text for unrelated call sites -- see errCodeSentinels, where resolveErrCode
+	// only needs the sentinel's Error() text to match.
+	ErrClusterInvalidState = errors.New("InvalidClusterState")
+	// ErrInvalidS3KeyPrefix is returned by EnableLogging when S3KeyPrefix
+	// contains a character outside the set documented on
+	// EnableLoggingInput.S3KeyPrefix (ErrorCode() "InvalidS3KeyPrefixFault",
+	// verified against InvalidS3KeyPrefixFault in types/errors.go).
+	ErrInvalidS3KeyPrefix = errors.New("InvalidS3KeyPrefixFault")
 )

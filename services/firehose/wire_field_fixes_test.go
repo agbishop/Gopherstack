@@ -28,7 +28,7 @@ func TestCreateDeliveryStream_EncryptionConfigurationRoundTrip(t *testing.T) {
 
 	_, err := client.CreateDeliveryStream(t.Context(), &firehosesdk.CreateDeliveryStreamInput{
 		DeliveryStreamName: aws.String("encrypted-stream"),
-		S3DestinationConfiguration: &firehosetypes.S3DestinationConfiguration{
+		ExtendedS3DestinationConfiguration: &firehosetypes.ExtendedS3DestinationConfiguration{
 			BucketARN: aws.String("arn:aws:s3:::bucket"),
 			RoleARN:   aws.String("arn:aws:iam::123456789012:role/r"),
 		},
@@ -75,7 +75,7 @@ func TestCreateDeliveryStream_DirectPutSourceConfigurationRoundTrip(t *testing.T
 
 	_, err := client.CreateDeliveryStream(t.Context(), &firehosesdk.CreateDeliveryStreamInput{
 		DeliveryStreamName: aws.String("direct-put-stream"),
-		S3DestinationConfiguration: &firehosetypes.S3DestinationConfiguration{
+		ExtendedS3DestinationConfiguration: &firehosetypes.ExtendedS3DestinationConfiguration{
 			BucketARN: aws.String("arn:aws:s3:::bucket"),
 			RoleARN:   aws.String("arn:aws:iam::123456789012:role/r"),
 		},

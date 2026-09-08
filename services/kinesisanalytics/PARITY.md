@@ -412,3 +412,60 @@ Gates: `go build ./services/kinesisanalytics/...`, `go vet
 ./services/kinesisanalytics/...`, `go test -race -count=1
 ./services/kinesisanalytics/...` (pass), `golangci-lint run
 ./services/kinesisanalytics/...` (0 issues).
+
+### 2026-09-07 (gopherstack-725q: CodeValidationException / UnsupportedOperationException, verdict: no code change)
+
+Revisited the two exceptions flagged as a structural gap in the 2026-08-20 entry above. No
+`api_op_*.go` file declares either error directly (`grep -l <name> api_op_*.go` in the SDK module
+comes back empty for both) -- the per-op error set lives in `deserializers.go`'s
+`awsAwsjson11_deserializeOpError<Op>` switches. Extraction:
+
+- `CodeValidationException`: `AddApplicationInput`, `CreateApplication`, `UpdateApplication`.
+- `UnsupportedOperationException`: `AddApplicationCloudWatchLoggingOption`,
+  `AddApplicationInput`, `AddApplicationInputProcessingConfiguration`, `AddApplicationOutput`,
+  `AddApplicationReferenceDataSource`, `DeleteApplication`,
+  `DeleteApplicationCloudWatchLoggingOption`, `DeleteApplicationInputProcessingConfiguration`,
+  `DeleteApplicationOutput`, `DeleteApplicationReferenceDataSource`, `DescribeApplication`,
+  `StartApplication`, `StopApplication`.
+
+`types/errors.go` doc comments (verbatim):
+- `CodeValidationException`: "User-provided application code (query) is invalid. This can be a
+  simple syntax error."
+- `UnsupportedOperationException`: "The request was rejected because a specified parameter is not
+  supported or a specified resource is not valid for this operation."
+
+**`CodeValidationException`: not implementable.** The related field, `CreateApplicationInput.
+ApplicationCode` (`*string`, optional -- not `This member is required`), is documented only as
+"One or more SQL statements that read input data, transform it, and generate output" -- no length
+limit, no format constraint, nothing in `validators.go` (no client-side validator exists for this
+field at all). The exception is specifically about the SQL *compiling*, not about presence or
+size. Gopherstack has no SQL engine to compile against; returning this error would mean rejecting
+requests based on invented heuristics (e.g. string-matching for "SELECT"), which is the fabrication
+this issue explicitly rules out. Verdict unchanged from 2026-08-20: genuinely unimplementable, not
+merely unscoped.
+
+**`UnsupportedOperationException`: not implementable.** Checked whether any of its 13 declaring
+ops has a documented, checkable state precondition distinct from the sibling
+`ResourceInUseException` ("Application is not available for this operation," already implemented
+via `ErrResourceInUse` in `applications.go`'s `StartApplication`/`StopApplication`/
+`checkAndBumpVersion`). Two ops' own doc comments do state a state precondition --
+`StartApplication`: "The application status must be READY for you to start an application";
+`StopApplication`: "You can stop an application only if it is in the running state" -- but both
+map onto `ResourceInUseException`'s wording exactly and are already the two existing
+`ErrResourceInUse` checks (`applications.go:672`, `applications.go:702`). None of the other 11 ops'
+doc comments state any precondition at all, and `DescribeApplication` -- a pure read with no state
+constraint under any real AWS semantics -- still declares this exception, which rules out "checkable
+application state" as a uniform, documented trigger across the declaring set. No length/enum/
+required-field angle exists either (checked each declaring op's own doc comment and struct fields;
+none mention one). Implementing anything here would mean inventing a condition (e.g. "only one
+CloudWatch logging option," "can't add an already-added input") that is real AWS product behavior
+but not documented anywhere in this SDK module, which the issue rules out.
+
+**Verdict: neither exception is implementable from a documented, checkable constraint. No code
+changed.** This confirms and closes out the 2026-08-20 "gaps disclosed, not fixed" entry's
+open question for these two error types specifically -- recorded here as a permanent divergence,
+not a to-do.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/kinesisanalytics/...` (pass),
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/kinesisanalytics/...` (0 issues) -- both run
+against the unmodified tree since no fix was made.

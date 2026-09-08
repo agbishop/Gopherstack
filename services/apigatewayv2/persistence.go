@@ -213,13 +213,20 @@ func fromIntegrationSnapshot(v *integrationSnapshot) *Integration {
 	}
 }
 
+// deploymentSnapshot's Routes/Integrations persist the routing snapshot
+// (gopherstack-cfr1) a stage pinned to this deployment serves, reusing
+// routeSnapshot/integrationSnapshot so the nested entries round-trip through
+// the same field-for-field mirroring as the top-level route/integration
+// tables above.
 type deploymentSnapshot struct {
-	CreatedDate      isoTime `json:"createdDate"`
-	DeploymentID     string  `json:"deploymentId"`
-	APIID            string  `json:"apiId"`
-	Description      string  `json:"description,omitempty"`
-	DeploymentStatus string  `json:"deploymentStatus"`
-	AutoDeployed     bool    `json:"autoDeployed"`
+	CreatedDate      isoTime               `json:"createdDate"`
+	DeploymentID     string                `json:"deploymentId"`
+	APIID            string                `json:"apiId"`
+	Description      string                `json:"description,omitempty"`
+	DeploymentStatus string                `json:"deploymentStatus"`
+	Routes           []routeSnapshot       `json:"routes,omitempty"`
+	Integrations     []integrationSnapshot `json:"integrations,omitempty"`
+	AutoDeployed     bool                  `json:"autoDeployed"`
 }
 
 func deploymentSnapshotKey(v *deploymentSnapshot) string {
@@ -227,6 +234,16 @@ func deploymentSnapshotKey(v *deploymentSnapshot) string {
 }
 
 func toDeploymentSnapshot(v *Deployment) *deploymentSnapshot {
+	routes := make([]routeSnapshot, len(v.Routes))
+	for i := range v.Routes {
+		routes[i] = *toRouteSnapshot(&v.Routes[i])
+	}
+
+	integrations := make([]integrationSnapshot, len(v.Integrations))
+	for i := range v.Integrations {
+		integrations[i] = *toIntegrationSnapshot(&v.Integrations[i])
+	}
+
 	return &deploymentSnapshot{
 		CreatedDate:      v.CreatedDate,
 		DeploymentID:     v.DeploymentID,
@@ -234,10 +251,22 @@ func toDeploymentSnapshot(v *Deployment) *deploymentSnapshot {
 		Description:      v.Description,
 		DeploymentStatus: v.DeploymentStatus,
 		AutoDeployed:     v.AutoDeployed,
+		Routes:           routes,
+		Integrations:     integrations,
 	}
 }
 
 func fromDeploymentSnapshot(v *deploymentSnapshot) *Deployment {
+	routes := make([]Route, len(v.Routes))
+	for i := range v.Routes {
+		routes[i] = *fromRouteSnapshot(&v.Routes[i])
+	}
+
+	integrations := make([]Integration, len(v.Integrations))
+	for i := range v.Integrations {
+		integrations[i] = *fromIntegrationSnapshot(&v.Integrations[i])
+	}
+
 	return &Deployment{
 		CreatedDate:      v.CreatedDate,
 		DeploymentID:     v.DeploymentID,
@@ -245,6 +274,8 @@ func fromDeploymentSnapshot(v *deploymentSnapshot) *Deployment {
 		Description:      v.Description,
 		DeploymentStatus: v.DeploymentStatus,
 		AutoDeployed:     v.AutoDeployed,
+		Routes:           routes,
+		Integrations:     integrations,
 	}
 }
 

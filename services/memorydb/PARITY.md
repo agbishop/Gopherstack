@@ -419,3 +419,136 @@ string` -- confirmed not a bool-for-enum mismatch on either side of the wire.
 Gates: `go build ./services/memorydb/...`, `go vet ./services/memorydb/...` and `go vet ./...`
 (repo-wide), `go test -race -count=1 ./services/memorydb/...`, `golangci-lint run
 ./services/memorydb/...`. No code changed this pass -- documentation-only (`gaps` entry above).
+
+## 2026-09-07 errtargetaudit triage (gopherstack-me2v): 4 class A findings, 0 real bugs, 1 landmine
+
+Screened this file first for a prior errtargetaudit/error-envelope entry -- none existed;
+this block was genuinely untriaged.
+
+Tool output: `operations with SDK ground truth: 45, resolved: 45, with an emission found: 40`
+(no coverage warning; 45/45 resolved). 4 class A findings, grouped by root cause:
+
+1. **`DescribeACLs`/`UpdateACL` attributed `ClusterNotFoundFault`** (sentinel reference,
+   clusters.go). Both handlers call `h.Backend.DescribeClusters(ctx, "")` to compute an ACL's
+   `Clusters` field and discard the error (`allClusters, _ := ...`). The sentinel the tool
+   traced (`DescribeClusters`'s own `if name != "" { ... return nil, ErrClusterNotFound }`)
+   cannot fire on this call path (name is always `""`), and even if it could, the return value
+   is thrown away before `writeBackendError` ever sees it. False positive, doubly impossible --
+   one-hop callee trace over a shared lookup helper called with a fixed empty filter.
+2. **`DescribeUsers` attributed `ACLNotFoundFault`** (sentinel reference, acls.go): identical
+   shape -- `handleDescribeUsers` calls `h.Backend.DescribeACLs(ctx, "")` and discards the
+   error to compute `allACLs` for cluster-membership lookups. Same double impossibility. False
+   positive.
+3. **`CreateCluster` attributed `SnapshotNotFoundFault`** (sentinel reference, clusters.go,
+   restore-from-`SnapshotName` branch): this one *is* CreateCluster's own code, not a
+   mis-attributed callee, and the guard can fire (an arbitrary caller-supplied `SnapshotName`
+   that doesn't exist in the store). Raw extraction from the pinned SDK
+   (`deserializeOpErrorCreateCluster` in `memorydb@v1.36.4/deserializers.go`) confirms
+   `CreateCluster`'s declared error set has no `SnapshotNotFoundFault` at all -- unlike
+   `ACLName`/`SubnetGroupName`/`ParameterGroupName`/`MultiRegionClusterName` above it in the
+   same function, which each have their own declared NotFound fault
+   (`ACLNotFoundFault`/`SubnetGroupNotFoundFault`/`ParameterGroupNotFoundFault`/
+   `MultiRegionClusterNotFoundFault`, all present in the same declared set). Real mismatch,
+   no safe remedy: left a landmine comment at the call site (clusters.go) naming
+   `InvalidParameterValueException` as the most likely real-AWS candidate without guessing a
+   fix, and pinned current behavior (`SnapshotNotFoundFault`, unendorsed) with a new
+   regression test, `TestErrCode_CreateCluster_SnapshotNotFound` (errcode_test.go).
+
+Protocol confirmed: plain JSON-RPC 1.1 (`awsAwsjson11_*` symbols throughout
+`memorydb@v1.36.4/deserializers.go`), routed by `X-Amz-Target`. Handler error shape
+(`writeError` in handler.go) writes the standard AWS JSON 1.1 envelope,
+`{"__type": errType, "message": message}`, status uniformly 400 for every declared fault
+(confirmed against the aws-sdk-go v1 model: every one of MemoryDB's exception shapes has an
+empty `error` trait). `writeBackendError` prefers an exact sentinel-to-fault mapping table
+(`errCodeLookup`) before falling back to a coarse `awserr`-category switch.
+
+**No pre-existing test asserted a wrong code for any of the 3 false positives** -- checked
+`handler_acls_test.go`/`handler_users_test.go`/`handler_clusters_test.go` directly. All 3
+false-positive call paths (`DescribeACLs`/`UpdateACL`/`DescribeUsers` computing their
+"belongs to these clusters/ACLs" fields against an otherwise-empty store) are already
+exercised by existing passing tests (`TestHandler_ACL_CRUD`'s "describe ACLs" case,
+`TestHandler_UpdateACL`'s "updates ACL" case, `TestHandler_DescribeUsers_All`) -- if the
+discarded-error/guard-cannot-fire reasoning above were wrong, those pre-existing tests would
+already be failing with 400 instead of 200. No new tests added for the 3 dismissals; one new
+test added for the landmine (see above).
+
+**Fixed vs left**: 0 code-behavior changes. Landmine comment only (clusters.go, non-functional
+-- confirmed `go build` and `golangci-lint` stay clean with it present). Neutered the new test
+by swapping in a wrong expected code: compiled fine, test failed as expected
+(`WRONG_CODE_FOR_NEUTER_CHECK` vs actual `SnapshotNotFoundFault`), then reverted.
+
+Re-ran the tool after the change: still `4` class A findings for memorydb, same 4 ops/codes
+(expected -- the fix here was a comment + a pinning test, not a code-emission change; the 3
+false positives are inherent to the tool's one-hop trace over a shared helper, and the 4th is
+a documented landmine, not a fix).
+
+Gates: `go test -race -count=1 ./services/memorydb/...` (pass), `golangci-lint run
+services/memorydb/...` (0 issues).
+
+## 2026-09-07 gopherstack-2i0c: re-derived and confirmed the asymmetry, no remedy found
+
+Re-verified the `CreateCluster` / `SnapshotNotFoundFault` finding above (item 3) rather
+than trusting the prior pass's summary. Re-extracted the declared set directly from
+`memorydb@v1.36.4/deserializers.go`'s `awsAwsjson11_deserializeOpErrorCreateCluster` (18
+codes, matches the bd issue's list exactly) and cross-checked it against the live
+`API_CreateCluster.html` Errors section: identical 18 codes, no `SnapshotNotFoundFault`.
+This rules out model staleness as the explanation for the asymmetry -- it is a genuine
+AWS modelling choice, not an artifact of the pinned SDK version.
+
+Confirmed `SnapshotNotFoundFault` ("The specified snapshot does not exist.",
+`types/errors.go`) *is* declared by `CopySnapshot` and `DeleteSnapshot` (both take a
+`SnapshotName`), just not by `CreateCluster` -- textbook right-code-wrong-op. No doc
+sentence anywhere (pinned SDK field comment, `docs-2.json`, or the live API reference)
+states what `CreateCluster` actually returns for an unresolvable `SnapshotName`; the
+`InvalidParameterValueException` candidate named in the landmine remains unconfirmed by
+any such sentence -- its doc text ("The specified parameter value is not valid.") is
+generic, not specific to this case. No fix applied; sharpened the landmine comment
+(clusters.go) with this verification instead of leaving it as a bare assertion.
+
+`TestErrCode_CreateCluster_SnapshotNotFound` left unchanged -- still pins the current
+(unendorsed) `SnapshotNotFoundFault` behavior, correctly, since nothing changed.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/memorydb/...` ok;
+`GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/memorydb/...` 0 issues. Re-ran
+`cmd/errtargetaudit`: same finding, same line, confirming no emission change.
+
+## 2026-09-08: writeError nil-on-write fall-through sweep (gopherstack-246v) -- clean
+
+Part of the 12-service sweep for the elasticache class bug (gopherstack-8haq): a helper
+that rejects a request via the local response writer and *returns* that writer's result
+hands a caller doing `if err != nil { return err }` a `nil`, since the writer returns nil
+after a successful write -- the rejection is silently skipped and the operation continues.
+
+**Base writer**: `writeError` (`handler.go:536`) returns `c.JSON(status, errorResponse{...})`
+directly -- nil on a successful write. `writeBackendError` (`handler.go:467`, a method)
+wraps it: a loop over `errCodeLookup` plus a fallback switch, every branch `return
+writeError(...)`.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test `.go` file (46
+files) found every function with a `return`-statement whose result is a bare call to
+`writeError`, then fixed-point-expanded to any function bare-returning a call to an
+already-found member -- 53 functions discovered: `writeBackendError`, all ~46 `handleXxx`
+op handlers, and the 6 `dispatch`/`dispatchXxxOps` routing functions.
+
+**Dispatch verified, not assumed.** `dispatch` and its sub-dispatchers use the same
+`(bool, error)` handled-tuple chain as iotwireless/memorydb's sibling services:
+`Handler()` -> `dispatch` -> `dispatchCoreOps`/`dispatchNewOps` -> `dispatchSnapshotAnd
+EngineOps`/`dispatchMultiRegionOps`/`dispatchParameterAndShardOps`, each level doing `if
+handled, result := h.dispatchX(...); handled { return result }` -- branches on the
+`handled` bool, never on `result != nil`, so a matched op that rejected via `writeError`
+(returning nil) still propagates by the bare `return result` inside the `handled` branch.
+Read all 3 such sites (`handler.go:209-266`) confirming zero exceptions.
+`dispatchCoreOps` itself resolves via a flat `memorydbCoreOps` map and returns `fn(h, ctx,
+c, body)` directly.
+
+Every call site of `writeError` and `writeBackendError` across the package (174 total) was
+enumerated: 171 are direct `return writeError(...)` / `return writeBackendError(...)` /
+`return h.handleXxx(...)` sites; the other 3 are the `(handled, result)` dispatch-chain
+assigns above, verified safe. Zero `_ =` discards, zero stored-single-value-and-`!=
+nil`-checked sites. Independently confirmed by grepping every non-test-file occurrence of
+`writeError(`/`writeBackendError(` outside their own definitions: every one is immediately
+preceded by `return` on the same line.
+
+**No instance of the broken shape exists in memorydb.** No code changed. Gates re-run for
+the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/memorydb/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/memorydb/...` ok.

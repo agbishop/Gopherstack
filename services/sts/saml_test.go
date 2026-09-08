@@ -209,9 +209,9 @@ func TestAssumeRoleWithSAML_SessionTrackedForCallerIdentity(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	accessKeyID := resp.AssumeRoleWithSAMLResult.Credentials.AccessKeyID
+	creds := resp.AssumeRoleWithSAMLResult.Credentials
 
-	ciResp, err := b.GetCallerIdentity(accessKeyID, "")
+	ciResp, err := b.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 	require.NoError(t, err)
 	assert.Contains(t, ciResp.GetCallerIdentityResult.Arn, "assumed-role")
 }
@@ -442,8 +442,8 @@ func TestAssumeRoleWithSAML_Tags(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify session stores the tags via GetCallerIdentity lookup.
-		key := resp.AssumeRoleWithSAMLResult.Credentials.AccessKeyID
-		ci, err := b.GetCallerIdentity(key, "")
+		creds := resp.AssumeRoleWithSAMLResult.Credentials
+		ci, err := b.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 		require.NoError(t, err)
 		assert.Contains(t, ci.GetCallerIdentityResult.Arn, "assumed-role")
 	})
@@ -921,7 +921,8 @@ func TestAssumeRoleWithSAML_TransitiveTagKeysFromAssertion(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	parentSession := b.LookupSession(samlResp.AssumeRoleWithSAMLResult.Credentials.AccessKeyID, "")
+	parentCreds := samlResp.AssumeRoleWithSAMLResult.Credentials
+	parentSession := b.LookupSession(parentCreds.AccessKeyID, parentCreds.SessionToken)
 	require.NotNil(t, parentSession)
 	assert.Equal(t, []string{"team"}, parentSession.TransitiveTagKeys)
 	require.Len(t, parentSession.Tags, 1)
@@ -934,7 +935,8 @@ func TestAssumeRoleWithSAML_TransitiveTagKeysFromAssertion(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	childSession := b.LookupSession(childResp.AssumeRoleResult.Credentials.AccessKeyID, "")
+	childCreds := childResp.AssumeRoleResult.Credentials
+	childSession := b.LookupSession(childCreds.AccessKeyID, childCreds.SessionToken)
 	require.NotNil(t, childSession)
 	require.Len(t, childSession.Tags, 1)
 	assert.Equal(t, sts.Tag{Key: "team", Value: "eng"}, childSession.Tags[0])

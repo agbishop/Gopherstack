@@ -103,8 +103,13 @@ func TestGlacier_PersistenceFullStateRoundTrip(t *testing.T) {
 
 	upload, err := b.InitiateMultipartUpload(accountID, region, vaultName, "mpu-desc", 1<<20)
 	require.NoError(t, err)
+
+	partData := make([]byte, 1<<20)
+	partHash := glacier.ComputeTreeHash(partData)
 	require.NoError(t,
-		b.UploadMultipartPart(accountID, region, vaultName, upload.MultipartUploadID, "0-1048575/*", "part-hash"),
+		b.UploadMultipartPart(
+			accountID, region, vaultName, upload.MultipartUploadID, "bytes 0-1048575/*", partHash, partData,
+		),
 	)
 
 	require.NoError(t, b.SetVaultLock(accountID, region, vaultName, `{"Version":"2012-10-17"}`, "lock-id-1"))
@@ -153,7 +158,7 @@ func TestGlacier_PersistenceFullStateRoundTrip(t *testing.T) {
 	parts, err := b2.ListParts(accountID, region, vaultName, upload.MultipartUploadID)
 	require.NoError(t, err)
 	require.Len(t, parts.Parts, 1)
-	assert.Equal(t, "part-hash", parts.Parts[0].SHA256TreeHash)
+	assert.Equal(t, partHash, parts.Parts[0].SHA256TreeHash)
 
 	// Vault lock (store.Table).
 	lock, err := b2.GetVaultLock(accountID, region, vaultName)

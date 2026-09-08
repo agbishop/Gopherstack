@@ -119,17 +119,12 @@ func (h *Handler) handleStartLendingAnalysis(
 	ctx context.Context,
 	in *startLendingAnalysisInput,
 ) (*startJobResponse, error) {
-	bucket := in.DocumentLocation.S3Object.Bucket
-	key := in.DocumentLocation.S3Object.Name
-
-	if bucket == "" || key == "" {
-		return nil, fmt.Errorf("%w: DocumentLocation.S3Object.Bucket and Name are required", errInvalidRequest)
+	uri, err := h.resolveDocumentLocation(ctx, in.DocumentLocation.S3Object.Bucket, in.DocumentLocation.S3Object.Name)
+	if err != nil {
+		return nil, err
 	}
 
-	uri := "s3://" + bucket + "/" + key
-
 	var job *LendingJob
-	var err error
 
 	if b, ok := h.Backend.(*InMemoryBackend); ok {
 		job, err = b.StartLendingAnalysisWithOptions(

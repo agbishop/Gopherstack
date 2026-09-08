@@ -262,30 +262,39 @@
 //     from a request field is invisible, same limitation cmd/errcodeaudit
 //     already discloses.
 //   - PER-OPERATION GROUND TRUTH ITSELF IS ABSENT for a pinned SDK module
-//     using newer Smithy/RPCv2CBOR-generation codegen with NO
-//     deserializers.go file at all (confirmed live: services/appstream,
-//     services/cloudwatch's OWN module, at aws-sdk-go-v2 versions pinned by
-//     this repo's go.mod) -- error matching there lives per-operation in
-//     each api_op_<Op>.go file, in a DIFFERENT shape entirely (`switch
-//     string(errorName) { case "ConflictException": ... }`, a plain string
-//     switch, never strings.EqualFold). deser.go's stringSwitchCaseLiteral
-//     reads THIS shape too, when it lives in deserializers.go (appstream's
-//     case: a deserializeOpError<Op> function exists, just with plain
-//     string-literal case labels rather than EqualFold calls) -- before
-//     this was added, every RPCv2CBOR-protocol operation read as declaring
-//     ZERO codes, so EVERY emission there was flagged, a confirmed
-//     large false-positive source (appstream: ~15 of 17 emitting ops, all
-//     spurious, before the fix). But a module with NO deserializers.go file
-//     on disk at all (services/cloudwatch's own "cloudwatch" module -- its
-//     112 "ground truth" operations in this scan's own early output turned
-//     out to be an UNRELATED cross-imported "s3" module's op set instead,
-//     caught only by the coverage guard reporting 0/112 resolved) is
-//     invisible to this tool's ground truth by construction: the codes now
-//     live in each api_op_<Op>.go file, one file per operation, which this
-//     tool does not read at all. Confirmed to affect at least
-//     services/cloudwatch; not resurveyed against the other 12 services this
-//     scan's own coverage guard flagged (see next point) to know how many
-//     more share it.
+//     with NO deserializers.go file at all -- confirmed, at the aws-sdk-go-v2
+//     versions this repo's go.mod pins, to be true of exactly ONE service
+//     module out of all 168: cloudwatch's own "cloudwatch" module
+//     (v1.66.3). services/appstream is a DIFFERENT case entirely, despite
+//     both once being described together here: appstream's own module DOES
+//     have a deserializers.go, with one rpc2_deserializeOpError<Op>
+//     function per operation, just using a plain string switch (`switch
+//     string(errorName) { case "ConflictException": ... }`) instead of
+//     strings.EqualFold -- deser.go's stringSwitchCaseLiteral reads that
+//     shape fine (before it existed, every RPCv2CBOR-protocol operation
+//     read as declaring ZERO codes, a confirmed large false-positive
+//     source: ~15 of 17 emitting appstream ops, all spurious). cloudwatch's
+//     module has migrated to a newer smithy schema-based client codegen
+//     that generates NO deserializers.go, no api_client.go-level
+//     deserializeOpError<Op>-shaped function of any kind, and no per-op
+//     switch/case anywhere in its api_op_<Op>.go files either (confirmed by
+//     reading them: error resolution is one GENERIC middleware,
+//     smithy-go's protocol.deserializeError, keyed on the service's own
+//     shared type_registry.go -- a SERVICE-WIDE map from error name to Go
+//     type with no operation attribution at all). types/errors.go still
+//     exists and still lists real ErrorCode() literals, so this module still
+//     contributes to AllCodes (cmd/errcodeaudit's class B boundary) -- it is
+//     PerOp/OpFuncs specifically that is empty, because the per-operation
+//     information this tool's whole premise rests on genuinely does not
+//     exist in this module's Go source, for any service using this codegen
+//     generation. Gopherstack-zkpi: rather than let that render as a
+//     misleading 0/0 (indistinguishable from "nothing to audit", and before
+//     that fix, not even printed at all -- run()'s own OpsGroundTruth==0
+//     filter dropped it before printServiceScan ever saw it), scan.go's
+//     modulesWithoutOpFuncs and report.go's untraceableModuleWarnings make a
+//     module in this state a distinct, unconditional "UNTRACEABLE" warning.
+//     cloudwatch is the only pinned module in this state today; nothing else
+//     in the corpus has this shape to extend the fix to.
 //   - A REPO-WIDE PATTERN, not specific to this tool: many services/<dir>
 //     test files import an entirely unrelated service (s3 and dynamodb by
 //     far the most common, confirmed live across cloudformation, cloudwatch,
@@ -368,12 +377,11 @@
 //     mapper compares against -- deliberately permissive, since an
 //     over-broad reachable set can only ever cause under-suppression (more
 //     findings kept), never the reverse.
-//   - Cause grouping (report.go's printCauseGroups, already present)
-//     surfaces a bulk shared-mapper event as "N findings, all via
-//     <mechanism>+<code>" in the summary printed before the full finding
-//     list, so a service shaped like bedrockagent or account is visible as
-//     one root cause at a glance even for a finding this reachability
-//     filter could not resolve and therefore still reports.
+//   - Site grouping (report.go's printSiteGroups) surfaces a bulk
+//     shared-mapper event as one file:line with its op count and op list,
+//     so a service shaped like bedrockagent or account is visible as one
+//     root cause at a glance even for a finding this reachability filter
+//     could not resolve and therefore still reports.
 //
 // WHAT THIS TOOL CANNOT TELL YOU, stated plainly:
 //   - It cannot distinguish a REACHABLE handler from an unreachable one at
@@ -449,27 +457,30 @@ func main() {
 	}
 
 	findings := 0
+	orphans := 0
 	warned := 0
 
 	for _, sr := range scans {
 		printServiceScan(sr)
 
 		findings += len(sr.Findings)
+		orphans += len(sr.OrphanFindings)
+
 		if len(sr.Warnings) > 0 {
 			warned++
 		}
 	}
 
-	summarize(scans, findings, warned)
+	summarize(scans, findings, orphans, warned)
 
-	if findings > 0 || warned > 0 {
+	if findings > 0 || orphans > 0 || warned > 0 {
 		os.Exit(exitFindings)
 	}
 
 	os.Exit(exitClean)
 }
 
-func summarize(scans []serviceScan, findings, warned int) {
+func summarize(scans []serviceScan, findings, orphans, warned int) {
 	scanned := 0
 
 	for _, sr := range scans {
@@ -478,8 +489,14 @@ func summarize(scans []serviceScan, findings, warned int) {
 		}
 	}
 
-	fmt.Fprintf(os.Stdout, "# %d services scanned, %d class A findings, %d coverage warnings\n",
-		scanned, findings, warned)
+	fmt.Fprintf(
+		os.Stdout,
+		"# %d services scanned, %d class A findings, %d orphan-code findings, %d coverage warnings\n",
+		scanned,
+		findings,
+		orphans,
+		warned,
+	)
 }
 
 func run(dirFlag string) ([]serviceScan, error) {
@@ -511,7 +528,7 @@ func run(dirFlag string) ([]serviceScan, error) {
 			return nil, fmt.Errorf("%s: %w", dir, scanErr)
 		}
 
-		if sr.OpsGroundTruth == 0 {
+		if !worthReporting(sr) {
 			continue
 		}
 
@@ -519,6 +536,16 @@ func run(dirFlag string) ([]serviceScan, error) {
 	}
 
 	return scans, nil
+}
+
+// worthReporting is false only for a service run() must drop before it ever
+// reaches printServiceScan -- OpsGroundTruth==0 alone used to be that test,
+// which silently dropped cloudwatch (gopherstack-zkpi: a resolved module
+// with real error types but zero per-op ground truth still needs its
+// UNTRACEABLE warning printed, not discarded here before coverageWarnings'
+// own output is ever seen).
+func worthReporting(sr serviceScan) bool {
+	return sr.OpsGroundTruth > 0 || len(sr.Warnings) > 0
 }
 
 func targetDirs(svcRoot, dirFlag string) ([]string, error) {

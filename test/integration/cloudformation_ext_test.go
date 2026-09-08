@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	cloudformationsdk "github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	smithy "github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -188,11 +189,16 @@ func TestIntegration_CloudFormation_CancelUpdateRollback(t *testing.T) {
 
 	waitForStackStatus(t, client, stackName, 10*time.Second)
 
-	// CancelUpdateStack (no-op on CREATE_COMPLETE stack)
+	// CancelUpdateStack is rejected on a CREATE_COMPLETE stack: real AWS
+	// only allows cancelling a stack that is UPDATE_IN_PROGRESS.
 	_, err = client.CancelUpdateStack(ctx, &cloudformationsdk.CancelUpdateStackInput{
 		StackName: aws.String(stackName),
 	})
-	require.NoError(t, err)
+	require.Error(t, err)
+
+	var apiErr smithy.APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, "ValidationError", apiErr.ErrorCode())
 
 	// ContinueUpdateRollback (no-op on CREATE_COMPLETE stack)
 	_, err = client.ContinueUpdateRollback(ctx, &cloudformationsdk.ContinueUpdateRollbackInput{

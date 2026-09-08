@@ -6,13 +6,13 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: kinesisanalyticsv2
 sdk_module: aws-sdk-go-v2/service/kinesisanalyticsv2@v1.41.4
-last_audit_commit: 55397dd52
-last_audit_date: 2026-08-29
-overall: A            # one real invented-request-member bug found and fixed this pass
-                       # (UpdateApplication.ApplicationDescription); every other prior
+last_audit_commit: 47436caf9
+last_audit_date: 2026-09-04
+overall: A            # one real non-total-sort bug found and fixed this pass
+                       # (ListApplicationSnapshots tie-break); every other prior
                        # finding re-verified, none regressed
 ops:
-  CreateApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "inline ApplicationConfiguration/CloudWatchLoggingOptions were previously silently discarded (fixed pre-existing pass); ApplicationCodeConfiguration/FlinkApplicationConfiguration/EnvironmentProperties/ApplicationSnapshotConfiguration/ApplicationSystemRollbackConfiguration/ApplicationEncryptionConfiguration/ZeppelinApplicationConfiguration were accepted-but-not-modeled (this and a prior pass's gap) -- now seeded via SeedApplicationConfiguration's extended SeedConfig, still without bumping past version 1. ZeppelinApplicationConfiguration (Studio notebook: MonitoringConfiguration/CatalogConfiguration+GlueDataCatalogConfiguration/DeployAsApplicationConfiguration+S3ContentBaseLocation/CustomArtifactsConfiguration+S3orMaven) is now fully typed and echoed via ZeppelinApplicationConfigurationDescription -- sized first (4-level-deep tree, one ArtifactType-discriminated union, ~9 leaf fields across 3 wire variants, no recursion), all shallow and typeable, no part left opaque. Referenced ARNs (GlueDataCatalogConfiguration.DatabaseARN, S3ContentLocation/S3ContentBaseLocation.BucketARN) are stored as plain strings with no cross-service existence check, matching this service's pre-existing convention for every other ARN field (ServiceExecutionRole, S3CodeLocationDesc.BucketARN, KinesisStreamsInputDesc.ResourceARN, etc.) -- this codebase has no cross-service backend-to-backend validation anywhere, so adding it only here would be a new, unprecedented architecture, not a fix. This pass also dropped an invented top-level Tags field from applicationDetailOutput (real ApplicationDetail, types/types.go:179, has no such member -- tags are only retrievable via the separate ListTagsForResource op); harmless to a typed client (unknown JSON keys are ignored) but a genuine shape deviation."}
+  CreateApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "inline ApplicationConfiguration/CloudWatchLoggingOptions were previously silently discarded (fixed pre-existing pass); ApplicationCodeConfiguration/FlinkApplicationConfiguration/EnvironmentProperties/ApplicationSnapshotConfiguration/ApplicationSystemRollbackConfiguration/ApplicationEncryptionConfiguration/ZeppelinApplicationConfiguration were accepted-but-not-modeled (this and a prior pass's gap) -- now seeded via SeedApplicationConfiguration's extended SeedConfig, still without bumping past version 1. ZeppelinApplicationConfiguration (Studio notebook: MonitoringConfiguration/CatalogConfiguration+GlueDataCatalogConfiguration/DeployAsApplicationConfiguration+S3ContentBaseLocation/CustomArtifactsConfiguration+S3orMaven) is now fully typed and echoed via ZeppelinApplicationConfigurationDescription -- sized first (4-level-deep tree, one ArtifactType-discriminated union, ~9 leaf fields across 3 wire variants, no recursion), all shallow and typeable, no part left opaque. Referenced ARNs (GlueDataCatalogConfiguration.DatabaseARN, S3ContentLocation/S3ContentBaseLocation.BucketARN) are stored as plain strings with no cross-service existence check, matching this service's pre-existing convention for every other ARN field (ServiceExecutionRole, S3CodeLocationDesc.BucketARN, KinesisStreamsInputDesc.ResourceARN, etc.). CORRECTED (gopherstack-osg7): the claim that this codebase has no cross-service backend-to-backend validation anywhere was false -- grafana's validateWorkspaceRoleArn/validateVpcConfiguration (services/grafana/cross_service.go) and ec2's validateOutpostArn are exactly that, using the SetAppConfig/siblingServices pattern documented on pkgs/service/service.go's AppContext. This service doesn't use that pattern for its ARN fields; adding it here would reuse an existing mechanism, not invent a new architecture. Whether to add it is a separate decision, not made this pass. This pass also dropped an invented top-level Tags field from applicationDetailOutput (real ApplicationDetail, types/types.go:179, has no such member -- tags are only retrievable via the separate ListTagsForResource op); harmless to a typed client (unknown JSON keys are ignored) but a genuine shape deviation."}
   DescribeApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "applicationDetailOutput previously omitted LastUpdateTimestamp/ConditionalToken/ApplicationVersionCreateTimestamp/ApplicationVersionRolledBackFrom/To/ApplicationVersionUpdatedFrom/ApplicationMaintenanceConfigurationDescription (all now populated); its VpcConfigurationDescriptions was WRONGLY placed at the top level of ApplicationDetail (real AWS has no such field -- it only exists nested inside ApplicationConfigurationDescription) -- this gopherstack-invented field placement is fixed (moved into appConfigDesc, matching real ApplicationConfigurationDescription.VpcConfigurationDescriptions)."}
   UpdateApplication: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "2026-08-29: request accepted a gopherstack-invented ApplicationDescription member and actually applied it to backend state -- real UpdateApplicationInput (api_op_UpdateApplication.go:33-78) has exactly 8 members (ApplicationName, ApplicationConfigurationUpdate, CloudWatchLoggingOptionUpdates, ConditionalToken, CurrentApplicationVersionId, RunConfigurationUpdate, RuntimeEnvironmentUpdate, ServiceExecutionRoleUpdate) and no way to change an application's description after CreateApplication. Found by cmd/acceptguard (a decoded-but-never-real request field being read and applied). DELETED from updateApplicationInput/UpdateApplicationParams/applyBasicFields; proven by TestKAV2_UpdateApplication_ApplicationDescription_NotARealField (wire_field_fixes_test.go), which failed against the unfixed code. ApplicationConfigurationUpdate (code/Flink/env-properties/snapshot/rollback/encryption/SQL-input-output-refdata/VPC sub-updates), CloudWatchLoggingOptionUpdates, RunConfigurationUpdate, RuntimeEnvironmentUpdate, and ConditionalToken were all accepted-but-ignored; all now implemented (applications.go/application_update_apply.go/handler_application_update.go). ConditionalToken is a deterministic sha256-derived function of (ApplicationARN, ApplicationVersionId) -- see conditionalToken/checkAndBumpVersionOrToken in store.go -- so it needs no extra persisted field and automatically rotates on every version bump. Sub-resource IDs referenced by CloudWatchLoggingOptionUpdates/SqlApplicationConfigurationUpdate/VpcConfigurationUpdates are validated to exist BEFORE the version is bumped (validateUpdateReferences), matching the Add*/Delete* config ops' existing 'find before bumping' convention -- a request naming an unknown ID leaves ApplicationVersionId untouched. ZeppelinApplicationConfigurationUpdate (this pass's gap) was also accepted-but-ignored; now implemented (applyZeppelinConfigUpdate), merging onto any existing ZeppelinConfig the same way applyFlinkConfigUpdate does. CustomArtifactsConfigurationUpdate reuses the create-time item shape wholesale (verified: real AWS's botocore model has no separate per-item update shape). THIS PASS'S BUG: InputUpdate.InputSchemaUpdate/InputParallelismUpdate and ReferenceDataSourceUpdate.ReferenceSchemaUpdate (same root cause as AddApplicationInput/AddApplicationReferenceDataSource's gap) were accepted-but-ignored -- a code comment even said so explicitly ('InputSchemaUpdate/InputParallelismUpdate are not modeled anywhere in this backend...and are ignored if present on the wire') but this was never surfaced as a PARITY.md gap despite InputSchema being a REQUIRED member one level up. Fixed: InputSchemaUpdateDesc (types/types.go:1336 'InputSchemaUpdate' -- its own Update-suffixed shape, field names RecordFormatUpdate/RecordEncodingUpdate/RecordColumnUpdates, NOT SourceSchema reused) and InputParallelismUpdateDesc now apply in applyInputUpdate, regenerating InAppStreamNames when NamePrefixUpdate or InputParallelismUpdate lands. ReferenceDataSourceUpdate.ReferenceSchemaUpdate is the asymmetric case: real AWS types it plain *SourceSchema (types/types.go:2106), NOT a dedicated Update shape like InputSchemaUpdate -- verified and modeled as such (ReferenceDataSourceUpdate.ReferenceSchemaUpdate *SourceSchemaDesc, reusing the same type as the create/describe sides). Proven via TestUpdateApplication_InputSchemaUpdate_SDKRoundTrip and TestUpdateApplication_ReferenceSchemaUpdate_SDKRoundTrip."}
   DeleteApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "CreateTimestamp request field is now validated against the application's actual CreateTimestamp (epoch-seconds float64 comparison with 1e-3/1ms tolerance, matching smithy-go's millisecond-precision unixTimestamp wire truncation); a mismatch returns InvalidArgumentException instead of silently deleting. DeleteApplication remains synchronous (see gaps, unchanged from prior audit)."}
@@ -26,7 +26,7 @@ ops:
   ListApplicationVersions: {wire: ok, errors: ok, state: ok, persist: n/a}
   CreateApplicationSnapshot: {wire: ok, errors: ok, state: ok, persist: ok, note: "unchanged this pass; not re-diffed (files untouched since 782e2a93)."}
   DescribeApplicationSnapshot: {wire: ok, errors: ok, state: ok, persist: ok, note: "unchanged this pass; not re-diffed."}
-  ListApplicationSnapshots: {wire: ok, errors: ok, state: ok, persist: ok, note: "unchanged this pass; not re-diffed."}
+  ListApplicationSnapshots: {wire: ok, errors: ok, state: fixed, persist: ok, note: "2026-09-04: sort.Slice ordered results by SnapshotCreation alone, with no tiebreak -- sort.Slice is not guaranteed stable, so two snapshots sharing a creation timestamp could come back in either relative order depending on the pre-sort order of the byApp index group, which an unrelated Delete on a THIRD snapshot in the same group silently changes (Index.remove's swap-with-last-element removal, pkgs/store/index.go) -- the same tie-prone-sort class fixed across bedrock/cloudwatchlogs/lightsail/quicksight/ssm/etc. in c78177958, which did not touch this service. Fixed: falls through to SnapshotName (unique per application, enforced by CreateApplicationSnapshot's pre-create existence check) when SnapshotCreation ties. Proven via TestBackend_ListApplicationSnapshots_TieBreak (whitebox_test.go), confirmed to fail against the pre-fix code."}
   DeleteApplicationSnapshot: {wire: ok, errors: ok, state: ok, persist: ok, note: "unchanged this pass; not re-diffed."}
   AddApplicationCloudWatchLoggingOption: {wire: ok, errors: ok, state: ok, persist: ok, note: "real AWS's AddApplicationCloudWatchLoggingOptionOutput carries an OperationId field (unlike most other Add*/Delete* config ops -- verified field-by-field against aws-sdk-go-v2's api_op_AddApplicationCloudWatchLoggingOption.go); gopherstack's response never had one. Fixed: now records an ApplicationOperation and returns OperationId."}
   AddApplicationInput: {wire: ok, errors: ok, state: ok, persist: ok, note: "verified AddApplicationInputOutput has no OperationId field in the real SDK -- correctly has none here. THIS PASS'S BUG: real AWS's Input shape (types/types.go:1125) has InputSchema as a REQUIRED member and InputParallelism as optional -- gopherstack's inputConfig/InputDescription modeled neither, so a real client's InputSchema (the column/format mapping the operation exists to configure) was silently dropped and never echoed back by DescribeApplication, and InAppStreamNames (documented on Input.NamePrefix: '...creates one or more...in-application streams with the names MyInApplicationStream_001, MyInApplicationStream_002...') was never populated at all. Fixed: added SourceSchemaDesc/RecordFormatDesc/MappingParametersDesc/InputParallelismDesc to models.go, wired into inputConfig (request) and InputDescription (response), and added inAppStreamNames() to synthesize the documented '<NamePrefix>_NNN' names. Proven via TestAddApplicationInput_InputSchema_SDKRoundTrip (wire_sdk_roundtrip_test.go) and hand-revert (removing the two assignment lines reproduces 'InputSchema silently dropped by the real client's deserializer', confirmed then restored byte-identical)."}
@@ -51,7 +51,7 @@ gaps:
   - FlinkApplicationConfigurationDescription.JobPlanDescription (DescribeApplicationRequest.IncludeAdditionalDetails) remains accepted-but-ignored: it is real AWS's Apache Flink job graph/scheduling plan (see the Apache Flink "Jobs and Scheduling" docs JobPlanDescription's own doc comment links to), which requires an actual Flink job compiler to produce -- structural, same class as DiscoverInputSchema's synthetic-schema limitation. Confirmed still genuinely unmodelable this pass; IncludeAdditionalDetails isn't even parsed by describeApplicationInput. Leniency only.
   - StopApplication's Force field now enforces the Flink-only restriction and is stored, but the pre-stop auto-snapshot itself is still not modeled: real AWS's auto-snapshot naming/visibility convention isn't documented publicly enough to fabricate (re-confirmed this pass via AWS's own "Deep dive into the Amazon Managed Service for Apache Flink application lifecycle" blog, which describes that a snapshot is taken but not how it's named or surfaced) -- deliberately left unimplemented rather than invented.
   - UpdateApplicationMaintenanceConfiguration's ApplicationMaintenanceWindowEndTime is never computed/returned (pre-existing gap, unchanged, low value -- no client observably depends on the exact window end time).
-  - ZeppelinApplicationConfiguration's referenced ARNs (GlueDataCatalogConfiguration.DatabaseARN, S3ContentLocation/S3ContentBaseLocation.BucketARN) are not validated to exist in a Glue/S3 backend -- matches every other ARN field in this service (ServiceExecutionRole, KinesisStreamsInputDesc.ResourceARN, etc.), none of which are cross-service-validated; this codebase has no cross-service backend-to-backend validation mechanism anywhere. Not a Zeppelin-specific gap.
+  - ZeppelinApplicationConfiguration's referenced ARNs (GlueDataCatalogConfiguration.DatabaseARN, S3ContentLocation/S3ContentBaseLocation.BucketARN) are not validated to exist in a Glue/S3 backend -- matches every other ARN field in this service (ServiceExecutionRole, KinesisStreamsInputDesc.ResourceARN, etc.), none of which are cross-service-validated. CORRECTED (gopherstack-osg7): this codebase does have a cross-service backend-to-backend validation mechanism (SetAppConfig/siblingServices, used by grafana/ec2/others to reject a request referencing a resource that doesn't exist elsewhere) -- this service simply doesn't use it for these ARN fields. Not a Zeppelin-specific gap, and not a "no mechanism exists" gap either; a follow-up could adopt the existing pattern here if desired.
   - DeleteApplication is synchronous (app removed immediately); real AWS transitions through a DELETING status first. ApplicationStatusDeleting const is defined but unused. Matches the synchronous-delete convention used elsewhere in this codebase; not fixed (pre-existing, unchanged).
   - Real AWS's default-assigned maintenance window (every application gets one automatically at creation, before any UpdateApplicationMaintenanceConfiguration call) is not modeled -- ApplicationMaintenanceConfigurationDescription is only populated in DescribeApplication once UpdateApplicationMaintenanceConfiguration has been called at least once. Pre-existing, unchanged; low value.
 deferred:
@@ -229,9 +229,13 @@ was confirmed genuinely structural (a real Flink job graph) and left alone.
 S3-vs-Maven choice), ~9 leaf fields total across the create/describe/update
 variants, no recursion. Fully typeable -- nothing left opaque. Referenced
 ARNs (`DatabaseARN`, `BucketARN`) are plain strings with no cross-service
-existence check, matching every other ARN field in this service (this
-codebase has no cross-service backend validation anywhere, so adding it only
-for Zeppelin would be new architecture, not a fix).
+existence check, matching every other ARN field in this service. CORRECTED
+(gopherstack-osg7): this codebase does have a cross-service backend
+validation mechanism (`SetAppConfig`/`siblingServices`, e.g.
+`services/grafana/cross_service.go`'s `validateWorkspaceRoleArn`); this
+service just doesn't use it here. Adding it for Zeppelin would reuse an
+existing pattern, not invent new architecture -- whether to do so is a
+separate decision.
 
 `Application.ZeppelinConfig` and `InputDescription.InputStartingPositionConfiguration`
 are additive (`omitempty`); `kinesisanalyticsv2SnapshotVersion` was **not**
@@ -478,3 +482,96 @@ from the prior three audits' documented derivations, files unchanged since
 `CreateApplicationPresignedUrl`, `DiscoverInputSchema`, and every
 `*ConfigurationDescription` sub-shape covered by the 2026-08-20 pass's
 field-by-field re-verification.
+
+### Follow-up pass (2026-09-04)
+
+Full parity sweep (`sdk_module` unchanged at `kinesisanalyticsv2@v1.41.4` --
+no new ops to re-derive). Diffed `55397dd52..47436caf9`: the only change in
+scope was `c78177958`'s `ApplicationDescription` removal, already documented
+in this file and re-confirmed present (deleted from
+`UpdateApplicationParams`/`updateApplicationInput`/`applyBasicFields`, guard
+comment now on `updateApplicationInput`).
+
+**Real bug found and fixed:** `ListApplicationSnapshots` (`application_snapshots.go`)
+sorted its result with `sort.Slice(out, func(i, j int) bool { return
+out[i].SnapshotCreation.Before(out[j].SnapshotCreation) })` -- a comparator
+that returns `false` for equal timestamps, which is not a total order.
+`sort.Slice` gives no stability guarantee across ties, so two snapshots of
+the same application created close enough together to land on the same
+timestamp could come back in either relative order on different calls. The
+concrete trigger: the source is `b.snapshotsByApp.Get(...)`, a
+`pkgs/store.Index` group whose `remove()` (backing `DeleteApplicationSnapshot`)
+swaps the last element into a removed slot (`pkgs/store/index.go:110-133`,
+by design -- documented as O(1) removal, not an insertion-order guarantee).
+Deleting an unrelated third snapshot in the same application can therefore
+silently swap two *other*, untouched, tied snapshots' relative order in the
+pre-sort slice, and `sort.Slice` propagates that swap straight into the
+result. A client paginating this listing across that page boundary would see
+the pair swap sides with nothing about either snapshot itself having
+changed -- the identical bug class `c78177958` fixed across
+bedrock/cloudwatchlogs/lightsail/quicksight/ssm/macie2/pinpoint/cloudfront/
+wafv2 ("sorted on a field that admits ties with no secondary comparison"),
+which did not touch this service. Fixed by falling through to `SnapshotName`
+(unique per application -- enforced by `CreateApplicationSnapshot`'s
+pre-create `b.snapshots.Has` check) when `SnapshotCreation` ties.
+
+Proven with `TestBackend_ListApplicationSnapshots_TieBreak` (`whitebox_test.go`):
+puts three snapshots directly into `b.snapshots` (bypassing the real-clock
+`CreateApplicationSnapshot` path so two of them share an exact, controlled
+timestamp), deletes the unrelated third, and asserts the tied pair's order
+is unchanged. Confirmed failing against the pre-fix comparator (asserted
+`snap-a` before `snap-b`, got `snap-b` before `snap-a`) before the fix, and
+passing after. No other listing in this service shares the shape: `ListApplications`
+sorts by `ApplicationName` (the table's own primary key component, so no
+ties are possible), `ListTagsForResource` sorts by tag `Key` (AWS enforces
+unique tag keys per resource), and `ListApplicationOperations`/
+`ListApplicationVersions` do not sort at all -- they return `b.operations`/
+`b.versions` in raw insertion order, which `store.go`'s `InMemoryBackend` doc
+comment already documents as the reason those two stay plain
+`map[string][]*T` rather than `store.Table`+`Index` (order-sensitive append
+histories, never rebuilt from a map). `parseNextToken` (`store.go:263`)
+already guards `idx < 0`, so this service was never exposed to the separate
+negative-continuation-token panic class `c78177958` fixed in eleven other
+services.
+
+Five dimensions:
+1. **AWS behavior compliance** -- re-verified `ListApplicationSnapshots`'
+   ordering contract against `api_op_ListApplicationSnapshots.go`'s doc
+   comment (no ordering documented, so gopherstack's creation-time-ascending
+   convention is a reasonable choice, now made a genuine total order rather
+   than a client-visible flaky one). Every other op's wire/error/state
+   grades trusted from the prior five audits, whose files are unchanged
+   (confirmed via `git diff 55397dd52..HEAD -- services/kinesisanalyticsv2/`
+   touching only the six files `c78177958` changed, all already accounted
+   for in this file).
+2. **LocalStack parity** -- NOT CHECKED. No LocalStack instance was run
+   side-by-side this pass; this file has never recorded a LocalStack
+   comparison for this service in any prior pass either.
+3. **Cross-service integration** -- checked by reading: every ARN this
+   service accepts (`ServiceExecutionRole`, `KinesisStreamsInputDesc.ResourceARN`,
+   S3/Glue ARNs inside `ZeppelinApplicationConfiguration`) is stored as a
+   plain string with no existence check against the owning service's
+   backend, consistent with every other ARN field here. CORRECTED
+   (gopherstack-osg7): this file's prior claim that the codebase has no
+   cross-service backend-to-backend validation mechanism was wrong --
+   `SetAppConfig`/`siblingServices` (grafana/ec2/others) is exactly that
+   mechanism; this service just doesn't use it for its ARN fields, which is
+   a choice, not a structural absence.
+4. **Performance** -- `ListApplications`/`ListApplicationSnapshots`/
+   `ListApplicationOperations`/`ListApplicationVersions` all clone and
+   (where sorted) re-sort their full per-application/per-region collection
+   on every call under one coarse `b.mu.RLock`, before applying the
+   `kav2DefaultPageSize=50` page window -- O(n log n) per call, standard for
+   this codebase's `pkgs/store` convention and not a new or
+   service-specific hotspot. No unbounded scan under a write lock found.
+5. **Resource leaks** -- re-confirmed `DeleteApplication` (`applications.go:267-306`)
+   still clears `b.snapshots` (via `snapshotsByApp`), `b.versionsStore(region)`,
+   and `b.operations[region]`, matching the prior audit's "clean" grade;
+   no new leak surface introduced by this pass's fix (`SnapshotName` already
+   persisted on `Snapshot`, no new field, no `kinesisanalyticsv2SnapshotVersion`
+   bump needed).
+
+Gates this pass: `GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/kinesisanalyticsv2/...`
+(0 issues, both before this pass's fix and after) and
+`GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/kinesisanalyticsv2/...`
+(pass, `ok ... 1.0s`, before/after as described above).

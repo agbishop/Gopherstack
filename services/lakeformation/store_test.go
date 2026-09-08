@@ -124,6 +124,30 @@ func TestReset(t *testing.T) {
 	assert.Equal(t, 0, b.PermissionCount())
 }
 
+// TestReset_TableObjectsCleared verifies that Reset() clears governed table
+// object state written via UpdateTableObjects.
+func TestReset_TableObjectsCleared(t *testing.T) {
+	t.Parallel()
+
+	b := lakeformation.NewInMemoryBackend()
+
+	txnID := b.StartTransaction("READ_AND_WRITE")
+
+	size := int64(42)
+	err := b.UpdateTableObjects("123456789012", "mydb", "mytable", txnID, []lakeformation.WriteOperation{
+		{AddObject: &lakeformation.TableObject{URI: "s3://bucket/obj1", Size: &size}},
+	})
+	require.NoError(t, err)
+
+	objectsBefore, _ := b.GetTableObjects("123456789012", "mydb", "mytable", "", 0, "")
+	require.Len(t, objectsBefore, 1, "sanity: table object should be recorded")
+
+	b.Reset()
+
+	objectsAfter, _ := b.GetTableObjects("123456789012", "mydb", "mytable", "", 0, "")
+	assert.Empty(t, objectsAfter, "tableObjects must be cleared by Reset")
+}
+
 func TestMultipleResetCycle(t *testing.T) {
 	t.Parallel()
 

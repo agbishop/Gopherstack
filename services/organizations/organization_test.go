@@ -224,12 +224,14 @@ func TestDescribeOrganization_AvailablePolicyTypes(t *testing.T) {
 		wantTotalLen int
 	}{
 		{
-			name:         "all_disabled_initially",
+			// SCP is auto-enabled by CreateOrganization under FeatureSet=ALL
+			// (SDK doc on CreateOrganization; gopherstack-inmm) -- everything
+			// else starts disabled.
+			name:         "scp_enabled_others_disabled_initially",
 			enableTypes:  nil,
-			wantEnabled:  nil,
+			wantEnabled:  []string{"SERVICE_CONTROL_POLICY"},
 			wantTotalLen: 8,
 			wantDisabled: []string{
-				"SERVICE_CONTROL_POLICY",
 				"RESOURCE_CONTROL_POLICY",
 				"TAG_POLICY",
 				"BACKUP_POLICY",
@@ -241,11 +243,10 @@ func TestDescribeOrganization_AvailablePolicyTypes(t *testing.T) {
 		},
 		{
 			name:        "one_enabled",
-			enableTypes: []string{"SERVICE_CONTROL_POLICY"},
-			wantEnabled: []string{"SERVICE_CONTROL_POLICY"},
+			enableTypes: []string{"TAG_POLICY"},
+			wantEnabled: []string{"SERVICE_CONTROL_POLICY", "TAG_POLICY"},
 			wantDisabled: []string{
 				"RESOURCE_CONTROL_POLICY",
-				"TAG_POLICY",
 				"BACKUP_POLICY",
 				"AISERVICES_OPT_OUT_POLICY",
 				"CHATBOT_POLICY",
@@ -277,6 +278,13 @@ func TestDescribeOrganization_AvailablePolicyTypes(t *testing.T) {
 			b, rootID := newOrgBackend(t)
 
 			for _, pt := range tt.enableTypes {
+				if pt == "SERVICE_CONTROL_POLICY" {
+					// Already enabled by CreateOrganization's FeatureSet=ALL
+					// seeding (gopherstack-inmm); EnablePolicyType would
+					// return AlreadyEnabled.
+					continue
+				}
+
 				_, err := b.EnablePolicyType(rootID, pt)
 				require.NoError(t, err)
 			}
@@ -365,6 +373,45 @@ func TestCreateOrganization_FeatureSetValidation(t *testing.T) {
 	}
 }
 
+// TestCreateOrganization_FeatureSetAll_EnablesSCPOnRoot verifies the SDK doc
+// comment on CreateOrganization: "By default (or if you set the FeatureSet
+// parameter to ALL) ... service control policies automatically enabled in
+// the root".
+func TestCreateOrganization_FeatureSetAll_EnablesSCPOnRoot(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	_, root, err := b.CreateOrganization("ALL")
+	require.NoError(t, err)
+
+	found := false
+
+	for _, pt := range root.PolicyTypes {
+		if pt.Type == "SERVICE_CONTROL_POLICY" {
+			found = true
+
+			assert.Equal(t, "ENABLED", pt.Status)
+		}
+	}
+
+	assert.True(t, found, "SERVICE_CONTROL_POLICY should be enabled on root under FeatureSet=ALL")
+}
+
+// TestCreateOrganization_ConsolidatedBilling_NoPolicyTypesEnabled verifies
+// the same doc comment's corollary: "If you instead choose ...
+// CONSOLIDATED_BILLING ... no policy types are enabled by default".
+func TestCreateOrganization_ConsolidatedBilling_NoPolicyTypesEnabled(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	_, root, err := b.CreateOrganization("CONSOLIDATED_BILLING")
+	require.NoError(t, err)
+
+	assert.Empty(t, root.PolicyTypes)
+}
+
 // TestCreateOrganization_FeatureSetViaHandler tests FeatureSet validation via handler.
 func TestCreateOrganization_FeatureSetViaHandler(t *testing.T) {
 	t.Parallel()
@@ -401,12 +448,14 @@ func TestDescribeOrganization_AllTypesAfterEnableDisable(t *testing.T) {
 
 	b, rootID := newOrgBackend(t)
 
-	// Enable two types.
-	_, err := b.EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
+	// SCP is already enabled by CreateOrganization's FeatureSet=ALL seeding
+	// (gopherstack-inmm); enable the other type.
+	_, err := b.EnablePolicyType(rootID, "TAG_POLICY")
 	require.NoError(t, err)
 
-	_, err = b.EnablePolicyType(rootID, "TAG_POLICY")
-	require.NoError(t, err)
+	// The default FullAWSAccess SCP is attached to root; detach it so
+	// disabling SCP isn't rejected by the still-attached guard.
+	require.NoError(t, b.DetachPolicy("p-FullAWSAccess", rootID))
 
 	// Disable one.
 	_, err = b.DisablePolicyType(rootID, "SERVICE_CONTROL_POLICY")

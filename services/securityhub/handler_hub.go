@@ -78,6 +78,10 @@ func (h *Handler) handleDisableHub(c *echo.Context) error {
 			})
 		}
 
+		if errors.Is(err, ErrHubIsAdministrator) {
+			return typedErrorResponse(c, http.StatusBadRequest, "InvalidAccessException", err.Error())
+		}
+
 		return typedErrorResponse(c, http.StatusInternalServerError, "InternalException", err.Error())
 	}
 

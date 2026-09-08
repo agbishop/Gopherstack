@@ -15,6 +15,14 @@ import (
 const (
 	dkimRecordCount  = 3
 	fixedRecordCount = 3
+
+	// maxDomainsPerOrganization is AWS's documented, non-adjustable quota
+	// ("Number of domains per Amazon WorkMail organization | 1,000. This is
+	// a hard quota and can't be changed.", docs.aws.amazon.com/workmail/
+	// latest/adminguide/workmail_limits.html). Documentation-sourced, not
+	// verified against the pinned SDK (no wire-visible quota field exists
+	// to check it against).
+	maxDomainsPerOrganization = 1000
 )
 
 // dnsRecordsForDomain builds the recommended DNS record list a real
@@ -58,6 +66,11 @@ func (b *InMemoryBackend) RegisterMailDomain(orgID, domainName string) error {
 	}
 	if b.mailDomains.Has(orgKey(orgID, domainName)) {
 		return fmt.Errorf("%w: domain %q already registered", ErrMailDomainInUse, domainName)
+	}
+	if len(b.mailDomainsByOrg.Get(orgID)) >= maxDomainsPerOrganization {
+		return fmt.Errorf(
+			"%w: organization %q already has %d domains", ErrLimitExceeded, orgID, maxDomainsPerOrganization,
+		)
 	}
 
 	region := org.Region

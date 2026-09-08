@@ -341,7 +341,10 @@ func (b *InMemoryBackend) GetGroup(ctx context.Context, nameOrARN string) (*Grou
 }
 
 // UpdateGroup updates the description, display name, owner, and criticality
-// of a resource group. Pass an empty displayName/owner to leave it unchanged.
+// of a resource group. Pass an empty description/displayName/owner to leave
+// it unchanged (UpdateGroupInput.Description is optional, per
+// api_op_UpdateGroup.go: no validateOpUpdateGroupInput required-field check
+// exists for it, unlike CreateGroup).
 // Pass criticality=0 to leave it unchanged. Criticality must be 1-10 if non-zero.
 func (b *InMemoryBackend) UpdateGroup(
 	ctx context.Context,
@@ -367,7 +370,9 @@ func (b *InMemoryBackend) UpdateGroup(
 		return nil, fmt.Errorf("%w: group %s not found", ErrNotFound, name)
 	}
 
-	g.Description = description
+	if description != "" {
+		g.Description = description
+	}
 
 	if displayName != "" {
 		g.DisplayName = displayName
@@ -405,6 +410,16 @@ func (b *InMemoryBackend) UpdateGroupQuery(
 	g, ok := b.groups.Get(regionKey(region, name))
 	if !ok {
 		return nil, fmt.Errorf("%w: group %s not found", ErrNotFound, name)
+	}
+
+	// api_op_UpdateGroupQuery.go:42-43: "A resource group can contain either
+	// a Configuration or a ResourceQuery, but not both."
+	if len(b.groupConfigurations[region][name]) > 0 {
+		return nil, fmt.Errorf(
+			"%w: a group cannot have both a ResourceQuery and a Configuration; "+
+				"use one or the other",
+			ErrValidation,
+		)
 	}
 
 	g.ResourceQuery = query
@@ -584,8 +599,19 @@ func (b *InMemoryBackend) PutGroupConfiguration(
 	region := getRegion(ctx, b.region)
 	name := resolveGroupName(nameOrARN)
 
-	if !b.groups.Has(regionKey(region, name)) {
+	g, ok := b.groups.Get(regionKey(region, name))
+	if !ok {
 		return fmt.Errorf("%w: group %s not found", ErrNotFound, name)
+	}
+
+	// api_op_PutGroupConfiguration.go:45-46: "A resource group can contain
+	// either a Configuration or a ResourceQuery, but not both."
+	if g.ResourceQuery != nil {
+		return fmt.Errorf(
+			"%w: a group cannot have both a ResourceQuery and a Configuration; "+
+				"use one or the other",
+			ErrValidation,
+		)
 	}
 
 	b.groupConfigurationsStore(region)[name] = cloneConfigItems(items)

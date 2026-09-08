@@ -371,3 +371,58 @@ func TestElasticsearchHandler_AddTags_DuplicateKeyRejected(t *testing.T) {
 		})
 	}
 }
+
+// TestElasticsearchHandler_AddRemoveTags_UnknownARN verifies AddTags and
+// RemoveTags reject an ARN that does not resolve to any domain with
+// ValidationException (400), matching real AWS: neither op's deserializer
+// (elasticsearchservice@v1.45.4 deserializers.go,
+// awsRestjson1_deserializeOpErrorAddTags / ...RemoveTags) declares
+// ResourceNotFoundException -- only BaseException/InternalException/
+// ValidationException(+LimitExceededException on AddTags). Before the fix
+// both handlers discarded the backend's ErrDomainNotFound and always wrote
+// 200 OK; a non-empty TagList also risked a nil-map panic in AddTags
+// (maps.Copy into the nil map returned by ListTags on the same unknown ARN).
+func TestElasticsearchHandler_AddRemoveTags_UnknownARN(t *testing.T) {
+	t.Parallel()
+
+	const unknownARN = "arn:aws:es:us-east-1:123456789012:domain/no-such-domain"
+
+	tests := []struct {
+		body map[string]any
+		name string
+		path string
+	}{
+		{
+			name: "add_tags_unknown_arn",
+			path: "/2015-01-01/tags",
+			body: map[string]any{
+				"ARN":     unknownARN,
+				"TagList": []map[string]string{{"Key": "env", "Value": "prod"}},
+			},
+		},
+		{
+			name: "remove_tags_unknown_arn",
+			path: "/2015-01-01/tags-removal",
+			body: map[string]any{
+				"ARN":     unknownARN,
+				"TagKeys": []string{"env"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler()
+			resp := doRequest(t, h, http.MethodPost, tt.path, tt.body)
+			defer resp.Body.Close()
+
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+			var out map[string]any
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&out))
+			assert.Contains(t, out["message"], "domain not found")
+		})
+	}
+}

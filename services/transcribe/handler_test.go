@@ -284,14 +284,36 @@ func TestTranscribe_ConflictIs409(t *testing.T) {
 		{
 			name:   "call_analytics_category",
 			action: "CreateCallAnalyticsCategory",
-			first:  map[string]any{"CategoryName": "cat-dup"},
-			second: map[string]any{"CategoryName": "cat-dup"},
+			first: map[string]any{
+				"CategoryName": "cat-dup",
+				"Rules":        []map[string]any{{"NonTalkTimeFilter": map[string]any{"Threshold": 30000}}},
+			},
+			second: map[string]any{
+				"CategoryName": "cat-dup",
+				"Rules":        []map[string]any{{"NonTalkTimeFilter": map[string]any{"Threshold": 30000}}},
+			},
 		},
 		{
 			name:   "language_model",
 			action: "CreateLanguageModel",
-			first:  map[string]any{"ModelName": "mdl-dup", "BaseModelName": "WideBand", "LanguageCode": "en-US"},
-			second: map[string]any{"ModelName": "mdl-dup", "BaseModelName": "WideBand", "LanguageCode": "en-US"},
+			first: map[string]any{
+				"ModelName":     "mdl-dup",
+				"BaseModelName": "WideBand",
+				"LanguageCode":  "en-US",
+				"InputDataConfig": map[string]any{
+					"S3Uri":             "s3://bucket/training/",
+					"DataAccessRoleArn": "arn:aws:iam::123456789012:role/TranscribeRole",
+				},
+			},
+			second: map[string]any{
+				"ModelName":     "mdl-dup",
+				"BaseModelName": "WideBand",
+				"LanguageCode":  "en-US",
+				"InputDataConfig": map[string]any{
+					"S3Uri":             "s3://bucket/training/",
+					"DataAccessRoleArn": "arn:aws:iam::123456789012:role/TranscribeRole",
+				},
+			},
 		},
 		{
 			name:   "vocabulary",
@@ -622,6 +644,7 @@ func TestTranscribe_TimestampFields_AreJSONNumbers(t *testing.T) {
 				"Media":                map[string]any{"MediaFileUri": "s3://b/f"},
 				"DataAccessRoleArn":    "arn:aws:iam::123456789012:role/Scribe",
 				"OutputBucketName":     "scribe-out",
+				"Settings":             map[string]any{"ShowSpeakerLabels": true, "MaxSpeakerLabels": 2},
 			},
 			timeFields: []string{"CreationTime", "StartTime", "CompletionTime"},
 		},

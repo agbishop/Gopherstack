@@ -55,22 +55,29 @@ func certTagsKeyFn(v *certTagsEntry) string { return v.ResourceID }
 // InvalidTagException, matching real AWS tagging behavior.
 const reservedTagPrefix = "aws:"
 
-func (h *Handler) setTags(resourceID string, kv map[string]string) error {
+// setTags validates and merges kv into resourceID's tag set. invalidTagErr
+// and tooManyTagsErr let callers supply the sentinel their op actually
+// declares: the legacy certificate-tag ops (AddTagsToCertificate,
+// ImportCertificate, RequestCertificate) declare InvalidTagException/
+// TooManyTagsException, but the ACME resource families and TagResource
+// declare ValidationException/ServiceQuotaExceededException instead --
+// gopherstack-ftkd.
+func (h *Handler) setTags(resourceID string, kv map[string]string, invalidTagErr, tooManyTagsErr error) error {
 	const maxTagKeyLength = 128
 	const maxTagValueLength = 256
 	for k, v := range kv {
 		if k == "" {
-			return fmt.Errorf("%w: tag key must not be empty", ErrInvalidTag)
+			return fmt.Errorf("%w: tag key must not be empty", invalidTagErr)
 		}
 		if strings.HasPrefix(strings.ToLower(k), reservedTagPrefix) ||
 			strings.HasPrefix(strings.ToLower(v), reservedTagPrefix) {
-			return fmt.Errorf("%w: tag keys/values must not begin with %q", ErrInvalidTag, reservedTagPrefix)
+			return fmt.Errorf("%w: tag keys/values must not begin with %q", invalidTagErr, reservedTagPrefix)
 		}
 		if len(k) > maxTagKeyLength {
-			return fmt.Errorf("%w: tag key exceeds 128 characters", ErrInvalidParameter)
+			return fmt.Errorf("%w: tag key exceeds 128 characters", invalidTagErr)
 		}
 		if len(v) > maxTagValueLength {
-			return fmt.Errorf("%w: tag value exceeds 256 characters", ErrInvalidParameter)
+			return fmt.Errorf("%w: tag value exceeds 256 characters", invalidTagErr)
 		}
 	}
 
@@ -89,10 +96,10 @@ func (h *Handler) setTags(resourceID string, kv map[string]string) error {
 			}
 		}
 		if entry.Tags.Len()+newKeys > maxTagsPerCertificate {
-			return fmt.Errorf("%w: maximum of 50 tags allowed", ErrTooManyTags)
+			return fmt.Errorf("%w: maximum of 50 tags allowed", tooManyTagsErr)
 		}
 	} else if len(kv) > maxTagsPerCertificate {
-		return fmt.Errorf("%w: maximum of 50 tags allowed", ErrTooManyTags)
+		return fmt.Errorf("%w: maximum of 50 tags allowed", tooManyTagsErr)
 	}
 
 	if !exists {
@@ -172,7 +179,7 @@ func (h *Handler) jsonAddTagsToCertificate(ctx context.Context, body []byte) (an
 	for _, t := range input.Tags {
 		kv[t.Key] = t.Value
 	}
-	if err := h.setTags(input.CertificateArn, kv); err != nil {
+	if err := h.setTags(input.CertificateArn, kv, ErrInvalidTag, ErrTooManyTags); err != nil {
 		return nil, err
 	}
 

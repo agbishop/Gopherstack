@@ -148,16 +148,27 @@ func (b *InMemoryBackend) UpdateThingGroup(input *UpdateThingGroupInput) (int64,
 }
 
 // DeleteThingGroup deletes a thing group by name.
-func (b *InMemoryBackend) DeleteThingGroup(thingGroupName string) error {
+func (b *InMemoryBackend) DeleteThingGroup(thingGroupName string, expectedVersion int64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if !b.thingGroups.Has(thingGroupName) {
+	tg, ok := b.thingGroups.Get(thingGroupName)
+	if !ok {
 		return fmt.Errorf("%w: %s", ErrThingGroupNotFound, thingGroupName)
+	}
+
+	if expectedVersion != 0 && expectedVersion != tg.Version {
+		return fmt.Errorf("%w: expected version %d, current version %d",
+			ErrVersionConflict, expectedVersion, tg.Version)
+	}
+
+	for _, member := range b.thingGroupMembers[thingGroupName] {
+		b.removeThingFromGroupIndexes(member, thingGroupName)
 	}
 
 	b.thingGroups.Delete(thingGroupName)
 	delete(b.thingGroupMembers, thingGroupName)
+	delete(b.resourceTags, tg.ThingGroupARN)
 
 	return nil
 }
@@ -177,16 +188,7 @@ func (b *InMemoryBackend) RemoveThingFromThingGroup(input *RemoveThingFromThingG
 		thingName = input.ThingArn
 	}
 
-	members := b.thingGroupMembers[groupName]
-	filtered := make([]string, 0, len(members))
-
-	for _, m := range members {
-		if m != thingName {
-			filtered = append(filtered, m)
-		}
-	}
-
-	b.thingGroupMembers[groupName] = filtered
+	b.removeThingFromGroupIndexes(thingName, groupName)
 
 	return nil
 }
@@ -275,15 +277,27 @@ func (b *InMemoryBackend) CreateDynamicThingGroup(input *CreateThingGroupInput) 
 }
 
 // DeleteDynamicThingGroup deletes a dynamic thing group.
-func (b *InMemoryBackend) DeleteDynamicThingGroup(name string) error {
+func (b *InMemoryBackend) DeleteDynamicThingGroup(name string, expectedVersion int64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if !b.thingGroups.Has(name) {
+	tg, ok := b.thingGroups.Get(name)
+	if !ok {
 		return fmt.Errorf("%w: %s", ErrThingGroupNotFound, name)
 	}
+
+	if expectedVersion != 0 && expectedVersion != tg.Version {
+		return fmt.Errorf("%w: expected version %d, current version %d",
+			ErrVersionConflict, expectedVersion, tg.Version)
+	}
+
+	for _, member := range b.thingGroupMembers[name] {
+		b.removeThingFromGroupIndexes(member, name)
+	}
+
 	b.thingGroups.Delete(name)
 	delete(b.thingGroupMembers, name)
+	delete(b.resourceTags, tg.ThingGroupARN)
 
 	return nil
 }

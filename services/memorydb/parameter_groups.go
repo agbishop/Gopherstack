@@ -167,6 +167,15 @@ func (b *InMemoryBackend) DeleteParameterGroup(ctx context.Context, name string)
 		return nil, ErrParameterGroupNotFound
 	}
 
+	for _, c := range tableAll(b.clusters[region]) {
+		if c.ParameterGroupName == name {
+			return nil, fmt.Errorf(
+				"parameter group %q is associated with cluster %q: %w",
+				name, c.Name, ErrParameterGroupInUse,
+			)
+		}
+	}
+
 	b.parameterGroupsStore(region).Delete(name)
 	delete(b.arnToResourceStore(region), pg.ARN)
 

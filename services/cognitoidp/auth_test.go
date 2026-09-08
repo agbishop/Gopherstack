@@ -2,6 +2,8 @@ package cognitoidp_test
 
 import (
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,12 +47,20 @@ func TestSignUpWithValidation_AutoVerify(t *testing.T) {
 	client, err := b.CreateUserPoolClient(pool.ID, "av-client")
 	require.NoError(t, err)
 
+	// AutoVerifiedAttributes selects which contact channel Cognito sends a
+	// confirmation code to; it does not skip confirmation itself (AWS docs,
+	// "Signing up and confirming user accounts": self-signed-up users always
+	// start Unconfirmed, and only a PreSignUp Lambda's autoConfirmUser
+	// response -- not AutoVerifiedAttributes -- can bypass that).
 	user, err := b.SignUpWithValidation(client.ClientID, "frank", "Pass1234!",
 		map[string]string{"email": "frank@example.com"})
 	require.NoError(t, err)
-	assert.Equal(t, cognitoidp.UserStatusConfirmed, user.Status)
-	assert.Empty(t, user.ConfirmCode)
+	assert.Equal(t, cognitoidp.UserStatusUnconfirmed, user.Status)
+	assert.NotEmpty(t, user.ConfirmCode)
 	assert.Equal(t, "true", user.Attributes["email_verified"])
+
+	err = b.ConfirmSignUp(client.ClientID, "frank", user.ConfirmCode)
+	require.NoError(t, err)
 }
 
 func TestSignUpWithValidation_RequiresCode_WhenEmailMissing(t *testing.T) {
@@ -88,6 +98,40 @@ func TestAdminCreateUser_ForceChangePassword(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "NEW_PASSWORD_REQUIRED", result.ChallengeName)
 	assert.NotEmpty(t, result.MFASession)
+}
+
+func TestForceChangePassword_TemporaryPasswordExpires(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		b := newTestBackend()
+		pool, err := b.CreateUserPoolWithOpts("temp-pwd-pool", cognitoidp.UserPoolOptions{
+			PasswordPolicy: &cognitoidp.PasswordPolicy{
+				TemporaryPasswordValidityDays: 1,
+			},
+		})
+		require.NoError(t, err)
+
+		client, err := b.CreateUserPoolClient(pool.ID, "temp-pwd-client")
+		require.NoError(t, err)
+
+		_, err = b.AdminCreateUser(pool.ID, "ivy", "Temp1234!", nil)
+		require.NoError(t, err)
+
+		result, err := b.InitiateAuth(client.ClientID, "USER_PASSWORD_AUTH", "ivy", "Temp1234!")
+		require.NoError(t, err)
+		assert.Equal(t, "NEW_PASSWORD_REQUIRED", result.ChallengeName,
+			"temp password within the validity window must still work")
+
+		time.Sleep(25 * time.Hour)
+		synctest.Wait()
+
+		_, err = b.InitiateAuth(client.ClientID, "USER_PASSWORD_AUTH", "ivy", "Temp1234!")
+		require.Error(t, err)
+		require.ErrorIs(t, err, cognitoidp.ErrNotAuthorized,
+			"an expired temporary password must be rejected, not challenged")
+		assert.Contains(t, err.Error(), "expired")
+	})
 }
 
 func TestSignUpWithValidation_PasswordPolicyEnforced(t *testing.T) {

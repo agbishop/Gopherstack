@@ -3,7 +3,14 @@ package guardduty
 import (
 	"encoding/json"
 	"net/http"
+	"slices"
 )
+
+// validSetFormats are the enum values IpSetFormat and ThreatIntelSetFormat
+// share (aws-sdk-go-v2/service/guardduty/types/enums.go).
+var validSetFormats = []string{ //nolint:gochecknoglobals // package-level lookup table; immutable after init
+	"TXT", "STIX", "OTX_CSV", "ALIEN_VAULT", "PROOF_POINT", "FIRE_EYE",
+}
 
 //nolint:dupl // IPSet and ThreatIntelSet dispatch identical op sets
 func (h *Handler) dispatchIPSetOps(op, path, query string, body []byte) (any, int, bool, error) {
@@ -42,7 +49,6 @@ func (h *Handler) dispatchIPSetOps(op, path, query string, body []byte) (any, in
 	return nil, 0, false, nil
 }
 
-//nolint:dupl // IPSet and ThreatIntelSet have identical handler patterns
 func (h *Handler) handleCreateIPSet(detectorID string, body []byte) (any, int, error) {
 	var req struct {
 		Tags                map[string]string `json:"tags"`
@@ -57,7 +63,7 @@ func (h *Handler) handleCreateIPSet(detectorID string, body []byte) (any, int, e
 		return nil, http.StatusBadRequest, ErrValidation
 	}
 
-	if req.Name == "" || req.Format == "" || req.Location == "" {
+	if req.Name == "" || req.Format == "" || req.Location == "" || !slices.Contains(validSetFormats, req.Format) {
 		return nil, http.StatusBadRequest, ErrValidation
 	}
 
@@ -178,7 +184,6 @@ func (h *Handler) dispatchThreatIntelSetOps(op, path, query string, body []byte)
 	return nil, 0, false, nil
 }
 
-//nolint:dupl // IPSet and ThreatIntelSet have identical handler patterns
 func (h *Handler) handleCreateThreatIntelSet(detectorID string, body []byte) (any, int, error) {
 	var req struct {
 		Tags                map[string]string `json:"tags"`
@@ -193,7 +198,7 @@ func (h *Handler) handleCreateThreatIntelSet(detectorID string, body []byte) (an
 		return nil, http.StatusBadRequest, ErrValidation
 	}
 
-	if req.Name == "" || req.Format == "" || req.Location == "" {
+	if req.Name == "" || req.Format == "" || req.Location == "" || !slices.Contains(validSetFormats, req.Format) {
 		return nil, http.StatusBadRequest, ErrValidation
 	}
 

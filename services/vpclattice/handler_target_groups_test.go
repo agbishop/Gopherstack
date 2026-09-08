@@ -228,3 +228,61 @@ func TestTargetGroupConfigRoundTripsIPAddressType(t *testing.T) {
 	assert.Equal(t, "IPV6", config["ipAddressType"])
 	assert.Equal(t, "V2", config["lambdaEventStructureVersion"])
 }
+
+// TestListTargetGroups_Filters verifies ListTargetGroups honors the two
+// query parameters real clients send (aws-sdk-go-v2/service/vpclattice
+// api_op_ListTargetGroups.go ListTargetGroupsInput: targetGroupType,
+// vpcIdentifier -- there is no serviceArn filter on this operation). The
+// emulator previously parsed a fabricated "serviceArn" query parameter that
+// no client sends and never filtered on vpcIdentifier at all.
+func TestListTargetGroups_Filters(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+
+	mustCreateTG := func(name, tgType, vpcID string) {
+		rec := doRequest(t, h, http.MethodPost, "/targetgroups", map[string]any{
+			"name": name,
+			"type": tgType,
+			"config": map[string]any{
+				"protocol":      "HTTP",
+				"port":          80,
+				"vpcIdentifier": vpcID,
+			},
+		})
+		require.Equal(t, http.StatusCreated, rec.Code)
+	}
+
+	mustCreateTG("tg-a", "IP", "vpc-a")
+	mustCreateTG("tg-b", "INSTANCE", "vpc-b")
+
+	names := func(items []any) []string {
+		out := make([]string, 0, len(items))
+		for _, it := range items {
+			m, _ := it.(map[string]any)
+			out = append(out, m["name"].(string))
+		}
+
+		return out
+	}
+
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{name: "no filter returns all", query: "", want: []string{"tg-a", "tg-b"}},
+		{name: "vpcIdentifier filters to matching vpc", query: "?vpcIdentifier=vpc-a", want: []string{"tg-a"}},
+		{name: "targetGroupType filters to matching type", query: "?targetGroupType=INSTANCE", want: []string{"tg-b"}},
+		{name: "vpcIdentifier matching nothing returns empty", query: "?vpcIdentifier=vpc-none", want: []string{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rec := doRequest(t, h, http.MethodGet, "/targetgroups"+tc.query, nil)
+			require.Equal(t, http.StatusOK, rec.Code)
+			items, _ := parseBody(t, rec)["items"].([]any)
+			assert.ElementsMatch(t, tc.want, names(items))
+		})
+	}
+}

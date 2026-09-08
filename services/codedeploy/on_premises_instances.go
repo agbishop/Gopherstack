@@ -96,6 +96,12 @@ func (b *InMemoryBackend) DeregisterOnPremisesInstance(name string) error {
 
 	inst, ok := b.onPremisesInstances.Get(name)
 	if !ok {
+		// DeregisterOnPremisesInstance's deserializer models neither
+		// InstanceDoesNotExistException nor any other not-found code
+		// (aws-sdk-go-v2/service/codedeploy deserializers.go) -- this is
+		// provably the wrong code, but whether the real op is a silent
+		// idempotent success or maps to a different code is unconfirmed.
+		// Do NOT "fix" this by guessing; needs real evidence (gopherstack-3pz8).
 		return fmt.Errorf("%w: instance %s not found", ErrOnPremisesInstanceNotFound, name)
 	}
 
@@ -119,7 +125,7 @@ func (b *InMemoryBackend) GetOnPremisesInstance(name string) (*OnPremisesInstanc
 
 	inst, ok := b.onPremisesInstances.Get(name)
 	if !ok {
-		return nil, fmt.Errorf("%w: instance %s not found", ErrOnPremisesInstanceNotFound, name)
+		return nil, fmt.Errorf("%w: instance %s not found", ErrOnPremisesInstanceNotRegistered, name)
 	}
 
 	cp := *inst

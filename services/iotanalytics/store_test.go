@@ -31,7 +31,7 @@ func TestCreateResourceARNsUseCtxbagRegionAndAccount(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "arn:aws:iotanalytics:eu-west-2:222233334444:datastore/ds1", ds.ARN)
 
-	p, err := b.CreatePipeline(ctx, "p1", nil, nil)
+	p, err := b.CreatePipeline(ctx, "p1", nil, validPipelineActivities())
 	require.NoError(t, err)
 	assert.Equal(t, "arn:aws:iotanalytics:eu-west-2:222233334444:pipeline/p1", p.ARN)
 }
@@ -254,7 +254,7 @@ func TestInMemoryBackend_ErrAlreadyExists_Direct(t *testing.T) {
 		{
 			name: "pipeline",
 			create: func(b *iotanalytics.InMemoryBackend) error {
-				_, err := b.CreatePipeline(context.Background(), "dup", nil, nil)
+				_, err := b.CreatePipeline(context.Background(), "dup", nil, validPipelineActivities())
 
 				return err
 			},

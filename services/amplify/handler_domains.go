@@ -162,10 +162,10 @@ func (h *Handler) updateDomainAssociation(
 
 	var input struct {
 		CertificateSettings           *domainCertificateSettingsIn `json:"certificateSettings"`
-		AutoSubDomainIAMRole          string                       `json:"autoSubDomainIAMRole"`
+		AutoSubDomainIAMRole          *string                      `json:"autoSubDomainIAMRole"`
+		EnableAutoSubDomain           *bool                        `json:"enableAutoSubDomain"`
 		SubDomainSettings             []SubDomainSetting           `json:"subDomainSettings"`
 		AutoSubDomainCreationPatterns []string                     `json:"autoSubDomainCreationPatterns"`
-		EnableAutoSubDomain           bool                         `json:"enableAutoSubDomain"`
 	}
 
 	if jsonErr := json.Unmarshal(body, &input); jsonErr != nil {

@@ -149,6 +149,7 @@ func (b *InMemoryBackend) DeleteConfigurationSet(name string) error {
 	}
 
 	b.configurationSets.Delete(name)
+	delete(b.resourceTags, b.configurationSetARN(name))
 
 	// Cascade-delete every event destination of this configuration set.
 	// slices.Clone the index results first: deleting from b.eventDestinations

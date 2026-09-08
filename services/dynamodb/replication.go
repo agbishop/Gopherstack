@@ -96,6 +96,10 @@ func (db *InMemoryDB) replicateItemMutation(
 	finalItem map[string]any,
 	op string,
 ) {
+	if db.IsReplicationPaused(tableName) {
+		return
+	}
+
 	// Look up global table metadata under read lock.
 	gt, exists := db.getGlobalTableForReplicationRLocked(globalTableName)
 	if !exists {

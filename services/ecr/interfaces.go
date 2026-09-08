@@ -30,7 +30,9 @@ type Backend interface {
 
 	// DeleteRepository removes the named repository and returns its metadata.
 	// Returns ErrRepositoryNotFound if the repository does not exist.
-	DeleteRepository(ctx context.Context, name string) (*Repository, error)
+	// Returns ErrRepositoryNotEmpty if the repository contains images and
+	// force is false.
+	DeleteRepository(ctx context.Context, name string, force bool) (*Repository, error)
 
 	// ProxyEndpoint returns the registry endpoint embedded in repository URIs
 	// and returned by GetAuthorizationToken.

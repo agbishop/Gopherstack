@@ -62,6 +62,14 @@ func (b *InMemoryBackend) DeleteNetworkACL(id string) error {
 	if acl.IsDefault {
 		return fmt.Errorf("%w: cannot delete default network ACL", ErrInvalidParameter)
 	}
+
+	if len(acl.AssociationIDs) > 0 {
+		return fmt.Errorf(
+			"%w: the network acl %s has dependencies (subnet %s) and cannot be deleted",
+			ErrDependencyViolation, id, acl.AssociationIDs[0],
+		)
+	}
+
 	b.networkACLs.Delete(id)
 	delete(b.tags, id)
 

@@ -168,6 +168,13 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err 
 		})
 
 		return c.JSONBlob(http.StatusNotFound, payload)
+	case errors.Is(err, ErrAlreadyExists):
+		payload, _ := json.Marshal(service.JSONErrorResponse{
+			Type:    "ResourceExistsException",
+			Message: err.Error(),
+		})
+
+		return c.JSONBlob(http.StatusBadRequest, payload)
 	case errors.Is(err, ErrInvalidParameter):
 		payload, _ := json.Marshal(service.JSONErrorResponse{
 			Type:    "InvalidParameterException",

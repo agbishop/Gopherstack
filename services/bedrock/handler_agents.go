@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v5"
@@ -108,7 +109,9 @@ func (h *AgentsHandler) handleUpdateAgent(c *echo.Context, agentID string, body 
 }
 
 func (h *AgentsHandler) handleDeleteAgent(c *echo.Context, agentID string) error {
-	if err := h.Backend.DeleteAgent(agentID); err != nil {
+	skipResourceInUseCheck, _ := strconv.ParseBool(c.QueryParam("skipResourceInUseCheck"))
+
+	if err := h.Backend.DeleteAgent(agentID, skipResourceInUseCheck); err != nil {
 		if errors.Is(err, ErrAlreadyExists) {
 			return c.JSON(http.StatusConflict, agentErrResp("ConflictException", err.Error()))
 		}

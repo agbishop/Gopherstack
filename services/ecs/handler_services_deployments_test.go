@@ -140,8 +140,9 @@ func TestECS_DeleteService_CleansUpTaskSets(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Delete the service — task sets should be cleaned up.
-	_, err = backend.DeleteService("svccleanup-cluster", "svccleanup-svc")
+	// Delete the service — task sets should be cleaned up. Force bypasses
+	// the desiredCount/runningCount guard since this test isn't exercising it.
+	_, err = backend.DeleteService("svccleanup-cluster", "svccleanup-svc", true)
 	require.NoError(t, err)
 
 	// Recreate the service with the same name — no stale task sets.

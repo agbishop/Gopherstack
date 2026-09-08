@@ -255,7 +255,7 @@ func TestSDKRoundTrip_ModifyLakehouseConfiguration(t *testing.T) {
 	h := redshift.NewHandler(backend)
 	client := newTestRedshiftClient(t, h)
 
-	_, err := backend.CreateCluster("rt-lh-cluster", "dc2.large", "dev", "admin")
+	_, err := backend.CreateCluster("rt-lh-cluster", "dc2.large", "dev", "admin", nil, "")
 	require.NoError(t, err)
 
 	out, err := client.ModifyLakehouseConfiguration(ctx, &redshiftsdk.ModifyLakehouseConfigurationInput{

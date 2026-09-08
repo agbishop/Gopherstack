@@ -2,8 +2,10 @@ package cloudcontrol
 
 import (
 	"encoding/json"
+	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +19,16 @@ const (
 	typeNamePartCount = 3
 	// typeNameSplitLimit limits SplitN so that a four-part string is detectable as invalid.
 	typeNameSplitLimit = typeNamePartCount + 1
+)
+
+// RFC 6902 patch operation names applyPatch implements.
+const (
+	patchOpAdd     = "add"
+	patchOpReplace = "replace"
+	patchOpRemove  = "remove"
+	patchOpMove    = "move"
+	patchOpCopy    = "copy"
+	patchOpTest    = "test"
 )
 
 // CreateResource creates a new resource of the given type with the given desired state JSON.
@@ -253,11 +265,18 @@ func (b *InMemoryBackend) UpdateResource(typeName, identifier, patchDocument, cl
 		return nil, ErrNotFound
 	}
 
+	newProperties, err := applyPatch(r.Properties, patchDocument)
+	if err != nil {
+		return nil, err
+	}
+
 	// Properties is not part of resources' key (TypeName+Identifier) or any
 	// index, so mutating it in place through the pointer returned by Get is
 	// safe without a follow-up Put -- same as the original map[string]*Resource
-	// behaviour this replaces.
-	r.Properties = applyPatch(r.Properties, patchDocument)
+	// behaviour this replaces. applyPatch never returns a partially-applied
+	// document on error (see its doc comment), so this assignment only ever
+	// happens once the WHOLE patch has succeeded.
+	r.Properties = newProperties
 
 	token := uuid.NewString()
 	event := &ProgressEvent{
@@ -445,40 +464,343 @@ func matchesResourceModel(properties string, modelFilter map[string]any) bool {
 	return true
 }
 
-// applyPatch applies a simplified JSON RFC 6902 patch to a JSON document.
-// For each "replace" or "add" operation it sets the field; "remove" deletes it.
-// If the document or patch cannot be parsed, the original document is returned unchanged.
-func applyPatch(document, patchDocument string) string {
+// patchOperation is one element of an RFC 6902 JSON Patch document.
+type patchOperation struct {
+	Value any    `json:"value"`
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	From  string `json:"from"`
+}
+
+// applyPatch applies an RFC 6902 JSON Patch document to a JSON document,
+// resolving each op's Path (and, for move/copy, From) as a real RFC 6901
+// JSON Pointer -- walking into nested objects and array elements, not just
+// top-level fields. All six RFC 6902 op types are implemented: add, replace,
+// remove, move, copy, test. Ops apply sequentially against the document as
+// mutated by prior ops in the same patch; per RFC 6902 atomic-patch
+// semantics, a failing op aborts the WHOLE patch, returning the ORIGINAL,
+// unmodified document alongside the error -- no partial application. Only
+// move/copy/test can fail this way: an unresolvable From (move/copy), a move
+// whose From is a proper prefix of Path, or a failed test (an unresolvable
+// Path, or a Path whose value doesn't match). add/replace/remove keep their
+// pre-existing best-effort behavior unchanged -- an unresolvable Path is a
+// silent no-op for those three, never an error. If the document or the
+// patch's own JSON cannot be parsed, the original document is returned
+// unchanged with no error (also pre-existing).
+func applyPatch(document, patchDocument string) (string, error) {
 	var doc map[string]any
 	if err := json.Unmarshal([]byte(document), &doc); err != nil {
-		return document
+		//nolint:nilerr // malformed document: return it unchanged, not an error (pre-existing behavior)
+		return document, nil
 	}
 
-	var ops []struct {
-		Value any    `json:"value"`
-		Op    string `json:"op"`
-		Path  string `json:"path"`
-	}
-
+	var ops []patchOperation
 	if err := json.Unmarshal([]byte(patchDocument), &ops); err != nil {
-		return document
+		//nolint:nilerr // malformed patch JSON: return document unchanged, not an error (pre-existing behavior)
+		return document, nil
 	}
 
 	for _, op := range ops {
-		field := strings.TrimPrefix(op.Path, "/")
+		var err error
 
-		switch op.Op {
-		case "replace", "add":
-			doc[field] = op.Value
-		case "remove":
-			delete(doc, field)
+		doc, err = applyPatchOp(doc, op)
+		if err != nil {
+			return document, err
 		}
 	}
 
 	out, err := json.Marshal(doc)
 	if err != nil {
-		return document
+		//nolint:nilerr // doc built entirely from valid JSON decodes, so this can't actually fail; fail closed anyway
+		return document, nil
 	}
 
-	return string(out)
+	return string(out), nil
+}
+
+// applyPatchOp dispatches a single patch operation to its RFC 6902 semantics.
+// A root Path ("" or "/") is silently skipped for every op, matching the
+// pre-existing add/replace/remove behavior (this simplified engine has no
+// well-defined "replace the whole document" container to mutate in place).
+func applyPatchOp(doc map[string]any, op patchOperation) (map[string]any, error) {
+	segments := splitPointer(op.Path)
+	if len(segments) == 0 {
+		return doc, nil
+	}
+
+	switch op.Op {
+	case patchOpAdd, patchOpReplace, patchOpRemove:
+		doc, _ = applyPointerOp(doc, segments, op.Op, op.Value).(map[string]any)
+
+		return doc, nil
+	case patchOpMove:
+		return applyMoveOp(doc, op.From, segments)
+	case patchOpCopy:
+		return applyCopyOp(doc, op.From, segments)
+	case patchOpTest:
+		return doc, applyTestOp(doc, segments, op.Value)
+	default:
+		return doc, nil
+	}
+}
+
+// applyMoveOp implements RFC 6902 4.4 "move": "remove the value at a
+// specified location and add it to the target location" -- functionally a
+// remove at from followed by an add at path with the removed value. Per the
+// RFC, "a location cannot be moved into one of its children", so it is an
+// error for from to be a proper prefix of path.
+func applyMoveOp(doc map[string]any, from string, pathSegments []string) (map[string]any, error) {
+	fromSegments := splitPointer(from)
+	if len(fromSegments) == 0 {
+		return doc, fmt.Errorf("%w: move: from %q must not be the root pointer", ErrValidation, from)
+	}
+
+	if isProperPrefix(fromSegments, pathSegments) {
+		path := "/" + strings.Join(pathSegments, "/")
+
+		return doc, fmt.Errorf("%w: move: from %q is a prefix of path %q", ErrValidation, from, path)
+	}
+
+	value, ok := resolvePointer(doc, fromSegments)
+	if !ok {
+		return doc, fmt.Errorf("%w: move: from %q does not resolve", ErrValidation, from)
+	}
+
+	doc, _ = applyPointerOp(doc, fromSegments, patchOpRemove, nil).(map[string]any)
+	doc, _ = applyPointerOp(doc, pathSegments, patchOpAdd, value).(map[string]any)
+
+	return doc, nil
+}
+
+// applyCopyOp implements RFC 6902 4.5 "copy": the value at from is added at
+// path; unlike move, from is left untouched. The copied value is a deep copy
+// so a later mutation of the source location cannot alias into the copy (or
+// vice versa) -- both slices and maps in the decoded JSON tree are reference
+// types in Go.
+func applyCopyOp(doc map[string]any, from string, pathSegments []string) (map[string]any, error) {
+	fromSegments := splitPointer(from)
+	if len(fromSegments) == 0 {
+		return doc, fmt.Errorf("%w: copy: from %q must not be the root pointer", ErrValidation, from)
+	}
+
+	value, ok := resolvePointer(doc, fromSegments)
+	if !ok {
+		return doc, fmt.Errorf("%w: copy: from %q does not resolve", ErrValidation, from)
+	}
+
+	doc, _ = applyPointerOp(doc, pathSegments, patchOpAdd, deepCopyJSON(value)).(map[string]any)
+
+	return doc, nil
+}
+
+// applyTestOp implements RFC 6902 4.6 "test": succeeds only if the value at
+// path equals the op's Value by JSON structural equality (member order
+// insignificant, array order significant), returning ErrValidation on a
+// missing path or a mismatched value.
+func applyTestOp(doc map[string]any, segments []string, want any) error {
+	got, ok := resolvePointer(doc, segments)
+	if !ok || !jsonValuesEqual(got, want) {
+		return fmt.Errorf("%w: test: value at %q does not match", ErrValidation, "/"+strings.Join(segments, "/"))
+	}
+
+	return nil
+}
+
+// isProperPrefix reports whether from is a strict ancestor pointer of path,
+// i.e. path names a location inside from. RFC 6902 4.4 forbids "move" in
+// this case ("a location cannot be moved into one of its children").
+func isProperPrefix(from, path []string) bool {
+	if len(from) >= len(path) {
+		return false
+	}
+
+	for i, seg := range from {
+		if path[i] != seg {
+			return false
+		}
+	}
+
+	return true
+}
+
+// resolvePointer reads the value at segments within node per RFC 6901,
+// without mutating node. An empty segments list resolves to node itself.
+func resolvePointer(node any, segments []string) (any, bool) {
+	if len(segments) == 0 {
+		return node, true
+	}
+
+	key := segments[0]
+	rest := segments[1:]
+
+	switch n := node.(type) {
+	case map[string]any:
+		child, ok := n[key]
+		if !ok {
+			return nil, false
+		}
+
+		return resolvePointer(child, rest)
+	case []any:
+		idx, ok := parseArrayIndex(key)
+		if !ok || idx >= len(n) {
+			return nil, false
+		}
+
+		return resolvePointer(n[idx], rest)
+	default:
+		return nil, false
+	}
+}
+
+// deepCopyJSON returns a structural copy of a JSON-decoded value
+// (map[string]any / []any / scalars) so "copy" cannot alias its source --
+// scalars (string/float64/bool/nil) are Go value types and need no copying,
+// but maps and slices are reference types and must be copied recursively.
+func deepCopyJSON(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		cp := make(map[string]any, len(t))
+		for k, vv := range t {
+			cp[k] = deepCopyJSON(vv)
+		}
+
+		return cp
+	case []any:
+		cp := make([]any, len(t))
+		for i, vv := range t {
+			cp[i] = deepCopyJSON(vv)
+		}
+
+		return cp
+	default:
+		return t
+	}
+}
+
+// jsonValuesEqual reports whether a and b are equal by JSON structural
+// equality per RFC 6902 4.6 ("test"): object member order is not
+// significant, array element order is significant. json.Marshal on
+// decoded `any` values sorts map keys deterministically, so comparing the
+// re-marshaled bytes implements exactly this equality (including 1 and 1.0
+// comparing equal -- both decode to the same float64 and marshal back
+// identically) -- same convention as matchesResourceModel above.
+func jsonValuesEqual(a, b any) bool {
+	aJSON, errA := json.Marshal(a)
+	bJSON, errB := json.Marshal(b)
+
+	return errA == nil && errB == nil && string(aJSON) == string(bJSON)
+}
+
+// splitPointer decodes an RFC 6901 JSON Pointer into its unescaped reference
+// tokens (~1 -> "/", then ~0 -> "~", per the RFC's decoding order). The root
+// pointer ("" or "/") yields no segments.
+func splitPointer(path string) []string {
+	if path == "" || path == "/" {
+		return nil
+	}
+
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	for i, p := range parts {
+		p = strings.ReplaceAll(p, "~1", "/")
+		parts[i] = strings.ReplaceAll(p, "~0", "~")
+	}
+
+	return parts
+}
+
+// applyPointerOp resolves segments against node and applies op at the target
+// location, returning the (possibly new, for array insert/remove) node. A
+// segment that fails to resolve (missing map key, out-of-range array index)
+// leaves node unchanged rather than erroring, matching applyPatch's
+// fail-closed, best-effort contract.
+func applyPointerOp(node any, segments []string, op string, value any) any {
+	key := segments[0]
+	rest := segments[1:]
+
+	switch n := node.(type) {
+	case map[string]any:
+		if len(rest) > 0 {
+			child, ok := n[key]
+			if ok {
+				n[key] = applyPointerOp(child, rest, op, value)
+			}
+
+			return n
+		}
+
+		switch op {
+		case patchOpAdd, patchOpReplace:
+			n[key] = value
+		case patchOpRemove:
+			delete(n, key)
+		}
+
+		return n
+	case []any:
+		return applyArrayPointerOp(n, key, rest, op, value)
+	default:
+		return node
+	}
+}
+
+// applyArrayPointerOp handles one pointer segment against a JSON array,
+// including the RFC 6901 "-" token (end-of-array, "add" only).
+func applyArrayPointerOp(n []any, key string, rest []string, op string, value any) any {
+	if len(rest) > 0 {
+		idx, ok := parseArrayIndex(key)
+		if !ok || idx >= len(n) {
+			return n
+		}
+
+		n[idx] = applyPointerOp(n[idx], rest, op, value)
+
+		return n
+	}
+
+	if key == "-" && op == patchOpAdd {
+		return append(n, value)
+	}
+
+	idx, ok := parseArrayIndex(key)
+	if !ok {
+		return n
+	}
+
+	switch op {
+	case patchOpAdd:
+		if idx > len(n) {
+			return n
+		}
+
+		n = append(n, nil)
+		copy(n[idx+1:], n[idx:])
+		n[idx] = value
+	case patchOpReplace:
+		if idx >= len(n) {
+			return n
+		}
+
+		n[idx] = value
+	case patchOpRemove:
+		if idx >= len(n) {
+			return n
+		}
+
+		n = append(n[:idx], n[idx+1:]...)
+	}
+
+	return n
+}
+
+// parseArrayIndex parses an RFC 6901 array reference token as a non-negative
+// index. Callers apply the op-specific bound ("add" allows == len(array),
+// "replace"/"remove" require < len(array)).
+func parseArrayIndex(seg string) (int, bool) {
+	idx, err := strconv.Atoi(seg)
+	if err != nil || idx < 0 {
+		return 0, false
+	}
+
+	return idx, true
 }

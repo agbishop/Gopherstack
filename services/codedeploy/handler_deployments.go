@@ -240,6 +240,7 @@ type listDeploymentsInput struct {
 	CreateTimeRange     *timeRangeEntry `json:"createTimeRange"`
 	ApplicationName     string          `json:"applicationName"`
 	DeploymentGroupName string          `json:"deploymentGroupName"`
+	ExternalID          string          `json:"externalId"`
 	IncludeOnlyStatuses []string        `json:"includeOnlyStatuses"`
 }
 
@@ -254,6 +255,7 @@ func (h *Handler) handleListDeployments(
 	filter := DeploymentFilter{
 		ApplicationName:     in.ApplicationName,
 		DeploymentGroupName: in.DeploymentGroupName,
+		ExternalID:          in.ExternalID,
 		Statuses:            in.IncludeOnlyStatuses,
 	}
 

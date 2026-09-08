@@ -345,7 +345,7 @@ func (h *Handler) handleListDetectMitigationActionsTasks(c *echo.Context) error 
 
 func (h *Handler) handleCancelDetectMitigationActionsTask(c *echo.Context) error {
 	after := strings.TrimPrefix(c.Request().URL.Path, pathDetectMitigationTasks+"/")
-	taskID := strings.SplitN(after, "/", maxPathSegments)[0]
+	taskID, _, _ := strings.Cut(after, "/")
 
 	if err := h.Backend.CancelDetectMitigationActionsTask(taskID); err != nil {
 		return respondErr(c, err)
@@ -509,7 +509,7 @@ func parseIoTBoolQueryParam(c *echo.Context, name string) *bool {
 func (h *Handler) handleCancelAuditMitigationActionsTask(c *echo.Context) error {
 	// Path: /audit/mitigationactions/tasks/{taskId}/cancel
 	after := strings.TrimPrefix(c.Request().URL.Path, "/audit/mitigationactions/tasks/")
-	taskID := strings.SplitN(after, "/", maxPathSegments)[0]
+	taskID, _, _ := strings.Cut(after, "/")
 
 	if err := h.Backend.CancelAuditMitigationActionsTask(&CancelAuditMitigationActionsTaskInput{
 		TaskID: taskID,

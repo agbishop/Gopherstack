@@ -528,6 +528,19 @@ func (b *InMemoryBackend) UpdateCertificateAuthority(
 		return fmt.Errorf("%w: CA %s not found", ErrCANotFound, caARN)
 	}
 
+	// api_op_UpdateCertificateAuthority.go: "Your private CA must be in the
+	// ACTIVE or DISABLED state before you can update it." Applies to every
+	// update (status transition or RevocationConfiguration change alone), not
+	// just a status change -- otherwise a CREATING/PENDING_CERTIFICATE/DELETED
+	// CA could be flipped straight to ACTIVE, bypassing
+	// ImportCertificateAuthorityCertificate/RestoreCertificateAuthority.
+	if ca.Status != caStatusActive && ca.Status != caStatusDisabled {
+		return fmt.Errorf(
+			"%w: CA %s must be in ACTIVE or DISABLED state to be updated (current: %s)",
+			ErrInvalidState, caARN, ca.Status,
+		)
+	}
+
 	if status != "" {
 		ca.Status = status
 		ca.LastStateChangeAt = time.Now().UTC()

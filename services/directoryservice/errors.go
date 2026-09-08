@@ -59,4 +59,32 @@ var (
 	// both type CertificateDoesNotExistException, not the generic
 	// EntityDoesNotExistException.
 	ErrCertificateDoesNotExist = awserr.New("CertificateDoesNotExistException", awserr.ErrNotFound)
+
+	// ErrRadiusAlreadyEnabled is returned by EnableRadius when RADIUS is
+	// already enabled for the directory -- EnableRadius's own deserializer
+	// models EntityAlreadyExistsException (directoryservice@v1.41.4
+	// deserializers.go), unlike DisableRadius/UpdateRadius which don't.
+	ErrRadiusAlreadyEnabled = awserr.New(errEntityAlreadyExistsException, awserr.ErrAlreadyExists)
+
+	// ErrInvalidLDAPSStatus is returned by EnableLDAPS/DisableLDAPS when the
+	// requested transition is redundant (enabling already-enabled LDAPS, or
+	// disabling LDAPS that isn't enabled) -- both ops model
+	// InvalidLDAPSStatusException (directoryservice@v1.41.4 types/errors.go:708).
+	ErrInvalidLDAPSStatus = awserr.New("InvalidLDAPSStatusException", awserr.ErrConflict)
+
+	// ErrInvalidClientAuthStatus is returned by EnableClientAuthentication/
+	// DisableClientAuthentication when the requested transition is redundant
+	// -- both ops model InvalidClientAuthStatusException, whose doc comment
+	// reads "Client authentication is already enabled."
+	// (directoryservice@v1.41.4 types/errors.go:678-679).
+	ErrInvalidClientAuthStatus = awserr.New("InvalidClientAuthStatusException", awserr.ErrConflict)
+
+	// ErrSnapshotUnsupportedForADConnector is returned by CreateSnapshot for
+	// an AD Connector directory -- CreateSnapshot's doc comment states "You
+	// cannot take snapshots of AD Connector directories."
+	// (directoryservice@v1.41.4 api_op_CreateSnapshot.go). CreateSnapshot's
+	// own deserializer models no dedicated exception for this, so it maps to
+	// the generic ClientException, the same as every other op's catch-all
+	// client error.
+	ErrSnapshotUnsupportedForADConnector = awserr.New("ClientException", awserr.ErrConflict)
 )

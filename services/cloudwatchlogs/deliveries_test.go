@@ -195,6 +195,26 @@ func TestDeliveryDestination_CRUD(t *testing.T) {
 			},
 		},
 		{
+			// Real AWS: "You can't delete a delivery destination if any
+			// current deliveries are associated with it."
+			name: "delete_rejected_while_delivery_associated",
+			setup: func(t *testing.T, b *cloudwatchlogs.InMemoryBackend) {
+				t.Helper()
+				dest, err := b.PutDeliveryDestination("assoc-dest", "arn:aws:s3:::assoc-bucket", "JSON", "S3", nil)
+				require.NoError(t, err)
+
+				delivery, err := b.CreateDelivery("assoc-src", dest.Arn, "", nil, nil, nil)
+				require.NoError(t, err)
+
+				err = b.DeleteDeliveryDestination("assoc-dest")
+				require.ErrorIs(t, err, cloudwatchlogs.ErrDeliveryDestinationInUse)
+
+				require.NoError(t, b.DeleteDelivery(delivery.ID))
+
+				require.NoError(t, b.DeleteDeliveryDestination("assoc-dest"))
+			},
+		},
+		{
 			name: "put_updates_existing",
 			setup: func(t *testing.T, b *cloudwatchlogs.InMemoryBackend) {
 				t.Helper()
@@ -370,6 +390,26 @@ func TestDeliverySource_CRUD(t *testing.T) {
 
 				_, err = b.GetDeliverySource("my-src")
 				require.Error(t, err)
+			},
+		},
+		{
+			// Real AWS: "You can't delete a delivery source if any current
+			// deliveries are associated with it."
+			name: "delete_rejected_while_delivery_associated",
+			setup: func(t *testing.T, b *cloudwatchlogs.InMemoryBackend) {
+				t.Helper()
+				_, err := b.PutDeliverySource("assoc-src", "APPLICATION_LOGS", nil, nil)
+				require.NoError(t, err)
+
+				delivery, err := b.CreateDelivery("assoc-src", "arn:aws:s3:::assoc-dest", "", nil, nil, nil)
+				require.NoError(t, err)
+
+				err = b.DeleteDeliverySource("assoc-src")
+				require.ErrorIs(t, err, cloudwatchlogs.ErrDeliverySourceInUse)
+
+				require.NoError(t, b.DeleteDelivery(delivery.ID))
+
+				require.NoError(t, b.DeleteDeliverySource("assoc-src"))
 			},
 		},
 		{

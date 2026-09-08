@@ -249,6 +249,44 @@ func TestDistributeDatasetEntries_SetsInProgress(t *testing.T) { //nolint:parall
 	assert.Equal(t, "UPDATE_IN_PROGRESS", desc["Status"])
 }
 
+// DeleteDataset rejects a dataset that is updating with
+// ResourceInUseException -- DeleteDatasetInput's own doc comment
+// (api_op_DeleteDataset.go): "You can't delete a dataset while it is
+// creating (Status = CREATE_IN_PROGRESS) or if the dataset is updating
+// (Status = UPDATE_IN_PROGRESS).".
+func TestDeleteDataset_WhileUpdating_Rejected(t *testing.T) { //nolint:paralleltest // stateful sequential
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, "CreateProject", map[string]any{"ProjectName": "del-ds-proj"})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var projResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &projResp))
+	projARN := projResp["ProjectArn"].(string)
+
+	rec = doRequest(t, h, "CreateDataset", map[string]any{
+		"ProjectArn":  projARN,
+		"DatasetType": "TRAIN",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var dsResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dsResp))
+	dsARN := dsResp["DatasetArn"].(string)
+
+	rec = doRequest(t, h, "DistributeDatasetEntries", map[string]any{
+		"Datasets": []any{
+			map[string]any{"DatasetArn": dsARN},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "DeleteDataset", map[string]any{"DatasetArn": dsARN})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "ResourceInUseException", errResp["__type"])
+}
+
 func TestDistributeDatasetEntries_UnknownDataset(t *testing.T) {
 	t.Parallel()
 
@@ -379,18 +417,26 @@ func TestDatasets(t *testing.T) { //nolint:paralleltest // existing issue.
 		assert.Equal(t, http.StatusOK, rec.Code)
 	})
 
-	// DeleteDataset
+	// DeleteDataset. datasetARN is UPDATE_IN_PROGRESS after the
+	// DistributeDatasetEntries subtest above and can no longer be deleted
+	// (see TestDeleteDataset_WhileUpdating_Rejected) -- exercise the
+	// success path on a freshly created, CREATE_COMPLETE dataset instead.
 	t.Run("DeleteDataset removes dataset", func(t *testing.T) { //nolint:paralleltest // existing issue.
-		rec := doRequest( //nolint:govet // existing issue.
-			t,
-			h,
-			"DeleteDataset",
-			map[string]any{"DatasetArn": datasetARN},
-		)
+		rec := doRequest(t, h, "CreateDataset", map[string]any{ //nolint:govet // existing issue.
+			"ProjectArn":  projectARN,
+			"DatasetType": "TEST",
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var dsResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &dsResp))
+		freshARN := dsResp["DatasetArn"].(string)
+
+		rec = doRequest(t, h, "DeleteDataset", map[string]any{"DatasetArn": freshARN})
 		assert.Equal(t, http.StatusOK, rec.Code)
 
 		// DescribeDataset should now return not found
-		rec = doRequest(t, h, "DescribeDataset", map[string]any{"DatasetArn": datasetARN})
+		rec = doRequest(t, h, "DescribeDataset", map[string]any{"DatasetArn": freshARN})
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 }

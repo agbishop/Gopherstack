@@ -275,6 +275,16 @@ func (b *InMemoryBackend) CancelRun(id string) error {
 	return nil
 }
 
+// runDeletableStatuses are the real AWS RunStatus values DeleteRun requires
+// before it will delete a run's metadata: COMPLETED, FAILED, or CANCELLED
+// (api_op_DeleteRun.go: "You can only delete a run that has reached a
+// COMPLETED, FAILED, or CANCELLED stage.").
+var runDeletableStatuses = map[string]bool{ //nolint:gochecknoglobals // read-only status set
+	statusCompleted: true,
+	statusFailed:    true,
+	statusCancelled: true,
+}
+
 // DeleteRun deletes a run.
 func (b *InMemoryBackend) DeleteRun(id string) error {
 	b.mu.Lock("DeleteRun")
@@ -283,6 +293,14 @@ func (b *InMemoryBackend) DeleteRun(id string) error {
 	run, ok := b.runs.Get(id)
 	if !ok {
 		return fmt.Errorf("%w: run %s not found", ErrNotFound, id)
+	}
+
+	if !runDeletableStatuses[run.Status] {
+		return fmt.Errorf(
+			"%w: run %s must be in a terminal state (COMPLETED, FAILED, or CANCELLED) "+
+				"to be deleted, current state is %s",
+			ErrInvalidState, id, run.Status,
+		)
 	}
 
 	delete(b.tags, run.Arn)

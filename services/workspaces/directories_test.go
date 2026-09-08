@@ -183,11 +183,11 @@ func TestDeregisterWorkspaceDirectory_BlockedByWorkspaces(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var wsOut struct {
-		PendingRequests []map[string]string `json:"PendingRequests"`
+		PendingRequests []map[string]any `json:"PendingRequests"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &wsOut)
 	require.Len(t, wsOut.PendingRequests, 1)
-	wsID := wsOut.PendingRequests[0]["WorkspaceId"]
+	wsID := wsOut.PendingRequests[0]["WorkspaceId"].(string)
 
 	rec2 := doTargetRequest(t, h, "DeregisterWorkspaceDirectory", map[string]any{
 		"DirectoryId": "d-busy",

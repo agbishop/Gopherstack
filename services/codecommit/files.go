@@ -344,7 +344,7 @@ func (b *InMemoryBackend) ListFileCommitHistory(
 	repoName, filePath, nextToken string, maxResults int,
 ) (page.Page[FileVersionEntry], error) {
 	if err := page.ValidateToken(nextToken); err != nil {
-		return page.Page[FileVersionEntry]{}, fmt.Errorf("%w: invalid nextToken", ErrValidation)
+		return page.Page[FileVersionEntry]{}, fmt.Errorf("%w: invalid nextToken", ErrInvalidContinuationToken)
 	}
 
 	b.mu.RLock("ListFileCommitHistory")

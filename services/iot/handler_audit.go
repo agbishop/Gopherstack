@@ -13,7 +13,7 @@ import (
 func (h *Handler) handleCancelAuditTask(c *echo.Context) error {
 	// Path: /audit/tasks/{taskId}/cancel
 	after := strings.TrimPrefix(c.Request().URL.Path, "/audit/tasks/")
-	taskID := strings.SplitN(after, "/", maxPathSegments)[0]
+	taskID, _, _ := strings.Cut(after, "/")
 
 	if err := h.Backend.CancelAuditTask(&CancelAuditTaskInput{
 		AuditTaskID: taskID,

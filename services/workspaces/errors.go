@@ -49,9 +49,37 @@ var (
 		awserr.ErrNotFound,
 	)
 
-	errConnAliasNotFound   = awserr.New(errResourceNotFound, awserr.ErrNotFound)
-	errBundleNotFound      = awserr.New(errResourceNotFound, awserr.ErrNotFound)
-	errImageNotFound       = awserr.New(errResourceNotFound, awserr.ErrNotFound)
+	// errIPGroupAssociatedWithDirectory is returned by DeleteIpGroup when the
+	// group is still associated with a directory. Real AWS: "You cannot
+	// delete an IP access control group that is associated with a
+	// directory." Real AWS's own deserializer declares ResourceAssociatedException
+	// for this case, but this package's generic error dispatch (handler.go's
+	// handleError) only distinguishes NotFound/InvalidParameter/AlreadyExists/
+	// Conflict, so this reuses errInvalidResourceState like every other
+	// still-in-use conflict in this package (e.g. errDirectoryHasWorkspaces).
+	errIPGroupAssociatedWithDirectory = awserr.New(errInvalidResourceState, awserr.ErrConflict)
+
+	errConnAliasNotFound = awserr.New(errResourceNotFound, awserr.ErrNotFound)
+	errBundleNotFound    = awserr.New(errResourceNotFound, awserr.ErrNotFound)
+	errImageNotFound     = awserr.New(errResourceNotFound, awserr.ErrNotFound)
+
+	// errBundleInUse is returned by DeleteWorkspaceBundle when a WorkSpace
+	// still references the bundle. Real AWS models ResourceAssociatedException
+	// for this operation; reused as errInvalidResourceState/Conflict for the
+	// same reason as errIPGroupAssociatedWithDirectory.
+	errBundleInUse = awserr.New(errInvalidResourceState, awserr.ErrConflict)
+	// errImageInUse is returned by DeleteWorkspaceImage when a bundle still
+	// references the image. Real AWS: "To delete an image, you must first
+	// delete any bundles that are associated with the image"
+	// (api_op_DeleteWorkspaceImage.go doc comment); ResourceAssociatedException
+	// is modelled for this operation.
+	errImageInUse = awserr.New(errInvalidResourceState, awserr.ErrConflict)
+	// errConnAliasInUse is returned by DeleteConnectionAlias when the alias is
+	// still shared with an account or associated with a directory. Real AWS:
+	// "You can delete a connection alias only after it is no longer shared
+	// with any accounts or associated with any directories"
+	// (api_op_DeleteConnectionAlias.go doc comment).
+	errConnAliasInUse      = awserr.New(errInvalidResourceState, awserr.ErrConflict)
 	errPoolNotFound        = awserr.New(errResourceNotFound, awserr.ErrNotFound)
 	errPoolSessionNotFound = awserr.New(errResourceNotFound, awserr.ErrNotFound)
 	errAddInNotFound       = awserr.New(errResourceNotFound, awserr.ErrNotFound)

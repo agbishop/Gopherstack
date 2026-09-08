@@ -16,6 +16,29 @@ func TestCloudWatchBackend_NewInMemoryBackend(t *testing.T) {
 	require.NotNil(t, b)
 }
 
+// TestCloudWatchBackend_Reset_TotalMetrics verifies that Reset() resyncs the
+// totalMetrics running counter (#60) with the cleared b.metrics map, mirroring
+// the fix already applied on the Restore path.
+func TestCloudWatchBackend_Reset_TotalMetrics(t *testing.T) {
+	t.Parallel()
+
+	b := cloudwatch.NewInMemoryBackend()
+
+	b.StoreDatumForTest("NS", cloudwatch.MetricDatum{MetricName: "m1"})
+	b.StoreDatumForTest("NS", cloudwatch.MetricDatum{MetricName: "m2"})
+	require.Equal(t, 2, b.TotalMetricsForTest())
+
+	b.Reset()
+
+	assert.Equal(t, 0, b.TotalMetricsForTest(), "totalMetrics must resync to 0 after Reset")
+
+	// A stale, too-high counter would wrongly reject writes under
+	// cwMaxTotalMetricRecords; confirm the post-Reset backend can still
+	// accept new metric series.
+	b.StoreDatumForTest("NS", cloudwatch.MetricDatum{MetricName: "m3"})
+	assert.Equal(t, 1, b.TotalMetricsForTest())
+}
+
 // ---------------------------------------------------------------------------
 // Dataset: GetDataset / AssociateDatasetKmsKey / DisassociateDatasetKmsKey
 // ---------------------------------------------------------------------------

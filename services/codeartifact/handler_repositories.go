@@ -296,6 +296,7 @@ func (h *Handler) handleGetRepositoryPermissionsPolicy(c *echo.Context, domainNa
 
 type putRepositoryPermissionsPolicyBody struct {
 	PolicyDocument string `json:"policyDocument"`
+	PolicyRevision string `json:"policyRevision"`
 }
 
 func (h *Handler) handlePutRepositoryPermissionsPolicy(
@@ -326,7 +327,9 @@ func (h *Handler) handlePutRepositoryPermissionsPolicy(
 		return c.JSON(http.StatusBadRequest, errResp("ValidationException", "policyDocument is required"))
 	}
 
-	pol, err := h.Backend.PutRepositoryPermissionsPolicy(c.Request().Context(), domainName, repoName, in.PolicyDocument)
+	pol, err := h.Backend.PutRepositoryPermissionsPolicy(
+		c.Request().Context(), domainName, repoName, in.PolicyDocument, in.PolicyRevision,
+	)
 	if err != nil {
 		return h.handleError(c, err)
 	}
@@ -348,7 +351,9 @@ func (h *Handler) handleDeleteRepositoryPermissionsPolicy(c *echo.Context, domai
 		return c.JSON(http.StatusBadRequest, errResp("ValidationException", "repository is required"))
 	}
 
-	pol, err := h.Backend.DeleteRepositoryPermissionsPolicy(c.Request().Context(), domainName, repoName)
+	revision := c.Request().URL.Query().Get("policy-revision")
+
+	pol, err := h.Backend.DeleteRepositoryPermissionsPolicy(c.Request().Context(), domainName, repoName, revision)
 	if err != nil {
 		return h.handleError(c, err)
 	}

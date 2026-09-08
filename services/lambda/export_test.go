@@ -413,6 +413,28 @@ func EnqueueAsync(
 // CleanupSemLen returns the number of cleanup goroutines currently holding a slot in cleanupSem.
 func CleanupSemLen(b *InMemoryBackend) int { return len(b.cleanupSem) }
 
+// CleanupTimedOutRuntimeForTest exports cleanupTimedOutRuntime so tests can drive
+// its cleanupSem-saturated fallback path directly and deterministically.
+func CleanupTimedOutRuntimeForTest(b *InMemoryBackend, functionName string) {
+	b.cleanupTimedOutRuntime(functionName)
+}
+
+// FillCleanupSem saturates b.cleanupSem to capacity and returns a function that
+// drains it back to empty. Used to test the "semaphore full" fallback path of the
+// various runtime-cleanup call sites.
+func FillCleanupSem(b *InMemoryBackend) func() {
+	n := cap(b.cleanupSem)
+	for range n {
+		b.cleanupSem <- struct{}{}
+	}
+
+	return func() {
+		for range n {
+			<-b.cleanupSem
+		}
+	}
+}
+
 // PollerNotifyC returns the notify channel of an EventSourcePoller for testing.
 func PollerNotifyC(p *EventSourcePoller) chan struct{} { return p.notifyC }
 

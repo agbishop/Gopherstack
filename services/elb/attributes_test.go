@@ -873,3 +873,50 @@ func TestModifyLBAttributesDesyncMode(t *testing.T) {
 		})
 	}
 }
+
+// TestModifyLoadBalancerAttributesPartialUpdatePreservesOtherGroups verifies that
+// a ModifyLoadBalancerAttributes call touching only one attribute group (here,
+// CrossZoneLoadBalancing) does not reset the other independently-settable
+// groups (AccessLog, ConnectionDraining, DesyncMitigationMode) to their
+// defaults. Each group in types.LoadBalancerAttributes is optional and
+// independently settable in the AWS SDK.
+func TestModifyLoadBalancerAttributesPartialUpdatePreservesOtherGroups(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+	mustCreateLB(t, h, "partial-upd-lb")
+
+	doELB(t, h, url.Values{
+		"Action":           {"ModifyLoadBalancerAttributes"},
+		"Version":          {"2012-06-01"},
+		"LoadBalancerName": {"partial-upd-lb"},
+		"LoadBalancerAttributes.AccessLog.Enabled":                   {"true"},
+		"LoadBalancerAttributes.AccessLog.S3BucketName":              {"keep-me-bucket"},
+		"LoadBalancerAttributes.AccessLog.EmitInterval":              {"5"},
+		"LoadBalancerAttributes.ConnectionDraining.Enabled":          {"true"},
+		"LoadBalancerAttributes.ConnectionDraining.Timeout":          {"120"},
+		"LoadBalancerAttributes.AdditionalAttributes.member.1.Key":   {"elb.http.desyncmitigationmode"},
+		"LoadBalancerAttributes.AdditionalAttributes.member.1.Value": {"strictest"},
+	})
+
+	rec := doELB(t, h, url.Values{
+		"Action":           {"ModifyLoadBalancerAttributes"},
+		"Version":          {"2012-06-01"},
+		"LoadBalancerName": {"partial-upd-lb"},
+		"LoadBalancerAttributes.CrossZoneLoadBalancing.Enabled": {"true"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	attrs, err := h.Backend.DescribeLoadBalancerAttributes(context.Background(), "partial-upd-lb")
+	require.NoError(t, err)
+
+	assert.True(t, attrs.CrossZoneLoadBalancing, "the group this request actually set")
+	assert.True(t, attrs.AccessLog.Enabled, "AccessLog must survive an update that omitted it")
+	assert.Equal(t, "keep-me-bucket", attrs.AccessLog.S3BucketName)
+	assert.Equal(t, int32(5), attrs.AccessLog.EmitInterval)
+	assert.True(t, attrs.ConnectionDraining, "ConnectionDraining must survive an update that omitted it")
+	assert.Equal(t, int32(120), attrs.ConnectionDrainingTimeout)
+	assert.Equal(
+		t, "strictest", attrs.DesyncMitigationMode, "DesyncMitigationMode must survive an update that omitted it",
+	)
+}

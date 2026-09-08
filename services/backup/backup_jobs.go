@@ -1,11 +1,14 @@
 package backup
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	sdk_s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 )
 
@@ -25,6 +28,10 @@ func (b *InMemoryBackend) StartBackupJob(
 
 	if iamRoleArn == "" {
 		return nil, fmt.Errorf("%w: IamRoleArn is required", ErrValidation)
+	}
+
+	if err := b.resourceExistsLocked(resourceArn); err != nil {
+		return nil, err
 	}
 
 	vault, ok := b.vaults.Get(vaultName)
@@ -49,6 +56,46 @@ func (b *InMemoryBackend) StartBackupJob(
 	cp := *j
 
 	return &cp, nil
+}
+
+// resourceExistsLocked checks a StartBackupJob ResourceArn against the
+// resource-owning backend, for the handful of resource types this emulator
+// can classify and has a wired hook for. An ARN of an unclassifiable or
+// unwired type is accepted unchecked -- real AWS Backup supports many
+// resource types this emulator does not model, and rejecting them would be
+// a fabricated rejection; an unwired hook must behave as if this check
+// never ran. Callers must hold b.mu.
+func (b *InMemoryBackend) resourceExistsLocked(resourceArn string) error {
+	bucket, ok := s3BucketFromARN(resourceArn)
+	if !ok || b.s3 == nil {
+		return nil
+	}
+
+	if _, err := b.s3.HeadBucket(context.Background(), &sdk_s3.HeadBucketInput{
+		Bucket: aws.String(bucket),
+	}); err != nil {
+		return fmt.Errorf("%w: S3 bucket %s does not exist", ErrNotFound, bucket)
+	}
+
+	return nil
+}
+
+// arnFieldCount is the number of colon-separated fields in an ARN:
+// arn:partition:service:region:account-id:resource.
+const arnFieldCount = 6
+
+// s3BucketFromARN reports whether resourceArn is a well-formed S3 bucket ARN
+// (arn:{partition}:s3:::{bucket}, no object key) and, if so, the bucket
+// name. AWS Backup's S3 resource type ARN is exactly the bucket ARN --
+// object-key ARNs (bucket/key) are left unclassified and stay permissive.
+func s3BucketFromARN(resourceArn string) (string, bool) {
+	parts := strings.SplitN(resourceArn, ":", arnFieldCount)
+	if len(parts) != arnFieldCount || parts[0] != "arn" || parts[2] != "s3" ||
+		parts[5] == "" || strings.Contains(parts[5], "/") {
+		return "", false
+	}
+
+	return parts[5], true
 }
 
 // DescribeBackupJob returns a backup job by ID.

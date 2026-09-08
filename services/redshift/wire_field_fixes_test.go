@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	redshiftsdk "github.com/aws/aws-sdk-go-v2/service/redshift"
 	"github.com/aws/aws-sdk-go-v2/service/redshift/types"
+	smithy "github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -617,4 +618,106 @@ func TestDescribeTableRestoreStatus_FiltersByRequestId(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, out.TableRestoreStatusDetails, 1)
 	assert.Equal(t, "t1", aws.ToString(out.TableRestoreStatusDetails[0].SourceTableName))
+}
+
+// TestCreateCluster_ClusterSecurityGroupsRoundTrip drives CreateCluster
+// through the real client with ClusterSecurityGroups set and proves the
+// association actually reaches the backend and reads back out through
+// DescribeClusters, rather than being parsed and silently dropped.
+// CreateClusterInput.ClusterSecurityGroups is a real, documented field
+// (redshift@v1.65.4 api_op_CreateCluster.go: "A list of security groups to
+// be associated with this cluster") that the backend previously had no
+// field to store at all.
+func TestCreateCluster_ClusterSecurityGroupsRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	backend := redshift.NewInMemoryBackend("000000000000", "us-east-1")
+	client := newTestRedshiftClient(t, redshift.NewHandler(backend))
+	ctx := t.Context()
+
+	_, err := client.CreateClusterSecurityGroup(ctx, &redshiftsdk.CreateClusterSecurityGroupInput{
+		ClusterSecurityGroupName: aws.String("csg-assoc"),
+		Description:              aws.String("assoc test group"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.CreateCluster(ctx, &redshiftsdk.CreateClusterInput{
+		ClusterIdentifier:     aws.String("csg-rt-cluster"),
+		NodeType:              aws.String("dc2.large"),
+		MasterUsername:        aws.String("admin"),
+		MasterUserPassword:    aws.String("Password1"),
+		ClusterSecurityGroups: []string{"csg-assoc"},
+	})
+	require.NoError(t, err)
+
+	out, err := client.DescribeClusters(ctx, &redshiftsdk.DescribeClustersInput{
+		ClusterIdentifier: aws.String("csg-rt-cluster"),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.Clusters, 1)
+	require.Len(t, out.Clusters[0].ClusterSecurityGroups, 1)
+	assert.Equal(t, "csg-assoc", aws.ToString(out.Clusters[0].ClusterSecurityGroups[0].ClusterSecurityGroupName))
+
+	// Real AWS: CreateCluster's own declared error switch includes
+	// ClusterSecurityGroupNotFound for a group that doesn't exist.
+	_, err = client.CreateCluster(ctx, &redshiftsdk.CreateClusterInput{
+		ClusterIdentifier:     aws.String("csg-rt-cluster-2"),
+		NodeType:              aws.String("dc2.large"),
+		MasterUsername:        aws.String("admin"),
+		MasterUserPassword:    aws.String("Password1"),
+		ClusterSecurityGroups: []string{"no-such-group"},
+	})
+	require.Error(t, err)
+
+	var apiErr smithy.APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, "ClusterSecurityGroupNotFound", apiErr.ErrorCode())
+}
+
+// TestCreateCluster_ClusterParameterGroupNameRoundTrip is the
+// ClusterParameterGroupName analogue of
+// TestCreateCluster_ClusterSecurityGroupsRoundTrip.
+func TestCreateCluster_ClusterParameterGroupNameRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	backend := redshift.NewInMemoryBackend("000000000000", "us-east-1")
+	client := newTestRedshiftClient(t, redshift.NewHandler(backend))
+	ctx := t.Context()
+
+	_, err := client.CreateClusterParameterGroup(ctx, &redshiftsdk.CreateClusterParameterGroupInput{
+		ParameterGroupName:   aws.String("cpg-assoc"),
+		ParameterGroupFamily: aws.String("redshift-1.0"),
+		Description:          aws.String("assoc test group"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.CreateCluster(ctx, &redshiftsdk.CreateClusterInput{
+		ClusterIdentifier:         aws.String("cpg-rt-cluster"),
+		NodeType:                  aws.String("dc2.large"),
+		MasterUsername:            aws.String("admin"),
+		MasterUserPassword:        aws.String("Password1"),
+		ClusterParameterGroupName: aws.String("cpg-assoc"),
+	})
+	require.NoError(t, err)
+
+	out, err := client.DescribeClusters(ctx, &redshiftsdk.DescribeClustersInput{
+		ClusterIdentifier: aws.String("cpg-rt-cluster"),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.Clusters, 1)
+	require.Len(t, out.Clusters[0].ClusterParameterGroups, 1)
+	assert.Equal(t, "cpg-assoc", aws.ToString(out.Clusters[0].ClusterParameterGroups[0].ParameterGroupName))
+
+	_, err = client.CreateCluster(ctx, &redshiftsdk.CreateClusterInput{
+		ClusterIdentifier:         aws.String("cpg-rt-cluster-2"),
+		NodeType:                  aws.String("dc2.large"),
+		MasterUsername:            aws.String("admin"),
+		MasterUserPassword:        aws.String("Password1"),
+		ClusterParameterGroupName: aws.String("no-such-group"),
+	})
+	require.Error(t, err)
+
+	var apiErr smithy.APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, "ClusterParameterGroupNotFound", apiErr.ErrorCode())
 }

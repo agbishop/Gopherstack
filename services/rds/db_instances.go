@@ -36,6 +36,24 @@ func normalizeDBInstanceDefaults(
 	return engine, instanceClass, allocatedStorage, masterUser
 }
 
+// dbSecurityGroupMembershipsLocked validates that every named DB security
+// group already exists and returns their membership records. Caller must
+// hold b.mu. Real AWS: CreateDBInstance's own declared error switch includes
+// DBSecurityGroupNotFound.
+func (b *InMemoryBackend) dbSecurityGroupMembershipsLocked(names []string) ([]DBSecurityGroupMembership, error) {
+	dbSGs := make([]DBSecurityGroupMembership, 0, len(names))
+
+	for _, sgName := range names {
+		if _, exists := b.dbSecurityGroups.Get(sgName); !exists {
+			return nil, fmt.Errorf("%w: security group %s not found", ErrDBSecurityGroupNotFound, sgName)
+		}
+
+		dbSGs = append(dbSGs, DBSecurityGroupMembership{DBSecurityGroupName: sgName, Status: subscriptionStatusActive})
+	}
+
+	return dbSGs, nil
+}
+
 // createDBInstanceLocked validates and inserts a new DB instance under b.mu,
 // returning a copy of the stored instance. Extracted from CreateDBInstance to
 // keep the locked region out of the parent's funlen count; the parent still
@@ -53,6 +71,11 @@ func (b *InMemoryBackend) createDBInstanceLocked(
 
 	if _, exists := b.instances.Get(normalizeID(id)); exists {
 		return nil, fmt.Errorf("%w: instance %s already exists", ErrInstanceAlreadyExists, id)
+	}
+
+	dbSGs, err := b.dbSecurityGroupMembershipsLocked(opts.DBSecurityGroupNames)
+	if err != nil {
+		return nil, err
 	}
 
 	engine, instanceClass, allocatedStorage, masterUser = normalizeDBInstanceDefaults(
@@ -86,6 +109,7 @@ func (b *InMemoryBackend) createDBInstanceLocked(
 		Port:                             port,
 		AllocatedStorage:                 allocatedStorage,
 		DBParameterGroupName:             paramGroupName,
+		DBSubnetGroupName:                opts.DBSubnetGroupName,
 		OptionGroupName:                  opts.OptionGroupName,
 		MultiAZ:                          opts.MultiAZ,
 		StorageType:                      opts.StorageType,
@@ -105,6 +129,7 @@ func (b *InMemoryBackend) createDBInstanceLocked(
 		CopyTagsToSnapshot:               opts.CopyTagsToSnapshot,
 		EnabledCloudwatchLogsExports:     opts.EnabledCloudwatchLogsExports,
 		VpcSecurityGroups:                vpcSGs,
+		DBSecurityGroups:                 dbSGs,
 		ReadReplicaIdentifiers:           []string{},
 		PubliclyAccessible:               opts.PubliclyAccessible,
 		PerformanceInsightsEnabled:       opts.PerformanceInsightsEnabled,
@@ -147,6 +172,9 @@ func (b *InMemoryBackend) CreateDBInstance(
 		)
 	}
 	if err := validateDBInstanceEngine(engine); err != nil {
+		return nil, err
+	}
+	if err := ValidateEngineLifecycleSupport(opts.EngineLifecycleSupport); err != nil {
 		return nil, err
 	}
 
@@ -269,6 +297,15 @@ func (b *InMemoryBackend) deleteDBInstanceLocked(
 		if src, srcExists := b.instances.Get(normalizeID(inst.ReplicaSourceDBInstanceIdentifier)); srcExists {
 			src.ReadReplicaIdentifiers = slices.DeleteFunc(src.ReadReplicaIdentifiers, func(s string) bool {
 				return idEqual(s, canonicalID)
+			})
+		}
+	}
+
+	// Remove this instance from its cluster's DBClusterMembers, if any.
+	if inst.DBClusterIdentifier != "" {
+		if cluster, clusterExists := b.clusters.Get(normalizeID(inst.DBClusterIdentifier)); clusterExists {
+			cluster.DBClusterMembers = slices.DeleteFunc(cluster.DBClusterMembers, func(m DBClusterMember) bool {
+				return idEqual(m.DBInstanceIdentifier, canonicalID)
 			})
 		}
 	}

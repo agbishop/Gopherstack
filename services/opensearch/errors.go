@@ -23,4 +23,10 @@ var (
 	ErrMigrationNotFound        = errors.New("ResourceNotFoundException")
 	ErrInsightNotFound          = errors.New("ResourceNotFoundException")
 	ErrWorkspaceNotFound        = errors.New("ResourceNotFoundException")
+	ErrAccessDenied             = errors.New("AccessDeniedException")
+	// ErrPackageAssociated is returned by DeletePackage when the package is
+	// still associated with a domain. Real AWS: DeletePackage's own doc
+	// comment, "The package can't be associated with any OpenSearch Service
+	// domain".
+	ErrPackageAssociated = errors.New("ConflictException")
 )

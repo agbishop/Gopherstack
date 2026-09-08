@@ -45,6 +45,13 @@ var (
 	ErrAuditReportNotFound = errors.New("ResourceNotFoundException")
 	// ErrTooManyTags is returned when tagging a CA would exceed the 50-tag limit.
 	ErrTooManyTags = errors.New("TooManyTagsException")
+	// ErrRequestAlreadyProcessed is returned when RevokeCertificate is called
+	// on a certificate that is already revoked, matching
+	// RequestAlreadyProcessedException ("Your request has already been
+	// completed") -- modeled only by RevokeCertificate's own deserializeOpError
+	// (acmpca@v1.50.0 deserializers.go), not by any other operation in this
+	// service.
+	ErrRequestAlreadyProcessed = errors.New("RequestAlreadyProcessedException")
 
 	errCAPrivKeyNil    = errors.New("CA private key is nil")
 	errDecodeCSRPEM    = errors.New("failed to decode CSR PEM")

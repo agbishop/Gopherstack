@@ -157,6 +157,7 @@ func (b *InMemoryBackend) deleteServicesForClusterLocked(clusterName string) {
 func (b *InMemoryBackend) deleteTasksForClusterLocked(clusterName string) {
 	for _, t := range b.tasksInClusterLocked(clusterName) {
 		b.tasks.Delete(tasksKeyFn(t))
+		b.deleteResourceTagsLocked(t.TaskArn)
 	}
 }
 

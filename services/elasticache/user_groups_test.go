@@ -129,10 +129,6 @@ func TestBackend_CreateUserGroupValidated_UserNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, elasticache.ErrGroupUserNotFound)
 }
 
-// ----------------------------------------
-// DeleteUserSafe
-// ----------------------------------------
-
 func TestBackend_UserGroup_AssignedReplicationGroupIDs(t *testing.T) {
 	t.Parallel()
 

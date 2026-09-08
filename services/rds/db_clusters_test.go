@@ -85,6 +85,26 @@ func TestDBCluster_RebootTransitions(t *testing.T) {
 	assert.Equal(t, "reboot-cluster", result.DBClusterIdentifier)
 }
 
+func TestCreateDBCluster_RejectsInvalidStorageType(t *testing.T) {
+	t.Parallel()
+
+	b := newBatch2Backend()
+	_, err := b.CreateDBCluster(
+		"bad-storage-cluster",
+		"aurora-postgresql",
+		"admin",
+		"",
+		"",
+		5432,
+		nil,
+		rds.DBClusterOptions{StorageType: "gp3"},
+	)
+	require.ErrorIs(t, err, rds.ErrInvalidParameter)
+
+	_, descErr := b.DescribeDBClusters("bad-storage-cluster")
+	assert.Error(t, descErr)
+}
+
 func TestDBCluster_HTTP_Modify(t *testing.T) {
 	t.Parallel()
 
@@ -581,5 +601,49 @@ func TestFailoverDBCluster(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.clusterID, got.DBClusterIdentifier)
 		})
+	}
+}
+
+// TestFailoverDBCluster_PromotesTarget verifies that FailoverDBCluster
+// actually promotes a cluster member to writer (real AWS behavior: "promotes
+// one of the Aurora Replicas... to be the primary DB instance, the cluster
+// writer" -- rds@v1.124.1 api_op_FailoverDBCluster.go:13-14), instead of only
+// flickering the cluster's Status.
+func TestFailoverDBCluster_PromotesTarget(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+	_, err := b.CreateDBCluster("fo-cluster", "aurora-mysql", "admin", "", "", 0, nil, rds.DBClusterOptions{})
+	require.NoError(t, err)
+
+	_, err = b.CreateDBInstance("fo-writer", "aurora-mysql", "db.r5.large", "", "", "", 20,
+		rds.DBInstanceOptions{DBClusterIdentifier: "fo-cluster"})
+	require.NoError(t, err)
+	_, err = b.CreateDBInstance("fo-reader", "aurora-mysql", "db.r5.large", "", "", "", 20,
+		rds.DBInstanceOptions{DBClusterIdentifier: "fo-cluster"})
+	require.NoError(t, err)
+
+	clusters, err := b.DescribeDBClusters("fo-cluster")
+	require.NoError(t, err)
+	require.Len(t, clusters[0].DBClusterMembers, 2)
+	writerIdx := 0
+	if clusters[0].DBClusterMembers[1].IsClusterWriter {
+		writerIdx = 1
+	}
+	require.True(t, clusters[0].DBClusterMembers[writerIdx].IsClusterWriter)
+	require.Equal(t, "fo-writer", clusters[0].DBClusterMembers[writerIdx].DBInstanceIdentifier)
+
+	_, err = b.FailoverDBCluster("fo-cluster", "fo-reader")
+	require.NoError(t, err)
+
+	clusters, err = b.DescribeDBClusters("fo-cluster")
+	require.NoError(t, err)
+	for _, m := range clusters[0].DBClusterMembers {
+		switch m.DBInstanceIdentifier {
+		case "fo-reader":
+			assert.True(t, m.IsClusterWriter, "target of FailoverDBCluster should be promoted to writer")
+		case "fo-writer":
+			assert.False(t, m.IsClusterWriter, "previous writer should no longer be writer after failover")
+		}
 	}
 }

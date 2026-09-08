@@ -3,6 +3,7 @@ package efs_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,13 @@ func TestAccessPointPosixUser(t *testing.T) {
 }
 
 // TestAccessPointRootDirectory verifies RootDirectory is stored and validated.
+//
+// wantErrIs was efs.ErrValidation ("ValidationException") until this pass;
+// CreateAccessPoint declares BadRequest ("Returned if the request is malformed
+// or contains an error such as an invalid parameter value or a missing required
+// parameter"), never ValidationException (efs@v1.44.4 deserializers.go/
+// types/errors.go) -- the old assertion locked in the exact wire-code defect
+// this pass fixed.
 func TestAccessPointRootDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -106,7 +114,7 @@ func TestAccessPointRootDirectory(t *testing.T) {
 				Path: "/data",
 			},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name:          "nil_root_directory_ok",
@@ -269,6 +277,42 @@ func TestDescribeAccessPoints_Pagination(t *testing.T) {
 				assert.Len(t, seen, tt.numAPs, "union of both pages must equal every created access point")
 			} else {
 				assert.Empty(t, nextToken)
+			}
+		})
+	}
+}
+
+// TestCreateAccessPoint_RequiresAvailableFileSystem verifies CreateAccessPoint
+// rejects requests while the file system's lifecycle state is not "available"
+// (efs@v1.44.4 types/errors.go: IncorrectFileSystemLifeCycleState, "Returned if
+// the file system's lifecycle state is not \"available\"").
+func TestCreateAccessPoint_RequiresAvailableFileSystem(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		wantErr       error
+		name          string
+		activateDelay time.Duration
+	}{
+		{name: "creating_state_rejected", activateDelay: time.Hour, wantErr: efs.ErrIncorrectFileSystemLifeCycleState},
+		{name: "available_state_allowed", activateDelay: 0, wantErr: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestEFSBackend()
+			efs.SetFSActivationDelay(b, tt.activateDelay)
+
+			fs, err := b.CreateFileSystem(context.Background(), fsReq("tok-ap-lifecycle-"+tt.name))
+			require.NoError(t, err)
+
+			_, err = b.CreateAccessPoint(context.Background(), apReq(fs.FileSystemID))
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

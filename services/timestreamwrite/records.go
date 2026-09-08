@@ -40,6 +40,27 @@ func recordGoesToMemoryStore(r Record, tbl *Table, now time.Time) bool {
 	return r.InternalTimestamp.After(cutoff)
 }
 
+// recordOutsideRetention reports whether ts lies outside the table's memory-store
+// retention window and the table has no magnetic store write path to receive it.
+// Per RejectedRecordsException (types/errors.go, timestreamwrite@v1.38.4), "Records
+// with timestamps that lie outside the retention duration of the memory store" are
+// rejected -- unless EnableMagneticStoreWrites lets them land in the magnetic store
+// instead (recordGoesToMemoryStore routes those there rather than rejecting).
+func recordOutsideRetention(ts time.Time, tbl *Table, now time.Time) bool {
+	if tbl == nil || tbl.RetentionProperties == nil || tbl.RetentionProperties.MemoryStoreRetentionPeriodInHours == 0 {
+		return false
+	}
+
+	if tbl.MagneticStoreWriteProperties != nil && tbl.MagneticStoreWriteProperties.EnableMagneticStoreWrites {
+		return false
+	}
+
+	retention := time.Duration(tbl.RetentionProperties.MemoryStoreRetentionPeriodInHours) * time.Hour
+	cutoff := now.Add(-retention)
+
+	return !ts.After(cutoff)
+}
+
 // recordKey computes a deterministic dedup key for a record using measure name,
 // time, time unit, and sorted dimension name=value pairs.
 func recordKey(r Record) string {
@@ -111,6 +132,21 @@ func writeRecordsIntoSlot(
 	var memoryInserted, magneticInserted int32
 
 	for i, r := range records {
+		ts := parseTimestreamTime(r.Time, r.TimeUnit)
+
+		if recordOutsideRetention(ts, tbl, now) {
+			rejected = append(rejected, RejectedRecord{
+				RecordIndex: i,
+				Reason: fmt.Sprintf(
+					"The record timestamp is outside the retention period. "+
+						"Current retention period for memory store is %d hours",
+					tbl.RetentionProperties.MemoryStoreRetentionPeriodInHours,
+				),
+			})
+
+			continue
+		}
+
 		key := recordKey(r)
 
 		newVersion := r.Version

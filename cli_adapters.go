@@ -70,11 +70,24 @@ type schedSageMakerAdapter struct {
 }
 
 func (a *schedSageMakerAdapter) StartPipelineExecution(
-	_ context.Context,
-	_ string,
-	_ map[string]string,
+	ctx context.Context,
+	pipelineARN string,
+	params map[string]string,
 ) error {
-	return nil
+	parts := strings.Split(pipelineARN, "/")
+	pipelineName := parts[len(parts)-1]
+
+	pipelineParams := make([]sagemaker.PipelineParameter, 0, len(params))
+	for name, value := range params {
+		pipelineParams = append(pipelineParams, sagemaker.PipelineParameter{Name: name, Value: value})
+	}
+
+	_, err := a.backend.StartPipelineExecutionFull(ctx, sagemaker.StartPipelineExecutionOptions{
+		PipelineName:       pipelineName,
+		PipelineParameters: pipelineParams,
+	})
+
+	return err
 }
 
 type schedECSAdapter struct {

@@ -4,10 +4,14 @@ import "time"
 
 // User represents a Cognito user within a pool.
 type User struct {
-	CreatedAt            time.Time         `json:"createdAt"`
-	UpdatedAt            time.Time         `json:"updatedAt"`
-	ConfirmCodeExpiresAt time.Time         `json:"confirmCodeExpiresAt"`
-	LastAuthTime         time.Time         `json:"lastAuthTime"`
+	CreatedAt            time.Time `json:"createdAt"`
+	UpdatedAt            time.Time `json:"updatedAt"`
+	ConfirmCodeExpiresAt time.Time `json:"confirmCodeExpiresAt"`
+	LastAuthTime         time.Time `json:"lastAuthTime"`
+	// TempPasswordIssuedAt is set whenever Status transitions to
+	// UserStatusForceChangePassword; postCredentialCheckLocked uses it against the
+	// pool's PasswordPolicy.TemporaryPasswordValidityDays to expire stale temp passwords.
+	TempPasswordIssuedAt time.Time         `json:"tempPasswordIssuedAt"`
 	Attributes           map[string]string `json:"attributes,omitempty"`
 	UserPoolID           string            `json:"userPoolID,omitempty"`
 	Sub                  string            `json:"sub,omitempty"`

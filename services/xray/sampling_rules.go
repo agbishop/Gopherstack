@@ -66,6 +66,32 @@ func ValidateSamplingRule(rule SamplingRule) error {
 	return nil
 }
 
+// ValidateSamplingRuleUpdate validates the pointer-optional fields of a
+// SamplingRuleUpdate against the same constraints ValidateSamplingRule enforces on
+// create: Priority, FixedRate, ReservoirSize, and ServiceName length are properties
+// of the sampling rule resource, not create-time-only, so UpdateSamplingRule must
+// not be usable to push a rule into a state CreateSamplingRule would have rejected.
+// Only fields the caller actually set (non-nil) are checked.
+func ValidateSamplingRuleUpdate(u SamplingRuleUpdate) error {
+	if u.ServiceName != nil && len(*u.ServiceName) > maxServiceNameLen {
+		return fmt.Errorf("%w: ServiceName must be at most %d characters", ErrInvalidSamplingRule, maxServiceNameLen)
+	}
+
+	if u.Priority != nil && (*u.Priority < 1 || *u.Priority > 9999) {
+		return fmt.Errorf("%w: Priority must be between 1 and 9999", ErrInvalidSamplingRule)
+	}
+
+	if u.FixedRate != nil && (*u.FixedRate < 0 || *u.FixedRate > 1.0) {
+		return fmt.Errorf("%w: FixedRate must be between 0.0 and 1.0", ErrInvalidSamplingRule)
+	}
+
+	if u.ReservoirSize != nil && *u.ReservoirSize < 0 {
+		return fmt.Errorf("%w: ReservoirSize must be >= 0", ErrInvalidSamplingRule)
+	}
+
+	return nil
+}
+
 // CreateSamplingRule creates a new sampling rule.
 // Returns ErrRuleLimitExceeded if the account already has maxSamplingRules rules.
 func (b *InMemoryBackend) CreateSamplingRule(rule SamplingRule) (*SamplingRule, error) {
@@ -267,6 +293,7 @@ func (b *InMemoryBackend) DeleteSamplingRule(ruleName, ruleARN string) (*Samplin
 
 	deleted := cloneRule(r)
 	b.samplingRules.Delete(r.RuleName)
+	delete(b.resourceTags, r.RuleARN)
 	b.lastRuleModification = time.Now()
 
 	return deleted, nil

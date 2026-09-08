@@ -797,6 +797,7 @@ func TestHandler_ServiceAttributes(t *testing.T) {
 		{name: "delete_and_verify", wantCode: http.StatusOK},
 		{name: "delete_missing_id", wantCode: http.StatusBadRequest},
 		{name: "delete_not_found_service", wantCode: http.StatusBadRequest},
+		{name: "delete_missing_attributes", wantCode: http.StatusBadRequest},
 		{name: "get_before_update", wantCode: http.StatusBadRequest},
 	}
 
@@ -871,20 +872,41 @@ func TestHandler_ServiceAttributes(t *testing.T) {
 				svcID, _ := createSvc()
 				doSDRequest(t, h, "UpdateServiceAttributes", map[string]any{
 					"ServiceId":  svcID,
-					"Attributes": map[string]string{"env": "prod"},
+					"Attributes": map[string]string{"env": "prod", "keep": "yes"},
 				})
-				deleteRec := doSDRequest(t, h, "DeleteServiceAttributes", map[string]any{"ServiceId": svcID})
+				// DeleteServiceAttributes' Attributes field names which keys to
+				// remove (real AWS: "A list of keys corresponding to each
+				// attribute that you want to delete") -- it must NOT wipe every
+				// attribute on the service.
+				deleteRec := doSDRequest(t, h, "DeleteServiceAttributes", map[string]any{
+					"ServiceId":  svcID,
+					"Attributes": []string{"env"},
+				})
 				assert.Equal(t, http.StatusOK, deleteRec.Code)
-				// After delete, GetServiceAttributes should 404
+
 				getRec := doSDRequest(t, h, "GetServiceAttributes", map[string]any{"ServiceId": svcID})
-				assert.Equal(t, http.StatusBadRequest, getRec.Code)
+				require.Equal(t, http.StatusOK, getRec.Code)
+
+				var getOut map[string]any
+				require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &getOut))
+				attrs := getOut["ServiceAttributes"].(map[string]any)["Attributes"].(map[string]any)
+				assert.NotContains(t, attrs, "env")
+				assert.Equal(t, "yes", attrs["keep"])
 
 			case "delete_missing_id":
-				deleteRec := doSDRequest(t, h, "DeleteServiceAttributes", map[string]any{})
+				deleteRec := doSDRequest(t, h, "DeleteServiceAttributes", map[string]any{"Attributes": []string{"env"}})
 				assert.Equal(t, tt.wantCode, deleteRec.Code)
 
 			case "delete_not_found_service":
-				deleteRec := doSDRequest(t, h, "DeleteServiceAttributes", map[string]any{"ServiceId": "no-such-svc"})
+				deleteRec := doSDRequest(t, h, "DeleteServiceAttributes", map[string]any{
+					"ServiceId":  "no-such-svc",
+					"Attributes": []string{"env"},
+				})
+				assert.Equal(t, tt.wantCode, deleteRec.Code)
+
+			case "delete_missing_attributes":
+				svcID, _ := createSvc()
+				deleteRec := doSDRequest(t, h, "DeleteServiceAttributes", map[string]any{"ServiceId": svcID})
 				assert.Equal(t, tt.wantCode, deleteRec.Code)
 
 			case "get_before_update":

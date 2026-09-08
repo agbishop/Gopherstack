@@ -235,14 +235,15 @@ type QueryInfo struct {
 
 // ExportTask represents a CloudWatch Logs export task.
 type ExportTask struct {
-	TaskName            string `json:"taskName,omitempty"`
+	Status              string `json:"status"`
 	TaskID              string `json:"taskId"`
 	LogGroupName        string `json:"logGroupName"`
 	Destination         string `json:"destination"`
 	DestinationPrefix   string `json:"destinationPrefix,omitempty"`
 	LogStreamNamePrefix string `json:"logStreamNamePrefix,omitempty"`
-	Status              string `json:"status"`
+	TaskName            string `json:"taskName,omitempty"`
 	StatusMessage       string `json:"statusMessage,omitempty"`
+	Region              string `json:"-"`
 	From                int64  `json:"from"`
 	To                  int64  `json:"to"`
 	CreationTime        int64  `json:"creationTime"`

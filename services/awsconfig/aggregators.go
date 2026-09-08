@@ -75,11 +75,11 @@ func (b *InMemoryBackend) DescribeAggregationAuthorizations() []AggregationAutho
 // deleting a nonexistent authorization succeeds silently, matching AWS.
 func (b *InMemoryBackend) DeleteAggregationAuthorization(accountID, region string) error {
 	if accountID == "" {
-		return fmt.Errorf("%w: AuthorizedAccountId is required", ErrValidation)
+		return fmt.Errorf("%w: AuthorizedAccountId is required", ErrInvalidParameterValue)
 	}
 
 	if region == "" {
-		return fmt.Errorf("%w: AuthorizedAwsRegion is required", ErrValidation)
+		return fmt.Errorf("%w: AuthorizedAwsRegion is required", ErrInvalidParameterValue)
 	}
 
 	b.mu.Lock("DeleteAggregationAuthorization")
@@ -100,7 +100,7 @@ func (b *InMemoryBackend) PutConfigurationAggregator(
 	tags []Tag,
 ) error {
 	if name == "" {
-		return fmt.Errorf("%w: ConfigurationAggregatorName is required", ErrValidation)
+		return fmt.Errorf("%w: ConfigurationAggregatorName is required", ErrInvalidParameterValue)
 	}
 
 	b.mu.Lock("PutConfigurationAggregator")
@@ -139,6 +139,9 @@ func existingAggregatorArnLocked(b *InMemoryBackend, name string) (string, bool)
 // DeleteConfigurationAggregator deletes a configuration aggregator by name.
 func (b *InMemoryBackend) DeleteConfigurationAggregator(name string) error {
 	if name == "" {
+		// DeleteConfigurationAggregator's deserializer declares only
+		// NoSuchConfigurationAggregatorException -- no validation-shaped code fits an
+		// empty name (verified against configservice@v1.68.4's deserializers.go).
 		return fmt.Errorf("%w: ConfigurationAggregatorName is required", ErrValidation)
 	}
 
@@ -305,11 +308,11 @@ func (b *InMemoryBackend) DescribePendingAggregationRequests() []PendingAggregat
 // deserializer, which declares only InvalidParameterValueException).
 func (b *InMemoryBackend) DeletePendingAggregationRequest(accountID, region string) error {
 	if accountID == "" {
-		return fmt.Errorf("%w: RequesterAccountId is required", ErrValidation)
+		return fmt.Errorf("%w: RequesterAccountId is required", ErrInvalidParameterValue)
 	}
 
 	if region == "" {
-		return fmt.Errorf("%w: RequesterAwsRegion is required", ErrValidation)
+		return fmt.Errorf("%w: RequesterAwsRegion is required", ErrInvalidParameterValue)
 	}
 
 	b.mu.Lock("DeletePendingAggregationRequest")

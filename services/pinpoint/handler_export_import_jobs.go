@@ -78,6 +78,10 @@ func (h *Handler) handleCreateExportJob(c *echo.Context, appID string) error {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	var req createExportJobRequest
 	if jsonErr := json.Unmarshal(body, &req); jsonErr != nil {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")
@@ -112,6 +116,10 @@ func (h *Handler) handleCreateImportJob(c *echo.Context, appID string) error {
 	body, err := httputils.ReadBody(c.Request())
 	if err != nil {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
+	}
+
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
 	}
 
 	var req createImportJobRequest

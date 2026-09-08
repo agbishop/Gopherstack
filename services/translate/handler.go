@@ -180,6 +180,8 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err 
 		code, status = "UnsupportedDisplayLanguageCodeException", http.StatusBadRequest
 	case errors.Is(err, ErrInvalidFilter):
 		code, status = "InvalidFilterException", http.StatusBadRequest
+	case errors.Is(err, ErrConcurrentModification):
+		code, status = "ConcurrentModificationException", http.StatusBadRequest
 	}
 
 	c.Response().Header().Set("Content-Type", translateContentType)

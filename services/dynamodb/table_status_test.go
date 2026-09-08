@@ -89,31 +89,40 @@ func TestTableStatus(t *testing.T) {
 	}
 }
 
-// TestDeleteWhileCreating verifies that deleting a table while it is in CREATING state
-// (i.e. before the activate timer fires) cancels the timer and does not panic or cause
-// state corruption once the original delay elapses.
+// TestDeleteWhileCreating verifies that DeleteTable rejects a table still in CREATING
+// state with ResourceInUseException (matching real AWS, which returns the same error
+// "If a table is in CREATING or UPDATING states"), and that deletion succeeds normally
+// once the table transitions to ACTIVE.
 func TestDeleteWhileCreating(t *testing.T) {
 	t.Parallel()
 
 	db := ddb.NewInMemoryDB()
 	db.SetCreateDelay(150 * time.Millisecond)
 
-	_, err := db.CreateTable(t.Context(), createInput("timer-cancel-table"))
+	out, err := db.CreateTable(t.Context(), createInput("timer-cancel-table"))
 	require.NoError(t, err)
+	require.Equal(t, types.TableStatusCreating, out.TableDescription.TableStatus)
 
-	// Delete the table while it is still in CREATING state.
+	// Delete while still CREATING must be rejected.
+	_, err = db.DeleteTable(t.Context(), &sdk.DeleteTableInput{
+		TableName: aws.String("timer-cancel-table"),
+	})
+	require.Error(t, err)
+	var ddbErr *ddb.Error
+	require.ErrorAs(t, err, &ddbErr)
+	assert.Contains(t, ddbErr.Type, "ResourceInUseException")
+
+	require.Eventually(t, func() bool {
+		desc, descErr := db.DescribeTable(t.Context(), &sdk.DescribeTableInput{
+			TableName: aws.String("timer-cancel-table"),
+		})
+
+		return descErr == nil && desc.Table.TableStatus == types.TableStatusActive
+	}, time.Second, 10*time.Millisecond, "table should become ACTIVE after the create delay elapses")
+
+	// Now that the table is ACTIVE, deletion must succeed.
 	_, err = db.DeleteTable(t.Context(), &sdk.DeleteTableInput{
 		TableName: aws.String("timer-cancel-table"),
 	})
 	require.NoError(t, err)
-
-	// Wait for the original delay to elapse — the cancelled timer must not fire.
-	// 200 ms is enough to confirm the 150 ms timer was suppressed (not flaky: if the
-	// timer were still running it would fire within this window and corrupt state).
-	time.Sleep(200 * time.Millisecond)
-
-	// The table should be gone; recreating it must succeed with no conflict.
-	out, err := db.CreateTable(t.Context(), createInput("timer-cancel-table"))
-	require.NoError(t, err)
-	assert.Equal(t, types.TableStatusCreating, out.TableDescription.TableStatus)
 }

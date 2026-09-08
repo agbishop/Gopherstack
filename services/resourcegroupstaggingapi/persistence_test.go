@@ -1,7 +1,9 @@
 package resourcegroupstaggingapi_test
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -122,6 +124,46 @@ func TestInMemoryBackend_Snapshot_EmptyBackend(t *testing.T) {
 	require.NoError(t, restored.Restore(t.Context(), snap))
 
 	assert.Empty(t, resourcegroupstaggingapi.ReportStateRegions(restored))
+}
+
+// TestInMemoryBackend_SnapshotRestore_PreservesReportStartTime verifies that a
+// report's real start time survives a Snapshot->Restore round trip. Before this
+// fix, reportCreationState.startedAt (an unexported, unpersisted time.Time used
+// only for the RUNNING->SUCCEEDED and 90-day-staleness checks in
+// DescribeReportCreation) was silently dropped by the reportStateSnapshot DTO,
+// so it decoded as time.Time{} (year 1) on every restore. That made both checks
+// fire immediately regardless of the report's actual age: a just-started RUNNING
+// report would flip to SUCCEEDED and then immediately past-90-days to NO REPORT
+// on the very next DescribeReportCreation call after a restore, even though no
+// real time had elapsed.
+func TestInMemoryBackend_SnapshotRestore_PreservesReportStartTime(t *testing.T) {
+	t.Parallel()
+
+	start := time.Now()
+
+	original := resourcegroupstaggingapi.NewInMemoryBackend(testAccountID, testRegion)
+	resourcegroupstaggingapi.SetClockFunc(original, func() time.Time { return start })
+
+	_, err := original.StartReportCreation(context.Background(), &resourcegroupstaggingapi.StartReportCreationInput{
+		S3Bucket: "bkt",
+	})
+	require.NoError(t, err)
+
+	snap := original.Snapshot(t.Context())
+	require.NotEmpty(t, snap)
+
+	restored := resourcegroupstaggingapi.NewInMemoryBackend(testAccountID, testRegion)
+	// Only a second of real time passes across the restore -- nowhere near
+	// reportRunningDuration (30s) or the 90-day staleness window.
+	afterRestore := start.Add(time.Second)
+	resourcegroupstaggingapi.SetClockFunc(restored, func() time.Time { return afterRestore })
+
+	require.NoError(t, restored.Restore(t.Context(), snap))
+
+	out := restored.DescribeReportCreation(context.Background())
+	require.NotNil(t, out.Status)
+	assert.Equal(t, "RUNNING", *out.Status,
+		"a freshly restored RUNNING report must still read RUNNING when no real time has passed")
 }
 
 // TestHandler_SnapshotRestoreDelegate verifies the dead-wiring fix: Handler

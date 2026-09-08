@@ -143,7 +143,7 @@ func validateCreateAcmeDomainValidationParams(p CreateAcmeDomainValidationParams
 		return fmt.Errorf("%w: DomainName is required", ErrInvalidParameter)
 	}
 
-	if err := validateDomainName(p.DomainName); err != nil {
+	if err := validateDomainName(p.DomainName, ErrInvalidParameter); err != nil {
 		return err
 	}
 
@@ -308,7 +308,10 @@ func (b *InMemoryBackend) UpdateAcmeDomainValidation(
 	return nil
 }
 
-// DeleteAcmeDomainValidation removes the domain validation with the given ARN.
+// DeleteAcmeDomainValidation removes the domain validation with the given
+// ARN. Unlike Describe/List/Update, Delete's deserializer declares no
+// ResourceNotFoundException -- a missing ARN is ErrInvalidParameter
+// (ValidationException), not ErrAcmeResourceNotFound -- gopherstack-ftkd.
 func (b *InMemoryBackend) DeleteAcmeDomainValidation(ctx context.Context, dvARN string) error {
 	region := getRegion(ctx, b.region)
 
@@ -317,7 +320,7 @@ func (b *InMemoryBackend) DeleteAcmeDomainValidation(ctx context.Context, dvARN 
 
 	dv, ok := b.domainValidations.Get(dvARN)
 	if !ok || dv.Region != region {
-		return fmt.Errorf("%w: ACME domain validation %s not found", ErrAcmeResourceNotFound, dvARN)
+		return fmt.Errorf("%w: ACME domain validation %s not found", ErrInvalidParameter, dvARN)
 	}
 
 	b.domainValidations.Delete(dvARN)

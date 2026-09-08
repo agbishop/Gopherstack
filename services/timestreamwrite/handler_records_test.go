@@ -40,7 +40,7 @@ func TestHandler_WriteRecords(t *testing.T) {
 						"MeasureName":      "cpu_utilization",
 						"MeasureValue":     "13.5",
 						"MeasureValueType": "DOUBLE",
-						"Time":             "1609459200000",
+						"Time":             recentTimeMillis(0),
 						"TimeUnit":         "MILLISECONDS",
 					},
 				},
@@ -83,7 +83,7 @@ func TestHandler_WriteRecords_RequiresMeasureName(t *testing.T) {
 				{
 					"MeasureValue":     "42.0",
 					"MeasureValueType": "DOUBLE",
-					"Time":             "1719820800000",
+					"Time":             recentTimeMillis(0),
 					"TimeUnit":         "MILLISECONDS",
 				},
 			},
@@ -98,7 +98,7 @@ func TestHandler_WriteRecords_RequiresMeasureName(t *testing.T) {
 			records: []map[string]any{
 				{
 					"MeasureValue": "85.5",
-					"Time":         "1719820800000",
+					"Time":         recentTimeMillis(0),
 					"TimeUnit":     "MILLISECONDS",
 				},
 			},
@@ -111,7 +111,7 @@ func TestHandler_WriteRecords_RequiresMeasureName(t *testing.T) {
 					"MeasureName":      "temperature",
 					"MeasureValue":     "36.6",
 					"MeasureValueType": "DOUBLE",
-					"Time":             "1719820800000",
+					"Time":             recentTimeMillis(0),
 					"TimeUnit":         "MILLISECONDS",
 				},
 			},
@@ -203,7 +203,7 @@ func TestHandler_WriteRecords_DimensionNameRequired(t *testing.T) {
 						"MeasureName":      "cpu",
 						"MeasureValue":     "42.0",
 						"MeasureValueType": "DOUBLE",
-						"Time":             "1719820800000",
+						"Time":             recentTimeMillis(0),
 						"TimeUnit":         "MILLISECONDS",
 						"Dimensions":       []map[string]any{tt.dimension},
 					},
@@ -229,7 +229,7 @@ func TestHandler_WriteRecords_MULTIConstraints(t *testing.T) {
 			record: map[string]any{
 				"MeasureName":      "multi-m",
 				"MeasureValueType": "MULTI",
-				"Time":             "1719820800000",
+				"Time":             recentTimeMillis(0),
 				"TimeUnit":         "MILLISECONDS",
 			},
 			wantStatus: http.StatusBadRequest,
@@ -240,7 +240,7 @@ func TestHandler_WriteRecords_MULTIConstraints(t *testing.T) {
 				"MeasureName":      "multi-m",
 				"MeasureValue":     "should-be-empty",
 				"MeasureValueType": "MULTI",
-				"Time":             "1719820800000",
+				"Time":             recentTimeMillis(0),
 				"TimeUnit":         "MILLISECONDS",
 				"MeasureValues": []map[string]any{
 					{"name": "a", "value": "1", "type": "DOUBLE"},
@@ -253,7 +253,7 @@ func TestHandler_WriteRecords_MULTIConstraints(t *testing.T) {
 			record: map[string]any{
 				"MeasureName":      "multi-m",
 				"MeasureValueType": "MULTI",
-				"Time":             "1719820800000",
+				"Time":             recentTimeMillis(0),
 				"TimeUnit":         "MILLISECONDS",
 				"MeasureValues": []map[string]any{
 					{"name": "cpu", "value": "42.0", "type": "DOUBLE"},
@@ -353,7 +353,7 @@ func TestHandler_WriteRecords_InvalidMeasureValueType(t *testing.T) {
 			record := map[string]any{
 				"MeasureName":  "cpu",
 				"MeasureValue": "1.5",
-				"Time":         "1609459200000",
+				"Time":         recentTimeMillis(0),
 				"TimeUnit":     "MILLISECONDS",
 			}
 			if tt.measureValueType != "" {
@@ -435,7 +435,7 @@ func TestHandler_WriteRecords_InvalidTimeUnit(t *testing.T) {
 				"MeasureName":      "metric",
 				"MeasureValue":     "42",
 				"MeasureValueType": "BIGINT",
-				"Time":             "1609459200000",
+				"Time":             recentTimeForUnit(tt.timeUnit),
 			}
 			if tt.timeUnit != "" {
 				record["TimeUnit"] = tt.timeUnit
@@ -517,7 +517,7 @@ func TestHandler_WriteRecords_DimensionCountLimit(t *testing.T) {
 						"MeasureName":      "m",
 						"MeasureValue":     "1",
 						"MeasureValueType": "BIGINT",
-						"Time":             "1609459200000",
+						"Time":             recentTimeMillis(0),
 						"TimeUnit":         "MILLISECONDS",
 						"Dimensions":       makeDimensions(tt.dimCount),
 					},
@@ -555,7 +555,7 @@ func TestHandler_WriteRecords_InvalidMeasureValueTypeViaCommonAttributes(t *test
 			map[string]any{
 				"MeasureName":  "cpu",
 				"MeasureValue": "1.0",
-				"Time":         "1609459200000",
+				"Time":         recentTimeMillis(0),
 			},
 		},
 	})
@@ -587,7 +587,7 @@ func TestHandler_WriteRecords_InvalidTimeUnitViaCommonAttributes(t *testing.T) {
 			map[string]any{
 				"MeasureName":  "load",
 				"MeasureValue": "0.5",
-				"Time":         "1609459200000",
+				"Time":         recentTimeMillis(0),
 			},
 		},
 	})
@@ -619,7 +619,7 @@ func TestHandler_WriteRecords_RecordOverridesCommonInvalidType(t *testing.T) {
 				"MeasureName":      "cpu",
 				"MeasureValue":     "1.0",
 				"MeasureValueType": "DOUBLE",
-				"Time":             "1609459200000",
+				"Time":             recentTimeMillis(0),
 			},
 		},
 	})
@@ -642,7 +642,7 @@ func TestHandler_WriteRecords_MultiMeasureValueTypeAccepted(t *testing.T) {
 			map[string]any{
 				"MeasureName":      "metrics",
 				"MeasureValueType": "MULTI",
-				"Time":             "1609459200000",
+				"Time":             recentTimeMillis(0),
 				"TimeUnit":         "MILLISECONDS",
 				"MeasureValues": []map[string]string{
 					{"Name": "cpu", "Value": "0.5", "Type": "DOUBLE"},
@@ -669,7 +669,7 @@ func TestHandler_WriteRecords_MultiMeasure(t *testing.T) {
 			{
 				"MeasureName":      "metrics",
 				"MeasureValueType": "MULTI",
-				"Time":             "1609459200000",
+				"Time":             recentTimeMillis(0),
 				"TimeUnit":         "MILLISECONDS",
 				"MeasureValues": []map[string]any{
 					{"Name": "cpu", "Value": "45.3", "Type": "DOUBLE"},
@@ -706,7 +706,7 @@ func TestHandler_WriteRecords_CommonAttributes(t *testing.T) {
 				{"Name": "region", "Value": "us-east-1"},
 				{"Name": "env", "Value": "prod"},
 			},
-			"Time":     "1609459200000",
+			"Time":     recentTimeMillis(0),
 			"TimeUnit": "MILLISECONDS",
 		},
 		"Records": []map[string]any{
@@ -728,8 +728,9 @@ func TestHandler_WriteRecords_CommonAttributes(t *testing.T) {
 	assert.Equal(t, 1, int(ingested["Total"].(float64)))
 }
 
-// TestHandler_WriteRecords_CommonAttributesMerge verifies record-specific
-// dimensions override CommonAttributes on name conflict.
+// TestHandler_WriteRecords_CommonAttributesMerge verifies a record's own
+// dimensions are unioned with CommonAttributes' dimensions when the two sets
+// don't share a name.
 func TestHandler_WriteRecords_CommonAttributesMerge(t *testing.T) {
 	t.Parallel()
 
@@ -737,12 +738,13 @@ func TestHandler_WriteRecords_CommonAttributesMerge(t *testing.T) {
 	doRequest(t, h, "CreateDatabase", map[string]string{"DatabaseName": "cam-db"})
 	doRequest(t, h, "CreateTable", map[string]any{"DatabaseName": "cam-db", "TableName": "cam-tbl"})
 
-	// Two unique records: first with no override, second with dimension override.
+	// Two unique records: first with no extra dimension, second with a
+	// record-specific dimension that doesn't overlap CommonAttributes'.
 	rec := doRequest(t, h, "WriteRecords", map[string]any{
 		"DatabaseName": "cam-db",
 		"TableName":    "cam-tbl",
 		"CommonAttributes": map[string]any{
-			"Time":     "1609459200000",
+			"Time":     recentTimeMillis(0),
 			"TimeUnit": "MILLISECONDS",
 			"Dimensions": []map[string]any{
 				{"Name": "env", "Value": "prod"},
@@ -759,7 +761,7 @@ func TestHandler_WriteRecords_CommonAttributesMerge(t *testing.T) {
 				"MeasureValue":     "2",
 				"MeasureValueType": "DOUBLE",
 				"Dimensions": []map[string]any{
-					{"Name": "env", "Value": "staging"}, // overrides common
+					{"Name": "zone", "Value": "us-east-1a"}, // unions with common's "env"
 				},
 			},
 		},
@@ -772,6 +774,48 @@ func TestHandler_WriteRecords_CommonAttributesMerge(t *testing.T) {
 
 	ingested := out["RecordsIngested"].(map[string]any)
 	assert.Equal(t, 2, int(ingested["Total"].(float64)))
+}
+
+// TestHandler_WriteRecords_CommonAttributesDimensionOverlapRejected verifies
+// that a record whose Dimensions share a name with CommonAttributes'
+// Dimensions is rejected with ValidationException, per
+// WriteRecordsInput.CommonAttributes' doc comment (api_op_WriteRecords.go,
+// timestreamwrite@v1.38.4): "Dimensions may not overlap, or a
+// ValidationException will be thrown".
+func TestHandler_WriteRecords_CommonAttributesDimensionOverlapRejected(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, "CreateDatabase", map[string]string{"DatabaseName": "cao-db"})
+	doRequest(t, h, "CreateTable", map[string]any{"DatabaseName": "cao-db", "TableName": "cao-tbl"})
+
+	rec := doRequest(t, h, "WriteRecords", map[string]any{
+		"DatabaseName": "cao-db",
+		"TableName":    "cao-tbl",
+		"CommonAttributes": map[string]any{
+			"Time":     recentTimeMillis(0),
+			"TimeUnit": "MILLISECONDS",
+			"Dimensions": []map[string]any{
+				{"Name": "env", "Value": "prod"},
+			},
+		},
+		"Records": []map[string]any{
+			{
+				"MeasureName":      "r1",
+				"MeasureValue":     "1",
+				"MeasureValueType": "DOUBLE",
+				"Dimensions": []map[string]any{
+					{"Name": "env", "Value": "staging"}, // overlaps common's "env"
+				},
+			},
+		},
+	})
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errBody map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errBody))
+	assert.Equal(t, "ValidationException", errBody["__type"])
 }
 
 // TestHandler_WriteRecords_DimensionValueType verifies DimensionValueType is
@@ -791,7 +835,7 @@ func TestHandler_WriteRecords_DimensionValueType(t *testing.T) {
 				"MeasureName":      "latency",
 				"MeasureValue":     "23",
 				"MeasureValueType": "BIGINT",
-				"Time":             "1609459200000",
+				"Time":             recentTimeMillis(0),
 				"TimeUnit":         "MILLISECONDS",
 				"Dimensions": []map[string]any{
 					{"Name": "endpoint", "Value": "/api/health", "DimensionValueType": "VARCHAR"},
@@ -820,7 +864,7 @@ func TestHandler_WriteRecords_RejectedRecordsException(t *testing.T) {
 				"MeasureName":      "errors",
 				"MeasureValue":     "5",
 				"MeasureValueType": "BIGINT",
-				"Time":             "1609459200000",
+				"Time":             recentTimeMillis(0),
 				"TimeUnit":         "MILLISECONDS",
 				"Version":          int64(5),
 			},
@@ -837,7 +881,7 @@ func TestHandler_WriteRecords_RejectedRecordsException(t *testing.T) {
 			"MeasureName":      "errors",
 			"MeasureValue":     "5",
 			"MeasureValueType": "BIGINT",
-			"Time":             "1609459200000",
+			"Time":             recentTimeMillis(0),
 			"TimeUnit":         "MILLISECONDS",
 			"Version":          int64(3),
 		},
@@ -867,7 +911,7 @@ func TestHandler_WriteRecords_MaxRecordsLimit(t *testing.T) {
 				"MeasureName":      fmt.Sprintf("metric-%d", i),
 				"MeasureValue":     "1.0",
 				"MeasureValueType": "DOUBLE",
-				"Time":             strconv.FormatInt(1609459200000+int64(i)*1000, 10),
+				"Time":             recentTimeMillis(int64(i) * 1000),
 				"TimeUnit":         "MILLISECONDS",
 			}
 		}
@@ -1014,11 +1058,11 @@ func TestHandler_WriteRecords_ReturnsIngestedTotal(t *testing.T) {
 		"Records": []map[string]any{
 			{
 				"MeasureName": "cpu", "MeasureValue": "45", "MeasureValueType": "DOUBLE",
-				"Time": "1609459200000", "TimeUnit": "MILLISECONDS",
+				"Time": recentTimeMillis(0), "TimeUnit": "MILLISECONDS",
 			},
 			{
 				"MeasureName": "mem", "MeasureValue": "80", "MeasureValueType": "DOUBLE",
-				"Time": "1609459200000", "TimeUnit": "MILLISECONDS",
+				"Time": recentTimeMillis(0), "TimeUnit": "MILLISECONDS",
 			},
 		},
 	})
@@ -1044,9 +1088,9 @@ func TestHandler_WriteRecords_ReturnsMemoryStoreCount(t *testing.T) {
 		"DatabaseName": "wrc-db",
 		"TableName":    "wrc-tbl",
 		"Records": []map[string]any{
-			{"MeasureName": "m1", "MeasureValue": "1", "Time": "1609459200000", "TimeUnit": "MILLISECONDS"},
-			{"MeasureName": "m2", "MeasureValue": "2", "Time": "1609459200001", "TimeUnit": "MILLISECONDS"},
-			{"MeasureName": "m3", "MeasureValue": "3", "Time": "1609459200002", "TimeUnit": "MILLISECONDS"},
+			{"MeasureName": "m1", "MeasureValue": "1", "Time": recentTimeMillis(0), "TimeUnit": "MILLISECONDS"},
+			{"MeasureName": "m2", "MeasureValue": "2", "Time": recentTimeMillis(1), "TimeUnit": "MILLISECONDS"},
+			{"MeasureName": "m3", "MeasureValue": "3", "Time": recentTimeMillis(2), "TimeUnit": "MILLISECONDS"},
 		},
 	})
 
@@ -1136,7 +1180,7 @@ func TestHandler_WriteRecords_ResponseFieldNames(t *testing.T) {
 				"MeasureName":      "cpu",
 				"MeasureValue":     "45.0",
 				"MeasureValueType": "DOUBLE",
-				"Time":             "1609459200000",
+				"Time":             recentTimeMillis(0),
 				"TimeUnit":         "MILLISECONDS",
 			},
 		},

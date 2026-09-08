@@ -277,8 +277,8 @@ func (b *InMemoryBackend) closeIDPAndPodTagsForCluster(clusterName string) {
 	}
 }
 
-// DeleteCluster deletes a cluster by name. For test convenience this fake cascades
-// and removes nodegroups as well (real AWS requires manual nodegroup deletion first).
+// DeleteCluster deletes a cluster by name. Matches real AWS: nodegroups and
+// Fargate profiles must be deleted first, or this returns ResourceInUseException.
 func (b *InMemoryBackend) DeleteCluster(name string) (*Cluster, error) {
 	b.mu.Lock("DeleteCluster")
 	defer b.mu.Unlock()
@@ -288,29 +288,29 @@ func (b *InMemoryBackend) DeleteCluster(name string) (*Cluster, error) {
 		return nil, fmt.Errorf("%w: cluster %s not found", ErrNotFound, name)
 	}
 
+	if ngs := b.nodegroupsByCluster.Get(name); len(ngs) > 0 {
+		return nil, fmt.Errorf("%w: cluster %s still has attached nodegroup %s",
+			ErrAlreadyExists, name, ngs[0].NodegroupName)
+	}
+
+	if fps := b.fargateProfilesByCluster.Get(name); len(fps) > 0 {
+		return nil, fmt.Errorf("%w: cluster %s still has attached fargate profile %s",
+			ErrAlreadyExists, name, fps[0].FargateProfileName)
+	}
+
 	cp := c.clone()
 	cp.Status = statusDeleting
 
-	// Collect nodegroups for cleanup before removal.
-	ngs := slices.Clone(b.nodegroupsByCluster.Get(name))
 	b.clusters.Delete(name)
-
-	for _, ng := range ngs {
-		b.nodegroups.Delete(nodegroupKey(ng.ClusterName, ng.NodegroupName))
-	}
 
 	delete(b.encryptionConfigs, name)
 
-	// Matches the pre-conversion behavior exactly: addons and fargate
-	// profiles for the cluster are bulk-removed WITHOUT closing their Tags
-	// (a pre-existing quirk of the map-based implementation this preserves
-	// byte-for-byte rather than fixes).
 	for _, a := range slices.Clone(b.addonsByCluster.Get(name)) {
-		b.addons.Delete(addonKey(a.ClusterName, a.AddonName))
-	}
+		if a.Tags != nil {
+			a.Tags.Close()
+		}
 
-	for _, fp := range slices.Clone(b.fargateProfilesByCluster.Get(name)) {
-		b.fargateProfiles.Delete(fargateProfileKey(fp.ClusterName, fp.FargateProfileName))
+		b.addons.Delete(addonKey(a.ClusterName, a.AddonName))
 	}
 
 	for _, capa := range slices.Clone(b.capabilitiesByCluster.Get(name)) {
@@ -324,15 +324,8 @@ func (b *InMemoryBackend) DeleteCluster(name string) (*Cluster, error) {
 	b.closeAccessEntryTagsForCluster(name)
 	b.closeIDPAndPodTagsForCluster(name)
 
-	// Release cluster and nodegroup tag resources.
 	if c.Tags != nil {
 		c.Tags.Close()
-	}
-
-	for _, ng := range ngs {
-		if ng.Tags != nil {
-			ng.Tags.Close()
-		}
 	}
 
 	return cp, nil

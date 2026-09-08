@@ -61,6 +61,12 @@ const (
 	maxSampleMessages = 10
 	// defaultSampleMessages is the default number of sample messages.
 	defaultSampleMessages = 10
+	// minPipelineActivities/maxPipelineActivities bound CreatePipelineInput/
+	// UpdatePipelineInput's PipelineActivities ("The list can be 2-25 PipelineActivity
+	// objects and must contain both a channel and a datastore activity",
+	// api_op_CreatePipeline.go / api_op_UpdatePipeline.go).
+	minPipelineActivities = 2
+	maxPipelineActivities = 25
 )
 
 // validateResourceName checks that name is 1-128 ASCII letters, digits, or underscores.
@@ -209,6 +215,69 @@ func validateDatastorePartitionEntry(i int, entry DatastorePartitionEntry) error
 			"%w: partitions[%d]: exactly one of attributePartition or timestampPartition must be set",
 			ErrValidation, i,
 		)
+	}
+
+	return nil
+}
+
+// countSetPipelineActivityFields returns how many of PipelineActivity's union members are set.
+func countSetPipelineActivityFields(a PipelineActivity) int {
+	set := []bool{
+		a.Channel != nil, a.Lambda != nil, a.Datastore != nil, a.AddAttributes != nil,
+		a.RemoveAttributes != nil, a.SelectAttributes != nil, a.Filter != nil, a.Math != nil,
+		a.DeviceRegistryEnrich != nil, a.DeviceShadowEnrich != nil,
+	}
+
+	n := 0
+
+	for _, s := range set {
+		if s {
+			n++
+		}
+	}
+
+	return n
+}
+
+// validatePipelineActivities checks that activities has 2-25 entries, contains exactly one
+// channel activity and exactly one datastore activity, and that no single entry sets more
+// than one activity type -- matching CreatePipelineInput/UpdatePipelineInput's documented
+// PipelineActivities contract ("The list can be 2-25 PipelineActivity objects and must
+// contain both a channel and a datastore activity. Each entry in the list must contain only
+// one activity.", api_op_CreatePipeline.go / api_op_UpdatePipeline.go). The SDK's client-side
+// validator only checks each activity's own required sub-fields (validatePipelineActivity in
+// validators.go), not this aggregate shape, so a real typed client can send a request this
+// backend must reject server-side.
+func validatePipelineActivities(activities []PipelineActivity) error {
+	if len(activities) < minPipelineActivities || len(activities) > maxPipelineActivities {
+		return fmt.Errorf(
+			"%w: pipelineActivities must contain %d-%d activities",
+			ErrValidation, minPipelineActivities, maxPipelineActivities,
+		)
+	}
+
+	channelCount, datastoreCount := 0, 0
+
+	for i, a := range activities {
+		if countSetPipelineActivityFields(a) != 1 {
+			return fmt.Errorf("%w: pipelineActivities[%d] must set exactly one activity", ErrValidation, i)
+		}
+
+		if a.Channel != nil {
+			channelCount++
+		}
+
+		if a.Datastore != nil {
+			datastoreCount++
+		}
+	}
+
+	if channelCount != 1 {
+		return fmt.Errorf("%w: pipelineActivities must contain exactly one channel activity", ErrValidation)
+	}
+
+	if datastoreCount != 1 {
+		return fmt.Errorf("%w: pipelineActivities must contain exactly one datastore activity", ErrValidation)
 	}
 
 	return nil

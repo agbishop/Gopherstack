@@ -6,6 +6,24 @@ import (
 	"time"
 )
 
+const filterActionArchive = "ARCHIVE"
+
+// matchesArchiveFilter reports whether any of detectorID's ARCHIVE-action
+// filters match f. CreateFilter's Action ("the action that is to be applied
+// to the findings that match the filter") was previously stored and echoed
+// back but never applied -- CreateSampleFindings is this backend's only
+// finding-creation path, so it is the only place Action can take effect.
+// Caller must already hold b.mu.
+func (b *InMemoryBackend) matchesArchiveFilter(detectorID string, f *Finding) bool {
+	for _, filt := range b.filtersByDetector.Get(detectorID) {
+		if filt.Action == filterActionArchive && matchesFindingCriteria(f, conditionsFromRaw(filt.FindingCriteria)) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // CreateFilter creates a new filter for a detector.
 func (b *InMemoryBackend) CreateFilter(
 	detectorID, name, description, action string,

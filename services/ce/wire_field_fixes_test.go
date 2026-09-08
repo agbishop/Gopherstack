@@ -226,6 +226,53 @@ func TestCreateCostCategoryDefinition_SplitChargeRulesAndEffectiveStart_RealClie
 	assert.Equal(t, []string{"Engineering", "Sales"}, got.Targets)
 }
 
+// TestUpdateCostCategoryDefinition_EffectiveStart_RealClient proves
+// UpdateCostCategoryDefinitionInput.EffectiveStart (api_op_UpdateCostCategoryDefinition.go:
+// "the cost category's effective start date ... If the date isn't provided, it's the
+// first day of the current month", same optional-with-default field Create has) is
+// honored, not silently dropped. Before this fix, updateCostCategoryDefinitionInput had
+// no EffectiveStart field at all -- the wire key was never even unmarshalled -- and the
+// backend unconditionally overwrote EffectiveStart with "now" on every update.
+func TestUpdateCostCategoryDefinition_EffectiveStart_RealClient(t *testing.T) {
+	t.Parallel()
+
+	h := ce.NewHandler(ce.NewInMemoryBackend("000000000000", "us-east-1"))
+	client := newTestCEClient(t, h)
+
+	createOut, err := client.CreateCostCategoryDefinition(
+		t.Context(),
+		&costexplorersdk.CreateCostCategoryDefinitionInput{
+			Name:        aws.String("Splitter"),
+			RuleVersion: cetypes.CostCategoryRuleVersionCostCategoryExpressionV1,
+			Rules:       []cetypes.CostCategoryRule{{Value: aws.String("Shared")}},
+		},
+	)
+	require.NoError(t, err)
+
+	updateOut, err := client.UpdateCostCategoryDefinition(
+		t.Context(),
+		&costexplorersdk.UpdateCostCategoryDefinitionInput{
+			CostCategoryArn: createOut.CostCategoryArn,
+			RuleVersion:     cetypes.CostCategoryRuleVersionCostCategoryExpressionV1,
+			Rules:           []cetypes.CostCategoryRule{{Value: aws.String("Shared")}},
+			EffectiveStart:  aws.String("2023-06-01T00:00:00Z"),
+		},
+	)
+	require.NoError(t, err)
+	assert.Equal(
+		t, "2023-06-01T00:00:00Z", aws.ToString(updateOut.EffectiveStart),
+		"a caller-supplied EffectiveStart must be honored on update, not silently overridden with now",
+	)
+
+	describeOut, err := client.DescribeCostCategoryDefinition(
+		t.Context(),
+		&costexplorersdk.DescribeCostCategoryDefinitionInput{CostCategoryArn: createOut.CostCategoryArn},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, describeOut.CostCategory)
+	assert.Equal(t, "2023-06-01T00:00:00Z", aws.ToString(describeOut.CostCategory.EffectiveStart))
+}
+
 // TestGetRightsizingRecommendation_Configuration_RealClient proves
 // GetRightsizingRecommendationOutput always echoes Configuration (with
 // AWS-documented server-applied defaults when the request omits it). Before

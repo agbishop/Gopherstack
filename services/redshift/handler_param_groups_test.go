@@ -106,6 +106,29 @@ func TestRedshiftHandler_DeleteClusterParameterGroup(t *testing.T) {
 			wantCode:     http.StatusBadRequest,
 			wantContains: []string{"InvalidParameterValue"},
 		},
+		{
+			// Real AWS: "Cannot delete a default cluster parameter group."
+			name:         "default_parameter_group_rejected",
+			body:         "Action=DeleteClusterParameterGroup&Version=2012-12-01&ParameterGroupName=default.redshift-1.0",
+			wantCode:     http.StatusBadRequest,
+			wantContains: []string{"InvalidClusterParameterGroupState"},
+		},
+		{
+			// Real AWS: "You cannot delete a parameter group if it is
+			// associated with a cluster" (api_op_DeleteClusterParameterGroup.go).
+			name: "associated_with_cluster_rejected",
+			setup: func(h *redshift.Handler) {
+				postRedshiftForm(t, h, "Action=CreateClusterParameterGroup&Version=2012-12-01"+
+					"&ParameterGroupName=assoc-pg&ParameterGroupFamily=redshift-1.0")
+				postRedshiftForm(t, h, "Action=CreateCluster&Version=2012-12-01"+
+					"&ClusterIdentifier=assoc-pg-cluster&NodeType=dc2.large"+
+					"&MasterUsername=admin&MasterUserPassword=Password1"+
+					"&ClusterParameterGroupName=assoc-pg")
+			},
+			body:         "Action=DeleteClusterParameterGroup&Version=2012-12-01&ParameterGroupName=assoc-pg",
+			wantCode:     http.StatusBadRequest,
+			wantContains: []string{"InvalidClusterParameterGroupState"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -316,7 +316,7 @@ func TestAlarmEvaluator_StateTransitions(t *testing.T) {
 			pages, _, _, err := b.DescribeAlarms(
 				[]string{alarmName}, nil, "", "", "",
 				100,
-			)
+				"", "", "")
 			require.NoError(t, err)
 			require.Len(t, pages.Data, 1)
 			assert.Equal(t, tt.wantState, pages.Data[0].StateValue,
@@ -412,7 +412,7 @@ func TestAlarmEvaluator_SNSActionFiredOnStateChange(t *testing.T) {
 
 			b.EvaluateAlarms(t.Context(), now)
 
-			pages, _, _, err := b.DescribeAlarms([]string{alarmName}, nil, "", "", "", 100)
+			pages, _, _, err := b.DescribeAlarms([]string{alarmName}, nil, "", "", "", 100, "", "", "")
 			require.NoError(t, err)
 			require.Len(t, pages.Data, 1)
 			assert.Equal(t, tt.wantState, pages.Data[0].StateValue)
@@ -474,7 +474,7 @@ func TestAlarmEvaluator_BackgroundJanitor(t *testing.T) {
 	go j.Run(ctx)
 
 	require.Eventually(t, func() bool {
-		pages, _, _, listErr := b.DescribeAlarms([]string{alarmName}, nil, "", "", "", 100)
+		pages, _, _, listErr := b.DescribeAlarms([]string{alarmName}, nil, "", "", "", 100, "", "", "")
 
 		return listErr == nil && len(pages.Data) > 0 && pages.Data[0].StateValue == "ALARM"
 	}, 500*time.Millisecond, 10*time.Millisecond, "background janitor must evaluate alarm to ALARM")
@@ -497,7 +497,7 @@ func putMetric(t *testing.T, b *cloudwatch.InMemoryBackend, datum cloudwatch.Met
 // describeMetricAlarm returns the single named metric alarm or fails.
 func describeMetricAlarm(t *testing.T, b *cloudwatch.InMemoryBackend, name string) cloudwatch.MetricAlarm {
 	t.Helper()
-	metric, _, _, err := b.DescribeAlarms([]string{name}, nil, "", "", "", 0)
+	metric, _, _, err := b.DescribeAlarms([]string{name}, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, metric.Data, 1, "expected exactly one alarm named %q", name)
 

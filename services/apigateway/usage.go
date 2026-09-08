@@ -7,19 +7,23 @@ import (
 	"time"
 )
 
-// usageTracker holds the mutable data-plane state for usage-plan enforcement: a
-// per-(plan,key) quota counter and a per-(plan,key) token bucket for rate/burst
-// throttling. All access is serialized by the owning InMemoryBackend's mutex, so the
-// tracker itself carries no lock.
+// usageTracker holds the mutable data-plane state for usage-plan and stage
+// method-setting throttle enforcement: a per-(plan,key) quota counter, a
+// per-(plan,key) token bucket for usage-plan rate/burst throttling, and a
+// per-(stage,route) token bucket for stage MethodSettings throttling. All
+// access is serialized by the owning InMemoryBackend's mutex, so the tracker
+// itself carries no lock.
 type usageTracker struct {
-	quota   map[string]*quotaCounter
-	buckets map[string]*tokenBucket
+	quota        map[string]*quotaCounter
+	buckets      map[string]*tokenBucket
+	stageBuckets map[string]*tokenBucket
 }
 
 func newUsageTracker() *usageTracker {
 	return &usageTracker{
-		quota:   make(map[string]*quotaCounter),
-		buckets: make(map[string]*tokenBucket),
+		quota:        make(map[string]*quotaCounter),
+		buckets:      make(map[string]*tokenBucket),
+		stageBuckets: make(map[string]*tokenBucket),
 	}
 }
 
@@ -271,4 +275,108 @@ func (b *InMemoryBackend) UpdateUsage(usagePlanID, keyID string, patchedFields m
 	}
 
 	return b.GetUsage(GetUsageInput{UsagePlanID: usagePlanID})
+}
+
+// stageThrottleKey composes the map key for a stage's per-route token bucket.
+func stageThrottleKey(apiID, stageName, routeKey string) string {
+	return apiID + "\x00" + stageName + "\x00" + routeKey
+}
+
+// stageMethodSettingFor resolves the MethodSetting that applies to a
+// resourcePath/httpMethod request on stage: the specific "{resourcePath}/
+// {httpMethod}" override when present, else the stage-wide "*/*" default,
+// else nil. A specific entry replaces the wildcard entirely rather than
+// merging with it -- AWS's docs describe per-method settings as
+// "override[s]" of the stage default (set-up-stages.html, "Override
+// stage-level settings": "After you customize the stage-level settings, you
+// can override them for each API method"). Returns the MethodSetting and the
+// map key it was found under (used to key the token bucket per distinct
+// setting rather than per literal route).
+func stageMethodSettingFor(stage *Stage, resourcePath, httpMethod string) (*MethodSetting, string) {
+	if stage.MethodSettings == nil {
+		return nil, ""
+	}
+
+	routeKey := resourcePath + "/" + httpMethod
+	if ms, ok := stage.MethodSettings[routeKey]; ok {
+		return &ms, routeKey
+	}
+
+	if ms, ok := stage.MethodSettings["*/*"]; ok {
+		return &ms, "*/*"
+	}
+
+	return nil, ""
+}
+
+// EnforceMethodThrottle applies a stage's MethodSettings throttling for a
+// request to resourcePath/httpMethod, independent of any usage plan or API
+// key -- this is AWS's "[p]er-method throttling limits that you set for an
+// API stage" (api-gateway-request-throttling.html's throttling precedence
+// list), the tier below usage-plan per-client/per-method limits. A
+// ThrottlingRateLimit of 0 (or unset) means "not configured" and is never
+// enforced: MethodSetting.ThrottlingRateLimit is `omitempty`, so the zero
+// value is indistinguishable from absence, matching this package's existing
+// usage-plan Throttle convention (see effectiveThrottle/enforce's identical
+// "RateLimit > 0" gate). It returns ErrThrottled when the limit is exceeded,
+// or nil when unconfigured, the stage doesn't exist, or the request is
+// within the configured rate.
+func (b *InMemoryBackend) EnforceMethodThrottle(apiID, stageName, resourcePath, httpMethod string) error {
+	b.mu.Lock("EnforceMethodThrottle")
+	defer b.mu.Unlock()
+
+	stage, ok := b.stages.Get(stageKey(apiID, stageName))
+	if !ok {
+		return nil
+	}
+
+	setting, routeKey := stageMethodSettingFor(stage, resourcePath, httpMethod)
+	if setting == nil || setting.ThrottlingRateLimit <= 0 {
+		return nil
+	}
+
+	now := time.Now()
+	mapKey := stageThrottleKey(apiID, stageName, routeKey)
+
+	bucket, exists := b.usage.stageBuckets[mapKey]
+	if !exists {
+		bucket = newTokenBucket(setting.ThrottlingRateLimit, setting.ThrottlingBurstLimit, now)
+		b.usage.stageBuckets[mapKey] = bucket
+	}
+
+	// Re-apply the currently configured rate/burst on every call so an
+	// UpdateStage that changes the limit takes effect immediately, rather
+	// than freezing the bucket at whatever settings were in force when it
+	// was first created.
+	bucket.ratePerSec = setting.ThrottlingRateLimit
+	burst := float64(setting.ThrottlingBurstLimit)
+	if burst <= 0 {
+		burst = setting.ThrottlingRateLimit
+	}
+	if burst < 1 {
+		burst = 1
+	}
+	bucket.burst = burst
+	if bucket.tokens > bucket.burst {
+		bucket.tokens = bucket.burst
+	}
+
+	if !bucket.allow(now) {
+		return ErrThrottled
+	}
+
+	return nil
+}
+
+// clearStageThrottleBuckets removes every stage MethodSettings token bucket
+// belonging to apiID/stageName. Called on DeleteStage so a deleted stage's
+// buckets don't leak in memory forever (the same ghost-row class as an
+// orphaned usage-plan association -- see DeleteAPIKey). Callers must hold b.mu.
+func (b *InMemoryBackend) clearStageThrottleBuckets(apiID, stageName string) {
+	prefix := apiID + "\x00" + stageName + "\x00"
+	for k := range b.usage.stageBuckets {
+		if strings.HasPrefix(k, prefix) {
+			delete(b.usage.stageBuckets, k)
+		}
+	}
 }

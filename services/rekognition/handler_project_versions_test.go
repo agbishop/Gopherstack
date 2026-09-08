@@ -146,6 +146,60 @@ func TestProjectVersion_Lifecycle(t *testing.T) { //nolint:paralleltest // exist
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
+// DeleteProjectVersion rejects a version that is training or running with
+// ResourceInUseException -- DeleteProjectVersionInput's own doc comment
+// (api_op_DeleteProjectVersion.go): "You can't delete a project version if
+// it is running or if it is training.".
+func TestProjectVersion_DeleteWhileTrainingOrRunning_Rejected(t *testing.T) { //nolint:paralleltest // stateful
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, "CreateProject", map[string]any{"ProjectName": "in-use-proj"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var projResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &projResp))
+	projectARN := projResp["ProjectArn"].(string)
+
+	rec = doRequest(t, h, "CreateProjectVersion", map[string]any{
+		"ProjectArn":   projectARN,
+		"VersionName":  "v1",
+		"OutputConfig": map[string]any{"S3Bucket": "my-bucket"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var verResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &verResp))
+	versionARN := verResp["ProjectVersionArn"].(string)
+
+	// Freshly created -> TRAINING_IN_PROGRESS -> delete rejected.
+	rec = doRequest(t, h, "DeleteProjectVersion", map[string]any{"ProjectVersionArn": versionARN})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "ResourceInUseException", errResp["__type"])
+
+	// RUNNING -> delete rejected.
+	rec = doRequest(t, h, "StartProjectVersion", map[string]any{
+		"ProjectVersionArn": versionARN,
+		"MinInferenceUnits": 1,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "DeleteProjectVersion", map[string]any{"ProjectVersionArn": versionARN})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "ResourceInUseException", errResp["__type"])
+
+	// STOPPED -> delete allowed.
+	rec = doRequest(t, h, "StopProjectVersion", map[string]any{"ProjectVersionArn": versionARN})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "DeleteProjectVersion", map[string]any{"ProjectVersionArn": versionARN})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 // ---------------------------------------------------------------------------
 // CreateProjectVersion persists and echoes OutputConfig/KmsKeyId/
 // VersionDescription/Tags back through DescribeProjectVersions and

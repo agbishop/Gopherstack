@@ -3,6 +3,7 @@ package codeconnections_test
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
 	"testing"
 
@@ -289,6 +290,49 @@ func TestBackendCreateHostNameNotUnique(t *testing.T) {
 	)
 	require.NoError(t, err, "duplicate host name must succeed")
 	assert.NotEqual(t, host1.HostArn, host2.HostArn)
+}
+
+// TestListHostsOrdersTiedNamesByArn verifies that when two hosts share a Name
+// (allowed -- see TestBackendCreateHostNameNotUnique), ListHosts still returns
+// a deterministic total order between them, broken by HostArn. Hosts are
+// seeded via AddHostInternal in descending-ARN insertion order: without a
+// secondary sort key, tied-Name hosts are left in insertion order (the
+// backing index is insertion-ordered, not re-sorted for ties), which is the
+// reverse of the expected ascending-ARN order this test asserts.
+func TestListHostsOrdersTiedNamesByArn(t *testing.T) {
+	t.Parallel()
+
+	b := codeconnections.NewInMemoryBackend("123456789012", "us-east-1")
+	ctx := context.Background()
+
+	arns := []string{
+		"arn:aws:codeconnections:us-east-1:123456789012:host/c-third",
+		"arn:aws:codeconnections:us-east-1:123456789012:host/b-second",
+		"arn:aws:codeconnections:us-east-1:123456789012:host/a-first",
+	}
+
+	for _, hostArn := range arns {
+		b.AddHostInternal(ctx, &codeconnections.Host{
+			HostArn:          hostArn,
+			Name:             "dup-name",
+			ProviderType:     "GitHub",
+			ProviderEndpoint: "https://example.com",
+			Status:           "AVAILABLE",
+		})
+	}
+
+	hosts := b.ListHosts(ctx)
+	require.Len(t, hosts, 3)
+
+	gotArns := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		gotArns = append(gotArns, h.HostArn)
+	}
+
+	wantArns := append([]string(nil), arns...)
+	sort.Strings(wantArns)
+
+	assert.Equal(t, wantArns, gotArns)
 }
 
 // TestBackendHostsByNameDeleteRestores verifies delete releases the name for reuse.

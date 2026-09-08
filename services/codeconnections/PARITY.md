@@ -5,9 +5,9 @@
 # AND check the SDK module for ops added since sdk_version. Only audit changed/new surface;
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: codeconnections
-sdk_module: aws-sdk-go-v2/service/codeconnections@v1.13.4   # version audited against; go.mod pin as of this pass (was stale at v1.10.22)
-last_audit_commit: 749ff939                       # HEAD when this manifest was PREVIOUSLY written; this pass's changes are uncommitted working-tree changes on top (git commands unavailable to this pass)
-last_audit_date: 2026-08-19
+sdk_module: aws-sdk-go-v2/service/codeconnections@v1.13.4   # unchanged this pass; still the go.mod pin
+last_audit_commit: bb9dd1e99                      # HEAD at the start of this pass (gopherstack-2y2); this pass's changes are uncommitted working-tree changes on top
+last_audit_date: 2026-09-04
 overall: A            # true-parity pass: closed every gaps/deferred item from the prior audit, plus new
                        # wire/error-shape bugs found while field-diffing. 2026-08-19 pass found and fixed
                        # 3 additional wrapper-key/nested-shape wire bugs (GetHost x4 fields, ListHosts Tags, GetConnection+ListConnections Tags) that the prior A grade had missed entirely -- see ops notes below and the 2026-08-19 section in Notes. Grade restored to A only because all three are now fixed and proven by hand-revert; the prior A was not honest at the time it was written.
@@ -40,14 +40,15 @@ ops:
   GetSyncBlockerSummary: {wire: ok, errors: ok, state: ok, persist: ok, note: "checked 2026-08-19: SyncBlocker's other required members (Id/Type/Status/CreatedReason/CreatedAt, epoch-seconds) and optional ResolvedAt/ResolvedReason all match the real type/deserializer. GAP DISCLOSED, not fixed (Layer 3 / never-emitted, out of this pass's scope): real types.SyncBlocker also has an optional Contexts []SyncBlockerContext member (types/types.go:352) that this response never emits at all -- SyncBlockerContext is never modeled in this service."}
   UpdateSyncBlocker: {wire: ok, errors: ok, state: ok, persist: ok, note: "checked 2026-08-19: same Contexts gap as GetSyncBlockerSummary above (shared SyncBlocker type), disclosed not fixed."}
   ListRepositorySyncDefinitions: {wire: ok, errors: ok, state: ok, persist: ok, note: "RESOLVED this pass (was 'deferred: pagination'): confirmed via aws-sdk-go-v2/service/codeconnections@v1.13.4's ListRepositorySyncDefinitionsInput struct AND botocore's paginators-1.json (empty pagination config for this op) that the real INPUT has NO NextToken/MaxResults member at all, even though the real OUTPUT has an optional NextToken -- a real client has no way to ever request a further page for this specific operation. Added a NextToken field to the output wire shape for completeness (real member); it always stays nil/omitted since every definition is returned in one response, which is the only behavior a real client could ever observe anyway."}
-  UpdateRepositoryLink: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: response no longer carries an invented Tags field."}
+  UpdateRepositoryLink: {wire: ok, errors: ok, state: ok, persist: ok, note: "response no longer carries an invented Tags field (prior pass). FIXED 2026-09-04 (gopherstack-2y2.1): ConnectionArn was written through with zero validation. UpdateRepositoryLinkInput.ConnectionArn's own doc comment states the updated ARN must share the original connection's providerType; the backend now looks up the new connection (region-scoped) and returns ResourceNotFoundException (ErrNotFound) if it does not exist, InvalidInputException (ErrValidation) on a ProviderType mismatch -- both confirmed present in UpdateRepositoryLink's own error switch. Same bug found (not fixed, out of scope) in services/codestarconnections' twin -- gopherstack-5k45."}
 families:
   RouteMatcher: {status: ok, note: "unchanged from 2026-07-13 pass; X-Amz-Target prefix and Content-Type verified byte-for-byte, no bug."}
   ConnectionStatus: {status: ok, note: "unchanged; CreateConnection sets AVAILABLE immediately, defensible emulation choice, do not 'fix' to PENDING."}
   HostStatus: {status: ok, note: "unchanged; CreateHost sets AVAILABLE immediately, defensible emulation choice."}
   SyncBlockerPersistence: {status: ok, note: "unchanged store.Table structure from 2026-07-13 pass; this pass's DeleteSyncConfiguration cascade-cleanup (see ops above) reuses the existing syncBlockersByResource index, no schema change, no snapshot version bump needed."}
+  ListPaginationTotalOrder: {status: ok, note: "FIXED 2026-09-04 (gopherstack-2y2.2): ListHosts/ListConnections sorted purely on the non-unique Name/ConnectionName field (both explicitly allow duplicates -- see CreateHost/CreateConnection notes above). Reasoned defensive fix, not an independently observed nondeterminism (this service's List* backends read from an insertion-ordered store.Index, not a re-ranged native map, so two back-to-back calls with no intervening Put/Delete already returned identical order) -- matches the precedent PR #2442 applied to its own one insertion-ordered case. Added HostArn/ConnectionArn as secondary sort keys."}
   ErrValidationWireType: {status: ok, note: "FIXED this pass: ErrValidation's wire type was 'ValidationException', a gopherstack-INVENTED error code -- aws-sdk-go-v2/service/codeconnections@v1.13.4's types/errors.go has NO ValidationException type at all in its full modeled exception set (17 types: AccessDeniedException/ConcurrentModificationException/ConditionalCheckFailedException/ConflictException/InternalServerException/InvalidInputException/LimitExceededException/ResourceAlreadyExistsException/ResourceNotFoundException/ResourceUnavailableException/RetryLatestCommitFailedException/SyncBlockerDoesNotExistException/SyncConfigurationStillExistsException/ThrottlingException/UnsupportedOperationException/UnsupportedProviderTypeException/UpdateOutOfSyncException). Renamed to InvalidInputException, confirmed as the real type for malformed/missing-required-field input by cross-referencing every mutating op's real error list in botocore's codeconnections/2023-12-01/service-2.json (all list InvalidInputException for input validation; none list ValidationException). This affected every required-field check across every handler in this service (Handler.resolveErrorType's single switch case), not just one op."}
-gaps: ["SyncBlocker.Contexts (types.SyncBlockerContext) is never emitted by GetSyncBlockerSummary/UpdateSyncBlocker -- disclosed 2026-08-19, out of scope for that pass (Layer-3/never-emitted-member hunt), not fixed."]
+gaps: ["SyncBlocker.Contexts (types.SyncBlockerContext) is never emitted by GetSyncBlockerSummary/UpdateSyncBlocker -- disclosed 2026-08-19, out of scope for that pass (Layer-3/never-emitted-member hunt), not fixed.", "CreateRepositoryLink's ConnectionArn and CreateSyncConfiguration's RepositoryLinkId are never checked for existence -- disclosed 2026-09-04, deliberately NOT fixed: unlike UpdateRepositoryLink (gopherstack-2y2.1), neither CreateRepositoryLink's nor CreateSyncConfiguration's own error deserializer switch (awsAwsjson10_deserializeOpErrorCreateRepositoryLink / ...CreateSyncConfiguration) contains ResourceNotFoundException at all, so there is no real error type this service's error set offers for 'referenced resource does not exist' on these two ops -- adding one would itself be the exact wire-shape bug this campaign exists to catch. Cannot be determined from the SDK whether real AWS validates these fields at all (and if so, via which mechanism); declining to guess."]
 deferred: []
 leaks: {status: clean, note: "no goroutines/janitors in this service; all state lives in store.Table/Index behind lockmetrics.RWMutex, snapshotted via persistence.go. FIXED this pass: DeleteSyncConfiguration previously left orphaned syncBlockers rows behind forever (see GetResourceSyncStatus/DeleteSyncConfiguration ops notes) -- a real ghost-row leak, now cleaned up via a cascade delete keyed off the existing syncBlockersByResource index. No new goroutines or tables were introduced; the fix reuses existing indexes."}
 ---
@@ -365,3 +366,62 @@ Gates: `go build ./services/codeconnections/...`, `go vet ./...`
 (repo-wide, clean -- no exported signature changed), `go test -race
 -count=1 ./services/codeconnections/...` (pass), `golangci-lint run
 ./services/codeconnections/...` (0 issues, no `nolint` in any edited file).
+
+### 2026-09-04 (gopherstack-2y2, 5-dimension audit: behavior/LocalStack/cross-service/perf/leaks)
+
+**1. AWS behavior compliance.** Re-derived independently against
+`aws-sdk-go-v2/service/codeconnections@v1.13.4` rather than trusting this
+manifest's prior "A" grade. Two real bugs found and fixed, both above
+(`UpdateRepositoryLink` ConnectionArn validation, gopherstack-2y2.1; List*
+pagination total order, gopherstack-2y2.2). One referential-integrity
+question examined and deliberately left unfixed (see `gaps` above:
+`CreateRepositoryLink`/`CreateSyncConfiguration` FK existence checks --
+neither op's error switch has `ResourceNotFoundException`, so there is no
+real error type available to signal it). `ConnectionStatus`/`HostStatus`
+hardcoded to `AVAILABLE` re-examined and reconfirmed as the prior passes'
+deliberate, documented choice (real `PENDING` requires simulating a console
+OAuth hand-off this backend does not model) -- not re-litigated.
+
+**2. LocalStack parity** (behavior differences a client would observe):
+NOT CHECKED -- no LocalStack instance available to this pass; the
+pagination-order fix above is the one behavior-observable difference found
+by static reasoning alone.
+
+**3. Cross-service integration**: CLEAN, confirmed by grep, not assumed.
+No other service imports `services/codeconnections` or calls into its
+backend. `services/cloudformation` only references
+`GetCodeConnectionsHandler()`/`GetCodeStarConnectionsHandler()` on its
+provider interface for registration wiring -- no CloudFormation resource
+type actually manages a CodeConnections connection/host/repository-link/sync
+configuration, so there is no CFN teardown path touching this service's
+state. `services/iam/actions.go` only maps the `CodeConnections_20231201`
+target prefix to the service name for IAM action-name resolution. `go test
+-race -count=1 ./services/cloudformation/...` passes unchanged.
+`services/codestarconnections` (this service's independent twin, confirmed
+via grep to share no import) has the identical `UpdateRepositoryLink` bug --
+filed separately as gopherstack-5k45, not fixed here (out of scope for this
+service's issue).
+
+**4. Performance**: CLEAN. All List* operations read from a `store.Index`
+scoped by region (O(records in region), not O(all records)); the two
+referential-check helpers (`connectionHasReferenceToHostLocked`,
+`syncConfigHasReferenceToLinkLocked`) are the same pattern. No hot path
+bypasses an index that exists for it -- `ListRepositorySyncDefinitions`
+scans all of a region's sync configurations rather than an
+index-by-RepositoryLinkID, but no such index exists anywhere in this
+service (`store_setup.go` has only `byRegion`/`byResource`), so this is
+consistent with every other List op here, not a deviant bypass.
+
+**5. Resource leaks**: CLEAN, confirmed by grep (`go func`, `time.Tick`,
+`time.NewTicker`, `time.AfterFunc`, `context.WithCancel` all zero matches
+outside tests). No goroutines, tickers, or unbounded caches; all state lives
+in `store.Table`/`Index` behind the one `lockmetrics.RWMutex`, snapshotted
+via `persistence.go`. Matches the prior pass's leaks note (already fixed
+then: `DeleteSyncConfiguration`'s `syncBlockers` cascade).
+
+Gates: `GOTOOLCHAIN=go1.26.6 go build ./services/codeconnections/...`,
+`GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/codeconnections/...`
+(pass), `GOTOOLCHAIN=go1.26.6 golangci-lint run
+./services/codeconnections/...` (0 issues), `GOTOOLCHAIN=go1.26.6 go test
+-race -count=1 ./services/cloudformation/...` and
+`./services/codestarconnections/...` (both pass, unmodified).

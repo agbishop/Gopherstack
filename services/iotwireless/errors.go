@@ -43,3 +43,20 @@ var (
 		"ResourceNotFoundException: Multicast group session not found",
 	)
 )
+
+// Sentinel errors for delete preconditions.
+var (
+	// ErrDeviceProfileInUse is returned when a device profile is still
+	// referenced by a wireless device.
+	ErrDeviceProfileInUse = errors.New("ConflictException: Device profile is in use")
+	// ErrServiceProfileInUse is returned when a service profile is still
+	// referenced by a wireless device.
+	ErrServiceProfileInUse = errors.New("ConflictException: Service profile is in use")
+	// ErrDestinationInUse is returned when a destination is still referenced
+	// by a wireless device.
+	ErrDestinationInUse = errors.New("ConflictException: Destination is in use")
+	// ErrMulticastGroupInUse is returned when a multicast group is still
+	// associated with a FUOTA task (api_op_DeleteMulticastGroup.go: "Deletes
+	// a multicast group if it is not in use by a FUOTA task").
+	ErrMulticastGroupInUse = errors.New("ConflictException: Multicast group is in use by a FUOTA task")
+)

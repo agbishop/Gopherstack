@@ -96,6 +96,7 @@ func (b *InMemoryBackend) DeleteEventSubscription(ctx context.Context, name stri
 	}
 	cp := copyEventSubscription(sub)
 	b.eventSubscriptionDelete(region, name)
+	delete(b.tagsStore(region), b.eventSubscriptionARN(region, name))
 
 	return cp, nil
 }

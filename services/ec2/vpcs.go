@@ -291,9 +291,10 @@ func (b *InMemoryBackend) DescribeVpcs(ids []string) []*VPC {
 // CreateVpc creates a new VPC with the given CIDR block and instance
 // tenancy ("default" or "dedicated"; ec2@v1.319.1 api_op_CreateVpc.go
 // documents InstanceTenancy's default as "default"). Matching real AWS,
-// a default security group named "default" is created for the new VPC (AWS
-// also creates a default network ACL and a main route table, which are not
-// yet modeled here — see PARITY.md).
+// a default security group named "default" and a main route table (with a
+// local route for cidr) are created and stored for the new VPC. The default
+// network ACL is not stored here -- DescribeNetworkAcls derives it per-VPC
+// instead (do not add a stored duplicate).
 func (b *InMemoryBackend) CreateVpc(cidr, tenancy string) (*VPC, error) {
 	if cidr == "" {
 		return nil, fmt.Errorf("%w: CidrBlock is required", ErrInvalidParameter)
@@ -329,16 +330,31 @@ func (b *InMemoryBackend) CreateVpc(cidr, tenancy string) (*VPC, error) {
 	})
 	b.indexSGLocked(sgID, id)
 
+	rtID := newRouteTableID()
+	b.routeTables.Put(&RouteTable{
+		ID:    rtID,
+		VPCID: id,
+		Main:  true,
+		Routes: []Route{
+			{DestinationCIDR: cidr, GatewayID: routeGatewayLocal, State: stateActive},
+		},
+		Associations: []RouteAssociation{
+			{ID: newRouteTableAssociationID(), RouteTableID: rtID, Main: true},
+		},
+	})
+	b.indexRouteTableLocked(rtID, id)
+
 	return v, nil
 }
 
 // vpcDependencyViolationLocked returns a DependencyViolation error naming the
 // first dependent resource found for vpcID, or nil if the VPC has no
 // dependents blocking deletion. Mirrors real AWS: the default security group
-// is auto-deleted with the VPC and does not block deletion; every other
-// VPC-scoped resource (subnets, non-default security groups, route tables,
-// attached internet/egress-only gateways, NAT gateways, non-default network
-// ACLs, VPC endpoints) must be removed first. Must be called with b.mu held.
+// and the main route table are auto-deleted with the VPC and do not block
+// deletion; every other VPC-scoped resource (subnets, non-default security
+// groups, non-main route tables, attached internet/egress-only gateways, NAT
+// gateways, non-default network ACLs, VPC endpoints) must be removed first.
+// Must be called with b.mu held.
 func (b *InMemoryBackend) vpcDependencyViolationLocked(vpcID string) error {
 	if err := b.vpcIndexedDependencyViolationLocked(vpcID); err != nil {
 		return err
@@ -367,9 +383,14 @@ func (b *InMemoryBackend) vpcIndexedDependencyViolationLocked(vpcID string) erro
 		}
 	}
 
-	if len(b.routeTableIDsByVPC[vpcID]) > 0 {
-		return fmt.Errorf("%w: the vpc %s has dependencies (route tables) and cannot be deleted",
-			ErrDependencyViolation, vpcID)
+	for rtID := range b.routeTableIDsByVPC[vpcID] {
+		rt, ok := b.routeTables.Get(rtID)
+		if ok && !rt.Main {
+			return fmt.Errorf(
+				"%w: the vpc %s has dependencies (route table %s) and cannot be deleted",
+				ErrDependencyViolation, vpcID, rtID,
+			)
+		}
 	}
 
 	if len(b.natGatewayIDsByVPC[vpcID]) > 0 {
@@ -427,10 +448,12 @@ func (b *InMemoryBackend) vpcScannedDependencyViolationLocked(vpcID string) erro
 	return nil
 }
 
-// DeleteVpc removes a VPC by ID. Matching real AWS, this fails with
-// DependencyViolation if the VPC still has dependent resources — it does NOT
-// cascade-delete them. The default security group is the sole exception: like
-// AWS, it is deleted automatically along with the VPC.
+// DeleteVpc removes a VPC by ID. Matching real AWS (ec2@v1.319.1
+// api_op_DeleteVpc.go:16: "it deletes the default security group, network
+// ACL, and route table for the VPC"), this fails with DependencyViolation if
+// the VPC still has other dependent resources — it does NOT cascade-delete
+// them. The default security group and main route table are the sole
+// exceptions: like AWS, both are deleted automatically along with the VPC.
 func (b *InMemoryBackend) DeleteVpc(id string) error {
 	b.mu.Lock("DeleteVpc")
 	defer b.mu.Unlock()
@@ -448,8 +471,19 @@ func (b *InMemoryBackend) DeleteVpc(id string) error {
 	for sgID := range b.sgIDsByVPC[id] {
 		b.securityGroups.Delete(sgID)
 		delete(b.tags, sgID)
+		delete(b.sgVpcAssociations, sgID)
 	}
 	delete(b.sgIDsByVPC, id)
+
+	// The main route table is auto-deleted with the VPC too (also never
+	// blocks deletion — see vpcDependencyViolationLocked).
+	for rtID := range b.routeTableIDsByVPC[id] {
+		if rt, ok := b.routeTables.Get(rtID); ok && rt.Main {
+			b.routeTables.Delete(rtID)
+			delete(b.tags, rtID)
+		}
+	}
+	delete(b.routeTableIDsByVPC, id)
 
 	b.vpcs.Delete(id)
 	delete(b.tags, id)

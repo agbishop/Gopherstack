@@ -222,7 +222,7 @@ func TestDetective_InvestigationGetAndUpdate(t *testing.T) { //nolint:parallelte
 				assert.Equal(t, graphArn, resp["GraphArn"])
 				assert.Equal(t, "arn:aws:iam::000000000000:user/alice", resp["EntityArn"])
 				assert.Equal(t, "ACTIVE", resp["State"])
-				assert.Equal(t, "RUNNING", resp["Status"])
+				assert.Equal(t, "SUCCESSFUL", resp["Status"])
 			},
 		},
 		{

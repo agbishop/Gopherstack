@@ -53,6 +53,11 @@ var (
 	ErrEgressOnlyIGWNotFound = errors.New("InvalidEgressOnlyInternetGatewayID.NotFound")
 	// ErrIAMAssociationNotFound is returned when an IAM instance profile association is not found.
 	ErrIAMAssociationNotFound = errors.New("InvalidAssociationID.NotFound")
+	// ErrIAMInstanceProfileAlreadyAssociated is returned by AssociateIamInstanceProfile
+	// when the target instance already has an active association: real AWS
+	// "You cannot associate more than one IAM instance profile with an
+	// instance" (ec2@v1.319.1 api_op_AssociateIamInstanceProfile.go).
+	ErrIAMInstanceProfileAlreadyAssociated = errors.New("IncorrectState")
 	// ErrTGWRouteTableNotFound is returned when a transit gateway route table is not found.
 	ErrTGWRouteTableNotFound = errors.New("InvalidTransitGatewayRouteTableId.NotFound")
 )
@@ -220,6 +225,15 @@ func (b *InMemoryBackend) AssociateIamInstanceProfile(
 		return nil, fmt.Errorf("%w: %s", ErrInstanceNotFound, instanceID)
 	}
 
+	for _, existing := range b.iamAssociations.All() {
+		if existing.InstanceID == instanceID && existing.State == stateAssociated {
+			return nil, fmt.Errorf(
+				"%w: There is an existing association for instance %s",
+				ErrIAMInstanceProfileAlreadyAssociated, instanceID,
+			)
+		}
+	}
+
 	assoc := &IamInstanceProfileAssociation{
 		AssociationID:      newIAMInstanceProfileAssociationID(),
 		InstanceID:         instanceID,
@@ -254,6 +268,18 @@ func (b *InMemoryBackend) DisassociateIamInstanceProfile(
 	cp := *assoc
 
 	return &cp, nil
+}
+
+// disassociateIamInstanceProfilesLocked removes every IAM instance profile
+// association for instanceID. Called from TerminateInstances so a terminated
+// instance never leaves a ghost "associated" row behind (gopherstack-hmfm).
+// Must be called with b.mu held.
+func (b *InMemoryBackend) disassociateIamInstanceProfilesLocked(instanceID string) {
+	for _, assoc := range b.iamAssociations.All() {
+		if assoc.InstanceID == instanceID {
+			b.iamAssociations.Delete(assoc.AssociationID)
+		}
+	}
 }
 
 // DescribeIamInstanceProfileAssociations returns IAM instance profile associations,
@@ -319,7 +345,12 @@ func (b *InMemoryBackend) ReplaceIamInstanceProfileAssociation(
 // ---- ReplaceRouteTableAssociation ----
 
 // ReplaceRouteTableAssociation replaces an existing route table association with a new route table.
-// Returns the new association ID.
+// Returns the new association ID. Reassigning a VPC's main route table by
+// passing its implicit association ID (ec2@v1.319.1
+// api_op_ReplaceRouteTableAssociation.go:17: "You can also use this
+// operation to change which table is the main route table in the VPC") is
+// not supported -- rejected explicitly rather than silently corrupting the
+// main-table invariant.
 func (b *InMemoryBackend) ReplaceRouteTableAssociation(
 	associationID, newRouteTableID string,
 ) (string, error) {
@@ -339,27 +370,43 @@ func (b *InMemoryBackend) ReplaceRouteTableAssociation(
 		return "", fmt.Errorf("%w: %s", ErrRouteTableNotFound, newRouteTableID)
 	}
 
-	// Find the old association.
-	var subnetID string
+	// Find the old association without mutating anything yet -- a mismatched
+	// found/subnetID sentinel here previously spliced out an association
+	// before checking whether it was safe to move.
+	var (
+		oldRT    *RouteTable
+		oldIndex int
+		subnetID string
+		found    bool
+	)
 
 	for _, rt := range b.routeTables.All() {
 		for i, assoc := range rt.Associations {
 			if assoc.ID == associationID {
-				subnetID = assoc.SubnetID
-				rt.Associations = append(rt.Associations[:i], rt.Associations[i+1:]...)
+				oldRT, oldIndex, subnetID, found = rt, i, assoc.SubnetID, true
 
 				break
 			}
 		}
 
-		if subnetID != "" {
+		if found {
 			break
 		}
 	}
 
-	if subnetID == "" {
+	if !found {
 		return "", fmt.Errorf("%w: %s", ErrAssociationNotFound, associationID)
 	}
+
+	if subnetID == "" {
+		return "", fmt.Errorf(
+			"%w: %s is the implicit main-route-table association for %s; "+
+				"reassigning a VPC's main route table is not supported",
+			ErrInvalidParameter, associationID, oldRT.VPCID,
+		)
+	}
+
+	oldRT.Associations = append(oldRT.Associations[:oldIndex], oldRT.Associations[oldIndex+1:]...)
 
 	newAssocID := newRouteTableAssociationID()
 	newRT.Associations = append(newRT.Associations, RouteAssociation{

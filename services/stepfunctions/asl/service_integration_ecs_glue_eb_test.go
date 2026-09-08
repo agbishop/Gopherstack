@@ -496,3 +496,86 @@ func TestSFN_UnsupportedIntegrationTaskFailed(t *testing.T) {
 		})
 	}
 }
+
+// --- .sync pattern support (gopherstack-tdp6) ---
+
+// TestSFN_SyncPatternUnsupportedForRequestResponseOnlyServices verifies that a
+// ".sync" Resource suffix is rejected with States.TaskFailed for services AWS
+// documents as Request-Response only (the "Run a Job - .sync" column reads
+// "Not supported" for these rows in the "AWS SDK integrations in Step
+// Functions" and "Optimized integrations" tables at
+// https://docs.aws.amazon.com/step-functions/latest/dg/connect-to-resource.html).
+// Before this check existed, gopherstack's serviceAction() stripped ".sync"
+// unconditionally and ran these as plain request/response, silently accepting
+// a pattern real Step Functions would reject.
+func TestSFN_SyncPatternUnsupportedForRequestResponseOnlyServices(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resource string
+	}{
+		{"lambda", "arn:aws:states:::lambda:invoke.sync"},
+		{"sqs", "arn:aws:states:::sqs:sendMessage.sync"},
+		{"sns", "arn:aws:states:::sns:publish.sync"},
+		{"dynamodb", "arn:aws:states:::dynamodb:putItem.sync"},
+		{"eventbridge", "arn:aws:states:::events:putEvents.sync"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			def := `{
+				"StartAt": "Task",
+				"States": {
+					"Task": {
+						"Type": "Task",
+						"Resource": "` + tt.resource + `",
+						"End": true
+					}
+				}
+			}`
+
+			sm, err := asl.Parse(def)
+			require.NoError(t, err)
+
+			exec := asl.NewExecutor(sm, nil, nil)
+
+			result, err := exec.Execute(t.Context(), "exec-sync-unsupported", `{}`)
+			require.NoError(t, err)
+
+			assert.Equal(t, "TaskFailed", result.Error, "expected States.TaskFailed for %s", tt.resource)
+			assert.Contains(t, result.Cause, asl.ErrSyncPatternUnsupported.Error())
+		})
+	}
+}
+
+// TestSFN_SyncPatternSupportedForJobServices verifies ECS and Glue -- the two
+// services AWS documents as supporting "Run a Job (.sync)" -- are unaffected
+// by the pattern-support check and still dispatch normally.
+func TestSFN_SyncPatternSupportedForJobServices(t *testing.T) {
+	t.Parallel()
+
+	def := `{
+		"StartAt": "Run",
+		"States": {
+			"Run": {
+				"Type": "Task",
+				"Resource": "arn:aws:states:::ecs:runTask.sync",
+				"End": true
+			}
+		}
+	}`
+
+	sm, err := asl.Parse(def)
+	require.NoError(t, err)
+
+	exec := asl.NewExecutor(sm, nil, nil)
+	exec.SetECSIntegration(&mockECS{returnOutput: map[string]any{"Tasks": []any{}, "Failures": []any{}}})
+
+	result, err := exec.Execute(t.Context(), "exec-sync-supported", `{"TaskDefinition": "td"}`)
+	require.NoError(t, err)
+
+	assert.Empty(t, result.Error)
+}

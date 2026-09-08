@@ -131,8 +131,17 @@ func (b *InMemoryBackend) ListConnections(ctx context.Context, providerTypeFilte
 		result = append(result, &cp)
 	}
 
+	// ConnectionName is not unique (CreateConnection has no
+	// ResourceAlreadyExistsException for a duplicate name, see errors.go),
+	// so ConnectionArn (always unique) breaks ties -- sort.Slice is not
+	// stable, and without a tie-break two connections sharing a name have no
+	// total order between them.
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].ConnectionName < result[j].ConnectionName
+		if result[i].ConnectionName != result[j].ConnectionName {
+			return result[i].ConnectionName < result[j].ConnectionName
+		}
+
+		return result[i].ConnectionArn < result[j].ConnectionArn
 	})
 
 	return result

@@ -64,7 +64,6 @@ type persistedScheduleGroup struct {
 	CreationDate         string            `json:"creationDate"`
 	LastModificationDate string            `json:"lastModificationDate"`
 	Tags                 map[string]string `json:"tags,omitempty"`
-	Description          string            `json:"description,omitempty"`
 	Name                 string            `json:"name"`
 	ARN                  string            `json:"arn"`
 	State                string            `json:"state"`
@@ -169,7 +168,6 @@ func toPersistedScheduleGroup(g *ScheduleGroup) *persistedScheduleGroup {
 	return &persistedScheduleGroup{
 		Name:                 g.Name,
 		ARN:                  g.ARN,
-		Description:          g.Description,
 		State:                g.State,
 		CreationDate:         g.CreationDate.Format(snapshotTimeLayout),
 		LastModificationDate: g.LastModificationDate.Format(snapshotTimeLayout),
@@ -347,7 +345,6 @@ func scheduleGroupFromPersisted(name string, pg *persistedScheduleGroup) *Schedu
 	return &ScheduleGroup{
 		Name:                 pg.Name,
 		ARN:                  pg.ARN,
-		Description:          pg.Description,
 		State:                pg.State,
 		CreationDate:         parseSnapshotTime(pg.CreationDate),
 		LastModificationDate: parseSnapshotTime(pg.LastModificationDate),

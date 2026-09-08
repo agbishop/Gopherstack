@@ -195,7 +195,15 @@ func (b *InMemoryBackend) UpdateWorkGroup(
 }
 
 // DeleteWorkGroup removes a workgroup by name. The "primary" workgroup cannot be deleted.
-func (b *InMemoryBackend) DeleteWorkGroup(name string) error {
+//
+// recursiveDelete mirrors DeleteWorkGroupInput.RecursiveDeleteOption: "The
+// option to delete the workgroup and its contents even if the workgroup
+// contains any named queries, query executions, or notebooks."
+// (aws-sdk-go-v2/service/athena@v1.60.4 api_op_DeleteWorkGroup.go). When
+// false and the workgroup still has any of those, deletion is rejected
+// instead of silently orphaning them; when true, they are cascade-deleted
+// along with the workgroup.
+func (b *InMemoryBackend) DeleteWorkGroup(name string, recursiveDelete bool) error {
 	b.mu.Lock("DeleteWorkGroup")
 	defer b.mu.Unlock()
 
@@ -207,8 +215,47 @@ func (b *InMemoryBackend) DeleteWorkGroup(name string) error {
 		return fmt.Errorf("%w: workgroup %q not found", ErrNotFound, name)
 	}
 
+	queries := b.namedQueriesByWorkGroup.Get(name)
+	executions := b.queryExecutionsByWorkGroup.Get(name)
+	notebooks := b.notebooksInWorkGroupLocked(name)
+
+	if !recursiveDelete && (len(queries) > 0 || len(executions) > 0 || len(notebooks) > 0) {
+		return fmt.Errorf(
+			"%w: workgroup %q contains named queries, query executions, or notebooks; "+
+				"set RecursiveDeleteOption to delete it",
+			ErrValidation, name,
+		)
+	}
+
+	for _, q := range queries {
+		b.namedQueries.Delete(q.NamedQueryID)
+	}
+
+	for _, qe := range executions {
+		b.queryExecutions.Delete(qe.QueryExecutionID)
+		delete(b.queryResults, qe.QueryExecutionID)
+	}
+
+	for _, nb := range notebooks {
+		b.notebooks.Delete(nb.NotebookID)
+	}
+
 	b.workGroups.Delete(name)
 	delete(b.resourceTags, b.workGroupARN(name))
 
 	return nil
+}
+
+// notebooksInWorkGroupLocked returns the notebooks belonging to workGroup.
+// Callers must hold b.mu.
+func (b *InMemoryBackend) notebooksInWorkGroupLocked(workGroup string) []*Notebook {
+	var out []*Notebook
+
+	for _, nb := range b.notebooks.All() {
+		if nb.WorkGroup == workGroup {
+			out = append(out, nb)
+		}
+	}
+
+	return out
 }

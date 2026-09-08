@@ -22,6 +22,22 @@ func (b *InMemoryBackend) AssociateResolverRule(
 		return nil, fmt.Errorf("%w: resolver rule %s not found", ErrNotFound, resolverRuleID)
 	}
 
+	// AssociateResolverRule models ResourceExistsException ("The resource that
+	// you tried to create already exists" -- API_route53resolver_
+	// AssociateResolverRule.html); DisassociateResolverRule already treats
+	// (ResolverRuleId, VPCId) as this association's identity, so re-associating
+	// the same pair is the duplicate this error covers.
+	for _, assoc := range b.ruleAssociationsByRegion.Get(region) {
+		if assoc.ResolverRuleID == resolverRuleID && assoc.VPCID == vpcID {
+			return nil, fmt.Errorf(
+				"%w: resolver rule %s is already associated with VPC %s",
+				ErrAlreadyExists,
+				resolverRuleID,
+				vpcID,
+			)
+		}
+	}
+
 	id := "rslvr-rrassoc-" + uuid.New().String()[:8]
 	assoc := &ResolverRuleAssociation{
 		ID:             id,

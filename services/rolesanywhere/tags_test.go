@@ -125,11 +125,13 @@ func TestTagResource_Upsert(t *testing.T) {
 	}
 }
 
-// TestTagResource_UnknownResourceNotFound proves that TagResource and
-// ListTagsForResource reject an ARN that matches no trust anchor, profile,
-// or CRL with ResourceNotFoundException, matching real AWS (both operations
-// model that exception). UntagResource does not model
-// ResourceNotFoundException at all and is left to silently no-op instead.
+// TestTagResource_UnknownResourceNotFound proves that TagResource,
+// ListTagsForResource, and UntagResource all reject an ARN that matches no
+// trust anchor, profile, or CRL with ResourceNotFoundException, matching
+// real AWS (all three operations model that exception -- see
+// aws-sdk-go-v2/service/rolesanywhere/deserializers.go's
+// awsRestjson1_deserializeOpErrorUntagResource, which is not a no-op-only
+// error set as a prior version of this test incorrectly assumed).
 func TestTagResource_UnknownResourceNotFound(t *testing.T) {
 	t.Parallel()
 
@@ -142,9 +144,8 @@ func TestTagResource_UnknownResourceNotFound(t *testing.T) {
 	_, err = b.ListTagsForResource(context.Background(), unknownARN)
 	require.Error(t, err)
 
-	// UntagResource has no ResourceNotFoundException in the real API and
-	// stays a no-op against an unknown ARN.
-	assert.NoError(t, b.UntagResource(context.Background(), unknownARN, []string{"a"}))
+	err = b.UntagResource(context.Background(), unknownARN, []string{"a"})
+	require.Error(t, err)
 }
 
 // TestTagResource_DeleteCascadesTags proves that deleting a trust anchor

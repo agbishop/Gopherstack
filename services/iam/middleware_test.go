@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/blackbirdworks/gopherstack/pkgs/awsmeta"
 	"github.com/blackbirdworks/gopherstack/services/iam"
 )
 
@@ -19,18 +20,26 @@ var (
 	errUserNotFound = errors.New("user not found")
 )
 
-// mockEnforcementBackend implements iam.EnforcementBackend for testing.
+// mockEnforcementBackend implements iam.EnforcementBackend for testing. It
+// also implements the middleware's optional permissionsBoundaryLookup
+// capability so boundary-enforcement tests can exercise it, mirroring the
+// real IAM backend without requiring every other service's own enforcement
+// mock (which only implements the required interface) to change.
 type mockEnforcementBackend struct {
-	keyMap   map[string]string   // accessKeyID → userName
-	policies map[string][]string // userName → []policyDoc
-	users    map[string]*iam.User
+	keyMap         map[string]string   // accessKeyID → userName
+	policies       map[string][]string // userName/roleName → []policyDoc
+	users          map[string]*iam.User
+	userBoundaries map[string]string // userName → boundary policy doc
+	roleBoundaries map[string]string // roleName → boundary policy doc
 }
 
 func newMockEnforcementBackend() *mockEnforcementBackend {
 	return &mockEnforcementBackend{
-		users:    make(map[string]*iam.User),
-		keyMap:   make(map[string]string),
-		policies: make(map[string][]string),
+		users:          make(map[string]*iam.User),
+		keyMap:         make(map[string]string),
+		policies:       make(map[string][]string),
+		userBoundaries: make(map[string]string),
+		roleBoundaries: make(map[string]string),
 	}
 }
 
@@ -54,6 +63,32 @@ func (m *mockEnforcementBackend) GetPoliciesForUser(userName string) ([]string, 
 
 func (m *mockEnforcementBackend) GetPoliciesForRole(roleName string) ([]string, error) {
 	return m.policies[roleName], nil
+}
+
+func (m *mockEnforcementBackend) PermissionsBoundaryDocForUser(userName string) string {
+	return m.userBoundaries[userName]
+}
+
+func (m *mockEnforcementBackend) PermissionsBoundaryDocForRole(roleName string) string {
+	return m.roleBoundaries[roleName]
+}
+
+// principalMiddleware seeds ctx with a pre-resolved principal, standing in for
+// cli.go's real principalMiddleware (which runs STS/IAM PrincipalResolvers
+// ahead of enforcement) so these unit tests can drive
+// resolveSTSUserIdentityPolicies without spinning up a real STS backend.
+func principalSeedingMiddleware(p *awsmeta.Principal) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			req := c.Request()
+			meta := awsmeta.FromRequest(req, "us-east-1")
+			meta.Principal = p
+			ctx := awsmeta.Set(req.Context(), meta)
+			c.SetRequest(req.WithContext(ctx))
+
+			return next(c)
+		}
+	}
 }
 
 func TestEnforcementMiddleware(t *testing.T) {
@@ -466,6 +501,179 @@ func TestEnforcementMiddleware_ResourcePolicyProviders(t *testing.T) {
 			e.ServeHTTP(rec, req)
 
 			require.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}
+
+// TestEnforcementMiddleware_STSUserPrincipal verifies gopherstack-s982:
+// a Kind=User principal minted by STS (GetSessionToken/GetFederationToken/
+// GetDelegatedAccessToken, which keep the caller's own identity instead of
+// assuming a role) is not silently allowed through as an unrecognized/dummy
+// key just because its ASIA access key ID is absent from IAM's own user
+// table. principalSeedingMiddleware stands in for cli.go's real
+// principalMiddleware, which would have already resolved this Principal via
+// STS's ResolvePrincipal before enforcement runs.
+func TestEnforcementMiddleware_STSUserPrincipal(t *testing.T) {
+	t.Parallel()
+
+	allowS3All := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*"}]}`
+
+	tests := []struct {
+		principal    *awsmeta.Principal
+		setupBackend func(*mockEnforcementBackend)
+		name         string
+		wantStatus   int
+	}{
+		{
+			name: "get_session_token_underlying_user_policy_allows",
+			principal: &awsmeta.Principal{
+				Kind: awsmeta.PrincipalKindUser,
+				Arn:  "arn:aws:iam::123456789012:user/alice",
+			},
+			setupBackend: func(b *mockEnforcementBackend) {
+				b.policies["alice"] = []string{allowS3All}
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "get_session_token_underlying_user_no_policy_implicit_deny",
+			principal: &awsmeta.Principal{
+				Kind: awsmeta.PrincipalKindUser,
+				Arn:  "arn:aws:iam::123456789012:user/bob",
+			},
+			setupBackend: func(_ *mockEnforcementBackend) {},
+			wantStatus:   http.StatusForbidden,
+		},
+		{
+			name: "get_federation_token_no_policy_record_implicit_deny",
+			principal: &awsmeta.Principal{
+				Kind: awsmeta.PrincipalKindUser,
+				Arn:  "arn:aws:sts::123456789012:federated-user/feduser",
+			},
+			setupBackend: func(_ *mockEnforcementBackend) {},
+			wantStatus:   http.StatusForbidden,
+		},
+		{
+			name: "root_session_left_unenforced",
+			principal: &awsmeta.Principal{
+				Kind: awsmeta.PrincipalKindUser,
+				Arn:  "arn:aws:iam::000000000000:root",
+			},
+			setupBackend: func(_ *mockEnforcementBackend) {},
+			wantStatus:   http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := newMockEnforcementBackend()
+			tt.setupBackend(backend)
+
+			e := echo.New()
+			e.Use(principalSeedingMiddleware(tt.principal))
+			e.Use(iam.EnforcementMiddleware(backend))
+			e.Any("/*", func(c *echo.Context) error {
+				return c.String(http.StatusOK, "ok")
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/my-bucket/key", strings.NewReader(""))
+			req.Header.Set(
+				"Authorization",
+				"AWS4-HMAC-SHA256 Credential=ASIAFAKESESSIONKEY/20230101/us-east-1/s3/aws4_request",
+			)
+
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}
+
+// TestEnforcementMiddleware_PermissionBoundary verifies gopherstack-7gnj: a
+// permission boundary is consulted by the live enforcement path, not just by
+// SimulatePrincipalPolicy. Per the IAM User Guide's "Permissions boundaries for
+// IAM entities" page, an entity's permissions boundary lets it act only within
+// what both its identity-based policies and its permissions boundary allow.
+func TestEnforcementMiddleware_PermissionBoundary(t *testing.T) {
+	t.Parallel()
+
+	allowS3All := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*"}]}`
+	allowIAMOnlyBoundary := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"iam:*","Resource":"*"}]}`
+	allowS3Boundary := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*"}]}`
+	denyAllBoundary := `{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*"}]}`
+
+	tests := []struct {
+		setupBackend func(*mockEnforcementBackend)
+		name         string
+		wantStatus   int
+	}{
+		{
+			name: "identity_allow_no_boundary_still_allowed",
+			setupBackend: func(b *mockEnforcementBackend) {
+				b.users["alice"] = &iam.User{UserName: "alice"}
+				b.keyMap["AKIABOUND1"] = "alice"
+				b.policies["alice"] = []string{allowS3All}
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "identity_allow_but_boundary_does_not_cover_action_denied",
+			setupBackend: func(b *mockEnforcementBackend) {
+				b.users["alice"] = &iam.User{UserName: "alice"}
+				b.keyMap["AKIABOUND1"] = "alice"
+				b.policies["alice"] = []string{allowS3All}
+				b.userBoundaries["alice"] = allowIAMOnlyBoundary
+			},
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "identity_allow_and_boundary_covers_action_allowed",
+			setupBackend: func(b *mockEnforcementBackend) {
+				b.users["alice"] = &iam.User{UserName: "alice"}
+				b.keyMap["AKIABOUND1"] = "alice"
+				b.policies["alice"] = []string{allowS3All}
+				b.userBoundaries["alice"] = allowS3Boundary
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "identity_allow_but_boundary_explicit_deny_denied",
+			setupBackend: func(b *mockEnforcementBackend) {
+				b.users["alice"] = &iam.User{UserName: "alice"}
+				b.keyMap["AKIABOUND1"] = "alice"
+				b.policies["alice"] = []string{allowS3All}
+				b.userBoundaries["alice"] = denyAllBoundary
+			},
+			wantStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := newMockEnforcementBackend()
+			tt.setupBackend(backend)
+
+			e := echo.New()
+			e.Use(iam.EnforcementMiddleware(backend))
+			e.Any("/*", func(c *echo.Context) error {
+				return c.String(http.StatusOK, "ok")
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/my-bucket/key", strings.NewReader(""))
+			req.Header.Set(
+				"Authorization",
+				"AWS4-HMAC-SHA256 Credential=AKIABOUND1/20230101/us-east-1/s3/aws4_request",
+			)
+
+			rec := httptest.NewRecorder()
+			e.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
 		})
 	}
 }

@@ -78,7 +78,7 @@ func TestECSServiceIndexConsistency(t *testing.T) {
 				})
 				require.NoError(t, err)
 
-				_, err = b.DeleteService("", "svc-b")
+				_, err = b.DeleteService("", "svc-b", true)
 				require.NoError(t, err)
 
 				snaps := b.GetServicesForReconcilerForTest()
@@ -111,11 +111,19 @@ func TestECSServiceIndexConsistency(t *testing.T) {
 
 				require.Len(t, b.GetServicesForReconcilerForTest(), 3)
 
+				// DeleteCluster now refuses while the cluster still has
+				// services, so delete each one first (force bypasses the
+				// desiredCount guard -- irrelevant to what this test covers).
+				for _, name := range []string{"alpha", "beta", "gamma"} {
+					_, err = b.DeleteService(clusterName, name, true)
+					require.NoError(t, err)
+				}
+
 				_, err = b.DeleteCluster(clusterName)
 				require.NoError(t, err)
 
 				snaps := b.GetServicesForReconcilerForTest()
-				require.Empty(t, snaps, "index not cleared after cluster deletion")
+				require.Empty(t, snaps, "index not cleared after service+cluster deletion")
 			},
 		},
 		{

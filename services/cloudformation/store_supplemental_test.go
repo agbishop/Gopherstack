@@ -502,9 +502,12 @@ func TestBackend_CancelUpdateStack(t *testing.T) {
 			wantStatus:  "UPDATE_ROLLBACK_COMPLETE",
 		},
 		{
-			name:       "no_op_when_create_complete",
+			// Real AWS: "You can cancel only stacks that are in the
+			// UPDATE_IN_PROGRESS state."
+			name:       "rejected_when_create_complete",
 			stackName:  "my-stack",
 			setup:      true,
+			wantErr:    cloudformation.ErrCancelUpdateStackInvalidState,
 			wantStatus: "CREATE_COMPLETE",
 		},
 		{
@@ -532,6 +535,12 @@ func TestBackend_CancelUpdateStack(t *testing.T) {
 
 			if tt.wantErr != nil {
 				require.ErrorIs(t, err, tt.wantErr)
+
+				if tt.wantStatus != "" {
+					stack, descErr := b.DescribeStack(tt.stackName)
+					require.NoError(t, descErr)
+					assert.Equal(t, tt.wantStatus, stack.StackStatus, "status must be unchanged by a rejected cancel")
+				}
 
 				return
 			}

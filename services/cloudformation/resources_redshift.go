@@ -25,7 +25,7 @@ func (rc *ResourceCreator) createRedshiftCluster(
 	dbName := strProp(props, "DBName", params, physicalIDs)
 	masterUser := strProp(props, "MasterUsername", params, physicalIDs)
 
-	cluster, err := rc.backends.Redshift.Backend.CreateCluster(id, nodeType, dbName, masterUser)
+	cluster, err := rc.backends.Redshift.Backend.CreateCluster(id, nodeType, dbName, masterUser, nil, "")
 	if err != nil {
 		return "", fmt.Errorf("create Redshift cluster %s: %w", id, err)
 	}

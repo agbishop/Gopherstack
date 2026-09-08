@@ -130,8 +130,16 @@ func (b *InMemoryBackend) ListHosts(ctx context.Context) []*Host {
 		result = append(result, &cp)
 	}
 
+	// Name is not unique (CreateHost has no ResourceAlreadyExistsException
+	// for a duplicate name, see errors.go), so HostArn (always unique)
+	// breaks ties -- sort.Slice is not stable, and without a tie-break two
+	// hosts sharing a name have no total order between them.
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
+		if result[i].Name != result[j].Name {
+			return result[i].Name < result[j].Name
+		}
+
+		return result[i].HostArn < result[j].HostArn
 	})
 
 	return result

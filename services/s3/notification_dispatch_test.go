@@ -233,6 +233,55 @@ func TestHandler_NotificationDispatch_CompleteMultipartUpload(t *testing.T) {
 	assert.Equal(t, "mp-key", mock.created[0].key)
 }
 
+// TestHandler_NotificationDispatch_PostObject_EventNameIsPost verifies that a
+// browser-style POST upload (post_object.go) fires the s3:ObjectCreated:Post
+// event, not s3:ObjectCreated:Put. AWS documents Put/Post/Copy/
+// CompleteMultipartUpload as distinct ObjectCreated sub-events; a notification
+// rule scoped to exactly "s3:ObjectCreated:Post" must fire for a POST upload.
+func TestHandler_NotificationDispatch_PostObject_EventNameIsPost(t *testing.T) {
+	t.Parallel()
+
+	handler, backend := newTestHandler(t)
+	mustCreateBucket(t, backend, "notif-post")
+
+	notifXML := `<NotificationConfiguration>` +
+		`<QueueConfiguration><Id>q1</Id>` +
+		`<Queue>arn:aws:sqs:us-east-1:000000000000:post-queue</Queue>` +
+		`<Event>s3:ObjectCreated:Post</Event></QueueConfiguration>` +
+		`</NotificationConfiguration>`
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/notif-post?notification",
+		strings.NewReader(notifXML),
+	)
+	rec := httptest.NewRecorder()
+	serveS3Handler(handler, rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	queue := &captureQueue{}
+	handler.SetNotificationDispatcher(
+		s3.NewNotificationDispatcher(&s3.NotificationTargets{SQSSender: queue}, "us-east-1"),
+	)
+
+	body, contentType := buildPostForm(t, map[string]string{"key": "posted.txt"}, "posted.txt", []byte("hi"))
+	req = httptest.NewRequest(http.MethodPost, "/notif-post", body)
+	req.Header.Set("Content-Type", contentType)
+	rec = httptest.NewRecorder()
+	serveS3Handler(handler, rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+
+	require.Eventually(t, func() bool {
+		queue.mu.Lock()
+		defer queue.mu.Unlock()
+
+		return len(queue.messages) == 1
+	}, 200*time.Millisecond, 5*time.Millisecond)
+
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	assert.Contains(t, queue.messages[0], `"eventName":"s3:ObjectCreated:Post"`)
+}
+
 func TestHandler_NotificationDispatch_DeleteObjects(t *testing.T) {
 	t.Parallel()
 

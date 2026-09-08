@@ -104,12 +104,23 @@ func (p *iamPrincipal) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// parsePolicy unmarshals a policy document JSON string. Returns empty policy on error.
-func parsePolicy(doc string) iamPolicy {
-	var p iamPolicy
-	_ = json.Unmarshal([]byte(doc), &p)
+// parsePolicy unmarshals a policy document JSON string. An empty/absent doc
+// is a valid empty policy (no statements); anything else that fails to parse
+// is malformed and reported via ErrMalformedPolicy rather than silently
+// treated as empty (gopherstack-x9ff: previously garbage input silently
+// became an empty policy, so CheckAccessNotGranted/CheckNoNewAccess/
+// CheckNoPublicAccess reported PASS on corrupt policyDocument input).
+func parsePolicy(doc string) (iamPolicy, error) {
+	if strings.TrimSpace(doc) == "" {
+		return iamPolicy{}, nil
+	}
 
-	return p
+	var p iamPolicy
+	if err := json.Unmarshal([]byte(doc), &p); err != nil {
+		return iamPolicy{}, ErrMalformedPolicy
+	}
+
+	return p, nil
 }
 
 // iamGlob reports whether value matches pattern (case-insensitive, supports * and ?).
@@ -119,10 +130,10 @@ func iamGlob(pattern, value string) bool {
 	return ok
 }
 
-// actionAllowed returns true if the statement's Action set covers the given action.
-func actionAllowed(stmt iamStatement, action string) bool {
-	for _, a := range stmt.Action {
-		if iamGlob(a, action) {
+// matchesAny returns true if value matches any glob pattern in patterns.
+func matchesAny(patterns []string, value string) bool {
+	for _, p := range patterns {
+		if iamGlob(p, value) {
 			return true
 		}
 	}
@@ -130,16 +141,31 @@ func actionAllowed(stmt iamStatement, action string) bool {
 	return false
 }
 
-// resourceAllowed returns true if the statement's Resource set covers the given resource.
-func resourceAllowed(stmt iamStatement, resource string) bool {
-	if len(stmt.Resource) == 0 {
-		return false
+// actionAllowed returns true if the statement's Action/NotAction set covers the given
+// action. NotAction means "every action except these", so a match there is a non-match
+// against the listed patterns (gopherstack-xyu4: previously NotAction was ignored
+// entirely, so a NotAction-only statement was silently treated as granting nothing).
+func actionAllowed(stmt iamStatement, action string) bool {
+	if len(stmt.Action) > 0 {
+		return matchesAny(stmt.Action, action)
 	}
 
-	for _, r := range stmt.Resource {
-		if iamGlob(r, resource) {
-			return true
-		}
+	if len(stmt.NotAction) > 0 {
+		return !matchesAny(stmt.NotAction, action)
+	}
+
+	return false
+}
+
+// resourceAllowed returns true if the statement's Resource/NotResource set covers the
+// given resource. Same NotResource fix as actionAllowed above.
+func resourceAllowed(stmt iamStatement, resource string) bool {
+	if len(stmt.Resource) > 0 {
+		return matchesAny(stmt.Resource, resource)
+	}
+
+	if len(stmt.NotResource) > 0 {
+		return !matchesAny(stmt.NotResource, resource)
 	}
 
 	return false
@@ -215,8 +241,11 @@ func stmtGrantedReasons(stmt iamStatement, i int, accesses []AccessSpec) []map[s
 }
 
 // CheckAccessNotGranted returns PASS if the policy does NOT grant any of the specified accesses.
-func CheckAccessNotGranted(policyDoc string, accesses []AccessSpec) PolicyCheckResult {
-	p := parsePolicy(policyDoc)
+func CheckAccessNotGranted(policyDoc string, accesses []AccessSpec) (PolicyCheckResult, error) {
+	p, err := parsePolicy(policyDoc)
+	if err != nil {
+		return PolicyCheckResult{}, err
+	}
 
 	var reasons []map[string]any
 
@@ -233,19 +262,26 @@ func CheckAccessNotGranted(policyDoc string, accesses []AccessSpec) PolicyCheckR
 			Result:  checkResultFail,
 			Message: "The specified policy grants the specified access.",
 			Reasons: reasons,
-		}
+		}, nil
 	}
 
 	return PolicyCheckResult{
 		Result:  checkResultPass,
 		Message: "The specified policy does not grant the specified access.",
-	}
+	}, nil
 }
 
 // CheckNoNewAccess returns PASS if newPolicyDoc does not grant access beyond existingPolicyDoc.
-func CheckNoNewAccess(existingDoc, newDoc string) PolicyCheckResult {
-	existing := parsePolicy(existingDoc)
-	newPol := parsePolicy(newDoc)
+func CheckNoNewAccess(existingDoc, newDoc string) (PolicyCheckResult, error) {
+	existing, err := parsePolicy(existingDoc)
+	if err != nil {
+		return PolicyCheckResult{}, err
+	}
+
+	newPol, err := parsePolicy(newDoc)
+	if err != nil {
+		return PolicyCheckResult{}, err
+	}
 
 	var reasons []map[string]any
 
@@ -262,13 +298,13 @@ func CheckNoNewAccess(existingDoc, newDoc string) PolicyCheckResult {
 			Result:  checkResultFail,
 			Message: "The updated policy grants new access compared to the existing policy.",
 			Reasons: reasons,
-		}
+		}, nil
 	}
 
 	return PolicyCheckResult{
 		Result:  checkResultPass,
 		Message: "The updated policy does not grant new access compared to the existing policy.",
-	}
+	}, nil
 }
 
 // newAccessReasons returns reasons for (action, resource) pairs granted by stmt
@@ -292,8 +328,11 @@ func newAccessReasons(existing iamPolicy, stmt iamStatement, i int) []map[string
 }
 
 // CheckNoPublicAccess returns PASS if the policy has no public-access Allow statements.
-func CheckNoPublicAccess(policyDoc string) PolicyCheckResult {
-	p := parsePolicy(policyDoc)
+func CheckNoPublicAccess(policyDoc string) (PolicyCheckResult, error) {
+	p, err := parsePolicy(policyDoc)
+	if err != nil {
+		return PolicyCheckResult{}, err
+	}
 
 	var reasons []map[string]any
 
@@ -313,13 +352,13 @@ func CheckNoPublicAccess(policyDoc string) PolicyCheckResult {
 			Result:  checkResultFail,
 			Message: "The policy grants public access.",
 			Reasons: reasons,
-		}
+		}, nil
 	}
 
 	return PolicyCheckResult{
 		Result:  checkResultPass,
 		Message: "The policy does not grant public access.",
-	}
+	}, nil
 }
 
 // ValidatePolicyFinding is a single finding from policy validation.
@@ -515,7 +554,7 @@ func ValidatePolicy(policyDoc, policyType string) []ValidatePolicyFinding {
 		return findings
 	}
 
-	p := parsePolicy(policyDoc)
+	p, _ := parsePolicy(policyDoc)
 
 	findings := validateVersion(raw, p)
 

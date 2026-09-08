@@ -891,3 +891,33 @@ func TestCompleteLayerUpload_LayerPartTooSmall(t *testing.T) {
 		})
 	}
 }
+
+// TestInitiateLayerUpload_Reset_CounterRestarts verifies that Reset() zeroes
+// layerUploadSeq, so the next upload ID's sequence suffix restarts at 1
+// (matching ec2's fix establishing that this codebase resets ID sequence
+// counters on Reset -- nextPrivateIPIndex, nextElasticIPIndex), not a suffix
+// that keeps climbing from the pre-Reset run.
+func TestInitiateLayerUpload_Reset_CounterRestarts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	b := ecr.NewInMemoryBackend("123456789012", "us-east-1", "ecr.local")
+
+	_, err := b.CreateRepository(ctx, "repo", "MUTABLE", false, "", "")
+	require.NoError(t, err)
+
+	init1, err := b.InitiateLayerUpload(ctx, "repo")
+	require.NoError(t, err)
+	require.True(t, strings.HasSuffix(init1.UploadID, "-1"),
+		"sanity: first upload ID should end in -1, got %s", init1.UploadID)
+
+	b.Reset()
+
+	_, err = b.CreateRepository(ctx, "repo", "MUTABLE", false, "", "")
+	require.NoError(t, err)
+
+	init2, err := b.InitiateLayerUpload(ctx, "repo")
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(init2.UploadID, "-1"),
+		"layerUploadSeq must restart at 1 after Reset, got upload ID %s", init2.UploadID)
+}

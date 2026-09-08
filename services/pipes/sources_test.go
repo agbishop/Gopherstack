@@ -217,7 +217,10 @@ func TestFilterCriteria_StoredAndReturned(t *testing.T) {
 		patterns []string
 	}{
 		{name: "single_filter", patterns: []string{`{"source": ["my-app"]}`}},
-		{name: "multiple_filters", patterns: []string{`{"type": ["order"]}`, `{"type": ["payment"]}`}},
+		{
+			name:     "multiple_filters",
+			patterns: []string{`{"type": ["order"]}`, `{"type": ["payment"]}`},
+		},
 	}
 
 	for _, tt := range tests {
@@ -303,6 +306,9 @@ func TestBatchSize_EffectiveFromAllSources(t *testing.T) {
 			name: "rabbitmq_batch_size",
 			sourceParams: &pipes.SourceParameters{
 				RabbitMQBrokerParameters: &pipes.RabbitMQBrokerSourceParameters{
+					Credentials: &pipes.MQBrokerCredentials{
+						BasicAuth: "arn:aws:secretsmanager:us-west-2:123456789012:secret:s",
+					},
 					QueueName: "q",
 					BatchSize: 20,
 				},
@@ -313,6 +319,9 @@ func TestBatchSize_EffectiveFromAllSources(t *testing.T) {
 			name: "activemq_batch_size",
 			sourceParams: &pipes.SourceParameters{
 				ActiveMQBrokerParameters: &pipes.ActiveMQBrokerSourceParameters{
+					Credentials: &pipes.MQBrokerCredentials{
+						BasicAuth: "arn:aws:secretsmanager:us-west-2:123456789012:secret:s",
+					},
 					QueueName: "q",
 					BatchSize: 8,
 				},
@@ -429,7 +438,9 @@ func TestBatchSize_Validation(t *testing.T) {
 		{
 			name: "kafka_over_limit_rejected",
 			sp: &pipes.SourceParameters{
-				SelfManagedKafkaParameters: &pipes.SelfManagedKafkaSourceParameters{BatchSize: -100},
+				SelfManagedKafkaParameters: &pipes.SelfManagedKafkaSourceParameters{
+					BatchSize: -100,
+				},
 			},
 			wantError: true,
 		},
@@ -521,6 +532,76 @@ func TestBatchSize_UpdateValidation(t *testing.T) {
 	}
 }
 
+// TestSourceStartingPosition_Required verifies that CreatePipe rejects a
+// Kinesis or DynamoDB Streams source with no StartingPosition, matching
+// aws-sdk-go-v2 pipes validators.go's validatePipeSourceKinesisStreamParameters
+// and validatePipeSourceDynamoDBStreamParameters (both mark it required).
+func TestSourceStartingPosition_Required(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		sp        *pipes.SourceParameters
+		name      string
+		wantError bool
+	}{
+		{
+			name: "kinesis_missing_starting_position_rejected",
+			sp: &pipes.SourceParameters{
+				KinesisStreamParameters: &pipes.KinesisStreamSourceParameters{},
+			},
+			wantError: true,
+		},
+		{
+			name: "kinesis_with_starting_position_accepted",
+			sp: &pipes.SourceParameters{
+				KinesisStreamParameters: &pipes.KinesisStreamSourceParameters{
+					StartingPosition: "LATEST",
+				},
+			},
+			wantError: false,
+		},
+		{
+			name: "dynamodb_missing_starting_position_rejected",
+			sp: &pipes.SourceParameters{
+				DynamoDBStreamParameters: &pipes.DynamoDBStreamSourceParameters{},
+			},
+			wantError: true,
+		},
+		{
+			name: "dynamodb_with_starting_position_accepted",
+			sp: &pipes.SourceParameters{
+				DynamoDBStreamParameters: &pipes.DynamoDBStreamSourceParameters{
+					StartingPosition: "TRIM_HORIZON",
+				},
+			},
+			wantError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := b3Backend()
+			_, err := b.CreatePipe(context.Background(), pipes.CreatePipeInput{
+				Name:             tt.name + "-pipe",
+				RoleARN:          "arn:aws:iam::111122223333:role/r",
+				Source:           b3SQSSource,
+				Target:           b3LambdaTarget,
+				DesiredState:     "RUNNING",
+				SourceParameters: tt.sp,
+			})
+
+			if tt.wantError {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, pipes.ErrValidation)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 // --- Kinesis and DynamoDB Streams runtime pollers ---
 
 // fakeKinesisReader is a fake PipeKinesisReader used to exercise the runtime
@@ -546,7 +627,10 @@ func (f *fakeKinesisReader) GetShardIterator(_, shardID, iteratorType, _ string)
 	return "iter-" + shardID + "-" + iteratorType, nil
 }
 
-func (f *fakeKinesisReader) GetRecords(iteratorToken string, _ int) ([]pipes.KinesisRecord, string, error) {
+func (f *fakeKinesisReader) GetRecords(
+	iteratorToken string,
+	_ int,
+) ([]pipes.KinesisRecord, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -574,7 +658,9 @@ func (f *fakeDDBStreamsReader) DescribeStreamShards(_ string) ([]string, error) 
 	return f.shardIDs, nil
 }
 
-func (f *fakeDDBStreamsReader) GetStreamShardIterator(_, shardID, iteratorType string) (string, error) {
+func (f *fakeDDBStreamsReader) GetStreamShardIterator(
+	_, shardID, iteratorType string,
+) (string, error) {
 	return "iter-" + shardID + "-" + iteratorType, nil
 }
 
@@ -656,10 +742,12 @@ func newStreamSourceHarness(t *testing.T, tc streamSourceCase) *streamSourceHarn
 		// source's own stream parameters, never at the top level.
 		if tc.isDynamoDB {
 			input.SourceParameters.DynamoDBStreamParameters = &pipes.DynamoDBStreamSourceParameters{
+				StartingPosition: "TRIM_HORIZON",
 				DeadLetterConfig: &pipes.DeadLetterConfig{Arn: tc.dlqARN},
 			}
 		} else {
 			input.SourceParameters.KinesisStreamParameters = &pipes.KinesisStreamSourceParameters{
+				StartingPosition: "TRIM_HORIZON",
 				DeadLetterConfig: &pipes.DeadLetterConfig{Arn: tc.dlqARN},
 			}
 		}
@@ -752,7 +840,12 @@ func TestPipesRunner_StreamSourcePolling(t *testing.T) {
 				h.lambdaInvoker.mu.Lock()
 				callsAfter := len(h.lambdaInvoker.calls)
 				h.lambdaInvoker.mu.Unlock()
-				assert.Equal(t, 1, callsAfter, "iterator must have advanced; no re-delivery expected")
+				assert.Equal(
+					t,
+					1,
+					callsAfter,
+					"iterator must have advanced; no re-delivery expected",
+				)
 			},
 		},
 		{
@@ -817,8 +910,16 @@ func TestPipesRunner_StreamSourcePolling(t *testing.T) {
 
 				require.Len(t, payloads, 1)
 				// Records are base64-encoded in the delivered payload's "data" field.
-				assert.Contains(t, string(payloads[0]), base64.StdEncoding.EncodeToString([]byte("keep-me")))
-				assert.NotContains(t, string(payloads[0]), base64.StdEncoding.EncodeToString([]byte("drop-this")))
+				assert.Contains(
+					t,
+					string(payloads[0]),
+					base64.StdEncoding.EncodeToString([]byte("keep-me")),
+				)
+				assert.NotContains(
+					t,
+					string(payloads[0]),
+					base64.StdEncoding.EncodeToString([]byte("drop-this")),
+				)
 			},
 		},
 		{
@@ -841,8 +942,17 @@ func TestPipesRunner_StreamSourcePolling(t *testing.T) {
 
 				h.sqsSender.mu.Lock()
 				defer h.sqsSender.mu.Unlock()
-				require.Len(t, h.sqsSender.bodies, 1, "failed Kinesis target delivery must be redirected to the DLQ")
-				assert.Contains(t, h.sqsSender.bodies[0], base64.StdEncoding.EncodeToString([]byte("boom")))
+				require.Len(
+					t,
+					h.sqsSender.bodies,
+					1,
+					"failed Kinesis target delivery must be redirected to the DLQ",
+				)
+				assert.Contains(
+					t,
+					h.sqsSender.bodies[0],
+					base64.StdEncoding.EncodeToString([]byte("boom")),
+				)
 				assert.Equal(t, "arn:aws:sqs:us-east-1:000000000000:dlq", h.sqsSender.queueURLs[0])
 			},
 		},
@@ -872,7 +982,12 @@ func TestPipesRunner_StreamSourcePolling(t *testing.T) {
 				payloads := h.lambdaInvoker.payloads
 				h.lambdaInvoker.mu.Unlock()
 
-				require.Len(t, calls, 1, "expected one Lambda invocation from the DynamoDB Streams poller")
+				require.Len(
+					t,
+					calls,
+					1,
+					"expected one Lambda invocation from the DynamoDB Streams poller",
+				)
 
 				var event struct {
 					Records []struct {
@@ -962,7 +1077,12 @@ func TestPipesRunner_BrokerSourcesNotPolled(t *testing.T) {
 			lambdaInvoker.mu.Lock()
 			calls := len(lambdaInvoker.calls)
 			lambdaInvoker.mu.Unlock()
-			assert.Equal(t, 0, calls, "broker sources have no backing emulator and must not be polled")
+			assert.Equal(
+				t,
+				0,
+				calls,
+				"broker sources have no backing emulator and must not be polled",
+			)
 		})
 	}
 }

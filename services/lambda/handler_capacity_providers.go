@@ -43,7 +43,7 @@ func (h *Handler) handleCapacityProviderRoute(c *echo.Context, path, method stri
 	}
 
 	// /2025-11-30/capacity-providers/{name} → Get / Delete / Update
-	name := strings.SplitN(rest, "/", 2)[0] //nolint:mnd // split name from sub-path
+	name, _, _ := strings.Cut(rest, "/")
 
 	switch method {
 	case http.MethodGet:

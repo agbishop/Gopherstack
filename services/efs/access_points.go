@@ -35,8 +35,12 @@ func (b *InMemoryBackend) CreateAccessPoint(
 		}
 	}
 
-	if _, ok := b.fileSystems.Get(regionKey(region, req.FileSystemID)); !ok {
+	fs, ok := b.fileSystems.Get(regionKey(region, req.FileSystemID))
+	if !ok {
 		return nil, fmt.Errorf("%w: file system %s not found", ErrNotFound, req.FileSystemID)
+	}
+	if err := checkFileSystemAvailable(fs); err != nil {
+		return nil, err
 	}
 
 	// Validate RootDirectory: require CreationInfo when path != "/".
@@ -44,7 +48,7 @@ func (b *InMemoryBackend) CreateAccessPoint(
 		if req.RootDirectory.CreationInfo == nil {
 			return nil, fmt.Errorf(
 				"%w: CreationInfo is required when RootDirectory.Path is not /",
-				ErrValidation,
+				ErrBadRequest,
 			)
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
@@ -128,6 +129,65 @@ func TestHandler_DeleteStateMachine(t *testing.T) {
 			assert.Equal(t, tt.wantCode, rec.Code)
 		})
 	}
+}
+
+// TestHandler_StartExecution_StateMachineDeleting is the gopherstack-kx95
+// wire-level regression test: while a state machine has a running
+// execution, DeleteStateMachine must leave it observable as DELETING
+// (checked at the backend level in state_machines_test.go), and a further
+// StartExecution against it must emit the actual "StateMachineDeleting"
+// __type over the wire, at the HTTP status this handler uses for its
+// conflict-family errors -- not merely "some error occurred".
+func TestHandler_StartExecution_StateMachineDeleting(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	h, e := newSFNHandler(t)
+
+	const waitDef = `{"StartAt":"W","States":{"W":{"Type":"Wait","Seconds":3600,"End":true}}}`
+
+	rec := sfnPost(ctx, t, h, e, "CreateStateMachine", makeSMBody("deleting-wire-sm", waitDef, ""))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var createResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
+	smArn, ok := createResp["stateMachineArn"].(string)
+	require.True(t, ok)
+
+	execArn := startExec(ctx, t, h, e, smArn, "keep-alive")
+
+	t.Cleanup(func() {
+		sfnPost(ctx, t, h, e, "StopExecution", `{"executionArn":"`+execArn+`","error":"Test","cause":"cleanup"}`)
+	})
+
+	require.Eventually(t, func() bool {
+		descRec := sfnPost(ctx, t, h, e, "DescribeExecution", `{"executionArn":"`+execArn+`"}`)
+		if descRec.Code != http.StatusOK {
+			return false
+		}
+
+		var desc map[string]any
+
+		return json.Unmarshal(descRec.Body.Bytes(), &desc) == nil && desc["status"] == "RUNNING"
+	}, 5*time.Second, 10*time.Millisecond)
+
+	delRec := sfnPost(ctx, t, h, e, "DeleteStateMachine", `{"stateMachineArn":"`+smArn+`"}`)
+	require.Equal(t, http.StatusOK, delRec.Code)
+
+	descRec := sfnPost(ctx, t, h, e, "DescribeStateMachine", `{"stateMachineArn":"`+smArn+`"}`)
+	require.Equal(t, http.StatusOK, descRec.Code, "DELETING state machine must still be describable")
+
+	var desc map[string]any
+	require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &desc))
+	assert.Equal(t, "DELETING", desc["status"])
+
+	startRec := sfnPost(ctx, t, h, e, "StartExecution",
+		`{"stateMachineArn":"`+smArn+`","name":"second","input":"{}"}`)
+	assert.Equal(t, http.StatusConflict, startRec.Code)
+
+	var errResp map[string]any
+	require.NoError(t, json.Unmarshal(startRec.Body.Bytes(), &errResp))
+	assert.Equal(t, "StateMachineDeleting", errResp["__type"])
 }
 
 func TestHandler_ListStateMachines(t *testing.T) {

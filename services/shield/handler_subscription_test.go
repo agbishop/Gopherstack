@@ -335,6 +335,17 @@ func TestHandler_UpdateSubscription(t *testing.T) {
 			body:       map[string]any{"AutoRenew": "MAYBE"},
 			wantStatus: 400,
 		},
+		{
+			// api_op_UpdateSubscription.go: "Only enter values for parameters you want to
+			// change. Empty parameters are not updated." An omitted AutoRenew must succeed
+			// as a no-op, not a validation error.
+			name: "omit_auto_renew_succeeds",
+			setup: func(b *shield.InMemoryBackend) {
+				require.NoError(t, b.CreateSubscription())
+			},
+			body:       map[string]any{},
+			wantStatus: 200,
+		},
 	}
 
 	for _, tt := range tests {
@@ -348,6 +359,31 @@ func TestHandler_UpdateSubscription(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, rec.Code)
 		})
 	}
+}
+
+// TestHandler_UpdateSubscriptionOmitAutoRenewPreservesExistingValue proves the omitted-field
+// no-op leaves the prior AutoRenew value intact rather than clobbering it with the empty string.
+func TestHandler_UpdateSubscriptionOmitAutoRenewPreservesExistingValue(t *testing.T) {
+	t.Parallel()
+
+	b := shield.NewInMemoryBackend("000000000000", "us-east-1")
+	require.NoError(t, b.CreateSubscription())
+	h := shield.NewHandler(b)
+
+	rec := doShieldRequest(t, h, "UpdateSubscription", map[string]any{"AutoRenew": shield.AutoRenewDisabled})
+	require.Equal(t, 200, rec.Code)
+
+	rec = doShieldRequest(t, h, "UpdateSubscription", map[string]any{})
+	require.Equal(t, 200, rec.Code)
+
+	rec = doShieldRequest(t, h, "DescribeSubscription", nil)
+	require.Equal(t, 200, rec.Code)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+	sub, ok := result["Subscription"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, shield.AutoRenewDisabled, sub["AutoRenew"])
 }
 
 // TestRefinement1_DescribeSubscriptionIncludesArn verifies SubscriptionArn in response.

@@ -1,6 +1,10 @@
 package grafana
 
-import "slices"
+import (
+	"slices"
+	"strconv"
+	"strings"
+)
 
 // defaultGrafanaVersion returns the latest version this emulator supports,
 // used by CreateWorkspace when GrafanaVersion is omitted (matching
@@ -41,6 +45,32 @@ func upgradeVersionsFor(current string) []string {
 	}
 
 	return slices.Clone(grafanaVersions[curIdx+1:])
+}
+
+// minServiceAccountGrafanaMajor is the minimum Grafana major version that
+// supports workspace service accounts: "You can only create service accounts
+// for workspaces that are compatible with Grafana version 9 and above"
+// (CreateWorkspaceServiceAccount's doc comment; CreateWorkspaceServiceAccountToken
+// repeats the same rule as "Service accounts are only available for
+// workspaces that are compatible with Grafana version 9 and above").
+const minServiceAccountGrafanaMajor = 9
+
+// supportsServiceAccounts reports whether a workspace on the given Grafana
+// version is compatible with service accounts, per
+// minServiceAccountGrafanaMajor. version is one of grafanaVersions'
+// "<major>.<minor>" strings.
+func supportsServiceAccounts(version string) bool {
+	major, _, ok := strings.Cut(version, ".")
+	if !ok {
+		return false
+	}
+
+	n, err := strconv.Atoi(major)
+	if err != nil {
+		return false
+	}
+
+	return n >= minServiceAccountGrafanaMajor
 }
 
 // ListVersions returns the Grafana versions creatable (workspaceID == "") or,

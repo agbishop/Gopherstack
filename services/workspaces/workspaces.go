@@ -30,6 +30,7 @@ const (
 	stateAdminMaintenance = "ADMIN_MAINTENANCE"
 	stateStopped          = "STOPPED"
 	statePending          = "PENDING"
+	stateUnhealthy        = "UNHEALTHY"
 	errMsgNotFound        = "Workspace not found"
 
 	// describeWorkspacesMaxResults is the AWS maximum results per page.
@@ -45,7 +46,7 @@ const (
 // full real allow-list is checked for correctness.
 func isRebootableWorkspaceState(state string) bool {
 	switch state {
-	case stateAvailable, "UNHEALTHY", "REBOOTING":
+	case stateAvailable, stateUnhealthy, "REBOOTING":
 		return true
 	}
 
@@ -58,11 +59,50 @@ func isRebootableWorkspaceState(state string) bool {
 // comment).
 func isRebuildableWorkspaceState(state string) bool {
 	switch state {
-	case stateAvailable, "ERROR", "UNHEALTHY", stateStopped, "REBOOTING":
+	case stateAvailable, "ERROR", stateUnhealthy, stateStopped, "REBOOTING":
 		return true
 	}
 
 	return false
+}
+
+// isStartableWorkspaceState matches StartWorkspaces's real precondition:
+// "You cannot start a WorkSpace unless it has a running mode of AutoStop or
+// Manual and a state of STOPPED" (api_op_StartWorkspaces.go doc comment).
+func isStartableWorkspaceState(state, runningMode string) bool {
+	return state == stateStopped && isEligibleRunningMode(runningMode)
+}
+
+// isStoppableWorkspaceState matches StopWorkspaces's real precondition:
+// "You cannot stop a WorkSpace unless it has a running mode of AutoStop or
+// Manual and a state of AVAILABLE, IMPAIRED, UNHEALTHY, or ERROR"
+// (api_op_StopWorkspaces.go doc comment).
+func isStoppableWorkspaceState(state, runningMode string) bool {
+	switch state {
+	case stateAvailable, "IMPAIRED", stateUnhealthy, "ERROR":
+		return isEligibleRunningMode(runningMode)
+	}
+
+	return false
+}
+
+// isEligibleRunningMode matches the running-mode half of the Start/StopWorkspaces
+// precondition ("a running mode of AutoStop or Manual", api_op_StartWorkspaces.go /
+// api_op_StopWorkspaces.go doc comments). MANUAL is WorkSpaces Core-only and
+// unreachable here -- isValidRunningMode rejects it in ModifyWorkspaceProperties --
+// but is still checked, matching isRebootableWorkspaceState's precedent for
+// unreachable-but-documented values.
+func isEligibleRunningMode(mode string) bool {
+	return mode == string(sdktypes.RunningModeAutoStop) || mode == string(sdktypes.RunningModeManual)
+}
+
+// workspaceRunningMode returns w's running mode, or "" if it has no properties set.
+func workspaceRunningMode(w *storedWorkspace) string {
+	if w.Properties == nil {
+		return ""
+	}
+
+	return w.Properties.RunningMode
 }
 
 // isValidComputeTypeName derives its answer from types.Compute.Values() so it
@@ -80,6 +120,19 @@ func isValidComputeTypeName(name string) bool {
 
 func isValidRunningMode(mode string) bool {
 	return mode == "ALWAYS_ON" || mode == "AUTO_STOP"
+}
+
+// validateRunningMode rejects an explicitly-set, unrecognized RunningMode.
+// An empty mode is left to the caller (CreateWorkspace defaults it;
+// ModifyWorkspaceProperties leaves an empty value as a no-op field).
+func validateRunningMode(mode string) error {
+	if mode != "" && !isValidRunningMode(mode) {
+		return awserr.Newf(
+			"invalid RunningMode: %q, must be ALWAYS_ON or AUTO_STOP",
+			awserr.ErrInvalidParameter, mode)
+	}
+
+	return nil
 }
 
 func (w *storedWorkspace) toWorkspace() *Workspace {
@@ -141,12 +194,22 @@ func (w *storedWorkspace) toWorkspace() *Workspace {
 }
 
 // CreateWorkspace creates a new WorkSpace and returns it.
-// Returns InvalidParameterValuesException when spec.DirectoryID is not registered.
+// Returns InvalidParameterValuesException when spec.DirectoryID is not registered
+// or spec.Properties.RunningMode is set to an unrecognized value. A RunningMode
+// left unset defaults to ALWAYS_ON, matching CreateWorkspacesPool's precedent
+// for an omitted RunningMode (pools.go's poolsRunningModeAlwaysOn) -- the pinned
+// SDK's WorkspaceProperties.RunningMode doc comment doesn't state a default.
 func (b *InMemoryBackend) CreateWorkspace(
 	ctx context.Context,
 	spec *WorkspaceCreationSpec,
 ) (*Workspace, error) {
 	region := b.regionFor(ctx)
+
+	if spec.Properties != nil {
+		if err := validateRunningMode(spec.Properties.RunningMode); err != nil {
+			return nil, err
+		}
+	}
 
 	b.mu.Lock("CreateWorkspace")
 	defer b.mu.Unlock()
@@ -166,6 +229,12 @@ func (b *InMemoryBackend) CreateWorkspace(
 	if spec.Properties != nil {
 		p := *spec.Properties
 		props = &p
+	} else {
+		props = &WorkspaceProperties{}
+	}
+
+	if props.RunningMode == "" {
+		props.RunningMode = string(sdktypes.RunningModeAlwaysOn)
 	}
 
 	const maxDefaultSubnetHost = 250
@@ -369,10 +438,8 @@ func (b *InMemoryBackend) ModifyWorkspaceProperties(
 			"invalid ComputeTypeName: %q", awserr.ErrInvalidParameter, props.ComputeTypeName)
 	}
 
-	if props.RunningMode != "" && !isValidRunningMode(props.RunningMode) {
-		return awserr.Newf(
-			"invalid RunningMode: %q, must be ALWAYS_ON or AUTO_STOP",
-			awserr.ErrInvalidParameter, props.RunningMode)
+	if err := validateRunningMode(props.RunningMode); err != nil {
+		return err
 	}
 
 	if props.RunningModeAutoStopTimeoutInMinutes != 0 {
@@ -438,7 +505,9 @@ func (b *InMemoryBackend) RebuildWorkspaces(workspaceIDs []string) ([]FailedRequ
 	return b.collectStateFailures(workspaceIDs, isRebuildableWorkspaceState), nil
 }
 
-// StartWorkspaces starts the given workspaces, transitioning STOPPED workspaces to AVAILABLE.
+// StartWorkspaces starts the given workspaces, transitioning STOPPED workspaces to
+// AVAILABLE. Returns a per-item failure for unknown IDs or a workspace whose state
+// or running mode doesn't support starting.
 func (b *InMemoryBackend) StartWorkspaces(workspaceIDs []string) ([]FailedRequest, error) {
 	b.mu.Lock("StartWorkspaces")
 	defer b.mu.Unlock()
@@ -457,15 +526,21 @@ func (b *InMemoryBackend) StartWorkspaces(workspaceIDs []string) ([]FailedReques
 			continue
 		}
 
-		if w.State == stateStopped {
-			w.State = stateAvailable
+		if !isStartableWorkspaceState(w.State, workspaceRunningMode(w)) {
+			failures = append(failures, startStopFailure(id, w.State, workspaceRunningMode(w)))
+
+			continue
 		}
+
+		w.State = stateAvailable
 	}
 
 	return failures, nil
 }
 
 // StopWorkspaces stops the given workspaces, transitioning them to STOPPED state.
+// Returns a per-item failure for unknown IDs or a workspace whose state or
+// running mode doesn't support stopping.
 func (b *InMemoryBackend) StopWorkspaces(workspaceIDs []string) ([]FailedRequest, error) {
 	b.mu.Lock("StopWorkspaces")
 	defer b.mu.Unlock()
@@ -484,12 +559,34 @@ func (b *InMemoryBackend) StopWorkspaces(workspaceIDs []string) ([]FailedRequest
 			continue
 		}
 
-		if w.State == stateAvailable {
-			w.State = stateStopped
+		if !isStoppableWorkspaceState(w.State, workspaceRunningMode(w)) {
+			failures = append(failures, startStopFailure(id, w.State, workspaceRunningMode(w)))
+
+			continue
 		}
+
+		w.State = stateStopped
 	}
 
 	return failures, nil
+}
+
+// startStopFailure builds a per-item FailedRequest for a workspace whose current
+// state or running mode doesn't support Start/StopWorkspaces. Start/StopWorkspaces
+// uniquely model InvalidResourceStateException at the operation level (unlike
+// Reboot/Rebuild, which model only OperationNotSupportedException -- see
+// collectStateFailures), so that is the ErrorCode used here for both halves of
+// their documented precondition.
+func startStopFailure(id, state, runningMode string) FailedRequest {
+	return FailedRequest{
+		WorkspaceID: id,
+		ErrorCode:   errInvalidResourceState,
+		ErrorMessage: fmt.Sprintf(
+			"WorkSpace %s is not in a state that supports this operation "+
+				"(current state: %s, running mode: %s)",
+			id, state, runningMode,
+		),
+	}
 }
 
 // TerminateWorkspaces terminates (deletes) the given workspaces, returning failures for unknown IDs.
@@ -556,9 +653,9 @@ func (b *InMemoryBackend) collectStateFailures(
 }
 
 // MigrateWorkspace migrates a workspace to a new bundle.
-func (b *InMemoryBackend) MigrateWorkspace( //nolint:nonamedreturns // existing issue.
+func (b *InMemoryBackend) MigrateWorkspace(
 	sourceWorkspaceID, bundleID string,
-) (sourceID, targetID string, err error) {
+) (string, string, error) {
 	b.mu.Lock("MigrateWorkspace")
 	defer b.mu.Unlock()
 

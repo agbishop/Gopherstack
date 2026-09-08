@@ -219,7 +219,10 @@ func (b *InMemoryBackend) StartApplication(id string) error {
 	return nil
 }
 
-// StopApplication transitions an application to STOPPED state.
+// StopApplication transitions an application to STOPPED state. All of the
+// application's job runs must already be completed or cancelled: "All
+// scheduled and running jobs must be completed or cancelled before stopping
+// an application" (aws-sdk-go-v2 api_op_StopApplication.go doc comment).
 func (b *InMemoryBackend) StopApplication(id string) error {
 	b.mu.Lock("StopApplication")
 	defer b.mu.Unlock()
@@ -234,8 +237,89 @@ func (b *InMemoryBackend) StopApplication(id string) error {
 		return fmt.Errorf("%w: application %s is already in %s state", ErrInvalidState, id, app.State)
 	}
 
+	for _, jr := range b.jobRunsByApplication.Get(id) {
+		if !isTerminalJobRunState(jr.State) {
+			return fmt.Errorf(
+				"%w: application %s has job run %s in state %s; all job runs must be completed or cancelled before stopping",
+				ErrInvalidState,
+				id,
+				jr.JobRunID,
+				jr.State,
+			)
+		}
+	}
+
 	app.State = ApplicationStateStopped
 	app.UpdatedAt = time.Now().UTC()
+
+	return nil
+}
+
+// applicationAutoStartEnabled reports whether app's autoStartConfiguration
+// permits an implicit start on job/session submission.
+// types.AutoStartConfig.Enabled: "Enables the application to automatically
+// start on job submission. Defaults to true." -- so absence of the
+// sub-object, or of its enabled key, means auto-start is on; only an
+// explicit `"enabled": false` turns it off.
+func applicationAutoStartEnabled(app *Application) bool {
+	raw, ok := app.ExtraConfig["autoStartConfiguration"]
+	if !ok {
+		return true
+	}
+
+	cfg, ok := raw.(map[string]any)
+	if !ok {
+		return true
+	}
+
+	enabled, ok := cfg["enabled"].(bool)
+	if !ok {
+		return true
+	}
+
+	return enabled
+}
+
+const (
+	// autoStopIdleTimeoutMinutesMin / autoStopIdleTimeoutMinutesMax bound
+	// AutoStopConfig.IdleTimeoutMinutes. The Go SDK's doc comment gives only
+	// the default of 15 minutes; the range lives in the wire model
+	// (botocore emr-serverless/2021-07-13/service-2.json,
+	// AutoStopConfigIdleTimeoutMinutesInteger: {"min": 1, "max": 10080}).
+	autoStopIdleTimeoutMinutesMin = 1
+	autoStopIdleTimeoutMinutesMax = 10080
+)
+
+// validateAutoStopConfig checks extra's autoStopConfiguration.idleTimeoutMinutes,
+// if present, against the documented AWS range. Absence of the sub-object or
+// key is valid -- idleTimeoutMinutes is optional and defaults to 15.
+func validateAutoStopConfig(extra map[string]any) error {
+	raw, ok := extra["autoStopConfiguration"]
+	if !ok {
+		return nil
+	}
+
+	cfg, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	val, ok := cfg["idleTimeoutMinutes"]
+	if !ok {
+		return nil
+	}
+
+	n, ok := val.(float64)
+	if !ok {
+		return nil
+	}
+
+	if n < autoStopIdleTimeoutMinutesMin || n > autoStopIdleTimeoutMinutesMax {
+		return fmt.Errorf(
+			"%w: autoStopConfiguration.idleTimeoutMinutes must be between %d and %d",
+			ErrValidation, autoStopIdleTimeoutMinutesMin, autoStopIdleTimeoutMinutesMax,
+		)
+	}
 
 	return nil
 }

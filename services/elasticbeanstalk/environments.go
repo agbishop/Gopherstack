@@ -349,13 +349,20 @@ func (b *InMemoryBackend) TerminateEnvironment(ctx context.Context, appName, env
 		return nil, fmt.Errorf("%w: environment %s not found", ErrNotFound, envName)
 	}
 
+	return b.terminateEnvironmentLocked(region, env), nil
+}
+
+// terminateEnvironmentLocked marks env as Terminated and removes it from
+// storage. Caller must hold b.mu.
+func (b *InMemoryBackend) terminateEnvironmentLocked(region string, env *Environment) *Environment {
 	env.Status = "Terminated"
 	out := cloneEnvironment(env)
-	b.environmentDeleteKey(region, appName, envName)
+	b.environmentDeleteKey(region, env.ApplicationName, env.EnvironmentName)
+	delete(b.managedActionHistory[region], env.EnvironmentName)
 
 	b.appendEvent(region, env, "terminateEnvironment completed successfully.", eventSeverityInfo)
 
-	return out, nil
+	return out
 }
 
 // AbortEnvironmentUpdate aborts an in-progress environment configuration update.

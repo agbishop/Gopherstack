@@ -346,10 +346,19 @@ func classifyError(reqErr error) (string, int) {
 		{ErrMapRunDoesNotExist, "ResourceNotFound", http.StatusNotFound},
 		{ErrTaskTokenNotFound, "TaskDoesNotExist", http.StatusNotFound},
 		{ErrStateMachineAlreadyExists, "StateMachineAlreadyExists", http.StatusConflict},
+		// AWS: CreateStateMachine/CreateStateMachineAlias/PublishStateMachineVersion/
+		// StartExecution/StartSyncExecution/UpdateStateMachine/UpdateStateMachineAlias/
+		// ListStateMachineAliases all model StateMachineDeleting for a state machine
+		// that is mid-deletion -- treated as a conflict, matching the
+		// AlreadyExists/ConflictException family below.
+		{ErrStateMachineDeleting, "StateMachineDeleting", http.StatusConflict},
 		// AWS: CreateStateMachineAlias models ConflictException for a duplicate
 		// alias name -- "StateMachineAliasAlreadyExists" names no type anywhere
 		// in this SDK.
 		{ErrStateMachineAliasAlreadyExists, "ConflictException", http.StatusConflict},
+		// AWS: DeleteStateMachineVersion's own error switch models
+		// ConflictException for a version still referenced by an alias.
+		{ErrStateMachineVersionReferencedByAlias, "ConflictException", http.StatusConflict},
 		{ErrExecutionAlreadyExists, "ExecutionAlreadyExists", http.StatusConflict},
 		{ErrActivityAlreadyExists, "ActivityAlreadyExists", http.StatusConflict},
 		{ErrExecutionNotRedrivable, "ExecutionNotRedrivable", http.StatusBadRequest},
@@ -359,7 +368,12 @@ func classifyError(reqErr error) (string, int) {
 		{ErrInvalidExecutionInput, "InvalidExecutionInput", http.StatusBadRequest},
 		{ErrInvalidName, "InvalidName", http.StatusBadRequest},
 		{ErrInvalidRoleArn, "InvalidArn", http.StatusBadRequest},
-		{ErrInvalidRoutingConfiguration, "InvalidRoutingConfiguration", http.StatusBadRequest},
+		// AWS: Create/UpdateStateMachineAlias both model ValidationException,
+		// not "InvalidRoutingConfiguration" (names no type anywhere in this
+		// SDK) -- AWS represents this exact condition as
+		// ValidationExceptionReasonInvalidRoutingConfiguration
+		// ("INVALID_ROUTING_CONFIGURATION", sfn@v1.45.4 types/enums.go:491).
+		{ErrInvalidRoutingConfiguration, "ValidationException", http.StatusBadRequest},
 		{ErrTagPolicyViolation, "TagPolicyViolation", http.StatusBadRequest},
 		// AWS: TagResource models TooManyTags for exceeding the per-resource tag
 		// limit.

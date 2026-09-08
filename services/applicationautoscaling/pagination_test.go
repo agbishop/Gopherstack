@@ -21,7 +21,7 @@ func registerN(t *testing.T, b *applicationautoscaling.InMemoryBackend, n int) {
 			"ecs",
 			"service/cluster/svc-"+string(rune('a'+i)),
 			"ecs:service:DesiredCount",
-			1, 10, nil, "", nil,
+			int32p(1), int32p(10), nil, "", nil,
 		)
 		require.NoError(t, err)
 	}
@@ -115,7 +115,7 @@ func TestDescribeScheduledActions_Pagination(t *testing.T) {
 	b := applicationautoscaling.NewInMemoryBackend("123456789012", "us-east-1")
 
 	_, err := b.RegisterScalableTarget(
-		"ecs", "service/cluster/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+		"ecs", "service/cluster/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 	)
 	require.NoError(t, err)
 

@@ -2,6 +2,7 @@ package redshift_test
 
 import (
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,6 +53,36 @@ func TestRedshiftHandler_EnableLogging(t *testing.T) {
 			body:         "Action=EnableLogging&Version=2012-12-01&ClusterIdentifier=log-cluster2",
 			wantCode:     http.StatusBadRequest,
 			wantContains: []string{"InvalidParameterValue"},
+		},
+		{
+			name: "s3_key_prefix_invalid_character_rejected",
+			setup: func(h *redshift.Handler) {
+				postRedshiftForm(t, h, "Action=CreateCluster&Version=2012-12-01&ClusterIdentifier=log-cluster3")
+			},
+			body: "Action=EnableLogging&Version=2012-12-01" +
+				"&ClusterIdentifier=log-cluster3&BucketName=my-bucket&S3KeyPrefix=" + url.QueryEscape("bad#prefix"),
+			wantCode:     http.StatusBadRequest,
+			wantContains: []string{"InvalidS3KeyPrefixFault"},
+		},
+		{
+			name: "s3_key_prefix_all_documented_characters_accepted",
+			setup: func(h *redshift.Handler) {
+				postRedshiftForm(t, h, "Action=CreateCluster&Version=2012-12-01&ClusterIdentifier=log-cluster4")
+			},
+			body: "Action=EnableLogging&Version=2012-12-01" +
+				"&ClusterIdentifier=log-cluster4&BucketName=my-bucket&S3KeyPrefix=" +
+				url.QueryEscape(`ab12 _.:/=+\-@`),
+			wantCode:     http.StatusOK,
+			wantContains: []string{"EnableLoggingResponse"},
+		},
+		{
+			name: "s3_key_prefix_empty_is_legal",
+			setup: func(h *redshift.Handler) {
+				postRedshiftForm(t, h, "Action=CreateCluster&Version=2012-12-01&ClusterIdentifier=log-cluster5")
+			},
+			body:         "Action=EnableLogging&Version=2012-12-01&ClusterIdentifier=log-cluster5&BucketName=my-bucket",
+			wantCode:     http.StatusOK,
+			wantContains: []string{"EnableLoggingResponse"},
 		},
 	}
 

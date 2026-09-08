@@ -419,6 +419,64 @@ func TestInMemoryBackend_DeveloperProviderName_RoundTrip(t *testing.T) {
 	assert.Equal(t, "developer.myapp.com", described.DeveloperProviderName)
 }
 
+// TestInMemoryBackend_UpdateIdentityPool_DeveloperProviderName proves
+// api_op_CreateIdentityPool.go's "Once you have set a developer provider name, you
+// cannot change it" invariant, and that a pool created without one can still adopt
+// one through Update.
+func TestInMemoryBackend_UpdateIdentityPool_DeveloperProviderName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		createDPN string
+		updateDPN string
+		want      string
+	}{
+		{
+			name:      "already set cannot change",
+			createDPN: "developer.myapp.com",
+			updateDPN: "developer.other.com",
+			want:      "developer.myapp.com",
+		},
+		{
+			name:      "unset can be adopted",
+			createDPN: "",
+			updateDPN: "developer.adopted.com",
+			want:      "developer.adopted.com",
+		},
+		{
+			name:      "already set survives an empty update",
+			createDPN: "developer.myapp.com",
+			updateDPN: "",
+			want:      "developer.myapp.com",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestBackend()
+
+			pool, err := b.CreateIdentityPool(
+				context.Background(), "dev-pool", true, false, tt.createDPN, nil, nil, nil,
+			)
+			require.NoError(t, err)
+
+			updated, err := b.UpdateIdentityPool(
+				context.Background(), pool.IdentityPoolID, "dev-pool", true, false,
+				tt.updateDPN, nil, nil, nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, updated.DeveloperProviderName)
+
+			described, err := b.DescribeIdentityPool(context.Background(), pool.IdentityPoolID)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, described.DeveloperProviderName)
+		})
+	}
+}
+
 func TestInMemoryBackend_UpdateIdentityPool_WithTags(t *testing.T) {
 	t.Parallel()
 

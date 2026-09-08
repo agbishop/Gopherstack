@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -288,24 +289,31 @@ func (h *Handler) handleGetPackageVersionAsset(
 	return c.Blob(http.StatusOK, "application/octet-stream", data)
 }
 
+// validatePackageVersionParams returns the raw, unwritten validation error so
+// callers can map and write it exactly once via h.handleError. It used to
+// write its own 400 body via c.JSON and return that call's (always-nil, on a
+// successful write) result directly; callers stored that nil in err and
+// tested it before continuing, so the rejection was silently treated as
+// success and the real (read-only) Backend method still ran, writing a
+// second body on top of the committed one (gopherstack-7opw, the
+// gopherstack-8haq shape).
 func (h *Handler) validatePackageVersionParams(
-	c *echo.Context,
 	domainName, repoName, format, name, version string,
 ) error {
 	if domainName == "" {
-		return c.JSON(http.StatusBadRequest, errResp("ValidationException", "domain is required"))
+		return fmt.Errorf("%w: domain is required", ErrValidation)
 	}
 	if repoName == "" {
-		return c.JSON(http.StatusBadRequest, errResp("ValidationException", "repository is required"))
+		return fmt.Errorf("%w: repository is required", ErrValidation)
 	}
 	if format == "" {
-		return c.JSON(http.StatusBadRequest, errResp("ValidationException", "format is required"))
+		return fmt.Errorf("%w: format is required", ErrValidation)
 	}
 	if name == "" {
-		return c.JSON(http.StatusBadRequest, errResp("ValidationException", "package is required"))
+		return fmt.Errorf("%w: package is required", ErrValidation)
 	}
 	if version == "" {
-		return c.JSON(http.StatusBadRequest, errResp("ValidationException", "version is required"))
+		return fmt.Errorf("%w: version is required", ErrValidation)
 	}
 
 	return nil
@@ -318,8 +326,8 @@ func (h *Handler) validatePackageVersionParams(
 func (h *Handler) handleGetPackageVersionReadme(
 	c *echo.Context, domainName, repoName, format, namespace, name, version string,
 ) error {
-	if err := h.validatePackageVersionParams(c, domainName, repoName, format, name, version); err != nil {
-		return err
+	if err := h.validatePackageVersionParams(domainName, repoName, format, name, version); err != nil {
+		return h.handleError(c, err)
 	}
 
 	readme, pv, err := h.Backend.GetPackageVersionReadme(
@@ -352,8 +360,8 @@ func (h *Handler) handleGetPackageVersionReadme(
 func (h *Handler) handleListPackageVersionAssets(
 	c *echo.Context, domainName, repoName, format, namespace, name, version string,
 ) error {
-	if err := h.validatePackageVersionParams(c, domainName, repoName, format, name, version); err != nil {
-		return err
+	if err := h.validatePackageVersionParams(domainName, repoName, format, name, version); err != nil {
+		return h.handleError(c, err)
 	}
 
 	assets, err := h.Backend.ListPackageVersionAssets(
@@ -414,8 +422,8 @@ func packageDependencyToMap(d PackageDependencyInfo) map[string]any {
 func (h *Handler) handleListPackageVersionDependencies(
 	c *echo.Context, domainName, repoName, format, namespace, name, version string,
 ) error {
-	if err := h.validatePackageVersionParams(c, domainName, repoName, format, name, version); err != nil {
-		return err
+	if err := h.validatePackageVersionParams(domainName, repoName, format, name, version); err != nil {
+		return h.handleError(c, err)
 	}
 
 	deps, err := h.Backend.ListPackageVersionDependencies(

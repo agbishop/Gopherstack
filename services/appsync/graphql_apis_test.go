@@ -304,6 +304,52 @@ func TestInMemoryBackend_DeleteGraphqlAPI_CascadeDelete(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestInMemoryBackend_DeleteGraphqlAPI_CascadeDelete_SourceAPIAssociations(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	src, err := b.CreateGraphqlAPI("Src", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	require.NoError(t, err)
+
+	merged, err := b.CreateGraphqlAPI("Merged", appsync.AuthTypeAPIKey, false, "MERGED", "", nil, nil, nil)
+	require.NoError(t, err)
+
+	assoc, err := b.AssociateSourceGraphqlAPI(merged.APIID, src.APIID, "desc", "")
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeleteGraphqlAPI(src.APIID))
+
+	_, err = b.GetSourceAPIAssociation(merged.APIID, assoc.AssociationID)
+	require.ErrorIs(t, err, awserr.ErrNotFound)
+
+	assocs, err := b.ListSourceAPIAssociations(merged.APIID)
+	require.NoError(t, err)
+	assert.Empty(t, assocs)
+}
+
+func TestInMemoryBackend_DeleteGraphqlAPI_CascadeDelete_DomainNameAssociation(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = b.CreateDomainName("api.example.com", "cert-arn", "", nil)
+	require.NoError(t, err)
+
+	_, err = b.AssociateAPI("api.example.com", api.APIID)
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeleteGraphqlAPI(api.APIID))
+
+	_, err = b.GetAPIAssociation("api.example.com")
+	require.ErrorIs(t, err, awserr.ErrNotFound)
+
+	dn, err := b.GetDomainName("api.example.com")
+	require.NoError(t, err)
+	assert.Empty(t, dn.APIID)
+}
+
 func TestInMemoryBackend_UpdateGraphqlAPI(t *testing.T) {
 	t.Parallel()
 

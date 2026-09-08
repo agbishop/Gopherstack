@@ -1,6 +1,7 @@
 package wafv2_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -115,24 +116,24 @@ func TestHandler_UpdateWebACL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		setup      func(*wafv2.Handler) string
-		body       func(id string) map[string]any
+		setup      func(*wafv2.Handler) (string, string)
+		body       func(id, lockToken string) map[string]any
 		name       string
 		wantStatus int
 	}{
 		{
 			name: "existing",
-			setup: func(h *wafv2.Handler) string {
+			setup: func(h *wafv2.Handler) (string, string) {
 				w, _ := wafv2.CreateWebACLSimple(h.Backend, "my-acl", "REGIONAL", "", "ALLOW", nil)
 
-				return w.ID
+				return w.ID, w.LockToken
 			},
-			body: func(id string) map[string]any {
+			body: func(id, lockToken string) map[string]any {
 				return map[string]any{
 					"Id":          id,
 					"Name":        "my-acl",
 					"Scope":       "REGIONAL",
-					"LockToken":   "",
+					"LockToken":   lockToken,
 					"Description": "updated",
 				}
 			},
@@ -140,11 +141,11 @@ func TestHandler_UpdateWebACL(t *testing.T) {
 		},
 		{
 			name: "not_found",
-			setup: func(_ *wafv2.Handler) string {
-				return "nonexistent"
+			setup: func(_ *wafv2.Handler) (string, string) {
+				return "nonexistent", "tok"
 			},
-			body: func(id string) map[string]any {
-				return map[string]any{"Id": id, "Name": "x", "Scope": "REGIONAL", "LockToken": ""}
+			body: func(id, lockToken string) map[string]any {
+				return map[string]any{"Id": id, "Name": "x", "Scope": "REGIONAL", "LockToken": lockToken}
 			},
 			wantStatus: http.StatusBadRequest,
 		},
@@ -155,8 +156,8 @@ func TestHandler_UpdateWebACL(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
-			id := tt.setup(h)
-			rec := doWafv2Request(t, h, "UpdateWebACL", tt.body(id))
+			id, lockToken := tt.setup(h)
+			rec := doWafv2Request(t, h, "UpdateWebACL", tt.body(id, lockToken))
 			assert.Equal(t, tt.wantStatus, rec.Code)
 
 			if tt.wantStatus == http.StatusOK {
@@ -172,30 +173,30 @@ func TestHandler_DeleteWebACL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		setup      func(*wafv2.Handler) string
-		body       func(id string) map[string]any
+		setup      func(*wafv2.Handler) (string, string)
+		body       func(id, lockToken string) map[string]any
 		name       string
 		wantStatus int
 	}{
 		{
 			name: "existing",
-			setup: func(h *wafv2.Handler) string {
+			setup: func(h *wafv2.Handler) (string, string) {
 				w, _ := wafv2.CreateWebACLSimple(h.Backend, "my-acl", "REGIONAL", "", "ALLOW", nil)
 
-				return w.ID
+				return w.ID, w.LockToken
 			},
-			body: func(id string) map[string]any {
-				return map[string]any{"Id": id, "Name": "my-acl", "Scope": "REGIONAL", "LockToken": ""}
+			body: func(id, lockToken string) map[string]any {
+				return map[string]any{"Id": id, "Name": "my-acl", "Scope": "REGIONAL", "LockToken": lockToken}
 			},
 			wantStatus: http.StatusOK,
 		},
 		{
 			name: "not_found",
-			setup: func(_ *wafv2.Handler) string {
-				return "nonexistent"
+			setup: func(_ *wafv2.Handler) (string, string) {
+				return "nonexistent", "tok"
 			},
-			body: func(id string) map[string]any {
-				return map[string]any{"Id": id, "Name": "x", "Scope": "REGIONAL", "LockToken": ""}
+			body: func(id, lockToken string) map[string]any {
+				return map[string]any{"Id": id, "Name": "x", "Scope": "REGIONAL", "LockToken": lockToken}
 			},
 			wantStatus: http.StatusBadRequest,
 		},
@@ -206,8 +207,8 @@ func TestHandler_DeleteWebACL(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
-			id := tt.setup(h)
-			rec := doWafv2Request(t, h, "DeleteWebACL", tt.body(id))
+			id, lockToken := tt.setup(h)
+			rec := doWafv2Request(t, h, "DeleteWebACL", tt.body(id, lockToken))
 			assert.Equal(t, tt.wantStatus, rec.Code)
 		})
 	}
@@ -1234,8 +1235,11 @@ func TestHandler_DeleteWebACL_CascadeLogging(t *testing.T) {
 	require.Len(t, webACLs, 1)
 	webACL := webACLs[0].(map[string]any)
 	webACLID := webACL["Id"].(string)
+	webACLLockToken := webACL["LockToken"].(string)
 
-	rec = doWafv2Request(t, h, "DeleteWebACL", map[string]any{"Id": webACLID, "Name": "test-acl", "Scope": "REGIONAL"})
+	rec = doWafv2Request(t, h, "DeleteWebACL", map[string]any{
+		"Id": webACLID, "Name": "test-acl", "Scope": "REGIONAL", "LockToken": webACLLockToken,
+	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	// The logging config should be gone.
@@ -1257,11 +1261,15 @@ func TestDeleteWebACL_FailsWhenAssociated(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
+	w, err := h.Backend.GetWebACL(context.Background(), id)
+	require.NoError(t, err)
+
 	// Attempt delete while associated — should fail with WAFAssociatedItemException.
 	rec = doWafv2Request(t, h, "DeleteWebACL", map[string]any{
-		"Id":    id,
-		"Name":  "protected-acl",
-		"Scope": "REGIONAL",
+		"Id":        id,
+		"Name":      "protected-acl",
+		"Scope":     "REGIONAL",
+		"LockToken": w.LockToken,
 	})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 
@@ -1274,9 +1282,10 @@ func TestDeleteWebACL_FailsWhenAssociated(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	rec = doWafv2Request(t, h, "DeleteWebACL", map[string]any{
-		"Id":    id,
-		"Name":  "protected-acl",
-		"Scope": "REGIONAL",
+		"Id":        id,
+		"Name":      "protected-acl",
+		"Scope":     "REGIONAL",
+		"LockToken": w.LockToken,
 	})
 	assert.Equal(t, http.StatusOK, rec.Code, "delete after disassociation should succeed: %s", rec.Body.String())
 }

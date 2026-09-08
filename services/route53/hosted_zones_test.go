@@ -262,6 +262,27 @@ func TestDeleteHostedZone_NotEmpty(t *testing.T) {
 	}
 }
 
+func TestDeleteHostedZone_RejectedWhileDNSSECEnabled(t *testing.T) {
+	t.Parallel()
+
+	h := newHandler(t)
+	zoneID := createZoneForOpsTest(t, h)
+	createKSKForOpsTest(t, h, zoneID, "main-key")
+
+	rec := send(t, h, http.MethodPost, "/2013-04-01/hostedzone/"+zoneID+"/enable-dnssec", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = send(t, h, http.MethodDelete, "/2013-04-01/hostedzone/"+zoneID, "")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "HostedZoneNotEmpty")
+
+	rec = send(t, h, http.MethodPost, "/2013-04-01/hostedzone/"+zoneID+"/disable-dnssec", "")
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = send(t, h, http.MethodDelete, "/2013-04-01/hostedzone/"+zoneID, "")
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestDeleteHostedZone_EmptyZoneSucceeds(t *testing.T) {
 	t.Parallel()
 

@@ -208,9 +208,10 @@ func (h *Handler) handleCreateRecipeJob(ctx context.Context, body []byte) ([]byt
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, fmt.Errorf("%w: %w", errInvalidRequest, err)
 	}
-	recipeName := ""
+	recipeName, recipeVersion := "", ""
 	if req.RecipeReference != nil {
 		recipeName = req.RecipeReference.Name
+		recipeVersion = req.RecipeReference.RecipeVersion
 	}
 	j, err := h.Backend.CreateJob(
 		ctx,
@@ -223,6 +224,7 @@ func (h *Handler) handleCreateRecipeJob(ctx context.Context, body []byte) ([]byt
 		req.Outputs,
 		req.Tags,
 		JobExtras{
+			RecipeVersion:      recipeVersion,
 			EncryptionMode:     req.EncryptionMode,
 			EncryptionKeyArn:   req.EncryptionKeyArn,
 			LogSubscription:    req.LogSubscription,

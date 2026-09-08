@@ -83,6 +83,12 @@ func (b *InMemoryBackend) DeleteVpcConnector(vcArn string) (*VpcConnector, error
 		return nil, fmt.Errorf("vpc connector %s not found: %w", vcArn, ErrNotFound)
 	}
 
+	// DeleteVpcConnector doc (api_op_DeleteVpcConnector.go): "You can't
+	// delete a connector that's used by one or more App Runner services."
+	if b.serviceUsesVpcConnector(vcArn) {
+		return nil, fmt.Errorf("vpc connector %s is used by one or more services: %w", vcArn, ErrInvalidParameter)
+	}
+
 	vc.Status = vpcConnStatusInactive
 	vc.DeletedAt = time.Now().UTC()
 	cp := vc.toVpcConnector()

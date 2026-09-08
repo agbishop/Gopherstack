@@ -177,12 +177,24 @@ func (b *InMemoryBackend) GetAdapter(ctx context.Context, adapterID string) (*Ad
 	return cloneAdapter(adapter), nil
 }
 
-// UpdateAdapter updates mutable fields on an existing adapter.
+// UpdateAdapter updates mutable fields on an existing adapter. name and
+// description are true optionals -- nil means the field was omitted from the
+// request and is left unchanged, matching UpdateAdapterInput.AdapterName /
+// .Description (both *string in the real SDK, api_op_UpdateAdapter.go)
+// rather than the enum-typed AutoUpdate, which the SDK sends only when
+// non-empty (serializers.go's `len(v.AutoUpdate) > 0` guard).
 func (b *InMemoryBackend) UpdateAdapter(
-	ctx context.Context, adapterID, description, autoUpdate string,
+	ctx context.Context, adapterID string, name, description *string, autoUpdate string,
 ) (*Adapter, error) {
 	if autoUpdate != "" && autoUpdate != autoUpdateEnabled && autoUpdate != autoUpdateDisabled {
 		return nil, fmt.Errorf("%w: AutoUpdate must be ENABLED or DISABLED", ErrValidation)
+	}
+
+	if name == nil && description == nil && autoUpdate == "" {
+		return nil, fmt.Errorf(
+			"%w: at least one of AdapterName, Description, AutoUpdate must be specified",
+			ErrValidation,
+		)
 	}
 
 	region := getRegion(ctx, b.region)
@@ -195,8 +207,12 @@ func (b *InMemoryBackend) UpdateAdapter(
 		return nil, fmt.Errorf("%w: adapter %s not found", ErrAdapterNotFound, adapterID)
 	}
 
-	if description != "" {
-		adapter.Description = description
+	if name != nil {
+		adapter.AdapterName = *name
+	}
+
+	if description != nil {
+		adapter.Description = *description
 	}
 
 	if autoUpdate != "" {

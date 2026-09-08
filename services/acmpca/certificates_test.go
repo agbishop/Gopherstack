@@ -122,6 +122,46 @@ func TestInMemoryBackend_CertificateValidation(t *testing.T) {
 			},
 		},
 		{
+			name: "revoking an already-revoked certificate returns RequestAlreadyProcessedException",
+			run: func(t *testing.T, b *acmpca.InMemoryBackend) {
+				t.Helper()
+
+				ca, err := b.CreateCertificateAuthority(
+					context.Background(),
+					"ROOT",
+					acmpca.CertificateAuthorityConfiguration{
+						Subject: acmpca.CertificateAuthoritySubject{CommonName: "Double Revoke CA"},
+					},
+				)
+				require.NoError(t, err)
+
+				subCA, err := b.CreateCertificateAuthority(
+					context.Background(),
+					"SUBORDINATE",
+					acmpca.CertificateAuthorityConfiguration{
+						Subject: acmpca.CertificateAuthoritySubject{CommonName: "Sub CA"},
+					},
+				)
+				require.NoError(t, err)
+
+				csr, err := b.GetCertificateAuthorityCsr(context.Background(), subCA.ARN)
+				require.NoError(t, err)
+
+				cert, err := b.IssueCertificate(context.Background(), ca.ARN, csr, 365)
+				require.NoError(t, err)
+
+				err = b.RevokeCertificate(context.Background(), ca.ARN, cert.Serial, "KEY_COMPROMISE")
+				require.NoError(t, err)
+
+				err = b.RevokeCertificate(context.Background(), ca.ARN, cert.Serial, "SUPERSEDED")
+				require.ErrorIs(t, err, acmpca.ErrRequestAlreadyProcessed)
+
+				got, err := b.GetCertificate(context.Background(), ca.ARN, cert.ARN)
+				require.NoError(t, err)
+				assert.Equal(t, "KEY_COMPROMISE", got.RevocationReason)
+			},
+		},
+		{
 			name: "revoke with invalid reason returns error",
 			run: func(t *testing.T, b *acmpca.InMemoryBackend) {
 				t.Helper()

@@ -263,7 +263,8 @@ func TestResourceCreator_SupplementalTypes_RealBackends(t *testing.T) {
 			logicalID:    "MyRotation",
 			resourceType: "AWS::SecretsManager::RotationSchedule",
 			props: map[string]any{
-				"SecretId": "arn:aws:secretsmanager:us-east-1:000000000000:secret:MySecret",
+				"SecretId":          "MySecret",
+				"RotationLambdaARN": "arn:aws:lambda:us-east-1:000000000000:function:unit-cfn-rotator",
 			},
 		},
 		{
@@ -332,9 +333,17 @@ func TestResourceCreator_SupplementalTypes_RealBackends(t *testing.T) {
 					tt.props["ServiceNamespace"].(string),
 					tt.props["ResourceId"].(string),
 					tt.props["ScalableDimension"].(string),
-					1, 10, nil, "", nil,
+					int32p(1), int32p(10), nil, "", nil,
 				)
 				require.NoError(t, regErr)
+			}
+
+			// A RotationSchedule now really calls RotateSecret, which requires the
+			// referenced secret to exist and already have a current version.
+			if tt.resourceType == "AWS::SecretsManager::RotationSchedule" {
+				_, secretErr := rc.Create(t.Context(), "MySecret", "AWS::SecretsManager::Secret",
+					map[string]any{"Name": "MySecret", "SecretString": "s3cr3t"}, nil, nil)
+				require.NoError(t, secretErr)
 			}
 
 			physID, err := rc.Create(t.Context(), tt.logicalID, tt.resourceType, tt.props, nil, nil)

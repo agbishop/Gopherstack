@@ -5,6 +5,8 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/url"
+	"slices"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -79,7 +81,7 @@ func (h *Handler) handleDescribeClusterSnapshots(vals url.Values) (any, error) {
 	markerStr := vals.Get("Marker")
 	maxRecordsStr := vals.Get("MaxRecords")
 
-	snaps, err := h.Backend.DescribeClusterSnapshots(snapshotID, clusterID, snapshotType)
+	snaps, err := h.Backend.DescribeClusterSnapshots(snapshotID, clusterID, snapshotType, parseClusterExists(vals))
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +90,8 @@ func (h *Handler) handleDescribeClusterSnapshots(vals url.Values) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	sortSnapshots(snaps, parseSnapshotSortingEntities(vals))
 
 	pageSize := defaultSnapshotPageSize
 	if maxRecordsStr != "" {
@@ -141,6 +145,87 @@ func (h *Handler) handleDescribeClusterSnapshots(vals url.Values) (any, error) {
 		Marker:    nextMarker,
 		Snapshots: xmlSnapshotList{Members: members},
 	}, nil
+}
+
+// parseClusterExists parses the optional ClusterExists request parameter into a
+// tri-state *bool, matching DescribeClusterSnapshotsInput's *bool ClusterExists
+// field (nil means "not specified", distinct from explicit false).
+func parseClusterExists(vals url.Values) *bool {
+	v := vals.Get("ClusterExists")
+	if v == "" {
+		return nil
+	}
+
+	b := v == paramValueTrue
+
+	return &b
+}
+
+// snapshotSortEntity is a parsed SortingEntities.SnapshotSortingEntity entry
+// (real DescribeClusterSnapshotsInput.SortingEntities, redshift@v1.65.4
+// api_op_DescribeClusterSnapshots.go, wire-encoded as
+// "SortingEntities.SnapshotSortingEntity.N.Attribute"/".SortOrder" per
+// awsAwsquery_serializeDocumentSnapshotSortingEntityList, serializers.go).
+type snapshotSortEntity struct {
+	attribute  string
+	descending bool
+}
+
+// parseSnapshotSortingEntities extracts SortingEntities.SnapshotSortingEntity.N
+// entries. Attribute is required per-entry (types.SnapshotSortingEntity);
+// SortOrder defaults to ascending (types.SortByOrderAscending) when omitted,
+// matching every other ascending-by-default sort in this service.
+func parseSnapshotSortingEntities(vals url.Values) []snapshotSortEntity {
+	var entities []snapshotSortEntity
+
+	for i := 1; i <= maxListItems; i++ {
+		prefix := fmt.Sprintf("SortingEntities.SnapshotSortingEntity.%d.", i)
+
+		attr := vals.Get(prefix + "Attribute")
+		if attr == "" {
+			return entities
+		}
+
+		entities = append(entities, snapshotSortEntity{
+			attribute:  attr,
+			descending: vals.Get(prefix+"SortOrder") == "DESC",
+		})
+	}
+
+	return entities
+}
+
+// sortSnapshots stably sorts snaps in place by entities, applied in order so
+// earlier entities take precedence (matching the field's plural name -- a
+// multi-key sort). SOURCE_TYPE (types.SnapshotAttributeToSortBySourceType)
+// and CREATE_TIME (...ByCreateTime) are backed by real Snapshot fields.
+// TOTAL_SIZE (...ByTotalSize) is intentionally NOT applied: this backend
+// does not model snapshot storage size anywhere (no field on Snapshot), and
+// fabricating one just to satisfy this sort key would produce a plausible
+// but meaningless order -- see .claude/memories/parity-principles.md's
+// no-stub rule. An unrecognized or TOTAL_SIZE entity is skipped (its
+// relative order is left as-is by the stable sort) rather than faked.
+func sortSnapshots(snaps []Snapshot, entities []snapshotSortEntity) {
+	for _, e := range slices.Backward(entities) {
+		var less func(a, b *Snapshot) bool
+
+		switch e.attribute {
+		case "CREATE_TIME":
+			less = func(a, b *Snapshot) bool { return a.SnapshotCreateTime.Before(b.SnapshotCreateTime) }
+		case "SOURCE_TYPE":
+			less = func(a, b *Snapshot) bool { return a.SnapshotType < b.SnapshotType }
+		default:
+			continue
+		}
+
+		sort.SliceStable(snaps, func(i, j int) bool {
+			if e.descending {
+				return less(&snaps[j], &snaps[i])
+			}
+
+			return less(&snaps[i], &snaps[j])
+		})
+	}
 }
 
 // filterSnapshotsByTimeRange applies DescribeClusterSnapshotsInput.StartTime/

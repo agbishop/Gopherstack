@@ -132,8 +132,9 @@ type instanceNetworkingWire struct {
 
 // instanceHardwareWire mirrors types.InstanceHardware.
 type instanceHardwareWire struct {
-	CPUCount    int32   `json:"cpuCount,omitempty"`
-	RAMSizeInGb float32 `json:"ramSizeInGb,omitempty"`
+	Disks       []diskWire `json:"disks,omitempty"`
+	CPUCount    int32      `json:"cpuCount,omitempty"`
+	RAMSizeInGb float32    `json:"ramSizeInGb,omitempty"`
 }
 
 // instanceMetadataOptionsWire mirrors types.InstanceMetadataOptions.
@@ -176,11 +177,16 @@ type instanceStateWire struct {
 	Code int32  `json:"code"`
 }
 
-func instanceToWire(i *Instance) instanceWire {
+func instanceToWire(i *Instance, disks []*Disk) instanceWire {
+	diskWires := make([]diskWire, len(disks))
+	for idx, d := range disks {
+		diskWires[idx] = diskToWire(d)
+	}
+
 	return instanceWire{
 		AddOns: addOnsToWire(i.AddOns), Arn: i.Arn, BlueprintID: i.BlueprintID, BlueprintName: i.BlueprintName,
 		BundleID: i.BundleID, CreatedAt: epochPtr(i.CreatedAt),
-		Hardware:      &instanceHardwareWire{CPUCount: i.CPUCount, RAMSizeInGb: i.RAMSizeInGb},
+		Hardware:      &instanceHardwareWire{CPUCount: i.CPUCount, RAMSizeInGb: i.RAMSizeInGb, Disks: diskWires},
 		IPAddressType: i.IPAddressType, Ipv6Addresses: i.IPv6Addresses, IsStaticIP: i.IsStaticIP,
 		Location: locationToWire(i.Location),
 		MetadataOptions: &instanceMetadataOptionsWire{
@@ -307,7 +313,7 @@ func (h *Handler) handleGetInstance(_ context.Context, body []byte) ([]byte, err
 		return nil, getErr
 	}
 
-	w := instanceToWire(inst)
+	w := instanceToWire(inst, h.Backend.DisksAttachedTo(inst.Name))
 
 	return marshalResponse(instanceEnvelope{Instance: &w})
 }
@@ -330,7 +336,7 @@ func (h *Handler) handleGetInstances(_ context.Context, body []byte) ([]byte, er
 
 	out := make([]instanceWire, len(pg.Data))
 	for i, inst := range pg.Data {
-		out[i] = instanceToWire(inst)
+		out[i] = instanceToWire(inst, h.Backend.DisksAttachedTo(inst.Name))
 	}
 
 	return marshalResponse(instancesListResponse{Instances: out, NextPageToken: pg.Next})

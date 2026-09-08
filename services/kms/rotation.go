@@ -19,7 +19,7 @@ func (b *InMemoryBackend) EnableKeyRotation(
 	b.mu.Lock("EnableKeyRotation")
 	defer b.mu.Unlock()
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}
@@ -75,7 +75,7 @@ func (b *InMemoryBackend) DisableKeyRotation(
 	b.mu.Lock("DisableKeyRotation")
 	defer b.mu.Unlock()
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}
@@ -112,7 +112,7 @@ func (b *InMemoryBackend) RotateKeyOnDemand(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +147,7 @@ func (b *InMemoryBackend) RotateKeyOnDemand(
 	if recentCount >= maxOnDemandRotationsPerDay {
 		return nil, fmt.Errorf(
 			"%w: on-demand rotation limit of %d per 24-hour window exceeded for key %q",
-			ErrValidation, maxOnDemandRotationsPerDay, key.KeyID,
+			ErrLimitExceeded, maxOnDemandRotationsPerDay, key.KeyID,
 		)
 	}
 
@@ -168,7 +168,7 @@ func (b *InMemoryBackend) GetKeyRotationStatus(
 	b.mu.RLock("GetKeyRotationStatus")
 	defer b.mu.RUnlock()
 
-	key, err := b.lookupKey(ctx, input.KeyID)
+	key, err := b.lookupKey(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +304,7 @@ func (b *InMemoryBackend) ListKeyRotations(
 	b.mu.RLock("ListKeyRotations")
 	defer b.mu.RUnlock()
 
-	key, err := b.lookupKey(ctx, input.KeyID)
+	key, err := b.lookupKey(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}

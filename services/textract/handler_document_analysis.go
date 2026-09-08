@@ -46,6 +46,10 @@ func (h *Handler) handleAnalyzeDocument(
 		return nil, err
 	}
 
+	if err := h.checkS3Object(ctx, in.Document.S3Object.Bucket, in.Document.S3Object.Name); err != nil {
+		return nil, err
+	}
+
 	uri := documentURI(in.Document.S3Object.Bucket, in.Document.S3Object.Name)
 
 	var blocks []Block
@@ -82,17 +86,12 @@ func (h *Handler) handleStartDocumentAnalysis(
 		return nil, err
 	}
 
-	bucket := in.DocumentLocation.S3Object.Bucket
-	key := in.DocumentLocation.S3Object.Name
-
-	if bucket == "" || key == "" {
-		return nil, fmt.Errorf("%w: DocumentLocation.S3Object.Bucket and Name are required", errInvalidRequest)
+	uri, err := h.resolveDocumentLocation(ctx, in.DocumentLocation.S3Object.Bucket, in.DocumentLocation.S3Object.Name)
+	if err != nil {
+		return nil, err
 	}
 
-	uri := "s3://" + bucket + "/" + key
-
 	var job *DocumentJob
-	var err error
 
 	if b, ok := h.Backend.(*InMemoryBackend); ok {
 		if err = b.ValidateAdaptersConfig(ctx, in.AdaptersConfig); err != nil {

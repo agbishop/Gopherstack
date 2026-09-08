@@ -6,9 +6,25 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: s3tables
 sdk_module: aws-sdk-go-v2/service/s3tables@v1.18.4   # version audited against
-last_audit_commit: f825229dc                      # HEAD when this manifest was written (gopherstack-wla0 pass)
-last_audit_date: 2026-08-23
-overall: A            # gopherstack-wla0 (2026-08-23) FIXED: GetTable/ListTables/GetNamespace/ListNamespaces
+last_audit_commit: 6742921a1                      # HEAD this pass started from (2026-09-04); pass's own commit not yet made
+last_audit_date: 2026-09-04
+overall: A            # 2026-09-04 FIXED: two missing-precondition bugs (see Notes). DeleteTable silently
+                      # accepted a stale/omitted optional versionToken and always succeeded -- real
+                      # DeleteTableInput.VersionToken is optional but, when supplied, is an optimistic-
+                      # concurrency check (ConflictException on mismatch), same pattern this service
+                      # already enforces on PutTableReplication/DeleteTableReplication; the backend method
+                      # didn't even take a versionToken parameter. Separately, DeleteTableBucket cascade-
+                      # deleted all child namespaces/tables instead of requiring the bucket be empty first,
+                      # and DeleteNamespace deleted a namespace that still contained tables instead of
+                      # rejecting it -- both contradict AWS's own docs ("Before you delete a table bucket,
+                      # you must first delete all namespaces and tables within the bucket" /
+                      # "Before you delete a table namespace ... you must delete all tables within the
+                      # namespace"), confirmed by directly fetching s3-tables-buckets-delete.html and
+                      # s3-tables-namespace-delete.html. A prior pass's DeleteTableBucket note ("cascade ...
+                      # verified correct") predates this doc citation and was wrong. Both now return the
+                      # already-modelled ConflictException (new ErrTableBucketNotEmpty/ErrNamespaceNotEmpty
+                      # sentinels) instead of cascading.
+                      # gopherstack-wla0 (2026-08-23) FIXED: GetTable/ListTables/GetNamespace/ListNamespaces
                       # wrote the fabricated wire key "tableBucketARN" instead of the real "tableBucketId" (a
                       # different, system-assigned value neither shape's real deserializer even has a
                       # tableBucketARN case for); GetTableBucket/ListTableBuckets never populated the same real
@@ -30,7 +46,7 @@ ops:
   CreateTableBucket: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: now applies encryptionConfiguration/storageClassConfiguration/tags from request body instead of discarding them"}
   GetTableBucket: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-wla0 FIXED: now includes the real, system-assigned tableBucketId (TableBucket.BucketID, synthesized at CreateTableBucket) -- previously omitted entirely (not fabricated, just absent, since no ID existed to source it from)."}
   ListTableBuckets: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: continuationToken/maxBuckets/prefix/type were silently ignored; now paginates via pkgs/page and filters. gopherstack-wla0 FIXED: TableBucketSummary entries now include the real tableBucketId, same fix as GetTableBucket."}
-  DeleteTableBucket: {wire: ok, errors: ok, state: ok, persist: ok, note: "cascade to namespaces/tables/tags/replication/expiry verified correct"}
+  DeleteTableBucket: {wire: ok, errors: ok, state: ok, persist: ok, note: "2026-09-04 FIXED: was cascading to namespaces/tables/tags/replication/expiry instead of requiring the bucket be empty first, contradicting AWS docs; now rejects a non-empty bucket with ConflictException (ErrTableBucketNotEmpty) -- see Notes"}
   PutTableBucketPolicy: {wire: ok, errors: ok, state: ok, persist: ok}
   GetTableBucketPolicy: {wire: ok, errors: ok, state: ok, persist: ok}
   DeleteTableBucketPolicy: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -49,11 +65,11 @@ ops:
   DeleteTableBucketReplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: now accepts+enforces the optional versionToken query param"}
   CreateNamespace: {wire: ok, errors: ok, state: ok, persist: ok, note: "CreateNamespaceOutput really does require tableBucketARN (confirmed) -- unaffected by the gopherstack-wla0 fix below, which only touches ops whose real shape has no tableBucketARN member."}
   GetNamespace: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-wla0 FIXED: GetNamespaceOutput has no tableBucketARN member at all (confirmed via awsRestjson1_deserializeOpDocumentGetNamespaceOutput) -- gopherstack was emitting a fabricated tableBucketARN key and omitting the real, system-assigned tableBucketId. Now emits the real key, backed by a new Namespace.TableBucketID set at CreateNamespace time."}
-  DeleteNamespace: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteNamespace: {wire: ok, errors: ok, state: ok, persist: ok, note: "2026-09-04 FIXED: deleted a namespace that still contained tables instead of rejecting it, contradicting AWS docs; now rejects with ConflictException (ErrNamespaceNotEmpty) -- see Notes"}
   ListNamespaces: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: continuationToken/maxNamespaces/prefix were silently ignored; now paginates + filters. gopherstack-wla0 FIXED: NamespaceSummary entries had the same fabricated-tableBucketARN/missing-tableBucketId bug as GetNamespace, same fix."}
   CreateTable: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: now applies encryptionConfiguration/storageClassConfiguration/tags from request body instead of discarding them"}
   GetTable: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: real GetTableInput accepts tableArn alone OR tableBucketARN+namespace+name; only the triple was honored before, so ARN-only callers always got 400. gopherstack-wla0 FIXED: response wrote the wire key \"tableBucketARN\", but GetTableOutput's real deserializer (awsRestjson1_deserializeOpDocumentGetTableOutput) has no such member -- only \"tableBucketId\", the table's owning bucket's system-assigned ID. Every real client's GetTableOutput.TableBucketId decoded nil on every call before this fix. Now backed by a new Table.TableBucketID set at CreateTable time from the resolved TableBucket's own BucketID."}
-  DeleteTable: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteTable: {wire: ok, errors: ok, state: ok, persist: ok, note: "2026-09-04 FIXED: the optional versionToken query param was parsed nowhere and the backend method didn't even accept one, so a stale token was silently ignored and delete always succeeded; now enforces optimistic concurrency (ConflictException on mismatch) when a token is supplied, matching PutTableReplication/DeleteTableReplication's existing pattern -- see Notes"}
   ListTables: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: continuationToken/maxTables/prefix were silently ignored; now paginates + filters. gopherstack-wla0 FIXED: TableSummary had the identical fabricated-tableBucketARN/missing-tableBucketId bug as GetTable, same fix."}
   RenameTable: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateTableMetadataLocation: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-wla0: dropped a fabricated tableBucketARN key from the response -- UpdateTableMetadataLocationOutput genuinely has no bucket-identifying member at all (no tableBucketARN, no tableBucketId), unlike GetTable/ListTables above; this was the harmless-extra case, not a wrong-key bug, so nothing was added back."}
@@ -87,6 +103,83 @@ leaks: {status: clean, note: "no goroutines/janitors in this service; all state 
 ---
 
 ## Notes
+
+## 2026-09-04: DeleteTable ignored its optional versionToken; DeleteTableBucket/DeleteNamespace cascaded instead of requiring emptiness
+
+**DeleteTable's versionToken was parsed nowhere.** `DeleteTableInput.VersionToken`
+is optional (`aws-sdk-go-v2/service/s3tables@v1.18.4`
+`api_op_DeleteTable.go`: no "This member is required" on `VersionToken`,
+unlike `Name`/`Namespace`/`TableBucketARN`; confirmed the client doesn't
+require it via `validateOpDeleteTableInput` in `validators.go`, which only
+checks the other three), bound as the `versionToken` query parameter
+(`awsRestjson1_serializeOpHttpBindingsDeleteTableInput`, serializers.go).
+When supplied it's an optimistic-concurrency check, the same pattern this
+service already enforces on `PutTableReplication`/`DeleteTableReplication`
+(both accept an optional/required versionToken and return the already-
+modelled `ConflictException` on mismatch). `handleDeleteTable`
+(`handler_tables.go`) never read `r.URL.Query().Get(keyVersionToken)` at
+all, and `InMemoryBackend.DeleteTable` (`tables.go`) didn't even take a
+versionToken parameter -- a stale or fabricated token supplied by a real
+client was silently accepted and the table deleted regardless.
+`DeleteTable`'s modelled error set (`awsRestjson1_deserializeOpErrorDeleteTable`,
+deserializers.go) includes `ConflictException`.
+
+Fixed: `DeleteTable` gained a `versionToken` parameter enforcing the same
+`!= "" && != stored` mismatch check as `PutTableReplication`; the handler
+now reads the query param and passes it through. `TestBackend_DeleteTable_VersionToken`
+(`tables_test.go`) covers stale (rejected, `ErrTableVersionConflict`),
+matching, and omitted tokens (both delete). Neutered the guard
+(`if versionToken != "" && ...` -> `if false && ...`) and confirmed the
+stale-token subtest failed with `Expected error with "ConflictException"
+in chain but got nil` while the other two subtests still passed; restored
+byte-identical (`md5sum`-verified) after.
+
+**DeleteTableBucket/DeleteNamespace cascaded instead of requiring
+emptiness, contradicting AWS's own docs.** Fetched
+`s3-tables-buckets-delete.html` directly: "Before you delete a table
+bucket, you must first delete all namespaces and tables within the
+bucket." Fetched `s3-tables-namespace-delete.html` directly: "Before you
+delete a table namespace from an Amazon S3 table bucket, you must delete
+all tables within the namespace, or move them under another namespace."
+Both `DeleteTableBucket` and `DeleteNamespace` model `ConflictException`
+(`awsRestjson1_deserializeOpErrorDeleteTableBucket`/`...DeleteNamespace`,
+deserializers.go). `InMemoryBackend.DeleteTableBucket` (`table_buckets.go`)
+instead walked `tablesByBucket`/`namespacesByBucket` and deleted every
+child namespace/table/tag/replication/expiry config unconditionally;
+`InMemoryBackend.DeleteNamespace` (`namespaces.go`) deleted a namespace
+with no check for tables still in it at all. A prior pass's `DeleteTableBucket`
+note ("cascade to namespaces/tables/tags/replication/expiry verified
+correct") predates this doc citation and was simply wrong -- "verified
+correct" apparently meant only that the cascade didn't leak index entries,
+not that cascading matches real AWS's documented precondition.
+
+Fixed both to reject with the newly-added `ErrTableBucketNotEmpty`/
+`ErrNamespaceNotEmpty` sentinels (`ConflictException`) when the bucket
+still has any namespace, or the namespace still has any table,
+respectively -- checking bucket-level emptiness by namespace count alone
+is sufficient since a namespace can no longer be deleted while it has
+tables, so zero namespaces transitively implies zero tables. Removed the
+now-dead cascade code and the `slices` import it needed;
+`store_setup.go`'s index-purpose comments updated from "cascade" to
+"not-empty precondition". `TestBackend_DeleteTableBucket_NotEmpty`
+(`table_buckets_test.go`) and `TestBackend_DeleteNamespace_NotEmpty`
+(`namespaces_test.go`) each prove reject-then-succeed-after-child-deleted;
+`TestInMemoryBackend_DeleteTableBucketCascade_PostRestore`
+(`persistence_test.go`) -- which asserted the old cascade-succeeds
+behavior against a Restore-rebuilt backend -- is renamed
+`...Precondition_PostRestore` and rewritten to assert the corrected
+reject/then-succeed sequence against the same Restore-rebuilt indexes.
+Neutered each new guard independently (single occurrence each, confirmed
+via `grep -c` before editing) and confirmed each failed only its own
+test with `Expected error with "ConflictException" in chain but got nil`
+while the sibling guard's test still passed; both restored byte-identical
+(`md5sum`-verified) after.
+
+No real caller in this repo relied on the cascade: the only backend-level
+cascade call site was the now-rewritten persistence test; the SDK
+integration tests (`test/integration/s3tables_test.go`) already delete an
+empty bucket/namespace in their lifecycle tests, so behavior there is
+unaffected.
 
 **2026-08-22 (CI fix, gopherstack-101r): batch 9's GetTableBucketEncryption
 default-fallback below is reverted -- it was wrong.** `TestTerraform_S3Tables/

@@ -424,28 +424,34 @@ func (b *InMemoryBackend) UpdateEndpoint(
 // Endpoint lifecycle FSM (#9)
 // ---------------------------------------------------------------------------
 
-// scheduleEndpointTransition drives an endpoint to nextStatus after delay.
-// ctx must be b.lifecycleCtx captured by the caller while holding b.mu.
-// region must be captured by the caller before the lock is released.
+// scheduleEndpointTransition drives an endpoint from fromStatus to nextStatus
+// after delay, a no-op if the endpoint has since been deleted or has moved to
+// a status other than fromStatus (e.g. a later overlapping transition already
+// completed it). ctx must be b.lifecycleCtx captured by the caller while
+// holding b.mu. region must be captured by the caller before the lock is
+// released.
 func (b *InMemoryBackend) scheduleEndpointTransition(
 	ctx context.Context,
-	region, name, nextStatus string,
+	region, name, fromStatus, nextStatus string,
 	delay time.Duration,
 ) {
 	b.runDelayed(ctx, delay, func() {
 		b.mu.Lock("scheduleEndpointTransition.goroutine")
 		defer b.mu.Unlock()
 
-		if ep, ok := b.endpointsStore(region).Get(name); ok {
-			ep.EndpointStatus = nextStatus
-			ep.LastModifiedTime = time.Now()
+		ep, ok := b.endpointsStore(region).Get(name)
+		if !ok || ep.EndpointStatus != fromStatus {
+			return
+		}
 
-			if nextStatus == statusInService {
-				for i := range ep.ProductionVariants {
-					ep.ProductionVariants[i].CurrentWeight = ep.ProductionVariants[i].DesiredWeight
-					ep.ProductionVariants[i].CurrentInstanceCount = ep.ProductionVariants[i].DesiredInstanceCount
-					ep.ProductionVariants[i].VariantStatus = []ProductionVariantStatus{{Status: statusInService}}
-				}
+		ep.EndpointStatus = nextStatus
+		ep.LastModifiedTime = time.Now()
+
+		if nextStatus == statusInService {
+			for i := range ep.ProductionVariants {
+				ep.ProductionVariants[i].CurrentWeight = ep.ProductionVariants[i].DesiredWeight
+				ep.ProductionVariants[i].CurrentInstanceCount = ep.ProductionVariants[i].DesiredInstanceCount
+				ep.ProductionVariants[i].VariantStatus = []ProductionVariantStatus{{Status: statusInService}}
 			}
 		}
 	})
@@ -463,7 +469,9 @@ func (b *InMemoryBackend) CreateEndpointFSM(ctx context.Context, opts CreateEndp
 	if err != nil {
 		return nil, err
 	}
-	b.scheduleEndpointTransition(lifecycleCtx, region, opts.Name, statusInService, endpointCreatingToInService)
+	b.scheduleEndpointTransition(
+		lifecycleCtx, region, opts.Name, statusCreating, statusInService, endpointCreatingToInService,
+	)
 
 	return ep, nil
 }
@@ -484,7 +492,9 @@ func (b *InMemoryBackend) UpdateEndpointFSM(
 	if err != nil {
 		return nil, err
 	}
-	b.scheduleEndpointTransition(lifecycleCtx, region, name, statusInService, endpointUpdatingToInService)
+	b.scheduleEndpointTransition(
+		lifecycleCtx, region, name, statusUpdating, statusInService, endpointUpdatingToInService,
+	)
 
 	return ep, nil
 }
@@ -537,7 +547,9 @@ func (b *InMemoryBackend) UpdateEndpointWeightsAndCapacitiesFull(
 	ep.LastModifiedTime = time.Now()
 
 	cp := cloneEndpoint(ep)
-	b.scheduleEndpointTransition(b.lifecycleCtx, region, name, statusInService, endpointUpdatingToInService)
+	b.scheduleEndpointTransition(
+		b.lifecycleCtx, region, name, statusUpdating, statusInService, endpointUpdatingToInService,
+	)
 
 	return cp, nil
 }

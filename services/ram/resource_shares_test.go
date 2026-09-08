@@ -114,6 +114,34 @@ func TestAllowExternalPrincipals_FalseRejectsOnCreate(t *testing.T) {
 	assert.ErrorIs(t, err, ram.ErrValidation)
 }
 
+// TestAllowExternalPrincipals_FalseAllowsSameAccountIAMPrincipal verifies that a
+// same-account IAM role/user ARN is never treated as an external principal: real AWS's
+// AllowExternalPrincipals gates other AWS accounts (api_op_CreateResourceShare.go:
+// "principals outside your organization"), not in-account IAM identities, and
+// AssociateResourceShare's Principals doc lists IAM role/user ARNs as their own
+// principal kind, always scoped to the resource share's own account.
+func TestAllowExternalPrincipals_FalseAllowsSameAccountIAMPrincipal(t *testing.T) {
+	t.Parallel()
+
+	b := ram.NewInMemoryBackend("000000000000", "us-east-1")
+
+	rs, err := b.CreateResourceShare(
+		"same-account-iam-principal",
+		false,
+		nil,
+		[]string{"arn:aws:iam::000000000000:role/MyRole"},
+		nil,
+	)
+	require.NoError(t, err)
+
+	assocs := b.GetResourceShareAssociations("PRINCIPAL", []string{rs.ARN})
+	require.Len(t, assocs, 1)
+	assert.False(t, assocs[0].External, "same-account IAM role ARN must not be flagged external")
+
+	invs := b.GetResourceShareInvitations(nil, []string{rs.ARN})
+	assert.Empty(t, invs, "a same-account principal must not generate a pending invitation")
+}
+
 // TestAccuracy2_CreateResourceShare_RejectedExternalPrincipalLeavesNoOrphan verifies
 // that a CreateResourceShare call rejected for an external principal (when
 // AllowExternalPrincipals is false) does not leave a partially created resource

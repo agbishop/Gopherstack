@@ -1,6 +1,9 @@
 package cloudformation
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ---- Backup Vault ----
 
@@ -72,6 +75,10 @@ func (rc *ResourceCreator) deleteBackupPlan(id string) error {
 
 // ---- Backup Selection ----
 
+// createBackupSelection reads the request shape CreateBackupSelectionInput actually models
+// (backup@v1.59.4 api_op_CreateBackupSelection.go): BackupPlanId is top-level, but
+// SelectionName/IamRoleArn/Resources/NotResources live nested under a BackupSelection struct
+// (types/types.go:653), matching the CloudFormation resource's own Properties shape.
 func (rc *ResourceCreator) createBackupSelection(
 	logicalID string,
 	props map[string]any,
@@ -82,16 +89,39 @@ func (rc *ResourceCreator) createBackupSelection(
 	}
 
 	planID := strProp(props, "BackupPlanId", params, physicalIDs)
-	selectionName := strProp(props, "SelectionName", params, physicalIDs)
+	sel, _ := props["BackupSelection"].(map[string]any)
+
+	selectionName := strProp(sel, "SelectionName", params, physicalIDs)
 	if selectionName == "" {
 		selectionName = logicalID
 	}
 
-	iamRoleArn := strProp(props, "IamRoleArn", params, physicalIDs)
-	sel, err := rc.backends.Backup.Backend.CreateBackupSelection(planID, selectionName, iamRoleArn, nil, nil, nil, nil)
+	iamRoleArn := strProp(sel, "IamRoleArn", params, physicalIDs)
+	resources := strSliceProp(sel["Resources"], params, physicalIDs)
+	notResources := strSliceProp(sel["NotResources"], params, physicalIDs)
+
+	created, err := rc.backends.Backup.Backend.CreateBackupSelection(
+		planID, selectionName, iamRoleArn, resources, notResources, nil, nil,
+	)
 	if err != nil {
 		return "", fmt.Errorf("create Backup Selection %s: %w", selectionName, err)
 	}
 
-	return sel.SelectionID, nil
+	// Composite physical ID: DeleteBackupSelection needs both IDs (backup/selections.go),
+	// and CloudFormation never stores creation-time Properties in a resolved, Ref-free form
+	// for Delete to re-derive BackupPlanId from later.
+	return planID + "|" + created.SelectionID, nil
+}
+
+func (rc *ResourceCreator) deleteBackupSelection(physicalID string) error {
+	if rc.backends.Backup == nil {
+		return nil
+	}
+
+	planID, selectionID, ok := strings.Cut(physicalID, "|")
+	if !ok {
+		return nil
+	}
+
+	return rc.backends.Backup.Backend.DeleteBackupSelection(planID, selectionID)
 }

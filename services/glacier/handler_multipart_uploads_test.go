@@ -100,26 +100,43 @@ func TestInitiateMultipartUpload(t *testing.T) {
 func TestUploadMultipartPart(t *testing.T) {
 	t.Parallel()
 
+	// partBody is exactly 1 MiB, matching the 1048576-byte part size declared
+	// at InitiateMultipartUpload below, so it passes the part-size/alignment
+	// check as well as the tree-hash check.
+	partBody := strings.Repeat("a", 1<<20)
+	partChecksum := glacier.ComputeTreeHash([]byte(partBody))
+
 	tests := []struct {
 		name        string
 		uploadID    string
 		rangeHdr    string
 		checksum    string
+		body        string
 		wantStatus  int
 		setupUpload bool
 	}{
 		{
 			name:        "success",
 			setupUpload: true,
-			rangeHdr:    "bytes 0-4194303/*",
-			checksum:    "abc123",
+			rangeHdr:    "bytes 0-1048575/*",
+			checksum:    partChecksum,
+			body:        partBody,
 			wantStatus:  http.StatusNoContent,
+		},
+		{
+			name:        "checksum_mismatch_rejected",
+			setupUpload: true,
+			rangeHdr:    "bytes 0-1048575/*",
+			checksum:    "abc123",
+			body:        partBody,
+			wantStatus:  http.StatusBadRequest,
 		},
 		{
 			name:        "upload_not_found",
 			setupUpload: false,
 			uploadID:    "nonexistent-upload-id",
-			rangeHdr:    "bytes 0-4194303/*",
+			rangeHdr:    "bytes 0-1048575/*",
+			body:        partBody,
 			wantStatus:  http.StatusNotFound,
 		},
 	}
@@ -158,7 +175,7 @@ func TestUploadMultipartPart(t *testing.T) {
 			rec = doRequestWithHeaders(
 				t, h, http.MethodPut,
 				"/-/vaults/"+vaultName+"/multipart-uploads/"+uploadID,
-				"part-data", headers,
+				tt.body, headers,
 			)
 			assert.Equal(t, tt.wantStatus, rec.Code)
 		})
@@ -216,11 +233,19 @@ func TestCompleteMultipartUpload(t *testing.T) {
 				require.Equal(t, http.StatusCreated, rec.Code)
 				uploadID = rec.Header().Get("X-Amz-Multipart-Upload-Id")
 				require.NotEmpty(t, uploadID)
+
+				partBody := strings.Repeat("a", 1<<20)
+				rec = doRequestWithHeaders(
+					t, h, http.MethodPut,
+					"/-/vaults/"+vaultName+"/multipart-uploads/"+uploadID,
+					partBody, map[string]string{"Content-Range": "bytes 0-1048575/*"},
+				)
+				require.Equal(t, http.StatusNoContent, rec.Code)
 			}
 
 			headers := map[string]string{
-				"X-Amz-Archive-Size":     "8388608",
-				"X-Amz-Sha256-Tree-Hash": "deadbeef",
+				"X-Amz-Archive-Size":     "1048576",
+				"X-Amz-Sha256-Tree-Hash": glacier.ComputeTreeHash([]byte(strings.Repeat("a", 1<<20))),
 			}
 
 			rec = doRequestWithHeaders(
@@ -416,21 +441,22 @@ func TestListParts(t *testing.T) {
 				uploadID = rec.Header().Get("X-Amz-Multipart-Upload-Id")
 				require.NotEmpty(t, uploadID)
 
+				const partSize = 1 << 20
+
 				for i := range tt.uploadParts {
-					rangeHdr := "bytes 0-4194303/*"
-					if i > 0 {
-						rangeHdr = "bytes 4194304-8388607/*"
-					}
+					start := i * partSize
+					rangeHdr := fmt.Sprintf("bytes %d-%d/*", start, start+partSize-1)
+					body := strings.Repeat(string(rune('a'+i)), partSize)
 
 					headers := map[string]string{
 						"Content-Range":          rangeHdr,
-						"X-Amz-Sha256-Tree-Hash": "checksum" + string(rune('0'+i)),
+						"X-Amz-Sha256-Tree-Hash": glacier.ComputeTreeHash([]byte(body)),
 					}
 
 					pr := doRequestWithHeaders(
 						t, h, http.MethodPut,
 						"/-/vaults/"+vaultName+"/multipart-uploads/"+uploadID,
-						"part-data", headers,
+						body, headers,
 					)
 					require.Equal(t, http.StatusNoContent, pr.Code)
 				}
@@ -495,14 +521,16 @@ func TestMultipartUpload_FullRoundTrip(t *testing.T) {
 			require.NotEmpty(t, uploadID)
 
 			// Upload a part
+			partBody := strings.Repeat("a", 4194304)
+			partChecksum := glacier.ComputeTreeHash([]byte(partBody))
 			partHeaders := map[string]string{
 				"Content-Range":          "bytes 0-4194303/*",
-				"X-Amz-Sha256-Tree-Hash": "abcdef",
+				"X-Amz-Sha256-Tree-Hash": partChecksum,
 			}
 			rec = doRequestWithHeaders(
 				t, h, http.MethodPut,
 				"/-/vaults/"+tt.vaultName+"/multipart-uploads/"+uploadID,
-				"part-data", partHeaders,
+				partBody, partHeaders,
 			)
 			require.Equal(t, http.StatusNoContent, rec.Code)
 
@@ -529,7 +557,7 @@ func TestMultipartUpload_FullRoundTrip(t *testing.T) {
 			// Complete the upload
 			completeHeaders := map[string]string{
 				"X-Amz-Archive-Size":     "4194304",
-				"X-Amz-Sha256-Tree-Hash": "abcdef",
+				"X-Amz-Sha256-Tree-Hash": partChecksum,
 			}
 			rec = doRequestWithHeaders(
 				t, h, http.MethodPost,
@@ -821,16 +849,17 @@ func TestCompleteMultipartUpload_RequiresHeaders(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		archiveSize string
-		treeHash    string
-		wantStatus  int
+		name           string
+		archiveSize    string
+		treeHash       string
+		wantStatus     int
+		uploadRealPart bool
 	}{
 		{
-			name:        "both_headers_present_ok",
-			archiveSize: "1048576",
-			treeHash:    strings.Repeat("a", 64),
-			wantStatus:  http.StatusCreated,
+			name:           "both_headers_present_ok",
+			archiveSize:    "1048576",
+			uploadRealPart: true,
+			wantStatus:     http.StatusCreated,
 		},
 		{
 			name:        "missing_archive_size_rejected",
@@ -868,6 +897,21 @@ func TestCompleteMultipartUpload_RequiresHeaders(t *testing.T) {
 			uploadID := initResp["uploadId"]
 			require.NotEmpty(t, uploadID)
 
+			treeHash := tt.treeHash
+
+			if tt.uploadRealPart {
+				partBody := strings.Repeat("a", 1<<20)
+				partReq := httptest.NewRequest(http.MethodPut,
+					"/"+testAccountID+"/vaults/mpu-complete-vault/multipart-uploads/"+uploadID,
+					strings.NewReader(partBody))
+				partReq.Header.Set("Content-Range", "bytes 0-1048575/*")
+				partRec := httptest.NewRecorder()
+				require.NoError(t, h.Handler()(e.NewContext(partReq, partRec)))
+				require.Equal(t, http.StatusNoContent, partRec.Code)
+
+				treeHash = glacier.ComputeTreeHash([]byte(partBody))
+			}
+
 			// Complete the upload.
 			req2 := httptest.NewRequest(http.MethodPost,
 				"/"+testAccountID+"/vaults/mpu-complete-vault/multipart-uploads/"+uploadID,
@@ -875,8 +919,8 @@ func TestCompleteMultipartUpload_RequiresHeaders(t *testing.T) {
 			if tt.archiveSize != "" {
 				req2.Header.Set("X-Amz-Archive-Size", tt.archiveSize)
 			}
-			if tt.treeHash != "" {
-				req2.Header.Set("X-Amz-Sha256-Tree-Hash", tt.treeHash)
+			if treeHash != "" {
+				req2.Header.Set("X-Amz-Sha256-Tree-Hash", treeHash)
 			}
 			rec2 := httptest.NewRecorder()
 			c2 := e.NewContext(req2, rec2)
@@ -1159,7 +1203,14 @@ func TestMultipartUpload_FullLifecycle(t *testing.T) {
 			uploads := listUploads["UploadsList"].([]any)
 			assert.Empty(t, uploads)
 
-			// Vault now has the archive.
+			// Vault now has the archive. NumberOfArchives only reports the
+			// as-of-last-inventory count (gopherstack-zpo5), so an inventory
+			// must run before the completed archive is wire-visible.
+			invRec := doRequestWithHeaders(t, h, http.MethodPost,
+				"/"+testAccountID+"/vaults/mp-lifecycle-"+tt.name+"/jobs",
+				`{"Type":"inventory-retrieval"}`, nil)
+			require.Equal(t, http.StatusAccepted, invRec.Code)
+
 			descVault := doRequestWithHeaders(t, h, http.MethodGet,
 				"/"+testAccountID+"/vaults/mp-lifecycle-"+tt.name, "", nil)
 			require.Equal(t, http.StatusOK, descVault.Code)

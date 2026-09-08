@@ -15,8 +15,20 @@ const apiKeyIDChars = "abcdefghijklmnopqrstuvwxyz0123456789"
 // apiKeyIDPrefix is the prefix used in AppSync API key IDs.
 const apiKeyIDPrefix = "da2-"
 
-// defaultAPIKeyExpiryDays is the default expiry in days when not specified.
-const defaultAPIKeyExpiryDays = 365
+// defaultAPIKeyExpiryDays is the default expiry in days when not specified
+// (CreateApiKeyInput.Expires doc, appsync@v1.56.4 api_op_CreateApiKey.go:38:
+// "The default value for this parameter is 7 days from creation time.").
+const defaultAPIKeyExpiryDays = 7
+
+// minAPIKeyExpiryDays and maxAPIKeyExpiryDays are the bounds AWS enforces on
+// a caller-supplied expiry (ApiKeyValidityOutOfBoundsException doc,
+// appsync@v1.56.4 types/errors.go:62-63: "The API key expiration must be set
+// to a value between 1 and 365 days from creation (for CreateApiKey) or from
+// update (for UpdateApiKey).").
+const (
+	minAPIKeyExpiryDays = 1
+	maxAPIKeyExpiryDays = 365
+)
 
 // maxAPIKeysPerAPI is the AWS-enforced limit of API keys per GraphQL API.
 // AWS default quota is 50 API keys per GraphQL API.
@@ -39,6 +51,32 @@ func randomAPIKeyID() string {
 	return apiKeyIDPrefix + string(b)
 }
 
+// resolveAPIKeyExpiry defaults an unset expiry (<=0) to defaultAPIKeyExpiryDays
+// from now, and otherwise validates the caller-supplied expiry against AWS's
+// documented 1-365-day bounds, returning ErrAPIKeyValidityOutOfBounds if it
+// falls outside them.
+func resolveAPIKeyExpiry(expires int64) (int64, error) {
+	now := time.Now()
+
+	if expires <= 0 {
+		return now.AddDate(0, 0, defaultAPIKeyExpiryDays).Unix(), nil
+	}
+
+	minExpires := now.AddDate(0, 0, minAPIKeyExpiryDays).Unix()
+	maxExpires := now.AddDate(0, 0, maxAPIKeyExpiryDays).Unix()
+
+	if expires < minExpires || expires > maxExpires {
+		return 0, fmt.Errorf(
+			"%w: expires must be between %d and %d days from now",
+			ErrAPIKeyValidityOutOfBounds,
+			minAPIKeyExpiryDays,
+			maxAPIKeyExpiryDays,
+		)
+	}
+
+	return expires, nil
+}
+
 // CreateAPIKey creates an API key for a GraphQL API.
 func (b *InMemoryBackend) CreateAPIKey(apiID, description string, expires int64) (*APIKey, error) {
 	b.mu.Lock("CreateAPIKey")
@@ -55,21 +93,15 @@ func (b *InMemoryBackend) CreateAPIKey(apiID, description string, expires int64)
 	if len(b.apiKeys[apiID]) >= maxAPIKeysPerAPI {
 		return nil, fmt.Errorf(
 			"%w: api %s already has the maximum of %d API keys",
-			ErrValidation,
+			ErrAPIKeyLimitExceeded,
 			apiID,
 			maxAPIKeysPerAPI,
 		)
 	}
 
-	// Default expiry to 365 days from now if not specified.
-	if expires <= 0 {
-		expires = time.Now().AddDate(0, 0, defaultAPIKeyExpiryDays).Unix()
-	}
-
-	// Cap expiry at 365 days from now (AWS enforces this).
-	maxExpires := time.Now().AddDate(0, 0, defaultAPIKeyExpiryDays).Unix()
-	if expires > maxExpires {
-		expires = maxExpires
+	expires, expErr := resolveAPIKeyExpiry(expires)
+	if expErr != nil {
+		return nil, expErr
 	}
 
 	keyID := randomAPIKeyID()
@@ -157,13 +189,12 @@ func (b *InMemoryBackend) UpdateAPIKey(apiID, keyID, description string, expires
 	}
 
 	if expires > 0 {
-		// Cap expiry at 365 days from now (AWS enforces this on update too).
-		maxExpires := time.Now().AddDate(0, 0, defaultAPIKeyExpiryDays).Unix()
-		if expires > maxExpires {
-			expires = maxExpires
+		resolved, expErr := resolveAPIKeyExpiry(expires)
+		if expErr != nil {
+			return nil, expErr
 		}
 
-		existing.Expires = expires
+		existing.Expires = resolved
 	}
 
 	cp := *existing

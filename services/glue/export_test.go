@@ -162,3 +162,39 @@ func MLTaskRunCount(b *InMemoryBackend) int {
 
 	return b.mlTaskRuns.Len()
 }
+
+// TableColumnStatsCount returns the number of stored table column-statistics
+// entries in the backend. Used only in tests.
+func TableColumnStatsCount(b *InMemoryBackend) int {
+	b.mu.RLock("TableColumnStatsCount")
+	defer b.mu.RUnlock()
+
+	return len(b.tableColumnStats)
+}
+
+// PartitionColumnStatsCount returns the number of stored partition
+// column-statistics entries in the backend. Used only in tests.
+func PartitionColumnStatsCount(b *InMemoryBackend) int {
+	b.mu.RLock("PartitionColumnStatsCount")
+	defer b.mu.RUnlock()
+
+	return len(b.partitionColumnStats)
+}
+
+// TableOptimizerCount returns the number of registered table optimizers in
+// the backend. Used only in tests.
+func TableOptimizerCount(b *InMemoryBackend) int {
+	b.mu.RLock("TableOptimizerCount")
+	defer b.mu.RUnlock()
+
+	return b.tableOptimizers.Len()
+}
+
+// UDFCount returns the number of registered user-defined functions in the
+// backend. Used only in tests.
+func UDFCount(b *InMemoryBackend) int {
+	b.mu.RLock("UDFCount")
+	defer b.mu.RUnlock()
+
+	return b.udfs.Len()
+}

@@ -470,3 +470,33 @@ func TestDescribeCustomDBEngineVersions_ConcurrentSafe(t *testing.T) {
 	versions := b.DescribeCustomDBEngineVersions("", "")
 	assert.NotEmpty(t, versions)
 }
+
+func TestCreateDBCluster_And_CreateDBInstance_RejectInvalidEngineLifecycleSupport(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cluster", func(t *testing.T) {
+		t.Parallel()
+
+		b := newBatch2Backend()
+		_, err := b.CreateDBCluster(
+			"bad-els-cluster", "aurora-postgresql", "admin", "", "", 5432, nil,
+			rds.DBClusterOptions{EngineLifecycleSupport: "bogus-lifecycle"},
+		)
+		require.ErrorIs(t, err, rds.ErrInvalidParameter)
+
+		_, descErr := b.DescribeDBClusters("bad-els-cluster")
+		assert.Error(t, descErr)
+	})
+
+	t.Run("instance", func(t *testing.T) {
+		t.Parallel()
+
+		b := newBatch3Backend()
+		_, err := b.CreateDBInstance("bad-els-inst", "postgres", "db.t3.micro", "", "admin", "", 20,
+			rds.DBInstanceOptions{EngineLifecycleSupport: "bogus-lifecycle"})
+		require.ErrorIs(t, err, rds.ErrInvalidParameter)
+
+		_, descErr := b.DescribeDBInstances("bad-els-inst")
+		assert.Error(t, descErr)
+	})
+}

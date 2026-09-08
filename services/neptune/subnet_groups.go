@@ -115,6 +115,16 @@ func (b *InMemoryBackend) DeleteDBSubnetGroup(ctx context.Context, name string) 
 	if !b.subnetGroupHas(region, name) {
 		return fmt.Errorf("%w: subnet group %s not found", ErrSubnetGroupNotFound, name)
 	}
+	for _, c := range b.clustersInRegion(region) {
+		if c.DBSubnetGroupName == name {
+			return fmt.Errorf(
+				"%w: subnet group %s is used by cluster %s",
+				ErrSubnetGroupInUse,
+				name,
+				c.DBClusterIdentifier,
+			)
+		}
+	}
 	b.subnetGroupDelete(region, name)
 	delete(b.tagsStore(region), b.subnetGroupARN(region, name))
 

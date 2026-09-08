@@ -27,9 +27,9 @@ type StorageBackend interface {
 	StopChannel(channelID string) (*Channel, error)
 
 	// Inputs
-	CreateInput(name, inputType, roleArn string, tags map[string]string) (*Input, error)
+	CreateInput(name, inputType, roleArn string, sdiSources []string, tags map[string]string) (*Input, error)
 	DescribeInput(inputID string) (*Input, error)
-	UpdateInput(inputID, name, roleArn string) (*Input, error)
+	UpdateInput(inputID, name, roleArn string, sdiSources []string, sdiSourcesSet bool) (*Input, error)
 	DeleteInput(inputID string) error
 	ListInputs(maxResults int, nextToken string) ([]*InputSummary, string, error)
 
@@ -241,7 +241,7 @@ type StorageBackend interface {
 
 	// Reservations
 	PurchaseOffering(
-		offeringID, name string,
+		offeringID, name, start string,
 		count int32,
 		renewalSettings RenewalSettings,
 		tags map[string]string,
@@ -2583,15 +2583,16 @@ type ChannelSummary struct {
 }
 
 // Input represents a MediaLive input.
-// Tags first: reduces GC pointer scan from 104 to 96 bytes.
+// Tags first, SdiSources last: reduces GC pointer scan from 120 to 112 bytes.
 type Input struct {
-	Tags      map[string]string
-	ARN       string
-	ID        string
-	Name      string
-	InputType string
-	RoleARN   string
-	State     string
+	Tags       map[string]string
+	ARN        string
+	ID         string
+	Name       string
+	InputType  string
+	RoleARN    string
+	State      string
+	SdiSources []string
 }
 
 // InputSummary is an input in a list response.

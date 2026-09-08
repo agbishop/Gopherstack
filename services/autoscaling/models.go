@@ -280,6 +280,15 @@ type pendingHookAction struct {
 	Disposition   terminationDisposition
 }
 
+// pendingRefreshAction tracks the timer driving an in-flight instance
+// refresh's scheduled transition to NextStatus (see instance_refreshes.go).
+type pendingRefreshAction struct {
+	timer      *time.Timer
+	ID         string
+	GroupName  string
+	NextStatus string
+}
+
 // LaunchTemplateSpecification identifies an EC2 launch template.
 type LaunchTemplateSpecification struct {
 	LaunchTemplateID   string `json:"LaunchTemplateId,omitempty"`

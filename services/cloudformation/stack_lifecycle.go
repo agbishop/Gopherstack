@@ -125,8 +125,9 @@ func (b *InMemoryBackend) ContinueUpdateRollback(_ context.Context, nameOrID str
 	return nil
 }
 
-// CancelUpdateStack cancels an in-progress stack update.
-// If the stack is in UPDATE_IN_PROGRESS state, it transitions to UPDATE_ROLLBACK_COMPLETE.
+// CancelUpdateStack cancels an in-progress stack update, transitioning it to
+// UPDATE_ROLLBACK_COMPLETE. Real AWS: "You can cancel only stacks that are
+// in the UPDATE_IN_PROGRESS state".
 func (b *InMemoryBackend) CancelUpdateStack(_ context.Context, nameOrID string) error {
 	b.mu.Lock("CancelUpdateStack")
 	defer b.mu.Unlock()
@@ -136,14 +137,16 @@ func (b *InMemoryBackend) CancelUpdateStack(_ context.Context, nameOrID string) 
 		return ErrStackNotFound
 	}
 
-	if stack.StackStatus == statusUpdateInProgress {
-		stack.StackStatus = statusUpdateRollbackInProgress
-		b.addEvent(stack.StackID, stack.StackName, stack.StackName, stack.StackID,
-			cfnStackType, statusUpdateRollbackInProgress, reasonUserInitiated)
-		stack.StackStatus = statusUpdateRollbackComplete
-		b.addEvent(stack.StackID, stack.StackName, stack.StackName, stack.StackID,
-			cfnStackType, statusUpdateRollbackComplete, "")
+	if stack.StackStatus != statusUpdateInProgress {
+		return ErrCancelUpdateStackInvalidState
 	}
+
+	stack.StackStatus = statusUpdateRollbackInProgress
+	b.addEvent(stack.StackID, stack.StackName, stack.StackName, stack.StackID,
+		cfnStackType, statusUpdateRollbackInProgress, reasonUserInitiated)
+	stack.StackStatus = statusUpdateRollbackComplete
+	b.addEvent(stack.StackID, stack.StackName, stack.StackName, stack.StackID,
+		cfnStackType, statusUpdateRollbackComplete, "")
 
 	return nil
 }

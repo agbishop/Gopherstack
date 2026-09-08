@@ -2,7 +2,6 @@ package vpclattice
 
 import (
 	"context"
-	"slices"
 	"sort"
 	"time"
 
@@ -161,9 +160,13 @@ func (b *InMemoryBackend) targetGroupInUse(id, arn string) bool {
 }
 
 // ListTargetGroups lists target groups with optional filters.
+//
+// ListTargetGroupsInput models maxResults, nextToken, targetGroupType and
+// vpcIdentifier query parameters -- there is no serviceArn filter on this
+// operation (aws-sdk-go-v2/service/vpclattice@v1.25.5 api_op_ListTargetGroups.go).
 func (b *InMemoryBackend) ListTargetGroups(
 	ctx context.Context,
-	tgType, serviceArn string,
+	tgType, vpcID string,
 	maxResults int32,
 	nextToken string,
 ) ([]*TargetGroupSummary, string, error) {
@@ -182,7 +185,7 @@ func (b *InMemoryBackend) ListTargetGroups(
 			continue
 		}
 
-		if serviceArn != "" && !slices.Contains(tg.ServiceARNs, serviceArn) {
+		if vpcID != "" && (tg.Config == nil || tg.Config.VpcID != vpcID) {
 			continue
 		}
 

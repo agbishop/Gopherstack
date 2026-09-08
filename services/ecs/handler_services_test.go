@@ -220,7 +220,7 @@ func TestECS_DeleteService(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	rec2 := doECSRequest(t, h, "DeleteService", map[string]any{"service": "del-svc"})
+	rec2 := doECSRequest(t, h, "DeleteService", map[string]any{"service": "del-svc", "force": true})
 	require.Equal(t, http.StatusOK, rec2.Code)
 
 	var resp map[string]any
@@ -241,6 +241,53 @@ func TestECS_DeleteService(t *testing.T) {
 
 	failures3, _ := resp3["failures"].([]any)
 	assert.Len(t, failures3, 1)
+}
+
+// TestECS_DeleteService_ActiveGuard verifies AWS's DeleteService guard: a
+// service with a non-zero desired count can't be deleted without Force.
+func TestECS_DeleteService_ActiveGuard(t *testing.T) {
+	t.Parallel()
+
+	backend := ecs.NewInMemoryBackend(testAccountID, testRegion, ecs.NewNoopRunner())
+
+	td, err := backend.RegisterTaskDefinition(ecs.RegisterTaskDefinitionInput{
+		Family:               "active-guard-td",
+		ContainerDefinitions: []ecs.ContainerDefinition{{Name: "app", Image: "nginx"}},
+	})
+	require.NoError(t, err)
+
+	_, err = backend.CreateCluster(ecs.CreateClusterInput{ClusterName: "active-guard-cluster"})
+	require.NoError(t, err)
+
+	svc, err := backend.CreateService(ecs.CreateServiceInput{
+		Cluster:        "active-guard-cluster",
+		ServiceName:    "active-guard-svc",
+		TaskDefinition: td.TaskDefinitionArn,
+		DesiredCount:   2,
+	})
+	require.NoError(t, err)
+
+	_, err = backend.DeleteService("active-guard-cluster", "active-guard-svc")
+	require.Error(t, err, "DeleteService must fail while desiredCount is non-zero")
+
+	services, failures, err := backend.DescribeServices(
+		"active-guard-cluster", []string{"active-guard-svc"},
+	)
+	require.NoError(t, err)
+	assert.Empty(t, failures, "service must survive a failed DeleteService")
+	require.Len(t, services, 1)
+
+	// Scale down, then deletion succeeds without Force.
+	zero := 0
+	_, err = backend.UpdateService(ecs.UpdateServiceInput{
+		Cluster:      "active-guard-cluster",
+		Service:      svc.ServiceArn,
+		DesiredCount: &zero,
+	})
+	require.NoError(t, err)
+
+	_, err = backend.DeleteService("active-guard-cluster", "active-guard-svc")
+	require.NoError(t, err)
 }
 
 func TestECS_Backend_CountRunningTasksForService(t *testing.T) {
@@ -814,6 +861,7 @@ func TestService_Tags_ResourceTagSync(t *testing.T) {
 
 				deleteRec := doECSRequest(t, h, "DeleteService", map[string]any{
 					"service": "tag-sync-delete-svc",
+					"force":   true,
 				})
 				require.Equal(t, http.StatusOK, deleteRec.Code)
 

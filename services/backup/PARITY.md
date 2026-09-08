@@ -1,6 +1,6 @@
 ---
 service: backup
-sdk_module: aws-sdk-go-v2/service/backup@v1.59.4
+sdk_module: aws-sdk-go-v2/service/backup@v1.64.0
 last_audit_commit: 621eeacb
 last_audit_date: 2026-08-29
 overall: A            # all 4 prior gaps closed with real fixes + tests; all 4 prior deferred items field-diffed and closed; a service-wide error-code/HTTP-status bug found and fixed (see notes)
@@ -46,7 +46,7 @@ overall: A            # all 4 prior gaps closed with real fixes + tests; all 4 p
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
 ops:
-  StartBackupJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "job now actually completes -- see families.BackupJob"}
+  StartBackupJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "job now actually completes -- see families.BackupJob. gopherstack-0o0q (2026-09-06): ResourceArn previously accepted any non-empty string with no cross-service existence check. A generic cross-service ARN-existence registry doesn't exist in this repo, so rather than build one, added a per-service switch (the pattern used five times already for cloudtrail/textract/rekognition->S3, athena->glue, ses->sns): an S3 ResourceArn (arn:{partition}:s3:::{bucket}, no object key -- the exact form Backup's S3 resource type uses) is checked via SetS3Backend's HeadBucket, returning ResourceNotFoundException for a bucket that doesn't exist. Every other resource type real AWS Backup supports (EC2/EBS/RDS/DynamoDB/EFS/FSx/...) stays permissive -- this emulator has no resolvable identity wired for them, and rejecting an ARN of a type this backend doesn't model would be a fabricated rejection. Unwired S3 (no SetS3Backend call) also stays permissive, matching this repo's unwired-hook-stays-permissive convention."}
   ListBackupJobs: {wire: ok, errors: ok, state: fixed, persist: n/a, note: "gopherstack-i25e (2026-08-29): REQUEST direction fixed -- query filters read under wrong \"by\"-prefixed keys (byState/byResourceArn/byResourceType/byAccountId/byParentJobId/byCreatedAfter/byCreatedBefore vs real state/resourceArn/resourceType/accountId/parentJobId/createdAfter/createdBefore, serializers.go:4629-4677); backupVaultName was already correct. The underlying jobMatchesFilter logic was already correct -- this was purely a wrong-wire-key defect, so every real client's filter on this op silently no-op'd and returned the unfiltered list with no error. messageCategory/completeAfter/completeBefore (real filters on ListBackupJobsInput) remain unimplemented -- left as a follow-up, not fabricated. See wire_field_fixes_test.go, which drives the real typed client and asserts a non-matching record is excluded per filter (not just that a matching one is present)."}
   StopBackupJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "was unroutable; real path is POST /backup-jobs/{id}, not /backup-jobs/{id}/stop-backup-job"}
   UntagResource: {wire: ok, errors: ok, state: ok, persist: ok, note: "was unroutable; real path is POST /untag/{arn}, not DELETE /tags/{arn}"}

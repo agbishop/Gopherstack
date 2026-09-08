@@ -6,6 +6,60 @@ import (
 	"strings"
 )
 
+// validateReceiptAction enforces the required members declared on each
+// ReceiptAction subtype (ses@v1.37.4 types/types.go / botocore
+// ses/2010-12-01 service-2.json "required" lists): S3Action.BucketName,
+// SNSAction.TopicArn, LambdaAction.FunctionArn, BounceAction.{SmtpReplyCode,
+// Message,Sender}, AddHeaderAction.{HeaderName,HeaderValue}. StopAction.Scope
+// has no member to enforce here -- Scope is not modeled, gopherstack always
+// treats a Stop action as its one legal value, RuleSet.
+func validateReceiptAction(a ReceiptAction) error {
+	switch a.Type {
+	case ReceiptActionTypeS3:
+		if strings.TrimSpace(a.S3BucketName) == "" {
+			return fmt.Errorf("%w: S3Action.BucketName is required", ErrInvalidParameter)
+		}
+	case ReceiptActionTypeSNS:
+		if strings.TrimSpace(a.SNSTopicARN) == "" {
+			return fmt.Errorf("%w: SNSAction.TopicArn is required", ErrInvalidParameter)
+		}
+	case ReceiptActionTypeLambda:
+		if strings.TrimSpace(a.LambdaFunctionARN) == "" {
+			return fmt.Errorf("%w: LambdaAction.FunctionArn is required", ErrInvalidParameter)
+		}
+	case ReceiptActionTypeBounce:
+		if strings.TrimSpace(a.SMTPReplyCode) == "" {
+			return fmt.Errorf("%w: BounceAction.SmtpReplyCode is required", ErrInvalidParameter)
+		}
+		if strings.TrimSpace(a.Message) == "" {
+			return fmt.Errorf("%w: BounceAction.Message is required", ErrInvalidParameter)
+		}
+		if strings.TrimSpace(a.Sender) == "" {
+			return fmt.Errorf("%w: BounceAction.Sender is required", ErrInvalidParameter)
+		}
+	case ReceiptActionTypeAddHeader:
+		if strings.TrimSpace(a.HeaderName) == "" {
+			return fmt.Errorf("%w: AddHeaderAction.HeaderName is required", ErrInvalidParameter)
+		}
+		if strings.TrimSpace(a.HeaderValue) == "" {
+			return fmt.Errorf("%w: AddHeaderAction.HeaderValue is required", ErrInvalidParameter)
+		}
+	}
+
+	return nil
+}
+
+// validateReceiptActions runs validateReceiptAction over every action in a rule.
+func validateReceiptActions(actions []ReceiptAction) error {
+	for _, a := range actions {
+		if err := validateReceiptAction(a); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // findRuleIndex returns the index of the rule with the given name, or -1 if not found.
 func findRuleIndex(rules []ReceiptRule, name string) int {
 	for i, r := range rules {
@@ -29,6 +83,10 @@ func (b *InMemoryBackend) CreateReceiptRule(ruleSetName string, rule ReceiptRule
 
 	if rule.TLSPolicy != "" && rule.TLSPolicy != TLSPolicyOptional && rule.TLSPolicy != TLSPolicyRequire {
 		return fmt.Errorf("%w: TlsPolicy must be Optional or Require", ErrInvalidParameter)
+	}
+
+	if err := validateReceiptActions(rule.Actions); err != nil {
+		return err
 	}
 
 	b.mu.Lock("CreateReceiptRule")
@@ -103,16 +161,16 @@ func (b *InMemoryBackend) ListReceiptFilters() []ReceiptFilter {
 	return out
 }
 
-// DeleteReceiptFilter removes a receipt filter by name.
+// DeleteReceiptFilter removes a receipt filter by name. A missing name is
+// idempotent: DeleteReceiptFilter's own deserializer (ses@v1.37.4
+// deserializers.go) declares no exception at all, and botocore's
+// ses/2010-12-01 service-2.json has no "errors" key on this op whatsoever.
 func (b *InMemoryBackend) DeleteReceiptFilter(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("%w: Filter.Name is required", ErrInvalidParameter)
 	}
 	b.mu.Lock("DeleteReceiptFilter")
 	defer b.mu.Unlock()
-	if !b.receiptFilters.Has(name) {
-		return fmt.Errorf("%w: %s", ErrReceiptFilterNotFound, name)
-	}
 	b.receiptFilters.Delete(name)
 
 	return nil
@@ -186,6 +244,10 @@ func (b *InMemoryBackend) UpdateReceiptRule(ruleSetName string, rule ReceiptRule
 
 	if rule.TLSPolicy != "" && rule.TLSPolicy != TLSPolicyOptional && rule.TLSPolicy != TLSPolicyRequire {
 		return fmt.Errorf("%w: TlsPolicy must be Optional or Require", ErrInvalidParameter)
+	}
+
+	if err := validateReceiptActions(rule.Actions); err != nil {
+		return err
 	}
 
 	b.mu.Lock("UpdateReceiptRule")

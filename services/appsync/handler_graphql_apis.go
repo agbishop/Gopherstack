@@ -3,6 +3,7 @@ package appsync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -142,8 +143,22 @@ func (h *Handler) handleGraphQL(ctx context.Context, c *echo.Context, apiID stri
 		})
 	}
 
-	result, execErr := h.Backend.ExecuteGraphQL(ctx, apiID, req.Query, req.OperationName, req.Variables)
+	auth := GraphQLAuth{
+		APIKey:    c.Request().Header.Get("X-Api-Key"),
+		AuthToken: c.Request().Header.Get("Authorization"),
+		Request:   c.Request(),
+	}
+
+	result, execErr := h.Backend.ExecuteGraphQL(ctx, apiID, req.Query, req.OperationName, req.Variables, auth)
 	if execErr != nil {
+		if errors.Is(execErr, ErrUnauthorized) {
+			// Real AppSync: 401 with a plain {"message":"Unauthorized"} body for a
+			// transport-level auth failure, distinct from the 200 + GraphQL
+			// errors[].errorType "Unauthorized" shape used for resolver-level
+			// (@aws_auth field) authorization failures.
+			return c.JSON(http.StatusUnauthorized, map[string]string{"message": ErrUnauthorized.Error()})
+		}
+
 		return c.JSON(http.StatusOK, graphqlResponse{
 			Errors: []graphqlError{{Message: execErr.Error()}},
 		})

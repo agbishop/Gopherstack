@@ -69,6 +69,26 @@ func ValidateListStatementsStatus(status string) error {
 	}
 }
 
+// ValidateListStatementsConnectionTarget enforces the mutual-exclusivity
+// constraint documented on ListStatementsInput.ClusterIdentifier / .WorkgroupName
+// (aws-sdk-go-v2/service/redshiftdata@v1.43.4's api_op_ListStatements.go: "When
+// providing ClusterIdentifier, then WorkgroupName can't be specified" and the
+// mirrored sentence on WorkgroupName). Unlike ExecuteStatement/
+// BatchExecuteStatement (ValidateConnectionTarget), neither field is required
+// here: ListStatements' own doc comment only requires one "when you use
+// identity-enhanced role sessions," so specifying neither must still list
+// across all targets, matching the identical precedent in ValidateListSessionsRequest.
+func ValidateListStatementsConnectionTarget(clusterIdentifier, workgroupName string) error {
+	if clusterIdentifier != "" && workgroupName != "" {
+		return fmt.Errorf(
+			"%w: specify either ClusterIdentifier or WorkgroupName, not both",
+			ErrValidation,
+		)
+	}
+
+	return nil
+}
+
 // ValidateConnectionTarget verifies that exactly one of clusterIdentifier or
 // workgroupName is provided, matching the AWS constraint.
 func ValidateConnectionTarget(clusterIdentifier, workgroupName string) error {

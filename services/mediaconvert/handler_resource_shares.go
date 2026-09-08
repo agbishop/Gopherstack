@@ -10,7 +10,8 @@ import (
 // --- Resource share handlers ---
 
 type createResourceShareInput struct {
-	JobID string `json:"jobId"`
+	JobID         string `json:"jobId"`
+	SupportCaseID string `json:"supportCaseId"`
 }
 
 func (h *Handler) handleCreateResourceShare(c *echo.Context, body []byte) error {
@@ -23,7 +24,11 @@ func (h *Handler) handleCreateResourceShare(c *echo.Context, body []byte) error 
 		return c.JSON(http.StatusBadRequest, errorResponse("BadRequestException", "jobId is required"))
 	}
 
-	if _, err := h.Backend.CreateResourceShare(in.JobID); err != nil {
+	if in.SupportCaseID == "" {
+		return c.JSON(http.StatusBadRequest, errorResponse("BadRequestException", "supportCaseId is required"))
+	}
+
+	if _, err := h.Backend.CreateResourceShare(in.JobID, in.SupportCaseID); err != nil {
 		return h.writeError(c, err)
 	}
 

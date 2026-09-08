@@ -150,3 +150,25 @@ func TestHandlerProbeAddressFamilyAutoDetect(t *testing.T) {
 		})
 	}
 }
+
+// TestHandlerUpdateProbeStatePending pins PARITY.md's claim that PENDING is
+// reachable via UpdateProbe (real AWS accepts a client-settable State field).
+func TestHandlerUpdateProbeStatePending(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	createMonitorP(t, h, "pending-mon")
+	probeID := createProbeP(t, h, "pending-mon", "10.0.0.1", "ICMP")
+
+	rec := doNMRequest(t, h, http.MethodPatch, "/monitors/pending-mon/probes/"+probeID, map[string]any{
+		"state": "PENDING",
+	})
+	require.Equal(t, http.StatusOK, rec.Code, "update probe: %s", rec.Body.String())
+
+	rec = doNMRequest(t, h, http.MethodGet, "/monitors/pending-mon/probes/"+probeID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Equal(t, "PENDING", out["state"], "probe state after UpdateProbe with state=PENDING")
+}

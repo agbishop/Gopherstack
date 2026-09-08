@@ -20,9 +20,12 @@ func TestHandler_GraphQL_NoSchema(t *testing.T) {
 	h, b := newTestHandler()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 	// No schema uploaded.
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
 
 	body := map[string]any{"query": `query { hello }`}
-	rec := doRequest(t, h, http.MethodPost, "/v1/apis/"+api.APIID+"/graphql", body)
+	rec := doRequestWithHeaders(t, h, "/v1/apis/"+api.APIID+"/graphql", body,
+		map[string]string{"x-api-key": key.ID})
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
@@ -137,6 +140,8 @@ func TestHandler_GraphQLExecution(t *testing.T) {
 
 			h, b := newTestHandler()
 			api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+			key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+			require.NoError(t, keyErr)
 
 			if tt.schema != "" {
 				_, _ = b.StartSchemaCreation(api.APIID, tt.schema)
@@ -152,7 +157,7 @@ func TestHandler_GraphQLExecution(t *testing.T) {
 
 			body := map[string]any{"query": tt.query}
 			path := "/v1/apis/" + api.APIID + "/graphql"
-			rec := doRequest(t, h, http.MethodPost, path, body)
+			rec := doRequestWithHeaders(t, h, path, body, map[string]string{"x-api-key": key.ID})
 			assert.Equal(t, tt.wantStatus, rec.Code)
 
 			if tt.wantKey != "" {

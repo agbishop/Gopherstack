@@ -132,12 +132,12 @@ func (b *InMemoryBackend) ListCustomModels(in *ListCustomModelsInput) ([]*Custom
 		return list[i].ModelArn < list[j].ModelArn
 	})
 
-	nextToken := ""
+	maxResults, nextToken := 0, ""
 	if in != nil {
-		list, nextToken = paginateBedrockSlice(list, in.NextToken)
+		maxResults, nextToken = int(in.MaxResults), in.NextToken
 	}
 
-	return list, nextToken
+	return paginate(list, maxResults, nextToken)
 }
 
 // matchesCustomModelFilter reports whether a custom model satisfies the list

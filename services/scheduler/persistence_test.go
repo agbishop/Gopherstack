@@ -157,13 +157,13 @@ func TestSchedulerHandler_Persistence(t *testing.T) {
 }
 
 // TestPersistence_RoundTripWithGroupName verifies a non-default group (with
-// description and tags) and a schedule within it both survive Snapshot/Restore.
+// tags) and a schedule within it both survive Snapshot/Restore.
 func TestPersistence_RoundTripWithGroupName(t *testing.T) {
 	t.Parallel()
 
 	b := scheduler.NewInMemoryBackend("000000000000", "us-east-1")
 
-	_, err := b.CreateScheduleGroup(context.Background(), "mygrp", "a description", map[string]string{"env": "test"})
+	_, err := b.CreateScheduleGroup(context.Background(), "mygrp", map[string]string{"env": "test"})
 	require.NoError(t, err)
 
 	_, err = b.CreateSchedule(
@@ -189,7 +189,7 @@ func TestPersistence_RoundTripWithGroupName(t *testing.T) {
 
 	g, err := fresh.GetScheduleGroup(context.Background(), "mygrp")
 	require.NoError(t, err)
-	assert.Equal(t, "a description", g.Description)
+	assert.Equal(t, "mygrp", g.Name)
 
 	// Verify tags were persisted for the group.
 	kv, err := fresh.ListTagsForResource(context.Background(), g.ARN)

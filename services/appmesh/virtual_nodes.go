@@ -72,6 +72,28 @@ func (b *InMemoryBackend) UpdateVirtualNode(meshName, name string, spec json.Raw
 	return vn, nil
 }
 
+// virtualNodeIsServiceProvider reports whether any virtual service in
+// meshName lists name as its provider (types.VirtualServiceProvider's
+// virtualNode field) — see the DeleteVirtualNode doc comment cited on
+// ErrVirtualNodeInUse's use below.
+func (b *InMemoryBackend) virtualNodeIsServiceProvider(meshName, name string) bool {
+	for _, vs := range b.virtualSvcsByMesh.Get(meshName) {
+		var body struct {
+			Provider *virtualServiceProviderBody `json:"provider"`
+		}
+		if err := json.Unmarshal(vs.Spec, &body); err != nil {
+			continue
+		}
+		if body.Provider != nil && body.Provider.VirtualNode != nil &&
+			body.Provider.VirtualNode.VirtualNodeName != nil &&
+			*body.Provider.VirtualNode.VirtualNodeName == name {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (b *InMemoryBackend) DeleteVirtualNode(meshName, name string) (*VirtualNode, error) {
 	b.mu.Lock("DeleteVirtualNode")
 	defer b.mu.Unlock()
@@ -82,6 +104,13 @@ func (b *InMemoryBackend) DeleteVirtualNode(meshName, name string) (*VirtualNode
 	vn, ok := b.virtualNodes.Get(key)
 	if !ok {
 		return nil, ErrVirtualNodeNotFound
+	}
+	// DeleteVirtualNode doc comment (aws-sdk-go-v2/service/appmesh@v1.38.4/
+	// api_op_DeleteVirtualNode.go): "You must delete any virtual services
+	// that list a virtual node as a service provider before you can delete
+	// the virtual node itself."
+	if b.virtualNodeIsServiceProvider(meshName, name) {
+		return nil, ErrVirtualNodeInUse
 	}
 	b.virtualNodes.Delete(key)
 	delete(b.tags, vn.Meta.Arn)

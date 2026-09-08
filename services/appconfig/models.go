@@ -46,15 +46,23 @@ type Validator struct {
 	Content string `json:"Content"` // JSON schema doc or Lambda ARN
 }
 
-// ConfigurationProfile represents an AppConfig configuration profile.
+// ConfigurationProfile represents an AppConfig configuration profile. Same
+// persistence-vs-wire split as Environment above: real
+// Get/Create/UpdateConfigurationProfileOutput (appconfig@v1.48.4
+// api_op_GetConfigurationProfile.go:44-90, checked 2026-09-08) has no
+// CreatedAt member. CreatedAt exists here purely as internal state --
+// DeletionProtectionCheck's "created in the past hour" exclusion needs it
+// (gopherstack-z4v1) -- and is stripped for the wire by
+// configurationProfileToOutput (configuration_profiles.go).
 type ConfigurationProfile struct {
-	ApplicationID    string `json:"ApplicationId"`
-	ID               string `json:"Id"`
-	Name             string `json:"Name"`
-	Description      string `json:"Description,omitempty"`
-	LocationURI      string `json:"LocationUri"`
-	Type             string `json:"Type,omitempty"`
-	RetrievalRoleArn string `json:"RetrievalRoleArn,omitempty"`
+	CreatedAt        time.Time `json:"CreatedAt,omitzero"`
+	ApplicationID    string    `json:"ApplicationId"`
+	ID               string    `json:"Id"`
+	Name             string    `json:"Name"`
+	Description      string    `json:"Description,omitempty"`
+	LocationURI      string    `json:"LocationUri"`
+	Type             string    `json:"Type,omitempty"`
+	RetrievalRoleArn string    `json:"RetrievalRoleArn,omitempty"`
 	// KmsKeyIdentifier is a real Get/Create/UpdateConfigurationProfileOutput
 	// member (appconfig@v1.48.4 api_op_GetConfigurationProfile.go) echoing
 	// back whatever key ID/alias/ARN the caller supplied. KmsKeyArn is the

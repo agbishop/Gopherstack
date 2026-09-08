@@ -458,6 +458,6 @@ func TestBackend_DeleteConfigurationProfile_NotFound(t *testing.T) {
 	t.Parallel()
 
 	b := appconfig.NewInMemoryBackend("123456789012", "us-east-1")
-	err := b.DeleteConfigurationProfile("app-1", "prof-1")
+	err := b.DeleteConfigurationProfile("app-1", "prof-1", "")
 	require.Error(t, err)
 }

@@ -478,7 +478,7 @@ func TestSQS_MessageMoveTasks_Handler(t *testing.T) {
 			wantCode: http.StatusOK,
 		},
 		{
-			name:   "StartMessageMoveTask_already_running_returns_conflict",
+			name:   "StartMessageMoveTask_already_running_returns_invalid_parameter_value",
 			action: "StartMessageMoveTask",
 			setup: func(t *testing.T, h *sqs.Handler) map[string]any {
 				t.Helper()
@@ -509,7 +509,7 @@ func TestSQS_MessageMoveTasks_Handler(t *testing.T) {
 				}
 			},
 			wantCode:        http.StatusBadRequest,
-			wantBodyContain: "ResourceInConflict",
+			wantBodyContain: "InvalidParameterValue",
 		},
 		{
 			name:   "StartMessageMoveTask_empty_source_arn_returns_error",
@@ -559,7 +559,8 @@ func TestSQS_MessageMoveTasks_Handler(t *testing.T) {
 
 				return map[string]any{"TaskHandle": handle}
 			},
-			wantCode: http.StatusBadRequest,
+			wantCode:        http.StatusBadRequest,
+			wantBodyContain: "InvalidParameterValue",
 		},
 	}
 

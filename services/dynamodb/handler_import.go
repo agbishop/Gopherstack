@@ -127,9 +127,9 @@ func importSummaryWireFromSDK(s types.ImportSummary) importTableDescriptionWire 
 		ImportStatus: string(s.ImportStatus),
 		TableArn:     ptrconv.String(s.TableArn),
 		InputFormat:  string(s.InputFormat),
-	}
-	w.S3BucketSource = importS3BucketSourceWireFromSDK(s.S3BucketSource)
-	w.CloudWatchLogGroupArn = ptrconv.String(s.CloudWatchLogGroupArn)
+
+		S3BucketSource:        importS3BucketSourceWireFromSDK(s.S3BucketSource),
+		CloudWatchLogGroupArn: ptrconv.String(s.CloudWatchLogGroupArn)}
 	if s.StartTime != nil {
 		w.StartTime = float64(s.StartTime.Unix())
 	}

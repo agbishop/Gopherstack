@@ -1,6 +1,35 @@
 package managedblockchain
 
-import "maps"
+import (
+	"fmt"
+	"maps"
+)
+
+// maxTagsPerResource is the real API's documented per-resource tag cap
+// (botocore managedblockchain/2018-09-24 service-2.json.gz InputTagMap: max
+// 50).
+const maxTagsPerResource = 50
+
+// checkTagLimit returns ErrTooManyTags if applying additions on top of
+// existing would push the resource's resulting tag count above
+// maxTagsPerResource. The check counts only keys in additions that are not
+// already present in existing, matching TagResource's own semantics (an
+// update to an existing key does not add a new tag).
+func checkTagLimit(existing, additions map[string]string) error {
+	newKeys := 0
+
+	for k := range additions {
+		if _, ok := existing[k]; !ok {
+			newKeys++
+		}
+	}
+
+	if total := len(existing) + newKeys; total > maxTagsPerResource {
+		return fmt.Errorf("%w: %d tag(s) would exceed the %d-tag limit", ErrTooManyTags, total, maxTagsPerResource)
+	}
+
+	return nil
+}
 
 // TaggedEntry pairs a resource ARN with its tags.
 type TaggedEntry struct {
@@ -99,6 +128,10 @@ func (b *InMemoryBackend) TagResource(resourceARN string, tags map[string]string
 	res, ok := b.arnToResource[resourceARN]
 	if !ok {
 		return ErrResourceNotFound
+	}
+
+	if err := checkTagLimit(resourceTags(res), tags); err != nil {
+		return err
 	}
 
 	switch r := res.(type) {

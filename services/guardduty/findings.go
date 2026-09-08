@@ -139,7 +139,7 @@ func (b *InMemoryBackend) CreateSampleFindings(detectorID string, findingTypes [
 
 	for _, ft := range findingTypes {
 		id := strings.ReplaceAll(uuid.New().String(), "-", "")
-		b.findings.Put(&Finding{
+		f := &Finding{
 			AccountID:     b.accountID,
 			Arn:           b.findingARN(detectorID, id),
 			CreatedAt:     now,
@@ -164,7 +164,10 @@ func (b *InMemoryBackend) CreateSampleFindings(detectorID string, findingTypes [
 			Resource: FindingResource{
 				ResourceType: "AccessKey",
 			},
-		})
+		}
+
+		f.Service.Archived = b.matchesArchiveFilter(detectorID, f)
+		b.findings.Put(f)
 	}
 
 	return nil

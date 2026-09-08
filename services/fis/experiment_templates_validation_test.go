@@ -218,6 +218,75 @@ func TestCreateTemplate_StopConditions_Required(t *testing.T) {
 }
 
 // ----------------------------------------
+// gopherstack-x842 — stop condition source/value cross-field validation
+// ----------------------------------------
+
+func TestCreateTemplate_StopCondition_AlarmSource_RequiresValue(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	body := map[string]any{
+		"roleArn":        "arn:aws:iam::000000000000:role/FISRole",
+		"stopConditions": []map[string]any{{"source": "aws:cloudwatch:alarm"}},
+		"targets":        map[string]any{},
+		"actions":        map[string]any{},
+	}
+
+	rec := doRequest(t, h, http.MethodPost, "/experimentTemplates", body)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var resp struct {
+		Type string `json:"__type"`
+	}
+
+	mustJSON(t, rec, &resp)
+	assert.Equal(t, "ValidationException", resp.Type)
+}
+
+func TestCreateTemplate_StopCondition_SourceMustBeExactMatch(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	body := map[string]any{
+		"roleArn": "arn:aws:iam::000000000000:role/FISRole",
+		"stopConditions": []map[string]any{
+			{
+				"source": "aws:cloudwatch:alarmBogusSuffix",
+				"value":  "arn:aws:cloudwatch:us-east-1:000000000000:alarm:MyAlarm",
+			},
+		},
+		"targets": map[string]any{},
+		"actions": map[string]any{},
+	}
+
+	rec := doRequest(t, h, http.MethodPost, "/experimentTemplates", body)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestCreateTemplate_StopCondition_AlarmSource_WithValue_Accepted(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	body := map[string]any{
+		"roleArn": "arn:aws:iam::000000000000:role/FISRole",
+		"stopConditions": []map[string]any{
+			{
+				"source": "aws:cloudwatch:alarm",
+				"value":  "arn:aws:cloudwatch:us-east-1:000000000000:alarm:MyAlarm",
+			},
+		},
+		"targets": map[string]any{},
+		"actions": map[string]any{},
+	}
+
+	rec := doRequest(t, h, http.MethodPost, "/experimentTemplates", body)
+	assert.Equal(t, http.StatusCreated, rec.Code)
+}
+
+// ----------------------------------------
 // Issue #22 — parseISODuration rejects months/years/weeks
 // ----------------------------------------
 

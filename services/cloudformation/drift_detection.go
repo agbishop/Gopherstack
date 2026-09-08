@@ -16,6 +16,8 @@ func (b *InMemoryBackend) pruneDriftDetections(stackID string) {
 		b.driftDetections.Delete(detectionID)
 	}
 	delete(b.driftByStackID, stackID)
+	delete(b.resourceDriftStatus, stackID)
+	delete(b.resourceDriftDetail, stackID)
 }
 
 const (

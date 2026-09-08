@@ -260,8 +260,30 @@ func (b *InMemoryBackend) DescribeAppVersionAppComponent(appArn, appVersion, id 
 	return a, c.clone(), nil
 }
 
+// renameAppComponentResourcesLocked repoints every resource on v whose
+// AppComponents assignment names oldName to newName instead. This backend
+// tracks a resource's component assignment purely by name (see
+// wire_convert.go's toPhysicalResourceWire doc comment), so without this a
+// rename would silently orphan every resource previously assigned to the
+// component -- they would no longer match any component name at all. Callers
+// must hold b.mu.
+func renameAppComponentResourcesLocked(v *AppVersion, oldName, newName string) {
+	for _, r := range v.Resources {
+		for i, name := range r.AppComponents {
+			if name == oldName {
+				r.AppComponents[i] = newName
+			}
+		}
+	}
+}
+
 // UpdateAppVersionAppComponent updates the component with the given id on
-// the draft version.
+// the draft version. Renaming to a name already used by another component on
+// the same version is rejected (ConflictException), matching
+// CreateAppVersionAppComponent's own duplicate-name rule -- this backend's
+// resource-to-component assignment is name-keyed (see
+// renameAppComponentResourcesLocked), so two components sharing a name would
+// make that assignment ambiguous.
 func (b *InMemoryBackend) UpdateAppVersionAppComponent(
 	appArn string, req *updateAppVersionAppComponentRequest, id string,
 ) (*App, *AppComponent, error) {
@@ -278,7 +300,12 @@ func (b *InMemoryBackend) UpdateAppVersionAppComponent(
 		return nil, nil, notFoundError(resourceAppComponent, id)
 	}
 
-	if req.Name != "" {
+	if req.Name != "" && req.Name != c.Name {
+		if existing := findAppComponent(a.Draft, req.Name); existing != nil && existing.ID != id {
+			return nil, nil, conflictError("app component already exists: " + req.Name)
+		}
+
+		renameAppComponentResourcesLocked(a.Draft, c.Name, req.Name)
 		c.Name = req.Name
 	}
 

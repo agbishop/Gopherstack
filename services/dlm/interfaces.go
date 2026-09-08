@@ -78,8 +78,13 @@ type PolicySummary struct {
 // TagsToAdd each apply an ANY-of match within the list, and the dimensions
 // are ANDed together.
 type PolicyFilter struct {
-	PolicyIDs []string
-	State     string
+	State string
+	// DefaultPolicyType narrows results to default policies only: "VOLUME"
+	// (EBS snapshot default policy), "INSTANCE" (EBS-backed AMI default
+	// policy), or "ALL" (any default policy). Empty imposes no restriction
+	// (both custom and default policies match).
+	DefaultPolicyType string
+	PolicyIDs         []string
 	// ResourceTypes matches against PolicyDetails.ResourceTypes.
 	ResourceTypes []string
 	// TargetTags holds "key=value" pairs matched against

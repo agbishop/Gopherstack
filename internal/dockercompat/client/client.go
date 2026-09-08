@@ -178,6 +178,43 @@ func (c *Client) ContainerRemove(
 	return err
 }
 
+// ContainerLogs returns a stream of a container's stdout/stderr. The caller
+// must close it. Unless the container was created with a TTY, the stream is
+// multiplexed per moby/moby/client's ContainerLogsOptions doc and must be
+// demultiplexed with stdcopy.StdCopy before use.
+func (c *Client) ContainerLogs(
+	ctx context.Context,
+	containerID string,
+	options compatcontainer.LogsOptions,
+) (io.ReadCloser, error) {
+	return c.inner.ContainerLogs(ctx, containerID, mobyclient.ContainerLogsOptions{
+		ShowStdout: options.ShowStdout,
+		ShowStderr: options.ShowStderr,
+		Since:      options.Since,
+		Until:      options.Until,
+		Timestamps: options.Timestamps,
+		Follow:     options.Follow,
+		Tail:       options.Tail,
+		Details:    options.Details,
+	})
+}
+
+// ContainerWait blocks until containerID satisfies options.Condition, matching
+// github.com/moby/moby/client@v0.5.1 container_wait.go:41's
+// (*Client).ContainerWait(ctx, containerID, ContainerWaitOptions)
+// ContainerWaitResult, with the compat option/result types substituted in.
+func (c *Client) ContainerWait(
+	ctx context.Context,
+	containerID string,
+	options compatcontainer.WaitOptions,
+) compatcontainer.WaitResult {
+	result := c.inner.ContainerWait(ctx, containerID, mobyclient.ContainerWaitOptions{
+		Condition: options.Condition,
+	})
+
+	return compatcontainer.WaitResult{Result: result.Result, Error: result.Error}
+}
+
 // ContainerList lists containers matching the provided filters.
 func (c *Client) ContainerList(
 	ctx context.Context,

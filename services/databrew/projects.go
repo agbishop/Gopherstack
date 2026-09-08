@@ -131,13 +131,36 @@ func (b *InMemoryBackend) OpenProjectSession(ctx context.Context, name string) (
 	return &cp, nil
 }
 
+// projectJobName returns the name of a job currently referencing name as its
+// ProjectName, or "" if none does. Callers must hold at least b.mu.RLock.
+func (b *InMemoryBackend) projectJobName(region, name string) string {
+	t := b.jobsTable(region)
+	for _, k := range snapshotKeys(t, jobKeyFn) {
+		j, ok := t.Get(k)
+		if ok && j.ProjectName == name {
+			return j.Name
+		}
+	}
+
+	return ""
+}
+
+// DeleteProject rejects deleting a project still referenced by a job, for
+// the same reason DeleteDataset does (see its doc comment): CreateJob's
+// validateJobResourceRefs already refuses to create a job naming a
+// nonexistent project. ConflictException is modeled for DeleteProject
+// (aws-sdk-go-v2/service/databrew's awsRestjson1_deserializeOpErrorDeleteProject).
 func (b *InMemoryBackend) DeleteProject(ctx context.Context, name string) error {
 	b.mu.Lock("DeleteProject")
 	defer b.mu.Unlock()
 	region := getRegion(ctx, b.defaultRegion)
-	if !b.projectsTable(region).Delete(name) {
+	if !b.projectsTable(region).Has(name) {
 		return ErrNotFound
 	}
+	if j := b.projectJobName(region, name); j != "" {
+		return fmt.Errorf("%w: project %q is used by job %q", ErrConflict, name, j)
+	}
+	b.projectsTable(region).Delete(name)
 
 	return nil
 }

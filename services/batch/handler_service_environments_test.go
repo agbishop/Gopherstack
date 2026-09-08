@@ -116,12 +116,79 @@ func TestHandler_ServiceEnvironment_Delete(t *testing.T) {
 				deleteTarget = createOut["serviceEnvironmentArn"]
 			}
 
+			// AWS requires DISABLED before delete (api_op_DeleteServiceEnvironment.go).
+			updRec := post(t, h, "/v1/updateserviceenvironment", map[string]any{
+				"serviceEnvironment": tt.createEnv,
+				"state":              "DISABLED",
+			})
+			require.Equal(t, http.StatusOK, updRec.Code)
+
 			delRec := post(t, h, "/v1/deleteserviceenvironment", map[string]any{
 				"serviceEnvironment": deleteTarget,
 			})
 			assert.Equal(t, tt.wantStatus, delRec.Code)
 		})
 	}
+}
+
+// TestHandler_ServiceEnvironment_Delete_Guards covers the two documented
+// preconditions on DeleteServiceEnvironment (api_op_DeleteServiceEnvironment.go):
+// the environment must be DISABLED, and must not be referenced by any job
+// queue's serviceEnvironmentOrder.
+func TestHandler_ServiceEnvironment_Delete_Guards(t *testing.T) {
+	t.Parallel()
+
+	t.Run("enabled_env_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+
+		rec := post(t, h, "/v1/createserviceenvironment", map[string]any{
+			"serviceEnvironmentName": "senv-enabled",
+			"serviceEnvironmentType": "SAGEMAKER_TRAINING",
+			"capacityLimits":         []map[string]any{{"capacityUnit": "NUM_INSTANCES", "maxCapacity": 10}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		delRec := post(t, h, "/v1/deleteserviceenvironment", map[string]any{
+			"serviceEnvironment": "senv-enabled",
+		})
+		assert.Equal(t, http.StatusBadRequest, delRec.Code)
+	})
+
+	t.Run("referenced_by_job_queue_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+
+		rec := post(t, h, "/v1/createserviceenvironment", map[string]any{
+			"serviceEnvironmentName": "senv-in-use",
+			"serviceEnvironmentType": "SAGEMAKER_TRAINING",
+			"capacityLimits":         []map[string]any{{"capacityUnit": "NUM_INSTANCES", "maxCapacity": 10}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		rec = post(t, h, "/v1/updateserviceenvironment", map[string]any{
+			"serviceEnvironment": "senv-in-use",
+			"state":              "DISABLED",
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		rec = post(t, h, "/v1/createjobqueue", map[string]any{
+			"jobQueueName": "sagemaker-jq-in-use",
+			"priority":     1,
+			"jobQueueType": "SAGEMAKER_TRAINING",
+			"serviceEnvironmentOrder": []map[string]any{
+				{"serviceEnvironment": "senv-in-use", "order": 1},
+			},
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		delRec := post(t, h, "/v1/deleteserviceenvironment", map[string]any{
+			"serviceEnvironment": "senv-in-use",
+		})
+		assert.Equal(t, http.StatusBadRequest, delRec.Code)
+	})
 }
 
 func TestHandler_ServiceEnvironment_DefaultState(t *testing.T) {

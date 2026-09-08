@@ -305,8 +305,8 @@ func TestHandler_ListTrustAnchors_Pagination(t *testing.T) {
 		wantCount  int
 	}{
 		{"no pagination returns all", "", http.StatusOK, 3},
-		{"maxResults=1 returns 1", "?maxResults=1", http.StatusOK, 1},
-		{"maxResults=2 returns 2", "?maxResults=2", http.StatusOK, 2},
+		{"pageSize=1 returns 1", "?pageSize=1", http.StatusOK, 1},
+		{"pageSize=2 returns 2", "?pageSize=2", http.StatusOK, 2},
 	}
 
 	for _, tt := range tests {

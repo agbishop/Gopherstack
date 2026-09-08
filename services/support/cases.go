@@ -28,6 +28,10 @@ const (
 	// cases, not lifetime case creation -- resolving a case frees a slot,
 	// matching the "cases you can have open" wording.
 	maxOpenCases = 500
+
+	// maxCaseIDList backs DescribeCasesInput.CaseIdList's documented "The
+	// maximum number of cases is 100" limit (api_op_DescribeCases.go).
+	maxCaseIDList = 100
 )
 
 // openCaseCountLocked returns the number of cases not currently in the
@@ -229,6 +233,17 @@ func (b *InMemoryBackend) DescribeCasesWithOptions(in DescribeCasesOptions) ([]C
 	b.mu.RLock("DescribeCasesWithOptions")
 	defer b.mu.RUnlock()
 
+	// CaseIdNotFound is the only case-specific exception DescribeCases models
+	// (aws-sdk-go-v2/service/support/deserializers.go
+	// awsAwsjson11_deserializeOpErrorDescribeCases: CaseIdNotFound,
+	// InternalServerError) -- an explicitly requested case ID that doesn't
+	// exist must error, not be silently dropped from the results.
+	for _, id := range in.CaseIDs {
+		if !b.cases.Has(id) {
+			return nil, "", fmt.Errorf("%w: %s", ErrNotFound, id)
+		}
+	}
+
 	all := b.cases.All()
 	cases := make([]Case, 0, len(all))
 	for _, cs := range all {
@@ -326,6 +341,14 @@ func pageLimit(maxResults int) int {
 	}
 
 	return maxResults
+}
+
+func validateCaseIDList(caseIDs []string) error {
+	if len(caseIDs) > maxCaseIDList {
+		return fmt.Errorf("%w: caseIdList exceeds %d cases", ErrValidation, maxCaseIDList)
+	}
+
+	return nil
 }
 
 func validatePageSize(maxResults int) error {

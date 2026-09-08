@@ -3,6 +3,7 @@ package dynamodb_test
 import (
 	"strconv"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -141,6 +142,75 @@ func TestJanitor_TTLSweep(t *testing.T) {
 			assert.Equal(t, tt.wantCount, int(scan.Count), "Item count mismatch for %s", tt.name)
 		})
 	}
+}
+
+// TestJanitor_TTLGracePeriod_DelaysEviction verifies that the TTL sweep
+// honours dynamodb.TTLGracePeriod: an item past its TTL survives sweeps run
+// within the grace window and is only evicted once the grace period elapses.
+//
+// Not parallel: mutates the package-level dynamodb.TTLGracePeriod, which
+// must not race with other tests relying on its zero-value default.
+//
+//nolint:paralleltest // mutates a package-level global, see comment above
+func TestJanitor_TTLGracePeriod_DelaysEviction(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		orig := dynamodb.TTLGracePeriod
+		//nolint:reassign // deliberately overriding the test-configurable grace period
+		dynamodb.TTLGracePeriod = 5 * time.Minute
+		defer func() {
+			//nolint:reassign // restoring the original value
+			dynamodb.TTLGracePeriod = orig
+		}()
+
+		db := dynamodb.NewInMemoryDB()
+		ctx := t.Context()
+
+		const tableName = "GraceTable"
+
+		_, err := db.CreateTable(ctx, &dynamodb_sdk.CreateTableInput{
+			TableName: aws.String(tableName),
+			KeySchema: []types.KeySchemaElement{
+				{AttributeName: aws.String("pk"), KeyType: types.KeyTypeHash},
+			},
+			AttributeDefinitions: []types.AttributeDefinition{
+				{AttributeName: aws.String("pk"), AttributeType: types.ScalarAttributeTypeS},
+			},
+		})
+		require.NoError(t, err)
+
+		_, err = db.UpdateTimeToLive(ctx, &dynamodb_sdk.UpdateTimeToLiveInput{
+			TableName: aws.String(tableName),
+			TimeToLiveSpecification: &types.TimeToLiveSpecification{
+				AttributeName: aws.String("expires"),
+				Enabled:       aws.Bool(true),
+			},
+		})
+		require.NoError(t, err)
+
+		expiredAt := time.Now().Add(-time.Second).Unix()
+		_, err = db.PutItem(ctx, &dynamodb_sdk.PutItemInput{
+			TableName: aws.String(tableName),
+			Item: map[string]types.AttributeValue{
+				"pk":      &types.AttributeValueMemberS{Value: "item-1"},
+				"expires": &types.AttributeValueMemberN{Value: strconv.FormatInt(expiredAt, 10)},
+			},
+		})
+		require.NoError(t, err)
+
+		j := dynamodb.NewJanitor(db, dynamodb.Settings{JanitorInterval: time.Hour})
+
+		table, ok := db.GetTable(tableName)
+		require.True(t, ok)
+
+		j.SweepTTL(ctx)
+		assert.Len(t, table.GetItems(), 1, "item should survive a sweep run within the grace period")
+
+		time.Sleep(dynamodb.TTLGracePeriod + time.Minute)
+		synctest.Wait()
+
+		j.SweepTTL(ctx)
+		assert.Empty(t, table.GetItems(), "item should be evicted once the grace period elapses")
+	})
 }
 
 func TestJanitor_TTLSweep_StreamRecords(t *testing.T) {

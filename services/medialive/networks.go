@@ -27,14 +27,13 @@ func (b *InMemoryBackend) CreateNetwork(
 	copy(rs, routes)
 
 	n := &storedNetwork{
-		Tags:                 copyTags(tags),
-		ARN:                  b.networkARN(id),
-		ID:                   id,
-		Name:                 name,
-		State:                networkStateActive,
-		AssociatedClusterIDs: []string{},
-		IPPools:              pools,
-		Routes:               rs,
+		Tags:    copyTags(tags),
+		ARN:     b.networkARN(id),
+		ID:      id,
+		Name:    name,
+		State:   networkStateActive,
+		IPPools: pools,
+		Routes:  rs,
 	}
 
 	b.mu.Lock("CreateNetwork")
@@ -42,7 +41,31 @@ func (b *InMemoryBackend) CreateNetwork(
 
 	b.networks.Put(n)
 
-	return n.toNetwork(), nil
+	return n.toNetwork(b.clusterIDsForNetwork(id)), nil
+}
+
+// clusterIDsForNetwork returns the sorted set of Cluster IDs whose
+// NetworkSettings.InterfaceMappings reference networkID. Caller must
+// already hold b.mu (Lock or RLock) -- see the real DescribeNetworkOutput's
+// "associatedClusterIds" field, a live association gopherstack derives from
+// Cluster.NetworkSettings rather than persisting redundantly (same pattern
+// as channelIDsForCluster/channelPlacementGroupIDsForNode).
+func (b *InMemoryBackend) clusterIDsForNetwork(networkID string) []string {
+	ids := []string{}
+
+	for _, c := range b.clusters.All() {
+		for _, m := range c.NetworkSettings.InterfaceMappings {
+			if m.NetworkID == networkID {
+				ids = append(ids, c.ID)
+
+				break
+			}
+		}
+	}
+
+	sort.Strings(ids)
+
+	return ids
 }
 
 // DescribeNetwork returns a Network by ID.
@@ -55,7 +78,7 @@ func (b *InMemoryBackend) DescribeNetwork(networkID string) (*Network, error) {
 		return nil, fmt.Errorf("%w: network %s not found", ErrNotFound, networkID)
 	}
 
-	return n.toNetwork(), nil
+	return n.toNetwork(b.clusterIDsForNetwork(networkID)), nil
 }
 
 // UpdateNetwork updates a Network's mutable fields.
@@ -88,10 +111,13 @@ func (b *InMemoryBackend) UpdateNetwork(
 		n.Routes = rs
 	}
 
-	return n.toNetwork(), nil
+	return n.toNetwork(b.clusterIDsForNetwork(networkID)), nil
 }
 
-// DeleteNetwork deletes a Network.
+// DeleteNetwork deletes a Network. api_op_DeleteNetwork.go's doc comment
+// ("The Network must have no resources associated with it.") maps to
+// clusterIDsForNetwork: any Cluster still referencing this network via
+// NetworkSettings.InterfaceMappings blocks the delete.
 func (b *InMemoryBackend) DeleteNetwork(networkID string) (*Network, error) {
 	b.mu.Lock("DeleteNetwork")
 	defer b.mu.Unlock()
@@ -101,8 +127,13 @@ func (b *InMemoryBackend) DeleteNetwork(networkID string) (*Network, error) {
 		return nil, fmt.Errorf("%w: network %s not found", ErrNotFound, networkID)
 	}
 
+	clusterIDs := b.clusterIDsForNetwork(networkID)
+	if len(clusterIDs) > 0 {
+		return nil, fmt.Errorf("%w: network %s has associated clusters", ErrConflict, networkID)
+	}
+
 	n.State = networkStateDeleting
-	out := n.toNetwork()
+	out := n.toNetwork(clusterIDs)
 	b.networks.Delete(networkID)
 	delete(b.tags, n.ARN)
 
@@ -125,7 +156,7 @@ func (b *InMemoryBackend) ListNetworks(
 
 	out := make([]*Network, 0, len(pg.Data))
 	for _, n := range pg.Data {
-		out = append(out, n.toNetwork())
+		out = append(out, n.toNetwork(b.clusterIDsForNetwork(n.ID)))
 	}
 
 	return out, pg.Next, nil

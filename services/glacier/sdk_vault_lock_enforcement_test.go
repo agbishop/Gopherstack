@@ -87,6 +87,10 @@ func initiateLockTestPolicy(t *testing.T, client *glaciersdk.Client, vaultName, 
 	return aws.ToString(out.LockId)
 }
 
+// vaultArchiveCount returns DescribeVault's NumberOfArchives, which only
+// reports the count as of the last inventory (gopherstack-zpo5) -- callers
+// must run an inventory-retrieval job first or this reads back the SDK's
+// int64 zero value for the "no inventory yet" null, not a live count.
 func vaultArchiveCount(t *testing.T, client *glaciersdk.Client, vaultName string) int64 {
 	t.Helper()
 
@@ -97,6 +101,21 @@ func vaultArchiveCount(t *testing.T, client *glaciersdk.Client, vaultName string
 	require.NoError(t, err)
 
 	return out.NumberOfArchives
+}
+
+// runInventory drives an inventory-retrieval InitiateJob, which snapshots
+// NumberOfArchivesAtLastInventory synchronously (jobs.go's
+// applyJobTypeSpecifics), before the caller reads it back via
+// vaultArchiveCount.
+func runInventory(t *testing.T, client *glaciersdk.Client, vaultName string) {
+	t.Helper()
+
+	_, err := client.InitiateJob(t.Context(), &glaciersdk.InitiateJobInput{
+		AccountId:     aws.String("-"),
+		VaultName:     aws.String(vaultName),
+		JobParameters: &glaciertypes.JobParameters{Type: aws.String("inventory-retrieval")},
+	})
+	require.NoError(t, err)
 }
 
 func TestVaultLockPolicy_DeleteEnforcement(t *testing.T) {
@@ -125,6 +144,7 @@ func TestVaultLockPolicy_DeleteEnforcement(t *testing.T) {
 		require.Error(t, err)
 		require.ErrorContains(t, err, "AccessDenied")
 
+		runInventory(t, client, "blanket-deny-archive")
 		require.EqualValues(t, 1, vaultArchiveCount(t, client, "blanket-deny-archive"),
 			"the denied delete must not have removed the archive")
 	})

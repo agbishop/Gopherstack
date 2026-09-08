@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
@@ -13,6 +16,49 @@ import (
 
 	"github.com/blackbirdworks/gopherstack/services/timestreamwrite"
 )
+
+// writeTestBaseMillis returns a millisecond epoch a few minutes in the past.
+// WriteRecords fixtures offset from it so records land inside a table's
+// default 6-hour memory-store retention window (records.go
+// recordOutsideRetention) regardless of how long the test run takes.
+// writeTestBase is fixed for the whole test binary. Recomputing it per call let
+// two writes of the "same" record straddle a millisecond boundary and stop
+// being duplicates, which made the version-conflict tests flaky.
+var writeTestBase = sync.OnceValue(func() int64 { //nolint:gochecknoglobals // one fixed clock for the whole test binary
+	return time.Now().Add(-5 * time.Minute).UnixMilli()
+})
+
+func writeTestBaseMillis() int64 { return writeTestBase() }
+
+// recentTimeMillis returns a "MILLISECONDS" Time fixture offset from a recent
+// base -- inside the default memory-store retention window.
+func recentTimeMillis(offset int64) string {
+	return strconv.FormatInt(writeTestBaseMillis()+offset, 10)
+}
+
+// recentTimeSeconds returns a "SECONDS" Time fixture inside the default
+// memory-store retention window.
+func recentTimeSeconds() string {
+	return strconv.FormatInt(writeTestBaseMillis()/1000, 10)
+}
+
+// recentTimeForUnit returns a Time fixture scaled to the given TimeUnit (as
+// records.go's parseTimestreamTime interprets it), staying inside the default
+// memory-store retention window regardless of unit.
+func recentTimeForUnit(unit string) string {
+	t := time.UnixMilli(writeTestBaseMillis())
+
+	switch unit {
+	case "SECONDS":
+		return strconv.FormatInt(t.Unix(), 10)
+	case "MICROSECONDS":
+		return strconv.FormatInt(t.UnixMicro(), 10)
+	case "NANOSECONDS":
+		return strconv.FormatInt(t.UnixNano(), 10)
+	default:
+		return strconv.FormatInt(t.UnixMilli(), 10)
+	}
+}
 
 func newTestHandler(t *testing.T) *timestreamwrite.Handler {
 	t.Helper()

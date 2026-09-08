@@ -22,8 +22,11 @@ func TestHandler_ExportTask_CancelRoundTrip(t *testing.T) {
 	backend := cloudwatchlogs.NewInMemoryBackend()
 	h := cloudwatchlogs.NewHandler(backend)
 
+	rec := doLogsRequest(t, h, e, "CreateLogGroup", `{"logGroupName":"/my/group"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+
 	// Create an export task.
-	rec := doLogsRequest(t, h, e, "CreateExportTask",
+	rec = doLogsRequest(t, h, e, "CreateExportTask",
 		`{"logGroupName":"/my/group","destination":"my-bucket","from":1000,"to":2000}`)
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -321,9 +324,10 @@ func TestHandler_CreateExportTask_FromToValidation(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		body     string
-		wantCode int
+		name       string
+		body       string
+		wantCode   int
+		needsGroup bool
 	}{
 		{
 			name:     "from_equal_to_fails",
@@ -336,9 +340,10 @@ func TestHandler_CreateExportTask_FromToValidation(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:     "from_less_than_to_succeeds",
-			body:     `{"logGroupName":"/grp","destination":"bucket","from":1000,"to":2000}`,
-			wantCode: http.StatusOK,
+			name:       "from_less_than_to_succeeds",
+			body:       `{"logGroupName":"/grp","destination":"bucket","from":1000,"to":2000}`,
+			wantCode:   http.StatusOK,
+			needsGroup: true,
 		},
 	}
 
@@ -346,7 +351,16 @@ func TestHandler_CreateExportTask_FromToValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			rec := makeLogsRequest(t, "CreateExportTask", tt.body)
+			e := echo.New()
+			backend := cloudwatchlogs.NewInMemoryBackend()
+			h := cloudwatchlogs.NewHandler(backend)
+
+			if tt.needsGroup {
+				setupRec := doLogsRequest(t, h, e, "CreateLogGroup", `{"logGroupName":"/grp"}`)
+				require.Equal(t, http.StatusOK, setupRec.Code)
+			}
+
+			rec := doLogsRequest(t, h, e, "CreateExportTask", tt.body)
 			assert.Equal(t, tt.wantCode, rec.Code)
 		})
 	}
@@ -398,7 +412,12 @@ func TestHandler_ExportImportTaskOperations(t *testing.T) {
 		},
 		// CreateExportTask
 		{
-			name:   "CreateExportTask/OK",
+			name: "CreateExportTask/OK",
+			setup: func(t *testing.T, h *cloudwatchlogs.Handler, e *echo.Echo) {
+				t.Helper()
+				rec := doLogsRequest(t, h, e, "CreateLogGroup", `{"logGroupName":"/my/group"}`)
+				require.Equal(t, http.StatusOK, rec.Code)
+			},
 			action: "CreateExportTask",
 			body: map[string]any{
 				"logGroupName": "/my/group",
@@ -414,6 +433,17 @@ func TestHandler_ExportImportTaskOperations(t *testing.T) {
 			action:   "CreateExportTask",
 			body:     map[string]any{"destination": "my-bucket", "from": 1000, "to": 2000},
 			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:   "CreateExportTask/LogGroupNotFound",
+			action: "CreateExportTask",
+			body: map[string]any{
+				"logGroupName": "/does/not/exist",
+				"destination":  "my-bucket",
+				"from":         1000,
+				"to":           2000,
+			},
+			wantCode: http.StatusNotFound,
 		},
 		{
 			name:     "CreateExportTask/MissingDestination",

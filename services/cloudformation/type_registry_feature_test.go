@@ -305,7 +305,7 @@ func TestListTypes_Visibility(t *testing.T) {
 			setup: func(b *cloudformation.InMemoryBackend) {
 				_, _ = b.RegisterType("Acme::Dep::Type", "s3://pkg.zip")
 				typeArn := "arn:aws:cloudformation:::type/resource/Acme::Dep::Type"
-				_ = b.DeregisterType(typeArn)
+				_ = b.DeregisterType("Acme::Dep::Type", typeArn, "")
 			},
 			wantNotPresent: []string{"Acme::Dep::Type"},
 		},

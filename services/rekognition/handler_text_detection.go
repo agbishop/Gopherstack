@@ -31,7 +31,11 @@ type detectTextResp struct {
 	TextDetections   []textDetectionEntry `json:"TextDetections"`
 }
 
-func (h *Handler) handleDetectText(_ context.Context, req *detectTextReq) (*detectTextResp, error) {
+func (h *Handler) handleDetectText(ctx context.Context, req *detectTextReq) (*detectTextResp, error) {
+	if err := h.checkImageRef(ctx, req.Image); err != nil {
+		return nil, err
+	}
+
 	detections := plausibleTextDetections(req)
 
 	return &detectTextResp{
@@ -65,8 +69,12 @@ type startTextDetectionReq struct {
 }
 
 func (h *Handler) handleStartTextDetection(
-	_ context.Context, req *startTextDetectionReq,
+	ctx context.Context, req *startTextDetectionReq,
 ) (*startJobResp, error) {
+	if err := h.checkVideoRef(ctx, req.Video); err != nil {
+		return nil, err
+	}
+
 	bucket, name, version := videoRefS3(req.Video)
 
 	jobID, err := h.Backend.StartAsyncJob(StartAsyncJobParams{

@@ -111,9 +111,9 @@ func TestGetFederationToken_SessionTrackedForCallerIdentity(t *testing.T) {
 	resp, err := b.GetFederationToken(&sts.GetFederationTokenInput{Name: "feduser"})
 	require.NoError(t, err)
 
-	accessKeyID := resp.GetFederationTokenResult.Credentials.AccessKeyID
+	creds := resp.GetFederationTokenResult.Credentials
 
-	ciResp, err := b.GetCallerIdentity(accessKeyID, "")
+	ciResp, err := b.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 	require.NoError(t, err)
 	assert.Contains(t, ciResp.GetCallerIdentityResult.Arn, "federated-user/feduser")
 	assert.Contains(t, ciResp.GetCallerIdentityResult.UserID, "feduser")

@@ -344,15 +344,55 @@ func TestReset(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
+	b := h.Backend
 
-	// Create a pool then reset.
-	doCognitoRequest(t, h, "CreateUserPool", map[string]any{"PoolName": "reset-pool"})
-	assert.Equal(t, 1, h.Backend.UserPoolCount())
+	poolRec := doCognitoRequest(t, h, "CreateUserPool", map[string]any{"PoolName": "reset-pool"})
+	require.Equal(t, http.StatusOK, poolRec.Code)
+
+	var poolResp struct {
+		UserPool struct {
+			ID string `json:"Id,omitempty"`
+		} `json:"UserPool"`
+	}
+	require.NoError(t, json.Unmarshal(poolRec.Body.Bytes(), &poolResp))
+	poolID := poolResp.UserPool.ID
+	assert.Equal(t, 1, b.UserPoolCount())
+
+	client, err := b.CreateUserPoolClient(poolID, "reset-client")
+	require.NoError(t, err)
+	assert.Equal(t, 1, b.ClientCount())
+
+	user, err := b.SignUp(client.ClientID, "reset-user", "Pass1234!", map[string]string{"email": "reset-user@x.com"})
+	require.NoError(t, err)
+	require.NoError(t, b.ConfirmSignUp(client.ClientID, "reset-user", user.ConfirmCode))
+
+	authResult, err := b.InitiateAuth(client.ClientID, "USER_PASSWORD_AUTH", "reset-user", "Pass1234!")
+	require.NoError(t, err)
+	assert.Equal(t, 1, b.UserCount())
+
+	// Populate attrVerificationCodes via the real API surface.
+	_, _, _, err = b.GetUserAttributeVerificationCode(authResult.Tokens.AccessToken, "email")
+	require.NoError(t, err)
+	require.Equal(t, 1, b.AttrVerificationCodeCount())
+
+	// Populate poolMfaConfigs. Setting MfaConfiguration "ON" also forces every
+	// subsequent InitiateAuth in this pool through the MFA-challenge branch
+	// (postCredentialCheckLocked), which populates mfaSessions below.
+	require.NoError(t, b.SetUserPoolMfaConfigFull(poolID, cognitoidp.UserPoolMfaFullConfig{MfaConfiguration: "ON"}))
+	require.Equal(t, 1, b.PoolMfaConfigCount())
+
+	mfaResult, err := b.InitiateAuth(client.ClientID, "USER_PASSWORD_AUTH", "reset-user", "Pass1234!")
+	require.NoError(t, err)
+	require.NotEmpty(t, mfaResult.MFASession)
+	require.Equal(t, 1, b.MFASessionCount())
 
 	h.Reset()
-	assert.Equal(t, 0, h.Backend.UserPoolCount())
-	assert.Equal(t, 0, h.Backend.UserCount())
-	assert.Equal(t, 0, h.Backend.ClientCount())
+	assert.Equal(t, 0, b.UserPoolCount())
+	assert.Equal(t, 0, b.UserCount())
+	assert.Equal(t, 0, b.ClientCount())
+	assert.Equal(t, 0, b.AttrVerificationCodeCount(), "Reset must clear attrVerificationCodes")
+	assert.Equal(t, 0, b.PoolMfaConfigCount(), "Reset must clear poolMfaConfigs")
+	assert.Equal(t, 0, b.MFASessionCount(), "Reset must clear mfaSessions")
 }
 
 func TestMultipleResetCycle(t *testing.T) {

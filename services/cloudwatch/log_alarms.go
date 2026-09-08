@@ -158,7 +158,7 @@ func (b *InMemoryBackend) PutLogAlarm(alarm *LogAlarm) error {
 // Caller must hold b.mu (read lock).
 func (b *InMemoryBackend) collectLogAlarms(
 	nameSet map[string]bool,
-	alarmNamePrefix, stateValue string,
+	alarmNamePrefix, stateValue, actionPrefix string,
 	include bool,
 ) []LogAlarm {
 	if !include {
@@ -168,13 +168,10 @@ func (b *InMemoryBackend) collectLogAlarms(
 	var result []LogAlarm
 
 	for _, alarm := range b.logAlarms.All() {
-		if len(nameSet) > 0 && !nameSet[alarm.AlarmName] {
-			continue
-		}
-		if alarmNamePrefix != "" && !strings.HasPrefix(alarm.AlarmName, alarmNamePrefix) {
-			continue
-		}
-		if stateValue != "" && alarm.StateValue != stateValue {
+		if !alarmMatchesDescribeFilter(
+			alarm.AlarmName, alarm.StateValue, nameSet, alarmNamePrefix, stateValue, actionPrefix,
+			alarm.AlarmActions, alarm.OKActions, alarm.InsufficientDataActions,
+		) {
 			continue
 		}
 		result = append(result, *alarm)

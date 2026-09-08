@@ -50,7 +50,7 @@ func (b *InMemoryBackend) CreateStorageVirtualMachine(
 		return nil, ErrValidation
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
@@ -84,7 +84,9 @@ func (b *InMemoryBackend) CreateStorageVirtualMachine(
 	return svm.toPublic(), nil
 }
 
-// DeleteStorageVirtualMachine removes an SVM.
+// DeleteStorageVirtualMachine removes an SVM. Real AWS: "Prior to deleting
+// an SVM, you must delete all non-root volumes in the SVM, otherwise the
+// operation will fail".
 func (b *InMemoryBackend) DeleteStorageVirtualMachine(svmID string) error {
 	b.mu.Lock("DeleteStorageVirtualMachine")
 	defer b.mu.Unlock()
@@ -93,7 +95,33 @@ func (b *InMemoryBackend) DeleteStorageVirtualMachine(svmID string) error {
 		return ErrStorageVirtualMachineNotFound
 	}
 
+	if err := b.requireNoSVMVolumesLocked(svmID); err != nil {
+		return err
+	}
+
 	b.deleteStorageVirtualMachineLocked(svmID)
+
+	return nil
+}
+
+// requireNoSVMVolumesLocked returns ErrValidation if svmID still hosts any
+// volumes. Caller must already hold b.mu.
+func (b *InMemoryBackend) requireNoSVMVolumesLocked(svmID string) error {
+	var hasVolume bool
+
+	b.volumes.Range(func(v *storedVolume) bool {
+		if v.StorageVirtualMachineID == svmID {
+			hasVolume = true
+
+			return false
+		}
+
+		return true
+	})
+
+	if hasVolume {
+		return fmt.Errorf("%w: storage virtual machine %s has volumes; delete them first", ErrValidation, svmID)
+	}
 
 	return nil
 }

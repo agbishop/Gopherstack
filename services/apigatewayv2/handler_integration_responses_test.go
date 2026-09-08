@@ -350,7 +350,7 @@ func TestHandler_UpdateIntegrationResponse(t *testing.T) {
 			setup: func(h *apigatewayv2.Handler) (string, string, string) {
 				apiID := createAPI(t, h, "test-api")
 				rr := doRequest(t, h, http.MethodPost, fmt.Sprintf("/v2/apis/%s/integrations", apiID), map[string]any{
-					"integrationType": "HTTP",
+					"integrationType": "HTTP_PROXY",
 				})
 				require.Equal(t, http.StatusCreated, rr.Code)
 				var i apigatewayv2.Integration

@@ -3,6 +3,7 @@ package redshift
 import (
 	"fmt"
 	"time"
+	"unicode"
 )
 
 // LoggingStatus represents the logging status for a Redshift cluster.
@@ -38,6 +39,29 @@ type EventSubscription struct {
 	Enabled             bool      `json:"enabled"`
 }
 
+// invalidS3KeyPrefixRune returns the first rune in s that falls outside the
+// character set documented on EnableLoggingInput.S3KeyPrefix (redshift@v1.65.4
+// api_op_EnableLogging.go): "Valid characters are any letter from any
+// language, any whitespace character, any numeric character, and the
+// following characters: underscore ( _ ), period ( . ), colon ( : ), slash (
+// / ), equal ( = ), plus ( + ), backslash ( \ ), hyphen ( - ), at symbol ( @
+// )." Returns 0 if every rune is valid.
+func invalidS3KeyPrefixRune(s string) rune {
+	for _, r := range s {
+		switch r {
+		case '_', '.', ':', '/', '=', '+', '\\', '-', '@':
+			continue
+		}
+		if unicode.IsLetter(r) || unicode.IsSpace(r) || unicode.IsNumber(r) {
+			continue
+		}
+
+		return r
+	}
+
+	return 0
+}
+
 // EnableLogging enables audit logging for the specified cluster.
 func (b *InMemoryBackend) EnableLogging(clusterID, bucketName, s3KeyPrefix string) (*LoggingStatus, error) {
 	if clusterID == "" {
@@ -45,6 +69,9 @@ func (b *InMemoryBackend) EnableLogging(clusterID, bucketName, s3KeyPrefix strin
 	}
 	if bucketName == "" {
 		return nil, fmt.Errorf("%w: BucketName is required", ErrInvalidParameter)
+	}
+	if r := invalidS3KeyPrefixRune(s3KeyPrefix); r != 0 {
+		return nil, fmt.Errorf("%w: S3KeyPrefix contains invalid character %q", ErrInvalidS3KeyPrefix, r)
 	}
 
 	b.mu.Lock("EnableLogging")

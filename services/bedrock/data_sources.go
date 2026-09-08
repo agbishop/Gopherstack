@@ -142,7 +142,11 @@ func (b *InMemoryBackend) UpdateDataSourceWithConfiguration(
 	return &cp, nil
 }
 
-// DeleteDataSource deletes a data source.
+// DeleteDataSource deletes a data source and its ingestion jobs and
+// documents. GetIngestionJob/ListIngestionJobs/ListKnowledgeBaseDocuments
+// otherwise keep returning orphaned rows for a data source ID that no
+// longer resolves, the same gap gopherstack-jkiu closed for
+// DeleteKnowledgeBase (gopherstack-y0to).
 func (b *InMemoryBackend) DeleteDataSource(kbID, dsID string) error {
 	b.mu.Lock("DeleteDataSource")
 	defer b.mu.Unlock()
@@ -154,6 +158,22 @@ func (b *InMemoryBackend) DeleteDataSource(kbID, dsID string) error {
 	}
 
 	b.dataSources.Delete(key)
+
+	b.ingestionJobs.Range(func(job *IngestionJob) bool {
+		if job.KnowledgeBaseID == kbID && job.DataSourceID == dsID {
+			b.ingestionJobs.Delete(ingestionJobKey(job.KnowledgeBaseID, job.DataSourceID, job.IngestionJobID))
+		}
+
+		return true
+	})
+
+	b.kbDocuments.Range(func(doc *KnowledgeBaseDocument) bool {
+		if doc.KnowledgeBaseID == kbID && doc.DataSourceID == dsID {
+			b.kbDocuments.Delete(kbDocKey(doc.KnowledgeBaseID, doc.DataSourceID, doc.DocumentID))
+		}
+
+		return true
+	})
 
 	return nil
 }

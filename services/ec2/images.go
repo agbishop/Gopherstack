@@ -632,6 +632,12 @@ func (b *InMemoryBackend) DeregisterImage(imageID string) error {
 	}
 	b.images.Delete(imageID)
 	delete(b.tags, imageID)
+	delete(b.imageAttributes, imageID)
+	delete(b.imageDisabled, imageID)
+	delete(b.imageDeprecated, imageID)
+	delete(b.imageDeregistrationProtection, imageID)
+	delete(b.fastLaunchImages, imageID)
+	delete(b.imageWatermarks, imageID)
 
 	return nil
 }

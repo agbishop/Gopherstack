@@ -14,10 +14,10 @@ import (
 
 func wireTestKeySchema() ([]dynamodbtypes.KeySchemaElement, []dynamodbtypes.AttributeDefinition) {
 	return []dynamodbtypes.KeySchemaElement{
-			{AttributeName: aws.String("id"), KeyType: dynamodbtypes.KeyTypeHash},
-		}, []dynamodbtypes.AttributeDefinition{
-			{AttributeName: aws.String("id"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
-		}
+		{AttributeName: aws.String("id"), KeyType: dynamodbtypes.KeyTypeHash},
+	}, []dynamodbtypes.AttributeDefinition{
+		{AttributeName: aws.String("id"), AttributeType: dynamodbtypes.ScalarAttributeTypeS},
+	}
 }
 
 // TestCreateTable_SSESpecification_SurvivesWireConversion verifies that

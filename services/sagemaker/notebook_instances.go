@@ -278,6 +278,13 @@ func (b *InMemoryBackend) DeleteNotebookInstance(ctx context.Context, name strin
 		return fmt.Errorf("%w: notebook instance %q not found", ErrNotebookNotFound, name)
 	}
 
+	if nb.NotebookInstanceStatus != notebookStatusStopped {
+		return fmt.Errorf(
+			"%w: notebook instance %q is in %s status and must be stopped before it can be deleted",
+			ErrValidation, name, nb.NotebookInstanceStatus,
+		)
+	}
+
 	arnIdx := b.notebookARNIndexStore(region)
 	delete(arnIdx, nb.NotebookInstanceArn)
 	store := b.notebooksStore(region)

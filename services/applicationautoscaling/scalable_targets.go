@@ -59,9 +59,17 @@ func (b *InMemoryBackend) scalableTargetsForNamespaceLocked(serviceNamespace str
 }
 
 // RegisterScalableTarget upserts a scalable target (creates or updates).
+// minCapacity and maxCapacity are *int32, not int32: real AWS's
+// RegisterScalableTargetInput models both as optional pointers, required only
+// "when registering a new scalable target" (api_op_RegisterScalableTarget.go),
+// and the operation doc states "Any parameters that you don't specify are not
+// changed by this update request." A plain int32 could not distinguish
+// "caller omitted MinCapacity" from "caller explicitly set MinCapacity to 0"
+// (0 is a documented valid capacity for several namespaces), so omitting it on
+// an update would silently reset capacity to 0 -- see updateExistingTarget.
 func (b *InMemoryBackend) RegisterScalableTarget(
 	serviceNamespace, resourceID, scalableDimension string,
-	minCapacity, maxCapacity int32,
+	minCapacity, maxCapacity *int32,
 	tags map[string]string,
 	roleARN string,
 	suspendedState *SuspendedState,
@@ -76,15 +84,6 @@ func (b *InMemoryBackend) RegisterScalableTarget(
 
 	if scalableDimension == "" {
 		return nil, fmt.Errorf("%w: ScalableDimension is required", ErrValidation)
-	}
-
-	if minCapacity > maxCapacity {
-		return nil, fmt.Errorf(
-			"%w: MinCapacity (%d) must not exceed MaxCapacity (%d)",
-			ErrValidation,
-			minCapacity,
-			maxCapacity,
-		)
 	}
 
 	// RegisterScalableTarget's modeled error set has LimitExceededException
@@ -109,6 +108,26 @@ func (b *InMemoryBackend) RegisterScalableTarget(
 		return b.updateExistingTarget(existing, minCapacity, maxCapacity, tags, roleARN, suspendedState, now)
 	}
 
+	// MinCapacity/MaxCapacity are "required when registering a new scalable
+	// target" (api_op_RegisterScalableTarget.go field docs); only optional on
+	// an update to an existing target, handled above.
+	if minCapacity == nil {
+		return nil, fmt.Errorf("%w: MinCapacity is required when registering a new scalable target", ErrValidation)
+	}
+
+	if maxCapacity == nil {
+		return nil, fmt.Errorf("%w: MaxCapacity is required when registering a new scalable target", ErrValidation)
+	}
+
+	if *minCapacity > *maxCapacity {
+		return nil, fmt.Errorf(
+			"%w: MinCapacity (%d) must not exceed MaxCapacity (%d)",
+			ErrValidation,
+			*minCapacity,
+			*maxCapacity,
+		)
+	}
+
 	limit := maxScalableTargetsForNamespace(serviceNamespace)
 	if b.scalableTargetsForNamespaceLocked(serviceNamespace) >= limit {
 		return nil, fmt.Errorf(
@@ -123,8 +142,8 @@ func (b *InMemoryBackend) RegisterScalableTarget(
 		ServiceNamespace:  serviceNamespace,
 		ResourceID:        resourceID,
 		ScalableDimension: scalableDimension,
-		MinCapacity:       minCapacity,
-		MaxCapacity:       maxCapacity,
+		MinCapacity:       *minCapacity,
+		MaxCapacity:       *maxCapacity,
 		ARN: arn.Build(
 			"application-autoscaling",
 			b.region,
@@ -182,14 +201,33 @@ func (b *InMemoryBackend) recordActivityLocked(
 // Caller must hold the write lock.
 func (b *InMemoryBackend) updateExistingTarget(
 	existing *ScalableTarget,
-	minCapacity, maxCapacity int32,
+	minCapacity, maxCapacity *int32,
 	tags map[string]string,
 	roleARN string,
 	suspendedState *SuspendedState,
 	now time.Time,
 ) (*ScalableTarget, error) {
-	existing.MinCapacity = minCapacity
-	existing.MaxCapacity = maxCapacity
+	newMin := existing.MinCapacity
+	if minCapacity != nil {
+		newMin = *minCapacity
+	}
+
+	newMax := existing.MaxCapacity
+	if maxCapacity != nil {
+		newMax = *maxCapacity
+	}
+
+	if newMin > newMax {
+		return nil, fmt.Errorf(
+			"%w: MinCapacity (%d) must not exceed MaxCapacity (%d)",
+			ErrValidation,
+			newMin,
+			newMax,
+		)
+	}
+
+	existing.MinCapacity = newMin
+	existing.MaxCapacity = newMax
 	existing.LastModifiedTime = now
 
 	if roleARN != "" {

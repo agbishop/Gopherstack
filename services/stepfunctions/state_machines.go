@@ -95,17 +95,29 @@ func (b *InMemoryBackend) CreateStateMachine(
 	defer b.mu.Unlock()
 
 	nameIdx := b.regionNameIndex(region)
+
+	var existing *StateMachine
 	if existingARN, exists := nameIdx[name]; exists {
-		if sm, _ := b.stateMachines.Get(existingARN); sm != nil && sm.Status != statusDeleting {
-			// AWS idempotency: same name+definition+type+roleArn → return existing without error.
-			if sm.Definition == definition && sm.Type == smType && sm.RoleArn == roleArn {
-				cp := *sm
+		existing, _ = b.stateMachines.Get(existingARN)
+	}
 
-				return &cp, nil
-			}
+	// AWS ARNs are name-derived (no uniquifying suffix), so a name still
+	// mid-deletion would collide with the record we're about to create at
+	// the same ARN -- AWS models exactly this case as StateMachineDeleting
+	// on CreateStateMachine.
+	if existing != nil && existing.Status == statusDeleting {
+		return nil, fmt.Errorf("%w: %s", ErrStateMachineDeleting, name)
+	}
 
-			return nil, fmt.Errorf("%w: %s", ErrStateMachineAlreadyExists, name)
-		}
+	// AWS idempotency: same name+definition+type+roleArn → return existing without error.
+	if existing != nil && existing.Definition == definition && existing.Type == smType && existing.RoleArn == roleArn {
+		cp := *existing
+
+		return &cp, nil
+	}
+
+	if existing != nil {
+		return nil, fmt.Errorf("%w: %s", ErrStateMachineAlreadyExists, name)
 	}
 
 	now := float64(time.Now().Unix())
@@ -128,8 +140,16 @@ func (b *InMemoryBackend) CreateStateMachine(
 	return sm, nil
 }
 
-// DeleteStateMachine marks a state machine as DELETING then removes it.
-// AWS: DeleteStateMachine's own error switch models only InvalidArn and
+// DeleteStateMachine marks a state machine as DELETING then removes it. AWS:
+// "This is an asynchronous operation. It sets the state machine's status to
+// DELETING and begins the deletion process. A state machine is deleted only
+// when all its executions are completed" (sfn service-2.json). If executions
+// are still running, the record (and its name-index entry, so
+// CreateStateMachine's duplicate-name check can see it) is left in place
+// with Status=DELETING; SweepDeletingStateMachines -- driven by the janitor
+// -- completes the removal once nothing is running.
+//
+// DeleteStateMachine's own error switch models only InvalidArn and
 // ValidationException -- no StateMachineDoesNotExist -- so it is idempotent
 // on a missing state machine.
 func (b *InMemoryBackend) DeleteStateMachine(arn string) error {
@@ -142,15 +162,30 @@ func (b *InMemoryBackend) DeleteStateMachine(arn string) error {
 	}
 
 	sm.Status = statusDeleting
+
+	if len(b.smExecsByStatus[arn][statusRunning]) > 0 {
+		return nil
+	}
+
+	b.completeDeleteLocked(arn, sm)
+
+	return nil
+}
+
+// completeDeleteLocked physically removes a state machine and everything
+// scoped to it (executions, versions, aliases, name index). Caller must hold
+// b.mu write lock and have already confirmed no executions are running.
+func (b *InMemoryBackend) completeDeleteLocked(arn string, sm *StateMachine) {
 	b.stateMachines.Delete(arn)
 
 	smRegion := regionFromARN(arn, b.region)
 	delete(b.nameIndex[smRegion], sm.Name)
 
-	// Cancel running goroutines and clean up all executions and history for this SM.
-	// Cloned first: b.executions.Delete below mutates the executionsByStateMachine
-	// index this slice is backed by, so iterating the live index result while
-	// deleting from it would be unsafe.
+	// Cancel any still-registered goroutines and clean up all executions and
+	// history for this SM. Cloned first: b.executions.Delete below mutates
+	// the executionsByStateMachine index this slice is backed by, so
+	// iterating the live index result while deleting from it would be
+	// unsafe.
 	execs := slices.Clone(b.executionsByStateMachine.Get(arn))
 	for _, exec := range execs {
 		execARN := exec.ExecutionArn
@@ -185,8 +220,32 @@ func (b *InMemoryBackend) DeleteStateMachine(arn string) error {
 		b.aliases.Delete(aARN)
 	}
 	delete(b.smAliases, arn)
+}
 
-	return nil
+// SweepDeletingStateMachines physically removes state machines that
+// DeleteStateMachine left marked DELETING (because executions were still
+// running) and that now have no running executions left. Returns the count
+// removed.
+func (b *InMemoryBackend) SweepDeletingStateMachines(_ context.Context) int {
+	b.mu.Lock("SweepDeletingStateMachines")
+	defer b.mu.Unlock()
+
+	var swept int
+
+	for _, sm := range b.stateMachines.All() {
+		if sm.Status != statusDeleting {
+			continue
+		}
+
+		if len(b.smExecsByStatus[sm.StateMachineArn][statusRunning]) > 0 {
+			continue
+		}
+
+		b.completeDeleteLocked(sm.StateMachineArn, sm)
+		swept++
+	}
+
+	return swept
 }
 
 // ListStateMachines returns state machines in the caller's region with optional pagination.
@@ -274,6 +333,10 @@ func (b *InMemoryBackend) UpdateStateMachine(smARN, definition, roleArn string) 
 	sm, exists := b.stateMachines.Get(smARN)
 	if !exists {
 		return 0, "", fmt.Errorf("%w: %s", ErrStateMachineDoesNotExist, smARN)
+	}
+
+	if sm.Status == statusDeleting {
+		return 0, "", fmt.Errorf("%w: %s", ErrStateMachineDeleting, smARN)
 	}
 
 	if definition != "" {

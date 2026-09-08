@@ -197,3 +197,8 @@ func (b *InMemoryBackend) PruneExecutionsForTest(cutoff float64) int {
 
 	return b.pruneExecutionsLocked(cutoff)
 }
+
+// ResourceTypeFromResourceForTest exposes resourceTypeFromResource for tests.
+func ResourceTypeFromResourceForTest(resource string) string {
+	return resourceTypeFromResource(resource)
+}

@@ -163,6 +163,16 @@ func (b *InMemoryBackend) UpdateGatewayResponse(input PutGatewayResponseInput) (
 	return &cp, nil
 }
 
+// deleteGatewayResponsesForAPILocked removes every custom gateway response
+// scoped to restAPIID. Callers must hold b.mu.
+func (b *InMemoryBackend) deleteGatewayResponsesForAPILocked(restAPIID string) {
+	for _, gr := range b.gatewayResponses.All() {
+		if gr.RestAPIID == restAPIID {
+			b.gatewayResponses.Delete(gatewayResponseKey(restAPIID, gr.ResponseType))
+		}
+	}
+}
+
 // DeleteGatewayResponse removes a custom gateway response, reverting to default.
 func (b *InMemoryBackend) DeleteGatewayResponse(restAPIID, responseType string) error {
 	b.mu.Lock("DeleteGatewayResponse")

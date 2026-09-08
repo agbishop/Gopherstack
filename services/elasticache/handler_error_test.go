@@ -5,10 +5,12 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	elasticachesdk "github.com/aws/aws-sdk-go-v2/service/elasticache"
@@ -21,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/blackbirdworks/gopherstack/pkgs/logger"
 	"github.com/blackbirdworks/gopherstack/pkgs/service"
 	"github.com/blackbirdworks/gopherstack/services/elasticache"
 )
@@ -157,6 +160,196 @@ func TestXMLErrorRequestIDsAreUnique(t *testing.T) {
 	require.NotEmpty(t, first.RequestID)
 	require.NotEmpty(t, second.RequestID)
 	assert.NotEqual(t, first.RequestID, second.RequestID, "each error response must carry a distinct RequestId")
+}
+
+// TestDescribeListChecked_MaxRecordsOutOfRange_DoesNotDoubleWrite locks
+// gopherstack-8haq one layer further: describeListChecked wraps
+// parsePaginationChecked for every one of its ~7 callers (DescribeCacheSubnetGroups
+// among them). Before the fix, parsePaginationChecked's xmlError write
+// returned nil, so describeListChecked's own "if err != nil" never fired
+// either, and it went on to call the backend with a zero-valued
+// marker/maxRecords and return a fabricated success page -- which the
+// caller (describeCacheSubnetGroups) then wrote as a second, corrupting
+// response onto the already-committed 400. See
+// TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange_DoesNotDoubleWrite
+// for the direct-caller half of this same defect.
+func TestDescribeListChecked_MaxRecordsOutOfRange_DoesNotDoubleWrite(t *testing.T) {
+	t.Parallel()
+
+	srv := newErrorTestServer(t)
+
+	form := url.Values{
+		"Action":     {"DescribeCacheSubnetGroups"},
+		"Version":    {"2015-02-02"},
+		"MaxRecords": {"101"},
+	}
+
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		srv.URL,
+		strings.NewReader(form.Encode()),
+	)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.NotContains(t, string(body), "DescribeCacheSubnetGroupsResponse",
+		"an out-of-range MaxRecords must stop describeListChecked before it writes a second (success) response")
+}
+
+// TestDescribeListChecked_NotFound_DoesNotDoubleWrite locks describeListChecked's
+// notFound branch (handler.go, just above the InternalFailure default) the same
+// way TestDescribeListChecked_MaxRecordsOutOfRange_DoesNotDoubleWrite locks its
+// parsePaginationChecked guard: a missing CacheSubnetGroupName must stop the
+// describeCacheSubnetGroups caller via errResponseWritten instead of xmlError's
+// nil-on-success-write, which would otherwise let it fall through to its own
+// success write on the already-committed error response.
+func TestDescribeListChecked_NotFound_DoesNotDoubleWrite(t *testing.T) {
+	t.Parallel()
+
+	srv := newErrorTestServer(t)
+
+	form := url.Values{
+		"Action":               {"DescribeCacheSubnetGroups"},
+		"Version":              {"2015-02-02"},
+		"CacheSubnetGroupName": {"no-such-sng"},
+	}
+
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		srv.URL,
+		strings.NewReader(form.Encode()),
+	)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Contains(t, string(body), "CacheSubnetGroupNotFoundFault")
+	assert.NotContains(t, string(body), "DescribeCacheSubnetGroupsResponse",
+		"a not-found subnet group name must stop describeListChecked before it writes a second (success) response")
+}
+
+// logCapture is a slog.Handler that records emitted log records for test
+// assertions, isolated per test server instance (unlike slog.Default(), which
+// would race and interleave across parallel tests).
+type logCapture struct {
+	records []slog.Record
+	mu      sync.Mutex
+}
+
+func (l *logCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (l *logCapture) Handle(_ context.Context, r slog.Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.records = append(l.records, r)
+
+	return nil
+}
+
+func (l *logCapture) WithAttrs([]slog.Attr) slog.Handler { return l }
+func (l *logCapture) WithGroup(string) slog.Handler      { return l }
+
+// messages returns the message of every record captured at the given level.
+func (l *logCapture) messages(level slog.Level) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	var msgs []string
+	for _, r := range l.records {
+		if r.Level == level {
+			msgs = append(msgs, r.Message)
+		}
+	}
+
+	return msgs
+}
+
+// newLogCapturingErrorTestServer is newErrorTestServer plus a request-scoped
+// logger (pkgs/logger, wired the way pkgs/telemetry.WrapEchoHandler expects)
+// so tests can assert on what the telemetry wrapper actually logged.
+func newLogCapturingErrorTestServer(t *testing.T) (*httptest.Server, *logCapture) {
+	t.Helper()
+
+	backend := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
+	handler := elasticache.NewHandler(backend)
+	handler.Region = "us-east-1"
+
+	capture := &logCapture{}
+
+	e := echo.New()
+	e.Use(logger.EchoMiddleware(slog.New(capture)))
+	registry := service.NewRegistry()
+	require.NoError(t, registry.Register(handler))
+	router := service.NewServiceRouter(registry)
+	e.Use(router.RouteHandler())
+
+	srv := httptest.NewServer(e)
+	t.Cleanup(srv.Close)
+
+	return srv, capture
+}
+
+// TestHandler_ErrResponseWrittenTranslatesToSuccessTelemetry pins the second
+// half of gopherstack-8haq's fix: Handler() must translate errResponseWritten
+// back to nil before returning, so pkgs/telemetry.WrapEchoHandler treats an
+// already-handled xmlError write the same as every other one -- logging
+// "operation completed with error status" at Warn, not "operation failed" at
+// Error. Echo's own Response.Committed guard means a regressed translation
+// does not corrupt the wire body (both echo's default error handler and this
+// repo's buildHTTPErrorHandler skip writing once committed), so the response
+// bytes alone can't tell the two behaviours apart -- the escaped error is only
+// observable through what the handler chain logs about the call.
+func TestHandler_ErrResponseWrittenTranslatesToSuccessTelemetry(t *testing.T) {
+	t.Parallel()
+
+	srv, capture := newLogCapturingErrorTestServer(t)
+
+	form := url.Values{
+		"Action":               {"DescribeCacheSubnetGroups"},
+		"Version":              {"2015-02-02"},
+		"CacheSubnetGroupName": {"no-such-sng"},
+	}
+
+	req, err := http.NewRequestWithContext(
+		context.Background(),
+		http.MethodPost,
+		srv.URL,
+		strings.NewReader(form.Encode()),
+	)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, 1, strings.Count(string(body), xml.Header),
+		"exactly one XML document must be written")
+	assert.Contains(t, string(body), "CacheSubnetGroupNotFoundFault")
+
+	assert.Empty(t, capture.messages(slog.LevelError),
+		"errResponseWritten must not surface as a handler error to the telemetry wrapper")
+	assert.Contains(t, capture.messages(slog.LevelWarn), "operation completed with error status",
+		"the already-written response must be logged as a normal error-status completion, "+
+			"not an escaped handler error")
 }
 
 // errorFault constrains PT to be a pointer to T that implements error, so

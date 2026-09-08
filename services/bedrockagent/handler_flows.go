@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v5"
@@ -156,7 +157,9 @@ func (h *Handler) handleGetFlowVersion(
 func (h *Handler) handleDeleteFlowVersion(
 	ctx context.Context, c *echo.Context, flowID, flowVersion string,
 ) error {
-	if err := h.Backend.DeleteFlowVersion(ctx, flowID, flowVersion); err != nil {
+	skip, _ := strconv.ParseBool(c.QueryParam("skipResourceInUseCheck"))
+
+	if err := h.Backend.DeleteFlowVersion(ctx, flowID, flowVersion, skip); err != nil {
 		return handleErr(c, err)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"time"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/logger"
 	"github.com/blackbirdworks/gopherstack/pkgs/persistence"
@@ -30,11 +31,19 @@ const resourcegroupstaggingapiSnapshotVersion = 1
 // leave it permanently empty, corrupting the table's primary key on restore.
 // This DTO gives Region a real JSON tag instead, mirroring the technique
 // services/codecommit uses for its own dirty tables.
+//
+// StartedAt mirrors reportCreationState.startedAt (also otherwise unexported
+// and un-persisted): without it, a restored report's RUNNING->SUCCEEDED and
+// staleness checks in DescribeReportCreation both compare against a zero
+// time.Time, so every restored report immediately reports NO REPORT
+// regardless of its real status. Persisted as RFC3339, the same pattern
+// services/sagemaker's persistedCluster.CreationTime uses.
 type reportStateSnapshot struct {
 	Region     string `json:"region"`
 	S3Location string `json:"s3Location"`
 	StartDate  string `json:"startDate"`
 	Status     string `json:"status"`
+	StartedAt  string `json:"startedAt"`
 }
 
 func reportStateSnapshotKeyFn(v *reportStateSnapshot) string { return v.Region }
@@ -45,15 +54,24 @@ func toReportStateSnapshot(v *reportCreationState) *reportStateSnapshot {
 		S3Location: v.S3Location,
 		StartDate:  v.StartDate,
 		Status:     v.Status,
+		StartedAt:  v.startedAt.Format(time.RFC3339Nano),
 	}
 }
 
-func fromReportStateSnapshot(v *reportStateSnapshot) *reportCreationState {
+func fromReportStateSnapshot(ctx context.Context, v *reportStateSnapshot) *reportCreationState {
+	startedAt, err := time.Parse(time.RFC3339Nano, v.StartedAt)
+	if err != nil {
+		logger.Load(ctx).WarnContext(ctx,
+			"resourcegroupstaggingapi: failed to parse report startedAt, treating as zero time",
+			"region", v.Region, "error", err)
+	}
+
 	return &reportCreationState{
 		Region:     v.Region,
 		S3Location: v.S3Location,
 		StartDate:  v.StartDate,
 		Status:     v.Status,
+		startedAt:  startedAt,
 	}
 }
 
@@ -166,7 +184,7 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 		return fmt.Errorf("resourcegroupstaggingapi: restore snapshot tables: %w", err)
 	}
 
-	if err := b.restoreDirtyTables(snap.Tables); err != nil {
+	if err := b.restoreDirtyTables(ctx, snap.Tables); err != nil {
 		return err
 	}
 
@@ -180,7 +198,7 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 // store_setup.go's registerAllTables doc) from tables via the ephemeral DTO
 // registry, factored out of Restore to keep Restore's own cognitive
 // complexity low. Callers must hold b.mu.Lock.
-func (b *InMemoryBackend) restoreDirtyTables(tables map[string]json.RawMessage) error {
+func (b *InMemoryBackend) restoreDirtyTables(ctx context.Context, tables map[string]json.RawMessage) error {
 	dtoReg, reportStateDTOs := buildPersistenceDTORegistry()
 	if err := dtoReg.RestoreAll(tables); err != nil {
 		return fmt.Errorf("resourcegroupstaggingapi: restore snapshot DTO tables: %w", err)
@@ -188,7 +206,7 @@ func (b *InMemoryBackend) restoreDirtyTables(tables map[string]json.RawMessage) 
 
 	b.reportStates.Reset()
 	for _, s := range reportStateDTOs.Snapshot() {
-		b.reportStates.Put(fromReportStateSnapshot(s))
+		b.reportStates.Put(fromReportStateSnapshot(ctx, s))
 	}
 
 	return nil

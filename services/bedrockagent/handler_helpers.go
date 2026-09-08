@@ -24,7 +24,7 @@ func handleErr(c *echo.Context, err error) error {
 	case errors.Is(err, awserr.ErrNotFound):
 		status = http.StatusNotFound
 		code = "ResourceNotFoundException"
-	case errors.Is(err, awserr.ErrAlreadyExists):
+	case errors.Is(err, awserr.ErrAlreadyExists), errors.Is(err, awserr.ErrConflict):
 		status = http.StatusConflict
 		code = "ConflictException"
 	case errors.Is(err, awserr.ErrInvalidParameter):

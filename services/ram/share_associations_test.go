@@ -219,6 +219,21 @@ func TestAssociateResourceShare_External(t *testing.T) {
 			principal:    "arn:aws:iam::111111111111:role/MyRole",
 			wantExternal: true,
 		},
+		{
+			name:         "iam role ARN same account - not external",
+			principal:    "arn:aws:iam::000000000000:role/MyRole",
+			wantExternal: false,
+		},
+		{
+			name:         "iam user ARN same account - not external",
+			principal:    "arn:aws:iam::000000000000:user/MyUser",
+			wantExternal: false,
+		},
+		{
+			name:         "organization ARN same account segment - still external",
+			principal:    "arn:aws:organizations::000000000000:organization/o-exampleorgid",
+			wantExternal: true,
+		},
 	}
 
 	for _, tt := range tests {

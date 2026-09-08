@@ -60,8 +60,8 @@ type StorageBackend interface {
 		certSettings *domainCertificateSettings,
 	) (*DomainAssociation, error)
 	UpdateDomainAssociation(
-		appID, domainName string, subDomains []SubDomainSetting, enableAutoSubDomain bool,
-		autoSubDomainCreationPatterns []string, autoSubDomainIAMRole string,
+		appID, domainName string, subDomains []SubDomainSetting, enableAutoSubDomain *bool,
+		autoSubDomainCreationPatterns []string, autoSubDomainIAMRole *string,
 		certSettings *domainCertificateSettings,
 	) (*DomainAssociation, error)
 	DeleteDomainAssociation(appID, domainName string) (*DomainAssociation, error)

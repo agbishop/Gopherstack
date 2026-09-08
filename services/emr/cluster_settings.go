@@ -70,6 +70,11 @@ func (b *InMemoryBackend) SetKeepJobFlowAliveWhenNoSteps(
 		}
 
 		cluster.KeepJobFlowAliveWhenNoSteps = keep
+		// AutoTerminate is the real API's inverse field (types.Cluster,
+		// emr@v1.64.4 types/types.go:315) -- keep it in sync or the
+		// janitor's auto-termination sweep (janitor.go) would act on a
+		// stale value after this call.
+		cluster.AutoTerminate = !keep
 	}
 
 	return nil

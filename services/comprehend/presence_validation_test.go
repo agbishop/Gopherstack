@@ -23,6 +23,12 @@ import (
 // (gopherstack-wl0s) named only DataLakeS3Uri and DesiredInferenceUnits --
 // validateOpCreateFlywheelInput marks DataAccessRoleArn required too.
 //
+// Also covers CreateDatasetInput's FlywheelArn and InputDataConfig, which
+// validateOpCreateDatasetInput likewise marks "This member is required" but
+// which requiredResourceFields (store.go) never listed for
+// resourceTypeDataset -- CreateDataset accepted a request missing either
+// field and echoed it back as a zero value instead of rejecting it.
+//
 // Each case proves both directions: omitting the field is rejected with
 // InvalidRequestException (the code both ops' own
 // awsAwsjson11_deserializeOpError<Op> switch declares for
@@ -57,6 +63,18 @@ func TestCreatePassthroughFields_PresenceValidation(t *testing.T) {
 			action: "CreateEndpoint", describeOp: "DescribeEndpoint",
 			arnField: "EndpointArn", missingField: "DesiredInferenceUnits",
 			validBody: endpointBody("presence-ep-units"),
+		},
+		{
+			name:   "create_dataset_flywheel_arn",
+			action: "CreateDataset", describeOp: "DescribeDataset",
+			arnField: "DatasetArn", missingField: "FlywheelArn",
+			validBody: datasetBody("presence-ds-flywheel"),
+		},
+		{
+			name:   "create_dataset_input_data_config",
+			action: "CreateDataset", describeOp: "DescribeDataset",
+			arnField: "DatasetArn", missingField: "InputDataConfig",
+			validBody: datasetBody("presence-ds-config"),
 		},
 	}
 

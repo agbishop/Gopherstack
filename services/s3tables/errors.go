@@ -7,10 +7,16 @@ var (
 	ErrTableBucketNotFound = awserr.New("NotFoundException", awserr.ErrNotFound)
 	// ErrTableBucketAlreadyExists is returned when a TableBucket already exists.
 	ErrTableBucketAlreadyExists = awserr.New("ConflictException", awserr.ErrConflict)
+	// ErrTableBucketNotEmpty is returned when deleting a TableBucket that
+	// still contains namespaces.
+	ErrTableBucketNotEmpty = awserr.New("ConflictException", awserr.ErrConflict)
 	// ErrNamespaceNotFound is returned when a Namespace does not exist.
 	ErrNamespaceNotFound = awserr.New("NotFoundException", awserr.ErrNotFound)
 	// ErrNamespaceAlreadyExists is returned when a Namespace already exists.
 	ErrNamespaceAlreadyExists = awserr.New("ConflictException", awserr.ErrConflict)
+	// ErrNamespaceNotEmpty is returned when deleting a Namespace that still
+	// contains tables.
+	ErrNamespaceNotEmpty = awserr.New("ConflictException", awserr.ErrConflict)
 	// ErrTableNotFound is returned when a Table does not exist.
 	ErrTableNotFound = awserr.New("NotFoundException", awserr.ErrNotFound)
 	// ErrTableAlreadyExists is returned when a Table already exists.

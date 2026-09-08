@@ -32,10 +32,22 @@ type SearchResult struct {
 }
 
 // findIndexLocked returns the stored index for a domain, or an error. The caller
-// must hold at least a read lock.
-func (b *InMemoryBackend) findIndexLocked(domainName, indexName string) (*DomainIndex, error) {
-	if d, ok := b.domains.Get(domainName); !ok || deleteWindowElapsed(d, b.clock()) {
+// must hold at least a read lock. action is the IAM-style action being
+// performed against the index (e.g. "es:ESHttpGet"), checked against the
+// domain's own resource-based AccessPolicies -- see accessPolicyDenies.
+func (b *InMemoryBackend) findIndexLocked(domainName, indexName, action string) (*DomainIndex, error) {
+	d, ok := b.domains.Get(domainName)
+	if !ok || deleteWindowElapsed(d, b.clock()) {
 		return nil, fmt.Errorf("%w: domain %s not found", ErrDomainNotFound, domainName)
+	}
+
+	if accessPolicyDenies(d.AccessPolicies, action, d.ARN) {
+		return nil, fmt.Errorf(
+			"%w: user is not authorized to perform %s on domain %s",
+			ErrAccessDenied,
+			action,
+			domainName,
+		)
 	}
 
 	idx, ok := b.domainIndexes.Get(domainIndexKey(domainName, indexName))
@@ -61,7 +73,7 @@ func (b *InMemoryBackend) IndexDocument(
 	b.mu.Lock("IndexDocument")
 	defer b.mu.Unlock()
 
-	idx, err := b.findIndexLocked(domainName, indexName)
+	idx, err := b.findIndexLocked(domainName, indexName, actionESHttpPut)
 	if err != nil {
 		return "", false, err
 	}
@@ -89,7 +101,7 @@ func (b *InMemoryBackend) GetDocument(
 	b.mu.RLock("GetDocument")
 	defer b.mu.RUnlock()
 
-	idx, err := b.findIndexLocked(domainName, indexName)
+	idx, err := b.findIndexLocked(domainName, indexName, actionESHttpGet)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +124,7 @@ func (b *InMemoryBackend) DeleteDocument(domainName, indexName, docID string) er
 	b.mu.Lock("DeleteDocument")
 	defer b.mu.Unlock()
 
-	idx, err := b.findIndexLocked(domainName, indexName)
+	idx, err := b.findIndexLocked(domainName, indexName, actionESHttpDelete)
 	if err != nil {
 		return err
 	}
@@ -137,7 +149,7 @@ func (b *InMemoryBackend) CountDocuments(domainName, indexName string) (int, err
 	b.mu.RLock("CountDocuments")
 	defer b.mu.RUnlock()
 
-	idx, err := b.findIndexLocked(domainName, indexName)
+	idx, err := b.findIndexLocked(domainName, indexName, actionESHttpGet)
 	if err != nil {
 		return 0, err
 	}
@@ -174,7 +186,7 @@ func (b *InMemoryBackend) SearchIndex(
 	b.mu.RLock("SearchIndex")
 	defer b.mu.RUnlock()
 
-	idx, err := b.findIndexLocked(domainName, indexName)
+	idx, err := b.findIndexLocked(domainName, indexName, actionESHttpPost)
 	if err != nil {
 		return nil, err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/store"
@@ -57,13 +58,7 @@ func sortedPipeNames(pipesTable *store.Table[Pipe]) []string {
 	for _, p := range pipesTable.All() {
 		names = append(names, p.Name)
 	}
-	for i := 0; i < len(names); i++ {
-		for j := i + 1; j < len(names); j++ {
-			if names[j] < names[i] {
-				names[i], names[j] = names[j], names[i]
-			}
-		}
-	}
+	slices.Sort(names)
 
 	return names
 }

@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -118,35 +119,38 @@ func TestHandler_CreateLabelingJob_MissingRequiredFields(t *testing.T) {
 func TestHandler_DescribeLabelingJob_Lifecycle(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateLabelingJob schedules its Initializing->InProgress->Completed
+	// transitions immediately, so the whole body stays in one bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	doSageMakerRequest(
-		t,
-		h,
-		"CreateLabelingJob",
-		createLabelingJobRequestBody("job-lifecycle", "arn:aws:sagemaker:us-east-1:000000000000:workteam/team-1"),
-	)
+		doSageMakerRequest(
+			t,
+			h,
+			"CreateLabelingJob",
+			createLabelingJobRequestBody("job-lifecycle", "arn:aws:sagemaker:us-east-1:000000000000:workteam/team-1"),
+		)
 
-	rec := doSageMakerRequest(t, h, "DescribeLabelingJob", map[string]any{"LabelingJobName": "job-lifecycle"})
-	require.Equal(t, http.StatusOK, rec.Code)
+		rec := doSageMakerRequest(t, h, "DescribeLabelingJob", map[string]any{"LabelingJobName": "job-lifecycle"})
+		require.Equal(t, http.StatusOK, rec.Code)
 
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Equal(t, "job-lifecycle", resp["LabelingJobName"])
-	assert.Equal(t, "Initializing", resp["LabelingJobStatus"])
-	assert.NotEmpty(t, resp["JobReferenceCode"])
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "job-lifecycle", resp["LabelingJobName"])
+		assert.Equal(t, "Initializing", resp["LabelingJobStatus"])
+		assert.NotEmpty(t, resp["JobReferenceCode"])
 
-	humanTaskConfig, ok := resp["HumanTaskConfig"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "arn:aws:sagemaker:us-east-1:000000000000:workteam/team-1", humanTaskConfig["WorkteamArn"])
+		humanTaskConfig, ok := resp["HumanTaskConfig"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "arn:aws:sagemaker:us-east-1:000000000000:workteam/team-1", humanTaskConfig["WorkteamArn"])
 
-	assert.Eventually(t, func() bool {
-		pollRec := doSageMakerRequest(t, h, "DescribeLabelingJob", map[string]any{"LabelingJobName": "job-lifecycle"})
-		var pollResp map[string]any
-		require.NoError(t, json.Unmarshal(pollRec.Body.Bytes(), &pollResp))
+		time.Sleep(time.Second)
+		synctest.Wait()
 
-		return pollResp["LabelingJobStatus"] == "Completed"
-	}, 2*time.Second, 20*time.Millisecond)
+		rec = doSageMakerRequest(t, h, "DescribeLabelingJob", map[string]any{"LabelingJobName": "job-lifecycle"})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "Completed", resp["LabelingJobStatus"])
+	})
 }
 
 func TestHandler_DescribeLabelingJob_NotFound(t *testing.T) {
@@ -165,30 +169,33 @@ func TestHandler_DescribeLabelingJob_NotFound(t *testing.T) {
 func TestHandler_StopLabelingJob(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateLabelingJob schedules its own transitions immediately, so the
+	// whole body stays in one bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	doSageMakerRequest(
-		t,
-		h,
-		"CreateLabelingJob",
-		createLabelingJobRequestBody("job-stop", "arn:aws:sagemaker:us-east-1:000000000000:workteam/team-1"),
-	)
+		doSageMakerRequest(
+			t,
+			h,
+			"CreateLabelingJob",
+			createLabelingJobRequestBody("job-stop", "arn:aws:sagemaker:us-east-1:000000000000:workteam/team-1"),
+		)
 
-	rec := doSageMakerRequest(t, h, "StopLabelingJob", map[string]any{"LabelingJobName": "job-stop"})
-	require.Equal(t, http.StatusOK, rec.Code)
+		rec := doSageMakerRequest(t, h, "StopLabelingJob", map[string]any{"LabelingJobName": "job-stop"})
+		require.Equal(t, http.StatusOK, rec.Code)
 
-	rec = doSageMakerRequest(t, h, "DescribeLabelingJob", map[string]any{"LabelingJobName": "job-stop"})
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Contains(t, []any{"Stopping", "Stopped"}, resp["LabelingJobStatus"])
+		rec = doSageMakerRequest(t, h, "DescribeLabelingJob", map[string]any{"LabelingJobName": "job-stop"})
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Contains(t, []any{"Stopping", "Stopped"}, resp["LabelingJobStatus"])
 
-	assert.Eventually(t, func() bool {
-		pollRec := doSageMakerRequest(t, h, "DescribeLabelingJob", map[string]any{"LabelingJobName": "job-stop"})
-		var pollResp map[string]any
-		require.NoError(t, json.Unmarshal(pollRec.Body.Bytes(), &pollResp))
+		time.Sleep(time.Second)
+		synctest.Wait()
 
-		return pollResp["LabelingJobStatus"] == "Stopped"
-	}, 2*time.Second, 20*time.Millisecond)
+		rec = doSageMakerRequest(t, h, "DescribeLabelingJob", map[string]any{"LabelingJobName": "job-stop"})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "Stopped", resp["LabelingJobStatus"])
+	})
 }
 
 func TestHandler_StopLabelingJob_NotFound(t *testing.T) {
@@ -285,38 +292,42 @@ func TestHandler_ListLabelingJobsForWorkteam_MissingArn(t *testing.T) {
 func TestHandler_ListLabelingJobs_ResponseIncludesInputConfigAndOutput(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateLabelingJob schedules its own transitions immediately, so the
+	// whole body stays in one bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	doSageMakerRequest(
-		t,
-		h,
-		"CreateLabelingJob",
-		createLabelingJobRequestBody("job-fields", "arn:aws:sagemaker:us-east-1:000000000000:workteam/team-1"),
-	)
+		doSageMakerRequest(
+			t,
+			h,
+			"CreateLabelingJob",
+			createLabelingJobRequestBody("job-fields", "arn:aws:sagemaker:us-east-1:000000000000:workteam/team-1"),
+		)
 
-	rec := doSageMakerRequest(t, h, "ListLabelingJobs", map[string]any{})
-	require.Equal(t, http.StatusOK, rec.Code)
+		rec := doSageMakerRequest(t, h, "ListLabelingJobs", map[string]any{})
+		require.Equal(t, http.StatusOK, rec.Code)
 
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	items, ok := resp["LabelingJobSummaryList"].([]any)
-	require.True(t, ok)
-	require.Len(t, items, 1)
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		items, ok := resp["LabelingJobSummaryList"].([]any)
+		require.True(t, ok)
+		require.Len(t, items, 1)
 
-	item, ok := items[0].(map[string]any)
-	require.True(t, ok)
-	assert.NotNil(t, item["InputConfig"], "LabelingJobSummary.InputConfig is a real member of the wire type")
+		item, ok := items[0].(map[string]any)
+		require.True(t, ok)
+		assert.NotNil(t, item["InputConfig"], "LabelingJobSummary.InputConfig is a real member of the wire type")
 
-	// LabelingJobOutput is only populated once the job completes.
-	assert.Eventually(t, func() bool {
-		pollRec := doSageMakerRequest(t, h, "ListLabelingJobs", map[string]any{})
-		var pollResp map[string]any
-		require.NoError(t, json.Unmarshal(pollRec.Body.Bytes(), &pollResp))
-		pollItems, _ := pollResp["LabelingJobSummaryList"].([]any)
-		require.Len(t, pollItems, 1)
+		// LabelingJobOutput is only populated once the job completes.
+		time.Sleep(time.Second)
+		synctest.Wait()
 
-		return pollItems[0].(map[string]any)["LabelingJobOutput"] != nil
-	}, 2*time.Second, 20*time.Millisecond)
+		rec = doSageMakerRequest(t, h, "ListLabelingJobs", map[string]any{})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		items, ok = resp["LabelingJobSummaryList"].([]any)
+		require.True(t, ok)
+		require.Len(t, items, 1)
+		assert.NotNil(t, items[0].(map[string]any)["LabelingJobOutput"])
+	})
 }
 
 func TestHandler_ListLabelingJobs_TimeFilters(t *testing.T) {

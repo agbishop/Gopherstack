@@ -23,6 +23,16 @@ const (
 	// and forward-compatibility (e.g. a hand-seeded test cluster).
 	StateRunning = "RUNNING"
 
+	// StateStarting and StateBootstrapping are the two remaining real
+	// ClusterState values AddJobFlowSteps' doc allows steps to be added
+	// against ("STARTING, BOOTSTRAPPING, RUNNING, or WAITING"), alongside
+	// StateWaiting/StateRunning above. Unreachable in this backend for the
+	// same reason StateRunning is (see its comment) -- included so
+	// clusterAcceptsSteps (clusters.go) checks the real allow-list, not a
+	// backend-specific approximation of it.
+	StateStarting      = "STARTING"
+	StateBootstrapping = "BOOTSTRAPPING"
+
 	StepStatePending   = "PENDING"
 	StepStateCompleted = "COMPLETED"
 	StepStateCancelled = "CANCELLED"

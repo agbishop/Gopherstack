@@ -608,7 +608,15 @@ func TestSDKCompleteness(t *testing.T) {
 
 	backend := iam.NewInMemoryBackend()
 	h := iam.NewHandler(backend)
-	sdkcheck.CheckCompleteness(t, &iamsdk.Client{}, h.GetSupportedOperations(), []string{})
+
+	// Added by the aws-sdk-go-v2/service/iam v1.63.0 bump; unimplemented.
+	notImplemented := []string{
+		"AcquireRole",
+		"GetAccountProperties",
+		"GetRoleTemplateVersion",
+		"PutAccountProperties",
+	}
+	sdkcheck.CheckCompleteness(t, &iamsdk.Client{}, h.GetSupportedOperations(), notImplemented)
 }
 
 // callIAM is a helper that sends an IAM action to the handler and returns the recorder.

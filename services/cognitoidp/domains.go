@@ -162,20 +162,41 @@ func (b *InMemoryBackend) UpdateUserPoolDomain(userPoolID, domain string) (strin
 	return d.CloudFrontDistribution, nil
 }
 
-// DeleteUserPoolDomain removes a domain from a user pool.
+// DeleteUserPoolDomain removes a domain from a user pool. The pool-existence
+// guard is relaxed for a domain whose recorded UserPoolID no longer resolves
+// to a live pool: DeleteUserPool now refuses to delete a pool with a domain
+// still attached (gopherstack-tq5q), but domains orphaned by data that
+// predates that fix would otherwise have no cleanup path at all, permanently
+// blocking their name from ever being reused.
 func (b *InMemoryBackend) DeleteUserPoolDomain(userPoolID, domain string) error {
 	b.mu.Lock("DeleteUserPoolDomain")
 	defer b.mu.Unlock()
 
-	if _, ok := b.pools.Get(userPoolID); !ok {
-		return fmt.Errorf("%w: pool %q not found", ErrUserPoolNotFound, userPoolID)
-	}
-
-	if _, ok := b.domains.Get(domain); !ok {
+	d, ok := b.domains.Get(domain)
+	if !ok {
 		return fmt.Errorf("%w: domain %q not found", ErrUserPoolNotFound, domain)
 	}
 
+	if _, poolExists := b.pools.Get(userPoolID); !poolExists && d.UserPoolID != userPoolID {
+		return fmt.Errorf("%w: pool %q not found", ErrUserPoolNotFound, userPoolID)
+	}
+
 	b.domains.Delete(domain)
+
+	return nil
+}
+
+// findPoolDomainLocked returns the domain owned by userPoolID, or nil if it
+// has none. AWS allows at most one domain per pool at a time, so a linear
+// scan is fine -- b.domains has no "byPool" index because domainsKeyFn is the
+// bare, pool-independent domain string (see store_setup.go). Caller must hold
+// at least a read lock.
+func (b *InMemoryBackend) findPoolDomainLocked(userPoolID string) *UserPoolDomain {
+	for _, d := range b.domains.All() {
+		if d.UserPoolID == userPoolID {
+			return d
+		}
+	}
 
 	return nil
 }

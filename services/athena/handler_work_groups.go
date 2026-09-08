@@ -23,7 +23,8 @@ type updateWorkGroupInput struct {
 }
 
 type deleteWorkGroupInput struct {
-	WorkGroup string `json:"WorkGroup"`
+	WorkGroup             string `json:"WorkGroup"`
+	RecursiveDeleteOption bool   `json:"RecursiveDeleteOption"`
 }
 
 type getWorkGroupInput struct {
@@ -91,7 +92,7 @@ func (h *Handler) workGroupOps() map[string]athenaActionFn {
 				return nil, err
 			}
 
-			return struct{}{}, h.Backend.DeleteWorkGroup(input.WorkGroup)
+			return struct{}{}, h.Backend.DeleteWorkGroup(input.WorkGroup, input.RecursiveDeleteOption)
 		},
 	}
 }

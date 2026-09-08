@@ -1,6 +1,7 @@
 package ec2_test
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 	"time"
@@ -1146,4 +1147,95 @@ func TestDeleteVpc_AfterTeardownDetachesVolumesAndEIPs(t *testing.T) {
 	addrs := b.DescribeAddresses([]string{addr.AllocationID})
 	require.Len(t, addrs, 1)
 	assert.Empty(t, addrs[0].InstanceID, "EIP must be disassociated after instance termination")
+}
+
+// TestJanitor_TerminatedInstancesSweep_ClearsMonitoringState locks the fix for
+// gopherstack-sgj3: detailed-monitoring state used to live in a standalone
+// instanceMonitoring side map that nothing ever cleared, so it grew forever
+// in the persisted snapshot even after the owning instance was swept. It now
+// lives on Instance itself and is discarded with it.
+func TestJanitor_TerminatedInstancesSweep_ClearsMonitoringState(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	insts, err := b.RunInstances("ami-test", "t2.micro", "", 1)
+	require.NoError(t, err)
+	instanceID := insts[0].ID
+
+	_, err = b.MonitorInstances([]string{instanceID})
+	require.NoError(t, err)
+
+	_, err = b.TerminateInstances([]string{instanceID})
+	require.NoError(t, err)
+	b.TickLifecycleForTest()
+
+	b.SetInstanceTerminatedAtForTest(instanceID, time.Now().Add(-2*time.Hour))
+
+	j := ec2.NewJanitor(b, time.Minute, time.Hour, 0)
+	j.SweepTerminatedInstancesForTest(t.Context())
+
+	instances := b.DescribeInstances([]string{instanceID}, "")
+	require.Empty(t, instances, "terminated instance should be removed after janitor sweep")
+
+	data := b.Snapshot(t.Context())
+	assert.NotContains(t, string(data), instanceID,
+		"swept instance's monitoring state must not linger in the persisted snapshot")
+}
+
+// TestSnapshot_NoRedundantInstanceIMDSOptions locks the fix for
+// gopherstack-sgj3: instanceIMDSOptions was a write-only shadow of
+// Instance.MetadataOptionsTokens/State, never read back by anything
+// (including ModifyInstanceMetadataOptions itself), so it just grew forever
+// in the persisted snapshot. It must no longer be persisted, and the real
+// source of truth (the Instance fields) must still round-trip.
+func TestSnapshot_NoRedundantInstanceIMDSOptions(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	insts, err := b.RunInstances("ami-test", "t2.micro", "", 1)
+	require.NoError(t, err)
+	instanceID := insts[0].ID
+
+	_, err = b.ModifyInstanceMetadataOptions(instanceID, "required", "enabled", "", 2)
+	require.NoError(t, err)
+
+	data := b.Snapshot(t.Context())
+
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+
+	_, ok := raw["instanceIMDSOptions"]
+	assert.False(t, ok, "instanceIMDSOptions must not be persisted; it is a dead shadow of Instance fields")
+
+	b2 := newTestBackend()
+	require.NoError(t, b2.Restore(t.Context(), data))
+
+	restored := b2.DescribeInstances([]string{instanceID}, "")
+	require.Len(t, restored, 1)
+	assert.Equal(t, "required", restored[0].MetadataOptionsTokens)
+	assert.Equal(t, "enabled", restored[0].MetadataOptionsState)
+}
+
+// TestDeleteNetworkInterface_ClearsIPv6Addresses locks the fix for
+// gopherstack-sgj3: assigned IPv6 addresses were tracked in a niIPv6Addresses
+// side map keyed by ENI ID that DeleteNetworkInterface never cleared, so it
+// grew forever in the persisted snapshot.
+func TestDeleteNetworkInterface_ClearsIPv6Addresses(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	eni, err := b.CreateNetworkInterface("subnet-default", "ipv6 leak test")
+	require.NoError(t, err)
+
+	_, err = b.AssignIpv6Addresses(eni.ID, 2)
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeleteNetworkInterface(eni.ID))
+
+	data := b.Snapshot(t.Context())
+	assert.NotContains(t, string(data), eni.ID,
+		"deleted ENI's assigned IPv6 addresses must not linger in the persisted snapshot")
 }

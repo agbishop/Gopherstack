@@ -13,9 +13,6 @@ import (
 // redshiftRetryDuration is the default retry window for Redshift delivery.
 const redshiftRetryDuration = 7200 * time.Second
 
-// redshiftHostParts is the SplitN limit for extracting cluster ID from JDBC host.
-const redshiftHostParts = 2
-
 const (
 	redshiftBackoffInitial = 2 * time.Second
 	redshiftBackoffMax     = 60 * time.Second
@@ -69,7 +66,7 @@ func parseRedshiftJDBCURL(clusterJDBCURL string) (string, string, error) {
 	database := strings.TrimPrefix(parsed.Path, "/")
 
 	// Extract cluster identifier from the host: <cluster>.<suffix>.redshift.amazonaws.com
-	clusterID := strings.SplitN(host, ".", redshiftHostParts)[0]
+	clusterID, _, _ := strings.Cut(host, ".")
 
 	if clusterID == "" || database == "" {
 		return "", "", fmt.Errorf("%w: JDBC URL missing cluster or database", ErrValidation)

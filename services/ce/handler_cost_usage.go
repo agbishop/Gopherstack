@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/collections"
 	"github.com/blackbirdworks/gopherstack/pkgs/service"
@@ -50,6 +51,15 @@ func (h *Handler) handleGetCostAndUsage(
 		return nil, fmt.Errorf("%w: Granularity is required", ErrValidation)
 	}
 
+	// Granularity is a real Smithy enum (botocore ce/2017-10-25's Granularity
+	// shape: DAILY/MONTHLY/HOURLY), not an arbitrary non-empty string --
+	// buildTimeBuckets silently bucketed anything else as DAILY.
+	switch in.Granularity {
+	case granularityDaily, granularityMonthly, granularityHourly:
+	default:
+		return nil, fmt.Errorf("%w: Granularity must be one of DAILY, MONTHLY, HOURLY", ErrValidation)
+	}
+
 	// Real GetCostAndUsageInput requires TimePeriod (a DateInterval whose Start
 	// and End members are themselves both required) and Metrics -- see
 	// api_op_GetCostAndUsage.go and types.DateInterval. An earlier revision
@@ -72,6 +82,18 @@ func (h *Handler) handleGetCostAndUsage(
 		return nil, fmt.Errorf("%w: TimePeriod.End is required", ErrValidation)
 	}
 
+	// The wire model constrains Start/End to YearMonthDay
+	// ((\d{4}-\d{2}-\d{2})(T\d{2}:\d{2}:\d{2}Z)?) -- buildTimeBuckets silently
+	// returned zero buckets (a 200 with an empty result) for a value it
+	// couldn't parse instead of rejecting it.
+	if _, err := time.Parse("2006-01-02", start); err != nil {
+		return nil, fmt.Errorf("%w: TimePeriod.Start must be a date in YYYY-MM-DD format", ErrValidation)
+	}
+
+	if _, err := time.Parse("2006-01-02", end); err != nil {
+		return nil, fmt.Errorf("%w: TimePeriod.End must be a date in YYYY-MM-DD format", ErrValidation)
+	}
+
 	if len(in.Metrics) == 0 {
 		return nil, fmt.Errorf("%w: Metrics is required", ErrValidation)
 	}
@@ -83,8 +105,8 @@ func (h *Handler) handleGetCostAndUsage(
 		groupBy[i] = GroupBySpec(g)
 	}
 
-	results := h.Backend.GetCostAndUsage(
-		start, end, granularity, in.Metrics, groupBy, serviceDimensionFilter(in.Filter),
+	results := h.Backend.GetCostAndUsageFiltered(
+		start, end, granularity, in.Metrics, groupBy, in.Filter,
 	)
 
 	page, nextToken := paginateList(results, 0, in.NextPageToken, resultByTimeKey)

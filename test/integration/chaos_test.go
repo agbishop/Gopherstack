@@ -52,10 +52,8 @@ func startChaosContainer(t *testing.T) string {
 	require.NoError(t, err)
 
 	req := testcontainers.ContainerRequest{
-		FromDockerfile: testcontainers.FromDockerfile{
-			Context:    "../../",
-			Dockerfile: dockerfile,
-		},
+		Context:      "../../",
+		Dockerfile:   dockerfile,
 		ExposedPorts: []string{"8000/tcp"},
 		WaitingFor: wait.ForHTTP("/_gopherstack/health").
 			WithStatusCodeMatcher(func(status int) bool { return status == 200 }).

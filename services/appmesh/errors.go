@@ -17,6 +17,9 @@ var (
 	ErrVirtualNodeNotFound = awserr.New("virtual node not found", awserr.ErrNotFound)
 	// ErrVirtualNodeAlreadyExists is returned when a virtual node already exists.
 	ErrVirtualNodeAlreadyExists = awserr.New("virtual node already exists", awserr.ErrAlreadyExists)
+	// ErrVirtualNodeInUse is returned when a virtual service still lists the
+	// virtual node as its provider.
+	ErrVirtualNodeInUse = awserr.New("virtual node is referenced by a virtual service", awserr.ErrConflict)
 	// ErrVirtualRouterNotFound is returned when a virtual router does not exist.
 	ErrVirtualRouterNotFound = awserr.New("virtual router not found", awserr.ErrNotFound)
 	// ErrVirtualRouterAlreadyExists is returned when a virtual router already exists.
@@ -50,4 +53,12 @@ var (
 	// TooManyTagsException wire code from the generic BadRequestException one,
 	// so mapErr must be able to select it independently.
 	ErrTooManyTags = errors.New("resource may have at most 50 tags")
+	// ErrMeshOwnerMismatch is returned when a request's meshOwner query
+	// parameter names an account other than this backend's own. gopherstack
+	// has no AWS RAM cross-account mesh-sharing model, so no mesh can ever
+	// really be shared from another account; a differing meshOwner can only
+	// name a mesh this account has no access to. Not awserr.ErrNotFound: real
+	// App Mesh declares ForbiddenException (not NotFoundException) on every
+	// meshOwner-carrying op for this case.
+	ErrMeshOwnerMismatch = errors.New("account is not the mesh owner and no mesh is shared with it")
 )

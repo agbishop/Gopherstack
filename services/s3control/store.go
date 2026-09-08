@@ -43,46 +43,44 @@ const (
 // and are NOT registered on registry — persistence.go round-trips them
 // through an ephemeral DTO store.Registry instead.
 type InMemoryBackend struct {
-	mu       *lockmetrics.RWMutex
-	registry *store.Registry
-
-	outpostsBuckets          *store.Table[OutpostsBucket]
-	accessGrants             *store.Table[AccessGrant]
-	accessGrantsLocations    *store.Table[AccessGrantsLocation]
-	accessPoints             *store.Table[AccessPoint]
-	objectLambdaAccessPoints *store.Table[ObjectLambdaAccessPoint]
-	mraps                    *store.Table[MultiRegionAccessPoint]
-	batchJobs                *store.Table[BatchJob]
-	accessGrantsInstances    *store.Table[AccessGrantsInstance]
-	storageLensGroups        *store.Table[StorageLensGroup]
-	configs                  *store.Table[PublicAccessBlock]
-
+	// objectLambdaSink is wired by cli.go to the S3 backend so a completed
+	// Object Lambda access point configuration reaches real GetObject
+	// handling (see SetObjectLambdaConfigSink).
+	objectLambdaSink             ObjectLambdaConfigSink
+	accessGrantsInstancePolicies map[string]string
+	objectLambdaAPPolicies       map[string]string
+	accessGrants                 *store.Table[AccessGrant]
+	accessGrantsLocations        *store.Table[AccessGrantsLocation]
+	accessPoints                 *store.Table[AccessPoint]
+	objectLambdaAccessPoints     *store.Table[ObjectLambdaAccessPoint]
+	mraps                        *store.Table[MultiRegionAccessPoint]
+	batchJobs                    *store.Table[BatchJob]
+	accessPointScopes            map[string]string
+	storageLensGroups            *store.Table[StorageLensGroup]
+	configs                      *store.Table[PublicAccessBlock]
 	// mrapRequests and accessPointPABs are "dirty" tables -- see the type
 	// doc comment above and store_setup.go.
-	mrapRequests    *store.Table[MultiRegionAccessPointRequest]
-	accessPointPABs *store.Table[PublicAccessBlock]
-
-	accessPointPolicies map[string]string
-	// batch1 additions
-	jobTags                      map[string]TagSet
-	accessGrantsInstancePolicies map[string]string
-	accessPointScopes            map[string]string
-	objectLambdaAPPolicies       map[string]string
-	objectLambdaAPConfigs        map[string]string
-	bucketPolicies               map[string]string
-	bucketTagging                map[string]TagSet
-	bucketLifecycle              map[string]string
-	bucketVersioning             map[string]string
-	mrapRoutes                   map[string]string
-	// batch2 additions
+	mrapRequests          *store.Table[MultiRegionAccessPointRequest]
+	accessPointPABs       *store.Table[PublicAccessBlock]
+	accessPointPolicies   map[string]string
+	outpostsBuckets       *store.Table[OutpostsBucket]
+	jobTags               map[string]TagSet
+	accessGrantsInstances *store.Table[AccessGrantsInstance]
+	mu                    *lockmetrics.RWMutex
+	objectLambdaAPConfigs map[string]string
+	bucketPolicies        map[string]string
+	bucketTagging         map[string]TagSet
+	bucketLifecycle       map[string]string
+	bucketVersioning      map[string]string
+	mrapRoutes            map[string]string
 	bucketReplication     map[string]string            // accountID:bucketName → replication config XML
 	storageLensConfigs    map[string]string            // accountID:configName → config XML
 	storageLensConfigTags map[string]TagSet            // accountID:configName → tags
 	resourceTags          map[string]map[string]string // ARN → tag key → tag value
-	// batch3 additions
-	accountID string
-	region    string
-	nextID    int64
+	registry              *store.Registry
+	region                string
+	accountID             string
+	nextID                int64
 }
 
 // NewInMemoryBackend creates a new InMemoryBackend with default config values.

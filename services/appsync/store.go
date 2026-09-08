@@ -3,6 +3,7 @@ package appsync
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/binary"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/lockmetrics"
@@ -12,6 +13,15 @@ import (
 // LambdaInvoker can invoke a Lambda function by name or ARN.
 type LambdaInvoker interface {
 	InvokeFunction(ctx context.Context, name, invocationType string, payload []byte) ([]byte, int, error)
+}
+
+// JWKSProvider resolves RSA public keys for JWT signature verification.
+// Implementations return an error when the issuer or key is unknown. Same
+// shape as services/apigateway and services/apigatewayv2's JWKSProvider
+// (services/cognitoidp's InMemoryBackend.GetJWTPublicKey implements it for
+// all three), reused rather than duplicated -- see SetJWKSProvider.
+type JWKSProvider interface {
+	GetJWTPublicKey(issuerURL, kid string) (*rsa.PublicKey, error)
 }
 
 // DynamoDBBackend is the minimal DynamoDB interface needed for DynamoDB resolvers.
@@ -47,7 +57,7 @@ type StorageBackend interface {
 	DeleteGraphqlAPI(apiID string) error
 	StartSchemaCreation(apiID, sdl string) (*Schema, error)
 	GetSchemaCreationStatus(apiID string) (*Schema, error)
-	GetIntrospectionSchema(apiID, format string) ([]byte, error)
+	GetIntrospectionSchema(apiID, format string, includeDirectives bool) ([]byte, error)
 	CreateDataSource(apiID string, ds *DataSource) (*DataSource, error)
 	GetDataSource(apiID, name string) (*DataSource, error)
 	ListDataSources(apiID string) ([]*DataSource, error)
@@ -60,6 +70,7 @@ type StorageBackend interface {
 		ctx context.Context,
 		apiID, query, operationName string,
 		variables map[string]any,
+		auth GraphQLAuth,
 	) (map[string]any, error)
 	// New Event API operations.
 	CreateAPI(name, ownerContact string, tagMap map[string]string, eventConfig *EventConfig) (*API, error)
@@ -208,10 +219,16 @@ type InMemoryBackend struct {
 	introspections         *store.Table[DataSourceIntrospection]
 	lambdaFn               LambdaInvoker
 	ddbBackend             DynamoDBBackend
+	jwksProvider           JWKSProvider
 	mu                     *lockmetrics.RWMutex
 	accountID              string
 	region                 string
 	endpoint               string
+	// sigv4Secret is the secret AWS_IAM auth verifies GraphQL request
+	// signatures against. Empty defers to httputils.SigV4Validator's own
+	// "test" default -- see SetSigV4Secret's doc comment for the gap this
+	// leaves when a non-default --sigv4-secret is configured.
+	sigv4Secret string
 }
 
 // NewInMemoryBackend creates a new in-memory AppSync backend.
@@ -258,7 +275,37 @@ func (b *InMemoryBackend) SetLambdaInvoker(fn LambdaInvoker) {
 	b.lambdaFn = fn
 }
 
+// SetSigV4Secret configures the secret AWS_IAM GraphQL auth verifies request
+// signatures against. Not wired from cli.go as of this writing: cli.go's
+// global --sigv4-secret flag (default "test", opt-in via --validate-sigv4)
+// is never passed here, so AWS_IAM-authenticated APIs always verify against
+// httputils.SigV4Validator's built-in "test" default regardless of a
+// non-default --sigv4-secret. Harmless under the (extremely common) default
+// configuration; a caller relying on a custom secret would need cli.go
+// updated to call this, e.g. appSyncBk.SetSigV4Secret(cli.SigV4Secret).
+func (b *InMemoryBackend) SetSigV4Secret(secret string) {
+	b.sigv4Secret = secret
+}
+
 // SetDynamoDBBackend configures the DynamoDB backend for DYNAMODB data sources.
 func (b *InMemoryBackend) SetDynamoDBBackend(ddb DynamoDBBackend) {
 	b.ddbBackend = ddb
+}
+
+// SetJWKSProvider configures the JWKS provider AMAZON_COGNITO_USER_POOLS and
+// OPENID_CONNECT GraphQL auth use to verify JWT signatures. Wired from cli.go
+// (wireAppSyncCognito) to services/cognitoidp's InMemoryBackend, same as
+// services/apigateway and services/apigatewayv2.
+//
+// Unlike checkLambdaAuth/checkIAMAuth, an unset provider does NOT reject --
+// checkCognitoAuth/checkOIDCAuth pass the request through instead. The ~150
+// other services, and most of this package's own tests, construct an
+// InMemoryBackend directly without calling this setter; treating "provider
+// never wired" as a hard rejection would make every such construction
+// unable to serve a Cognito/OIDC-authenticated GraphQL request at all. A real
+// gopherstack server always wires this (see wireAppSyncCognito in cli.go), so
+// production traffic gets full signature verification; the permissive path
+// only matters for callers that build the backend standalone.
+func (b *InMemoryBackend) SetJWKSProvider(p JWKSProvider) {
+	b.jwksProvider = p
 }

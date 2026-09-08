@@ -48,7 +48,8 @@ func (b *InMemoryBackend) DescribeSchema(nameOrArn string) (*Schema, error) {
 	return nil, fmt.Errorf("%w: schema %q not found", ErrNotFound, nameOrArn)
 }
 
-// DeleteSchema removes a schema.
+// DeleteSchema removes a schema. Per api_op_DeleteSchema.go's doc comment,
+// the caller must first delete all datasets referencing the schema.
 func (b *InMemoryBackend) DeleteSchema(nameOrArn string) error {
 	b.mu.Lock("DeleteSchema")
 	defer b.mu.Unlock()
@@ -56,6 +57,11 @@ func (b *InMemoryBackend) DeleteSchema(nameOrArn string) error {
 	s := b.findSchema(nameOrArn)
 	if s == nil {
 		return fmt.Errorf("%w: schema %q not found", ErrNotFound, nameOrArn)
+	}
+	for _, ds := range b.datasets.All() {
+		if ds.SchemaArn == s.SchemaArn {
+			return fmt.Errorf("%w: schema %q still has datasets referencing it", ErrInUse, nameOrArn)
+		}
 	}
 	b.schemas.Delete(s.Name)
 

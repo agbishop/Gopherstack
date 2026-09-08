@@ -273,6 +273,13 @@ type SessionInfo struct {
 	SourceIdentity    string   `json:"source_identity,omitempty"`
 	Tags              []Tag    `json:"tags,omitempty"`
 	TransitiveTagKeys []string `json:"transitive_tag_keys,omitempty"`
+	// IsAssumedRole reports whether this session was minted by an actual role
+	// assumption (AssumeRole/AssumeRoleWithSAML/AssumeRoleWithWebIdentity/
+	// AssumeRoot). False for GetSessionToken/GetFederationToken/
+	// GetDelegatedAccessToken sessions, which keep the caller's own identity
+	// rather than assuming a role. ResolvePrincipal uses this to report the
+	// correct awsmeta.PrincipalKind to IAM's cross-service enforcement path.
+	IsAssumedRole bool `json:"is_assumed_role,omitempty"`
 }
 
 // SessionMetrics represents STS session and janitor sweep metrics for dashboard views.

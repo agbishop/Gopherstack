@@ -58,6 +58,7 @@ func (b *InMemoryBackend) DeleteChannel(channelIDOrARN string) error {
 
 	ch.Tags.Close()
 	b.channels.Delete(ch.ChannelID)
+	b.resourcePolicies.Delete(ch.ChannelARN)
 
 	return nil
 }

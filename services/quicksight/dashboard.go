@@ -12,7 +12,7 @@ import (
 // ---- Dashboards ----
 
 func (b *InMemoryBackend) CreateDashboard(
-	accountID, dashboardID, name string,
+	accountID, dashboardID, name, themeArn, versionDescription string,
 	definition map[string]any,
 	permissions []ResourcePermission,
 	tags map[string]string,
@@ -33,10 +33,13 @@ func (b *InMemoryBackend) CreateDashboard(
 	d := &storedDashboard{
 		CreatedTime:            now,
 		LastUpdatedTime:        now,
+		LastPublishedTime:      now,
 		DashboardID:            dashboardID,
 		Arn:                    arn.Build("quicksight", b.region, accountID, fmt.Sprintf("dashboard/%s", dashboardID)),
 		Name:                   name,
 		Status:                 statusCreationSuccessful,
+		ThemeArn:               themeArn,
+		VersionDescription:     versionDescription,
 		VersionNumber:          1,
 		PublishedVersionNumber: 1,
 		Definition:             definition,
@@ -64,7 +67,7 @@ func (b *InMemoryBackend) DescribeDashboard(accountID, dashboardID string) (*Das
 }
 
 func (b *InMemoryBackend) UpdateDashboard(
-	accountID, dashboardID, name string,
+	accountID, dashboardID, name, themeArn, versionDescription string,
 	definition map[string]any,
 ) (*Dashboard, error) {
 	b.mu.Lock("UpdateDashboard")
@@ -82,6 +85,12 @@ func (b *InMemoryBackend) UpdateDashboard(
 	if definition != nil {
 		d.Definition = definition
 	}
+	if themeArn != "" {
+		d.ThemeArn = themeArn
+	}
+	if versionDescription != "" {
+		d.VersionDescription = versionDescription
+	}
 	d.LastUpdatedTime = time.Now().UTC()
 	d.VersionNumber++
 	// UpdateDashboardOutput's field is named CreationStatus: it reports the
@@ -91,7 +100,21 @@ func (b *InMemoryBackend) UpdateDashboard(
 	return d.toDashboard(), nil
 }
 
-func (b *InMemoryBackend) DeleteDashboard(accountID, dashboardID string) error {
+// DeleteDashboard deletes a dashboard, or (per api_op_DeleteDashboard.go's
+// VersionNumber doc comment: "If the version number property is provided, only
+// the specified version of the dashboard is deleted") just one of its versions
+// when versionNumber is nonzero. This backend has no real per-version content
+// history (see dashboardCurrentVersionToMap's doc comment), so a targeted
+// version delete can't remove that version's Definition/ThemeArn/etc -- but it
+// does record the version number as deleted (DeletedVersions) rather than
+// fabricating removal or -- the bug gopherstack-86y fixed -- deleting the
+// entire dashboard when the caller asked to delete only one version. A
+// version must exist and not already be deleted (mirroring
+// UpdateDashboardPublishedVersion's own [1, VersionNumber] check plus the
+// DeletedVersions check) else ErrDashboardVersionNotFound, matching
+// DeleteTemplate's real behavior of 404ing on a repeat delete of the same
+// version.
+func (b *InMemoryBackend) DeleteDashboard(accountID, dashboardID string, versionNumber int64) error {
 	b.mu.Lock("DeleteDashboard")
 	defer b.mu.Unlock()
 
@@ -99,6 +122,19 @@ func (b *InMemoryBackend) DeleteDashboard(accountID, dashboardID string) error {
 	d, ok := b.dashboards.Get(key)
 	if !ok {
 		return ErrDashboardNotFound
+	}
+
+	if versionNumber != 0 {
+		if versionNumber < 1 || versionNumber > d.VersionNumber || d.DeletedVersions[versionNumber] {
+			return ErrDashboardVersionNotFound
+		}
+
+		if d.DeletedVersions == nil {
+			d.DeletedVersions = make(map[int64]bool)
+		}
+		d.DeletedVersions[versionNumber] = true
+
+		return nil
 	}
 
 	delete(b.tags, d.Arn)
@@ -195,6 +231,10 @@ func (b *InMemoryBackend) ListDashboardVersions(
 
 	versions := make([]*DashboardVersion, 0, end-start)
 	for i := start + 1; i <= end; i++ {
+		if d.DeletedVersions[int64(i)] {
+			continue
+		}
+
 		versions = append(versions, &DashboardVersion{
 			CreatedTime:   d.CreatedTime,
 			Arn:           fmt.Sprintf("%s/version/%d", d.Arn, i),
@@ -262,8 +302,9 @@ func (b *InMemoryBackend) SearchDashboards(
 
 // UpdateDashboardPublishedVersion flips which stored version of a dashboard is
 // the published one. versionNumber must name a version that actually exists
-// (i.e. be in [1, VersionNumber], matching the versions ListDashboardVersions
-// synthesizes), else ErrDashboardVersionNotFound.
+// and hasn't been deleted (i.e. be in [1, VersionNumber] and absent from
+// DeletedVersions, matching the versions ListDashboardVersions synthesizes),
+// else ErrDashboardVersionNotFound.
 func (b *InMemoryBackend) UpdateDashboardPublishedVersion(
 	accountID, dashboardID string,
 	versionNumber int64,
@@ -276,12 +317,14 @@ func (b *InMemoryBackend) UpdateDashboardPublishedVersion(
 		return nil, ErrDashboardNotFound
 	}
 
-	if versionNumber < 1 || versionNumber > d.VersionNumber {
+	if versionNumber < 1 || versionNumber > d.VersionNumber || d.DeletedVersions[versionNumber] {
 		return nil, ErrDashboardVersionNotFound
 	}
 
 	d.PublishedVersionNumber = versionNumber
-	d.LastUpdatedTime = time.Now().UTC()
+	now := time.Now().UTC()
+	d.LastUpdatedTime = now
+	d.LastPublishedTime = now
 
 	return d.toDashboard(), nil
 }

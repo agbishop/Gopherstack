@@ -115,3 +115,28 @@ func TestElasticIPOperations(t *testing.T) {
 		})
 	}
 }
+
+// TestReleaseAddress_InUse verifies AWS's ReleaseAddress guard: an
+// associated Elastic IP cannot be released until it is disassociated.
+func TestReleaseAddress_InUse(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+
+	addr, err := b.AllocateAddress()
+	require.NoError(t, err)
+
+	instances, err := b.RunInstances("ami-123", "t2.micro", "", 1)
+	require.NoError(t, err)
+
+	assocID, err := b.AssociateAddress(addr.AllocationID, instances[0].ID)
+	require.NoError(t, err)
+
+	err = b.ReleaseAddress(addr.AllocationID)
+	require.ErrorIs(t, err, ec2.ErrAddressInUse)
+	assert.NotEmpty(t, b.DescribeAddresses([]string{addr.AllocationID}),
+		"address must survive a failed ReleaseAddress")
+
+	require.NoError(t, b.DisassociateAddress(assocID))
+	require.NoError(t, b.ReleaseAddress(addr.AllocationID))
+}

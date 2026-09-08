@@ -66,7 +66,16 @@ func (b *InMemoryBackend) StartSession(
 		return nil, fmt.Errorf("%w: application %s not found", ErrNotFound, applicationID)
 	}
 	if app.State != ApplicationStateStarted {
-		return nil, fmt.Errorf("%w: application %s must be STARTED to start a session", ErrInvalidState, applicationID)
+		if !applicationAutoStartEnabled(app) {
+			return nil, fmt.Errorf(
+				"%w: application %s must be STARTED to start a session and autoStartConfiguration disables implicit start",
+				ErrConflict,
+				applicationID,
+			)
+		}
+
+		app.State = ApplicationStateStarted
+		app.UpdatedAt = time.Now().UTC()
 	}
 	if clientToken == "" {
 		return nil, fmt.Errorf("%w: clientToken is required", ErrValidation)

@@ -262,6 +262,7 @@ func (b *InMemoryBackend) DeleteJourney(appID, journeyID string) (*Journey, erro
 
 	b.journeys.Delete(journeyID)
 	delete(b.arnIndex, j.ARN)
+	delete(b.journeyRuns, appID+"/"+journeyID)
 
 	return cloneJourney(j), nil
 }

@@ -284,34 +284,18 @@ func mergeTags(dst, src map[string]string) map[string]string {
 	return dst
 }
 
-// DeleteProject removes a project by name and all builds associated with it.
-// Idempotent: real AWS's DeleteProject declares no ResourceNotFoundException
-// (botocore codebuild/2016-10-06/service-2.json operations.DeleteProject.errors:
-// only InvalidInputException), so deleting an already-gone project is not an
+// DeleteProject removes a project by name. Its builds are NOT deleted
+// (api_op_DeleteProject.go: "Deletes a build project. When you delete a
+// project, its builds are not deleted."). Idempotent: real AWS's
+// DeleteProject declares no ResourceNotFoundException (botocore
+// codebuild/2016-10-06/service-2.json operations.DeleteProject.errors: only
+// InvalidInputException), so deleting an already-gone project is not an
 // error.
 func (b *InMemoryBackend) DeleteProject(name string) error {
 	b.mu.Lock("DeleteProject")
 	defer b.mu.Unlock()
 
-	if !b.projects.Has(name) {
-		return nil
-	}
-
 	b.projects.Delete(name)
-
-	// Use the per-project build index for O(k) cleanup instead of O(n) scan.
-	// IDs are gathered first since deleting from the table mutates the very
-	// index slice Get returned.
-	group := b.buildsByProject.Get(name)
-	ids := make([]string, len(group))
-
-	for i, bld := range group {
-		ids[i] = bld.ID
-	}
-
-	for _, id := range ids {
-		b.builds.Delete(id)
-	}
 
 	return nil
 }

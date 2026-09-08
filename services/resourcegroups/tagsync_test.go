@@ -3,6 +3,7 @@ package resourcegroups_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -198,4 +199,37 @@ func TestTagSyncTask_FullLifecyclePaginated(t *testing.T) {
 	for _, task := range remaining {
 		assert.NotEqual(t, cancelled, task.TaskArn)
 	}
+}
+
+// TestStartTagSyncTask_Reset_CounterRestarts verifies that Reset() zeroes
+// taskIDCounter, so the next tag-sync task's ARN suffix restarts at 1
+// (matching ec2's fix establishing that this codebase resets ID sequence
+// counters on Reset -- nextPrivateIPIndex, nextElasticIPIndex), not a suffix
+// that keeps climbing from the pre-Reset run.
+func TestStartTagSyncTask_Reset_CounterRestarts(t *testing.T) {
+	t.Parallel()
+
+	b := resourcegroups.NewInMemoryBackend("000000000000", "us-east-1")
+
+	_, err := b.CreateGroup(context.Background(), "counter-group", "", nil, nil, nil)
+	require.NoError(t, err)
+
+	task1, err := b.StartTagSyncTask(
+		context.Background(), "counter-group", "arn:aws:iam::000000000000:role/r", "k", "v", nil,
+	)
+	require.NoError(t, err)
+	require.True(t, strings.HasSuffix(task1.TaskArn, "-1"),
+		"sanity: first task ARN should end in -1, got %s", task1.TaskArn)
+
+	b.Reset()
+
+	_, err = b.CreateGroup(context.Background(), "counter-group", "", nil, nil, nil)
+	require.NoError(t, err)
+
+	task2, err := b.StartTagSyncTask(
+		context.Background(), "counter-group", "arn:aws:iam::000000000000:role/r", "k", "v", nil,
+	)
+	require.NoError(t, err)
+	assert.True(t, strings.HasSuffix(task2.TaskArn, "-1"),
+		"taskIDCounter must restart at 1 after Reset, got task ARN %s", task2.TaskArn)
 }

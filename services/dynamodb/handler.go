@@ -759,7 +759,7 @@ func (h *DynamoDBHandler) dispatchItemOps(
 	case opPutItem:
 		return handleOpErr(
 			ctx, action, body,
-			models.ToSDKPutItemInput, h.Backend.PutItem, models.FromSDKPutItemOutput,
+			toSDKPutItemInputChecked, h.Backend.PutItem, models.FromSDKPutItemOutput,
 		)
 	case opGetItem:
 		return handleOpErr(
@@ -769,27 +769,27 @@ func (h *DynamoDBHandler) dispatchItemOps(
 	case opDeleteItem:
 		return handleOpErr(
 			ctx, action, body,
-			models.ToSDKDeleteItemInput, h.Backend.DeleteItem, models.FromSDKDeleteItemOutput,
+			toSDKDeleteItemInputChecked, h.Backend.DeleteItem, models.FromSDKDeleteItemOutput,
 		)
 	case opScan:
 		return handleOpErr(
 			ctx, action, body,
-			models.ToSDKScanInput, h.Backend.Scan, models.FromSDKScanOutput,
+			toSDKScanInputChecked, h.Backend.Scan, models.FromSDKScanOutput,
 		)
 	case opUpdateItem:
 		return handleOpErr(
 			ctx, action, body,
-			models.ToSDKUpdateItemInput, h.Backend.UpdateItem, models.FromSDKUpdateItemOutput,
+			toSDKUpdateItemInputChecked, h.Backend.UpdateItem, models.FromSDKUpdateItemOutput,
 		)
 	case opQuery:
 		return handleOpErr(
 			ctx, action, body,
-			models.ToSDKQueryInput, h.Backend.Query, models.FromSDKQueryOutput,
+			toSDKQueryInputChecked, h.Backend.Query, models.FromSDKQueryOutput,
 		)
 	case opSearchVectors:
 		return handleOpErr(
 			ctx, action, body,
-			models.ToSDKSearchVectorsInput, h.Backend.SearchVectors, models.FromSDKSearchVectorsOutput,
+			toSDKSearchVectorsInputChecked, h.Backend.SearchVectors, models.FromSDKSearchVectorsOutput,
 		)
 	case opBatchGetItem:
 		return handleOpErr(
@@ -821,7 +821,7 @@ func (h *DynamoDBHandler) dispatchTransactOps(
 			ctx,
 			action,
 			body,
-			models.ToSDKTransactWriteItemsInput,
+			toSDKTransactWriteItemsInputChecked,
 			h.Backend.TransactWriteItems,
 			models.FromSDKTransactWriteItemsOutput,
 		)
@@ -915,8 +915,7 @@ func (h *DynamoDBHandler) classifyError(reqErr error) (int, *Error) {
 	// But our internal implementation returns native go errors or custom structs.
 	// We need to map them to Wire Error struct.
 
-	var wireErr *Error
-	if errors.As(reqErr, &wireErr) {
+	if wireErr, ok := errors.AsType[*Error](reqErr); ok {
 		// Map type to status code. Most DynamoDB errors return 400.
 		if wireErr.Type == errInternalServerErrorType {
 			return http.StatusInternalServerError, wireErr

@@ -223,7 +223,15 @@ func (b *InMemoryBackend) consumeAttachmentSetLocked(id string) ([]AttachmentRef
 	}
 	refs := make([]AttachmentRef, 0, len(set.AttachmentIDs))
 	for _, attachmentID := range set.AttachmentIDs {
-		attachment, _ := b.attachments.Get(attachmentID)
+		// A set's AttachmentIDs always resolve via the public API (attachments
+		// and their owning set are added together and swept together), but a
+		// hand-edited or cross-version persisted snapshot could restore a set
+		// referencing an attachment that no longer exists. Skip rather than
+		// dereference a nil *Attachment.
+		attachment, found := b.attachments.Get(attachmentID)
+		if !found {
+			continue
+		}
 		refs = append(refs, AttachmentRef{AttachmentID: attachmentID, FileName: attachment.FileName})
 	}
 	b.attachmentSets.Delete(id)

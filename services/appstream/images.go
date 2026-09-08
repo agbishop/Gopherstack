@@ -249,6 +249,10 @@ func (b *InMemoryBackend) CreateUpdatedImage(imageName, newImageName, descriptio
 // DeleteImageOutput carries the deleted Image
 // (deserializeCBOR_DeleteImageOutput in the pinned appstream SDK's
 // deserializers.go), not an empty envelope.
+//
+// "You cannot delete an image when it is in use" (api_op_DeleteImage.go doc
+// comment); a fleet still referencing this image by name or ARN counts as
+// in use, matching DeleteImage's modeled ResourceInUseException.
 func (b *InMemoryBackend) DeleteImage(name string) (*Image, error) {
 	b.mu.Lock("DeleteImage")
 	defer b.mu.Unlock()
@@ -256,6 +260,12 @@ func (b *InMemoryBackend) DeleteImage(name string) (*Image, error) {
 	img, ok := b.images.Get(name)
 	if !ok {
 		return nil, ErrNotFound
+	}
+
+	for _, f := range b.fleets.All() {
+		if f.ImageName == img.Name || f.ImageArn == img.Arn {
+			return nil, ErrResourceInUse
+		}
 	}
 
 	deleted := img.toImage()

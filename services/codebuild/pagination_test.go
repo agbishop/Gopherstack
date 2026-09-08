@@ -185,3 +185,59 @@ func TestHandler_ListReports_FilterByStatus(t *testing.T) {
 		assert.Equal(t, []string{"arn:aws:codebuild:us-east-1:000000000000:report/filter-rg:ok"}, out.Reports)
 	})
 }
+
+// TestHandler_ListBuildsForProject_SortOrderBuildCountLimit verifies
+// ListBuildsForProjectInput.SortOrder's documented limit (api_op_ListBuildsForProject.go:
+// "If the project has more than 100 builds, setting the sort order will
+// result in an error") is enforced, rather than silently sorting anyway.
+func TestHandler_ListBuildsForProject_SortOrderBuildCountLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		sortOrder  string
+		buildCount int
+		wantStatus int
+	}{
+		{
+			name:       "over_100_builds_rejects_sort_order",
+			buildCount: 101,
+			sortOrder:  "ASCENDING",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "at_100_builds_allows_sort_order",
+			buildCount: 100,
+			sortOrder:  "ASCENDING",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "over_100_builds_without_sort_order_is_unaffected",
+			buildCount: 101,
+			sortOrder:  "",
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			createTestProject(t, h, "sort-limit-project")
+
+			for range tt.buildCount {
+				rec := doRequest(t, h, "StartBuild", map[string]any{"projectName": "sort-limit-project"})
+				require.Equal(t, http.StatusOK, rec.Code)
+			}
+
+			req := map[string]any{"projectName": "sort-limit-project"}
+			if tt.sortOrder != "" {
+				req["sortOrder"] = tt.sortOrder
+			}
+
+			rec := doRequest(t, h, "ListBuildsForProject", req)
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}

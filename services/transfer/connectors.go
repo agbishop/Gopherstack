@@ -83,6 +83,7 @@ func (b *InMemoryBackend) DeleteConnector(connectorID string) error {
 	}
 
 	b.connectors.Delete(connectorID)
+	delete(b.tagsStore, connectorARN(b.accountID, b.region, connectorID))
 
 	return nil
 }

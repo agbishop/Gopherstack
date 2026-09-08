@@ -26,6 +26,23 @@ func (b *InMemoryBackend) AssociateResolverQueryLogConfig(
 		)
 	}
 
+	// AssociateResolverQueryLogConfig models ResourceExistsException ("The
+	// resource that you tried to create already exists" -- API_route53resolver_
+	// AssociateResolverQueryLogConfig.html); DisassociateResolverQueryLogConfig
+	// already treats (ResolverQueryLogConfigId, ResourceId) as this
+	// association's identity, so re-associating the same pair is the
+	// duplicate this error covers.
+	for _, assoc := range b.queryLogConfigAssociationsByRegion.Get(region) {
+		if assoc.ResolverQueryLogConfigID == queryLogConfigID && assoc.ResourceID == resourceID {
+			return nil, fmt.Errorf(
+				"%w: resource %s is already associated with query log config %s",
+				ErrAlreadyExists,
+				resourceID,
+				queryLogConfigID,
+			)
+		}
+	}
+
 	now := currentTime()
 	id := "rqlca-" + uuid.New().String()[:8]
 	assoc := &ResolverQueryLogConfigAssociation{

@@ -199,6 +199,120 @@ func TestListClustersV2_ClusterType(t *testing.T) {
 	assert.Equal(t, kafka.ClusterTypeServerless, typesByName["srv-list"])
 }
 
+// TestListClustersV2_Filters verifies clusterNameFilter and clusterTypeFilter,
+// documented on ListClustersV2Input (api_op_ListClustersV2.go, kafka@v1.57.2):
+// "Specify a prefix of the names of the clusters that you want to list. The
+// service lists all the clusters whose names start with this prefix." and
+// "Specify either PROVISIONED or SERVERLESS.".
+func TestListClustersV2_Filters(t *testing.T) {
+	t.Parallel()
+
+	h, backend := newTestHandlerWithBackend(t)
+
+	_, err := backend.CreateCluster(context.Background(), "prod-alpha", "3.5.1", 3, kafka.BrokerNodeGroupInfo{
+		InstanceType:  "kafka.m5.large",
+		ClientSubnets: []string{"subnet-1"},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	_, err = backend.CreateCluster(context.Background(), "prod-beta", "3.5.1", 3, kafka.BrokerNodeGroupInfo{
+		InstanceType:  "kafka.m5.large",
+		ClientSubnets: []string{"subnet-1"},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	_, err = backend.CreateServerlessCluster(context.Background(), "dev-serverless", &kafka.ServerlessClusterInfo{
+		VpcConfigs: []kafka.ServerlessVpcConfig{{SubnetIDs: []string{"subnet-2"}}},
+	}, nil)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		query     string
+		wantNames []string
+	}{
+		{
+			name:      "no_filter",
+			query:     "",
+			wantNames: []string{"prod-alpha", "prod-beta", "dev-serverless"},
+		},
+		{
+			name:      "name_prefix_matches_two",
+			query:     "?clusterNameFilter=prod-",
+			wantNames: []string{"prod-alpha", "prod-beta"},
+		},
+		{
+			name:      "name_prefix_matches_none",
+			query:     "?clusterNameFilter=zzz",
+			wantNames: []string{},
+		},
+		{
+			name:      "type_filter_serverless",
+			query:     "?clusterTypeFilter=SERVERLESS",
+			wantNames: []string{"dev-serverless"},
+		},
+		{
+			name:      "type_filter_provisioned",
+			query:     "?clusterTypeFilter=PROVISIONED",
+			wantNames: []string{"prod-alpha", "prod-beta"},
+		},
+		{
+			name:      "name_and_type_filter_combined",
+			query:     "?clusterNameFilter=prod-&clusterTypeFilter=PROVISIONED",
+			wantNames: []string{"prod-alpha", "prod-beta"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := doKafkaRequest(t, h, http.MethodGet, "/api/v2/clusters"+tt.query, nil)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+			clusterList, _ := resp["clusterInfoList"].([]any)
+
+			gotNames := make([]string, 0, len(clusterList))
+			for _, ci := range clusterList {
+				gotNames = append(gotNames, ci.(map[string]any)["clusterName"].(string))
+			}
+
+			assert.ElementsMatch(t, tt.wantNames, gotNames)
+		})
+	}
+}
+
+// TestListClusters_NameFilter verifies clusterNameFilter on the V1 ListClusters
+// op, documented on ListClustersInput (api_op_ListClusters.go, kafka@v1.57.2):
+// "Specify a prefix of the name of the clusters that you want to list. The
+// service lists all the clusters whose names start with this prefix.".
+func TestListClusters_NameFilter(t *testing.T) {
+	t.Parallel()
+
+	h, backend := newTestHandlerWithBackend(t)
+	backend.AddClusterInternal("prod-alpha", "3.5.1")
+	backend.AddClusterInternal("prod-beta", "3.5.1")
+	backend.AddClusterInternal("dev-gamma", "3.5.1")
+
+	rec := doKafkaRequest(t, h, http.MethodGet, "/v1/clusters?clusterNameFilter=prod-", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	clusterList, _ := resp["clusterInfoList"].([]any)
+
+	gotNames := make([]string, 0, len(clusterList))
+	for _, ci := range clusterList {
+		gotNames = append(gotNames, ci.(map[string]any)["clusterName"].(string))
+	}
+
+	assert.ElementsMatch(t, []string{"prod-alpha", "prod-beta"}, gotNames)
+}
+
 // TestRefinement2_ListClustersV2_ServerlessHasNoProvisionedArm verifies V2 list shape.
 
 func TestListClustersV2_ServerlessHasNoProvisionedArm(t *testing.T) {

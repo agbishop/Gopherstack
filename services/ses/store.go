@@ -18,35 +18,46 @@ const sesDefaultMaxItems = 100
 // InMemoryBackend is an in-memory store for SES emails, verified identities,
 // email templates, and configuration sets.
 type InMemoryBackend struct {
-	// registry holds every "clean" store.Table (templates, receiptRuleSets,
-	// receiptFilters, customVerifTemplates) so their Reset/Snapshot/Restore
-	// collapse to one call each. "Dirty" tables (identities, configSets,
-	// trackingOptions, eventDestinations) and the emailsByID derived cache
-	// are NOT on this registry -- see store_setup.go's file doc comment.
-	registry          *store.Registry
-	identities        *store.Table[IdentityRecord]
-	emailsByID        *store.Table[Email]
-	templates         *store.Table[EmailTemplate]
-	configSets        *store.Table[ConfigurationSet]
-	receiptRuleSets   *store.Table[ReceiptRuleSet]
-	receiptFilters    *store.Table[ReceiptFilter]
-	eventDestinations *store.Table[EventDestination]
+	snsPublisher         SNSPublisher
+	customVerifTemplates *store.Table[CustomVerificationEmailTemplate]
+	emailsByID           *store.Table[Email]
+	templates            *store.Table[EmailTemplate]
+	configSets           *store.Table[ConfigurationSet]
+	receiptRuleSets      *store.Table[ReceiptRuleSet]
+	receiptFilters       *store.Table[ReceiptFilter]
+	eventDestinations    *store.Table[EventDestination]
 	// eventDestinationsByConfigSet is a secondary index over
 	// eventDestinations grouping by ConfigSetName, answering the "all event
 	// destinations of configuration set X" lookups the previous nested
 	// map[string]map[string]*EventDestination answered directly.
 	eventDestinationsByConfigSet *store.Index[EventDestination]
-	trackingOptions              *store.Table[TrackingOptions]
-	customVerifTemplates         *store.Table[CustomVerificationEmailTemplate]
-	policies                     map[string]map[string]string // identity → policyName → policyDocument
-	activeRuleSet                string
-	region                       string
-	accountID                    string
-	mu                           *lockmetrics.RWMutex
-	emails                       []Email
-	emailTTL                     time.Duration
-	configuredEmailTTL           time.Duration
-	accountSendingEnabled        bool
+	// registry holds every "clean" store.Table (templates, receiptRuleSets,
+	// receiptFilters, customVerifTemplates) so their Reset/Snapshot/Restore
+	// collapse to one call each. "Dirty" tables (identities, configSets,
+	// trackingOptions, eventDestinations) and the emailsByID derived cache
+	// are NOT on this registry -- see store_setup.go's file doc comment.
+	registry              *store.Registry
+	trackingOptions       *store.Table[TrackingOptions]
+	mu                    *lockmetrics.RWMutex
+	identities            *store.Table[IdentityRecord]
+	policies              map[string]map[string]string // identity → policyName → policyDocument
+	activeRuleSet         string
+	region                string
+	accountID             string
+	emails                []Email
+	emailTTL              time.Duration
+	configuredEmailTTL    time.Duration
+	accountSendingEnabled bool
+}
+
+// SetSNSPublisher registers an SNS publisher used to deliver bounce/complaint/
+// delivery notifications to identity notification topics (SetIdentityNotificationTopic)
+// and configuration-set event destinations (CreateConfigurationSetEventDestination).
+func (b *InMemoryBackend) SetSNSPublisher(pub SNSPublisher) {
+	b.mu.Lock("SetSNSPublisher")
+	defer b.mu.Unlock()
+
+	b.snsPublisher = pub
 }
 
 // NewInMemoryBackend creates a new InMemoryBackend with the default email TTL.

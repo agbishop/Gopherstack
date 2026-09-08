@@ -118,6 +118,7 @@ func (b *InMemoryBackend) DeleteDBClusterSnapshot(ctx context.Context, snapshotI
 	snapArn := b.clusterSnapshotARN(region, snapshotID)
 	b.clusterSnapshotDelete(region, snapshotID)
 	delete(b.tagsStore(region), snapArn)
+	b.snapshotAttributesDelete(region, snapshotID)
 	b.recordEvent(
 		region, snapshotID, sourceTypeDBClusterSnapshot, snapArn,
 		"DB cluster snapshot deleted", eventCatBackup, eventCatDelete,

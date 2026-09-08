@@ -108,7 +108,7 @@ func (b *InMemoryBackend) BatchDelete(
 		b.channels.Delete(id)
 		result.Successful = append(
 			result.Successful,
-			BatchSuccessfulResult{ID: id, Arn: ch.ARN, State: stateDeleted},
+			BatchSuccessfulResult{ID: id, Arn: ch.ARN, State: stateDeleting},
 		)
 	}
 	for _, id := range inputIDs {

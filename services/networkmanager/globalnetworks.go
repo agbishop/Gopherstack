@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/page"
+	"github.com/blackbirdworks/gopherstack/pkgs/store"
 	"github.com/blackbirdworks/gopherstack/pkgs/tags"
 )
 
@@ -72,6 +73,26 @@ func (b *InMemoryBackend) DeleteGlobalNetwork(id string) (*GlobalNetwork, error)
 		return nil, notFoundError(resourceGlobalNetwork, id)
 	}
 
+	// DeleteGlobalNetwork doc (api_op_DeleteGlobalNetwork.go): "You must
+	// first delete all global network objects (devices, links, and sites),
+	// deregister all transit gateways, and delete any core networks."
+	inGN := func(gnID string) bool { return gnID == id }
+
+	switch {
+	case tableHasMatch(b.sites, func(v *Site) bool { return inGN(v.GlobalNetworkID) }):
+		return nil, conflictError(resourceGlobalNetwork, id, "global network has sites")
+	case tableHasMatch(b.devices, func(v *Device) bool { return inGN(v.GlobalNetworkID) }):
+		return nil, conflictError(resourceGlobalNetwork, id, "global network has devices")
+	case tableHasMatch(b.links, func(v *Link) bool { return inGN(v.GlobalNetworkID) }):
+		return nil, conflictError(resourceGlobalNetwork, id, "global network has links")
+	case tableHasMatch(b.transitGatewayRegistrations, func(v *TransitGatewayRegistration) bool {
+		return inGN(v.GlobalNetworkID)
+	}):
+		return nil, conflictError(resourceGlobalNetwork, id, "global network has registered transit gateways")
+	case tableHasMatch(b.coreNetworks, func(v *CoreNetwork) bool { return inGN(v.GlobalNetworkID) }):
+		return nil, conflictError(resourceGlobalNetwork, id, "global network has core networks")
+	}
+
 	g.State = stateDeleting
 	scheduleRemoval(b, "GlobalNetworkDeleted", b.globalNetworks, id)
 
@@ -118,6 +139,46 @@ func (b *InMemoryBackend) globalNetworkExists(id string) bool {
 	_, ok := b.globalNetworks.Get(id)
 
 	return ok
+}
+
+// tableHasMatch reports whether any row in table satisfies match -- the
+// shared shape behind this file's delete/disassociate referential-integrity
+// guards (DeleteSite/DeleteDevice/DeleteLink/DeleteGlobalNetwork/
+// DisassociateLink), each of which has an SDK doc sentence naming a
+// precondition this backend previously never enforced.
+func tableHasMatch[V any](table *store.Table[V], match func(*V) bool) bool {
+	found := false
+
+	table.Range(func(v *V) bool {
+		if match(v) {
+			found = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return found
+}
+
+// requireNoDependentAssociations backs DeleteDevice/DeleteLink: both refuse
+// (per their own SDK doc sentence) while a LinkAssociation or
+// CustomerGatewayAssociation still references resourceID.
+func (b *InMemoryBackend) requireNoDependentAssociations(
+	resourceType, resourceID string,
+	linkAssocMatch func(*LinkAssociation) bool,
+	cgwMatch func(*CustomerGatewayAssociation) bool,
+	linkAssocMsg, cgwMsg string,
+) error {
+	switch {
+	case tableHasMatch(b.linkAssociations, linkAssocMatch):
+		return conflictError(resourceType, resourceID, linkAssocMsg)
+	case tableHasMatch(b.customerGatewayAssociations, cgwMatch):
+		return conflictError(resourceType, resourceID, cgwMsg)
+	}
+
+	return nil
 }
 
 // ---- Site ----
@@ -197,6 +258,15 @@ func (b *InMemoryBackend) DeleteSite(globalNetworkID, id string) (*Site, error) 
 	s, ok := b.sites.Get(id)
 	if !ok || s.GlobalNetworkID != globalNetworkID {
 		return nil, notFoundError(resourceSite, id)
+	}
+
+	// DeleteSite doc (api_op_DeleteSite.go): "The site cannot be associated
+	// with any device or link."
+	switch {
+	case tableHasMatch(b.devices, func(v *Device) bool { return v.GlobalNetworkID == globalNetworkID && v.SiteID == id }):
+		return nil, conflictError(resourceSite, id, "site is associated with a device")
+	case tableHasMatch(b.links, func(v *Link) bool { return v.GlobalNetworkID == globalNetworkID && v.SiteID == id }):
+		return nil, conflictError(resourceSite, id, "site is associated with a link")
 	}
 
 	s.State = stateDeleting
@@ -328,6 +398,19 @@ func (b *InMemoryBackend) DeleteDevice(globalNetworkID, id string) (*Device, err
 	d, ok := b.devices.Get(id)
 	if !ok || d.GlobalNetworkID != globalNetworkID {
 		return nil, notFoundError(resourceDevice, id)
+	}
+
+	// DeleteDevice doc (api_op_DeleteDevice.go): "You must first
+	// disassociate the device from any links and customer gateways."
+	err := b.requireNoDependentAssociations(resourceDevice, id,
+		func(v *LinkAssociation) bool { return v.GlobalNetworkID == globalNetworkID && v.DeviceID == id },
+		func(v *CustomerGatewayAssociation) bool {
+			return v.GlobalNetworkID == globalNetworkID && v.DeviceID == id
+		},
+		"device is associated with a link", "device is associated with a customer gateway",
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	d.State = stateDeleting
@@ -465,6 +548,19 @@ func (b *InMemoryBackend) DeleteLink(globalNetworkID, id string) (*Link, error) 
 		return nil, notFoundError(resourceLink, id)
 	}
 
+	// DeleteLink doc (api_op_DeleteLink.go): "You must first disassociate
+	// the link from any devices and customer gateways."
+	err := b.requireNoDependentAssociations(resourceLink, id,
+		func(v *LinkAssociation) bool { return v.GlobalNetworkID == globalNetworkID && v.LinkID == id },
+		func(v *CustomerGatewayAssociation) bool {
+			return v.GlobalNetworkID == globalNetworkID && v.LinkID == id
+		},
+		"link is associated with a device", "link is associated with a customer gateway",
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	l.State = stateDeleting
 	scheduleRemoval(b, "LinkDeleted", b.links, id)
 
@@ -499,12 +595,22 @@ func (b *InMemoryBackend) AssociateLink(globalNetworkID, deviceID, linkID string
 	b.mu.Lock("AssociateLink")
 	defer b.mu.Unlock()
 
-	if d, ok := b.devices.Get(deviceID); !ok || d.GlobalNetworkID != globalNetworkID {
+	d, ok := b.devices.Get(deviceID)
+	if !ok || d.GlobalNetworkID != globalNetworkID {
 		return nil, notFoundError(resourceDevice, deviceID)
 	}
 
-	if l, ok := b.links.Get(linkID); !ok || l.GlobalNetworkID != globalNetworkID {
+	l, ok := b.links.Get(linkID)
+	if !ok || l.GlobalNetworkID != globalNetworkID {
 		return nil, notFoundError(resourceLink, linkID)
+	}
+
+	// AssociateLink doc (api_op_AssociateLink.go): "The device and link must
+	// be in the same global network and the same site." Only enforced when
+	// the device has a site (CreateDevice's SiteId is optional; CreateLink's
+	// is required), matching the doc's ambiguity for a siteless device.
+	if d.SiteID != "" && d.SiteID != l.SiteID {
+		return nil, conflictError(resourceLink, linkID, "device and link are not in the same site")
 	}
 
 	a := &LinkAssociation{
@@ -529,6 +635,15 @@ func (b *InMemoryBackend) DisassociateLink(globalNetworkID, deviceID, linkID str
 	a, ok := b.linkAssociations.Get(key)
 	if !ok {
 		return nil, notFoundError(resourceLinkAssoc, key)
+	}
+
+	// DisassociateLink doc (api_op_DisassociateLink.go): "You must first
+	// disassociate any customer gateways that are associated with the
+	// link."
+	if tableHasMatch(b.customerGatewayAssociations, func(v *CustomerGatewayAssociation) bool {
+		return v.GlobalNetworkID == globalNetworkID && v.LinkID == linkID
+	}) {
+		return nil, conflictError(resourceLinkAssoc, key, "link is associated with a customer gateway")
 	}
 
 	a.LinkAssociationState = assocStateDeleting

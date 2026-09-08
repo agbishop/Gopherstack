@@ -2,8 +2,10 @@ package cloudfrontkeyvaluestore_test
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -273,4 +275,63 @@ func TestSDKClient_ListKeysPagination(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Len(t, page2.Items, 2)
+}
+
+// TestHandler_MutationsRequireIfMatch verifies that PutKey, DeleteKey, and
+// UpdateKeys all reject a request with no If-Match header as
+// ValidationException, matching IfMatch's "This member is required" doc
+// comment on all three inputs (validators.go's
+// validateOp{PutKey,DeleteKey,UpdateKeys}Input in
+// cloudfrontkeyvaluestore@v1.15.4). The real SDK client validates this
+// locally and never sends such a request, so this drives the handler
+// directly with a raw HTTP request instead of going through the SDK client.
+func TestHandler_MutationsRequireIfMatch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path   func(arn string) string
+		name   string
+		method string
+		body   string
+	}{
+		{
+			name:   "put key",
+			method: http.MethodPut,
+			path:   func(arn string) string { return "/key-value-stores/" + url.PathEscape(arn) + "/keys/k1" },
+			body:   `{"Value":"v1"}`,
+		},
+		{
+			name:   "delete key",
+			method: http.MethodDelete,
+			path:   func(arn string) string { return "/key-value-stores/" + url.PathEscape(arn) + "/keys/k1" },
+		},
+		{
+			name:   "update keys",
+			method: http.MethodPost,
+			path:   func(arn string) string { return "/key-value-stores/" + url.PathEscape(arn) + "/keys" },
+			body:   `{"Puts":[{"Key":"k1","Value":"v1"}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h, backend := newTestHandler(t)
+			kvs, err := backend.CreateKeyValueStore(tt.name+"-kvs", "", nil)
+			require.NoError(t, err)
+
+			e := echo.New()
+			req := httptest.NewRequest(tt.method, tt.path(kvs.ARN), strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+
+			require.NoError(t, h.Handler()(c))
+
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Equal(t, "ValidationException", rec.Header().Get("X-Amzn-Errortype"))
+			assert.Contains(t, rec.Body.String(), "IfMatch")
+		})
+	}
 }

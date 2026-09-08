@@ -263,6 +263,7 @@ func (b *InMemoryBackend) issueCredentials(
 		Tags:              mergedTags,
 		TransitiveTagKeys: input.TransitiveTagKeys,
 		Expiration:        expiration,
+		IsAssumedRole:     true,
 	}
 
 	b.storeSession(session)

@@ -55,6 +55,14 @@ func validatePutRuleInput(input PutRuleInput) error {
 		)
 	}
 
+	if input.State != "" && !isValidRuleState(input.State) {
+		return fmt.Errorf(
+			"%w: State must be one of ENABLED, DISABLED, %s",
+			ErrInvalidParameter,
+			ruleStateEnabledAllCloudTrailMgmtEvents,
+		)
+	}
+
 	if input.ScheduleExpression != "" {
 		if _, err := parseScheduleExpression(input.ScheduleExpression); err != nil {
 			return fmt.Errorf(
@@ -67,6 +75,17 @@ func validatePutRuleInput(input PutRuleInput) error {
 	}
 
 	return nil
+}
+
+// isValidRuleState reports whether state is one of RuleState's modeled
+// values (see ruleStateEnabledAllCloudTrailMgmtEvents).
+func isValidRuleState(state string) bool {
+	switch state {
+	case ruleStateEnabled, ruleStateDisabled, ruleStateEnabledAllCloudTrailMgmtEvents:
+		return true
+	default:
+		return false
+	}
 }
 
 // PutRule creates or updates a rule on an event bus.

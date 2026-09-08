@@ -45,6 +45,8 @@ type Handler struct {
 	Backend      StorageBackend
 	jwksProvider JWKSProvider
 	lambda       LambdaInvoker
+	sqsSender    SQSSender
+	snsPublisher SNSPublisher
 	authCache    *authorizerCache
 	httpClient   *http.Client
 	// selRegexpCache is a bounded LRU of compiled selection-pattern regexps. It is
@@ -74,6 +76,21 @@ func NewHandler(backend StorageBackend) *Handler {
 // SetLambdaInvoker configures the Lambda invoker for AWS_PROXY integrations.
 func (h *Handler) SetLambdaInvoker(lambda LambdaInvoker) {
 	h.lambda = lambda
+}
+
+// SetSQSSender configures the SQS hook for AWS integrations whose URI targets sqs.
+// Left unset, such integrations fall back to the pre-existing Lambda-invoke behaviour
+// (see handleAWSIntegration) rather than erroring -- an unwired hook is a no-op, not
+// a rejection.
+func (h *Handler) SetSQSSender(sender SQSSender) {
+	h.sqsSender = sender
+}
+
+// SetSNSPublisher configures the SNS hook for AWS integrations whose URI targets
+// sns action/Publish. Left unset, such integrations fall back to the pre-existing
+// Lambda-invoke behaviour rather than erroring.
+func (h *Handler) SetSNSPublisher(publisher SNSPublisher) {
+	h.snsPublisher = publisher
 }
 
 // SetJWKSProvider configures the JWKS provider used to verify Cognito JWT signatures.

@@ -275,6 +275,13 @@ func applyUpdate(app *Application, update *applicationUpdate) error {
 	}
 
 	if update.ApplicationCodeUpdate != "" {
+		// AWS docs (kinesisanalytics limits page): "The SQL code in an application is
+		// limited to 100 KB" -- CreateApplication enforces this via validateApplicationCode
+		// but UpdateApplication previously let ApplicationCodeUpdate bypass it entirely.
+		if err := validateApplicationCode(update.ApplicationCodeUpdate); err != nil {
+			return err
+		}
+
 		app.ApplicationCode = update.ApplicationCodeUpdate
 	}
 

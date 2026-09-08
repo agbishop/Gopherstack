@@ -88,9 +88,16 @@ func (b *InMemoryBackend) initDefaultRegions() {
 		{RegionName: "us-west-2", RegionOptStatus: RegionOptStatusEnabledDefault},
 		{RegionName: "eu-west-1", RegionOptStatus: RegionOptStatusEnabledDefault},
 		{RegionName: "eu-central-1", RegionOptStatus: RegionOptStatusEnabledDefault},
-		// Opt-in regions: already ENABLED but can be disabled via DisableRegion.
-		{RegionName: "ap-southeast-1", RegionOptStatus: RegionOptStatusEnabled},
-		{RegionName: "ap-northeast-1", RegionOptStatus: RegionOptStatusEnabled},
+		// ap-southeast-1 (Singapore, launched 2010) and ap-northeast-1 (Tokyo,
+		// launched 2011) predate AWS's 2019 opt-in region policy, so like the
+		// regions above they are ENABLED_BY_DEFAULT and cannot be disabled
+		// (gopherstack-5py7).
+		{RegionName: "ap-southeast-1", RegionOptStatus: RegionOptStatusEnabledDefault},
+		{RegionName: "ap-northeast-1", RegionOptStatus: RegionOptStatusEnabledDefault},
+		// Opt-in regions (launched after the 2019 policy): already ENABLED but
+		// can be disabled via DisableRegion.
+		{RegionName: "af-south-1", RegionOptStatus: RegionOptStatusEnabled},
+		{RegionName: "ap-east-1", RegionOptStatus: RegionOptStatusEnabled},
 	}
 }
 

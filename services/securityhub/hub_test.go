@@ -491,3 +491,50 @@ func TestSecurityHubV2FeatureDescribeRace(t *testing.T) {
 
 	wg.Wait()
 }
+
+// gopherstack-1qf: DisableSecurityHub's doc comment
+// (api_op_DisableSecurityHub.go) states "You can't disable Security Hub CSPM
+// in an account that is currently the Security Hub CSPM administrator" --
+// DisableHub never checked this precondition.
+func TestDisableSecurityHub_RefusedWhileAdministrator(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		disassociate bool
+		wantCode     int
+	}{
+		{
+			name:     "administrator_with_active_member_refused",
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:         "after_disassociating_all_members_allowed",
+			disassociate: true,
+			wantCode:     http.StatusOK,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			doRequest(t, h, http.MethodPost, "/accounts", nil)
+			doRequest(t, h, http.MethodPost, "/members", map[string]any{
+				"AccountDetails": []any{
+					map[string]any{"AccountId": "111111111111", "Email": "a@example.com"},
+				},
+			})
+
+			if tc.disassociate {
+				doRequest(t, h, http.MethodPost, "/members/disassociate", map[string]any{
+					"AccountIds": []any{"111111111111"},
+				})
+			}
+
+			rec := doRequest(t, h, http.MethodDelete, "/accounts", nil)
+			assert.Equal(t, tc.wantCode, rec.Code)
+		})
+	}
+}

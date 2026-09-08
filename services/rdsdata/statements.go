@@ -27,6 +27,8 @@ func (b *InMemoryBackend) ExecuteStatement(
 				transactionID,
 			)
 		}
+
+		b.touchTransactionLocked(region, transactionID)
 	}
 
 	b.appendStatementLocked(region, resourceARN, sql, transactionID)
@@ -67,6 +69,8 @@ func (b *InMemoryBackend) BatchExecuteStatement(
 				transactionID,
 			)
 		}
+
+		b.touchTransactionLocked(region, transactionID)
 	}
 
 	b.appendStatementLocked(region, resourceARN, sql, transactionID)

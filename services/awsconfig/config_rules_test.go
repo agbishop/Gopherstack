@@ -53,6 +53,29 @@ func TestAWSConfigBackend_DeleteConfigRule(t *testing.T) {
 	}
 }
 
+// TestAWSConfigBackend_DeleteConfigRule_ClearsRemediationExceptions verifies
+// that DeleteConfigRule clears remediation exceptions recorded under the
+// rule name. Otherwise a new rule put back under the same (user-chosen,
+// reusable) ConfigRuleName -- with a remediation configuration re-added --
+// inherits the deleted rule's stale exceptions.
+func TestAWSConfigBackend_DeleteConfigRule_ClearsRemediationExceptions(t *testing.T) {
+	t.Parallel()
+
+	b := awsconfig.NewInMemoryBackend()
+	require.NoError(t, b.PutConfigRule(&awsconfig.ConfigRule{ConfigRuleName: "reused-rule"}))
+	require.NoError(t, b.PutRemediationExceptions("reused-rule", []awsconfig.RemediationExceptionResourceKey{
+		{ResourceType: "AWS::S3::Bucket", ResourceID: "bucket1"},
+	}))
+	require.Len(t, b.DescribeRemediationExceptions("reused-rule"), 1)
+
+	require.NoError(t, b.DeleteConfigRule("reused-rule"))
+
+	require.NoError(t, b.PutConfigRule(&awsconfig.ConfigRule{ConfigRuleName: "reused-rule"}))
+
+	assert.Empty(t, b.DescribeRemediationExceptions("reused-rule"),
+		"recreated config rule must not inherit the deleted rule's remediation exceptions")
+}
+
 func TestAWSConfigBackend_DeleteEvaluationResults(t *testing.T) {
 	t.Parallel()
 

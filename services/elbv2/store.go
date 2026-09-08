@@ -9,6 +9,8 @@ import (
 )
 
 type InMemoryBackend struct {
+	ec2Resolver   EC2Resolver
+	certResolver  CertificateResolver
 	registry      *store.Registry
 	loadBalancers *store.Table[LoadBalancer] // keyed by ARN
 	targetGroups  *store.Table[TargetGroup]  // keyed by ARN
@@ -59,6 +61,27 @@ func NewInMemoryBackend(accountID, region string) *InMemoryBackend {
 	go b.runHealthReconciler()
 
 	return b
+}
+
+// SetEC2Resolver wires the backend to validate SecurityGroups/Subnets
+// against the real services/ec2 backend -- see EC2Resolver's doc comment.
+// Called from cli.go's wireELBv2CrossService.
+func (b *InMemoryBackend) SetEC2Resolver(r EC2Resolver) {
+	b.mu.Lock("SetEC2Resolver")
+	defer b.mu.Unlock()
+
+	b.ec2Resolver = r
+}
+
+// SetCertificateResolver wires the backend to validate listener
+// CertificateArns and report their attach/detach to ACM -- see
+// CertificateResolver's doc comment. Called from cli.go's
+// wireELBv2CrossService.
+func (b *InMemoryBackend) SetCertificateResolver(r CertificateResolver) {
+	b.mu.Lock("SetCertificateResolver")
+	defer b.mu.Unlock()
+
+	b.certResolver = r
 }
 
 // Close stops the background health reconciler.

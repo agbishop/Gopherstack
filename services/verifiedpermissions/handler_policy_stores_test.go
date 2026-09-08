@@ -182,11 +182,13 @@ func TestVPHandler_DeletePolicyStore(t *testing.T) {
 			wantCode: http.StatusOK,
 		},
 		{
+			// DeletePolicyStore is documented idempotent: deleting a
+			// nonexistent store still returns HTTP 200.
 			name: "delete non-existent",
 			setup: func(_ *testing.T, _ *verifiedpermissions.Handler) string {
 				return "nonexistent-id"
 			},
-			wantCode: http.StatusBadRequest,
+			wantCode: http.StatusOK,
 		},
 	}
 
@@ -334,7 +336,12 @@ func TestVPHandler_DeletePolicyStore_CascadesIdentitySources(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestVPHandler_DeletePolicyStore_DeletionProtection_ConflictException(t *testing.T) {
+// TestVPHandler_DeletePolicyStore_DeletionProtection_InvalidStateException is
+// the regression test for gopherstack-990: real AWS's InvalidStateException
+// doc comment (types/errors.go) names this exact condition -- "The policy
+// store can't be deleted because deletion protection is enabled" -- and
+// ConflictException isn't even in DeletePolicyStore's modelled error set.
+func TestVPHandler_DeletePolicyStore_DeletionProtection_InvalidStateException(t *testing.T) {
 	t.Parallel()
 
 	h := newTestVPHandler(t)
@@ -354,7 +361,7 @@ func TestVPHandler_DeletePolicyStore_DeletionProtection_ConflictException(t *tes
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Equal(t, "ConflictException", resp["__type"])
+	assert.Equal(t, "InvalidStateException", resp["__type"])
 }
 
 // TestVPHandler_TagResource_TooManyTags verifies exceeding the 50-tag limit

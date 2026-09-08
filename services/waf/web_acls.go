@@ -82,23 +82,55 @@ func (b *InMemoryBackend) UpdateWebACL(
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			acl.Rules = append(acl.Rules, u.ActivatedRule)
-		case updateDelete:
-			filtered := acl.Rules[:0]
-			for _, r := range acl.Rules {
-				if r.RuleId != u.ActivatedRule.RuleId {
-					filtered = append(filtered, r)
-				}
-			}
-			acl.Rules = filtered
+		if err := applyWebACLUpdate(acl, u); err != nil {
+			return err
 		}
 	}
 
 	sort.Slice(acl.Rules, func(i, j int) bool {
 		return acl.Rules[i].Priority < acl.Rules[j].Priority
 	})
+
+	return nil
+}
+
+// applyWebACLUpdate inserts or deletes a single ActivatedRule. Real AWS
+// rejects a redundant insert/delete with WAFInvalidOperationException
+// (types/errors.go: "You tried to add a Rule to a WebACL, but the Rule
+// already exists"/"...remove a Rule..., but the Rule isn't in the
+// specified WebACL").
+func applyWebACLUpdate(acl *WebACL, u WebACLUpdate) error {
+	activated := false
+	for _, r := range acl.Rules {
+		if r.RuleId == u.ActivatedRule.RuleId {
+			activated = true
+
+			break
+		}
+	}
+
+	switch u.Action {
+	case updateInsert:
+		if activated {
+			return fmt.Errorf("%w: rule %q is already activated in this WebACL",
+				ErrInvalidOperation, u.ActivatedRule.RuleId)
+		}
+
+		acl.Rules = append(acl.Rules, u.ActivatedRule)
+	case updateDelete:
+		if !activated {
+			return fmt.Errorf("%w: rule %q isn't activated in this WebACL",
+				ErrInvalidOperation, u.ActivatedRule.RuleId)
+		}
+
+		filtered := acl.Rules[:0]
+		for _, r := range acl.Rules {
+			if r.RuleId != u.ActivatedRule.RuleId {
+				filtered = append(filtered, r)
+			}
+		}
+		acl.Rules = filtered
+	}
 
 	return nil
 }
@@ -124,6 +156,7 @@ func (b *InMemoryBackend) DeleteWebACL(id, changeToken string) error {
 	}
 
 	b.webACLs.Delete(id)
+	delete(b.tags, acl.WebACLArn)
 
 	return nil
 }

@@ -277,7 +277,12 @@ func (b *InMemoryBackend) CreateSampleFindings(findingTypes []string) error {
 			}
 		}
 
-		b.findings.Put(&storedFinding{Finding: finding})
+		sf := &storedFinding{Finding: finding}
+		if b.matchesArchiveFilter(sf) {
+			sf.Finding.Archived = true
+		}
+
+		b.findings.Put(sf)
 	}
 
 	return nil

@@ -508,12 +508,16 @@ func TestHandler_CreateCommit_ParentCommitIdOutdated(t *testing.T) {
 	assert.Equal(t, "ParentCommitIdOutdatedException", resp["__type"])
 }
 
-// TestHandler_CreateCommit_SameFileContent verifies CreateCommit rejects a
-// putFiles entry whose content matches what's already at that path with
-// SameFileContentException (previously declared but never returned by any
-// backend path), and that no commit is created as a side effect of the
-// rejected attempt.
-func TestHandler_CreateCommit_SameFileContent(t *testing.T) {
+// TestHandler_CreateCommit_NoChange verifies CreateCommit rejects a putFiles
+// entry whose content matches what's already at that path with
+// NoChangeException, and that no commit is created as a side effect of the
+// rejected attempt. Corrected from SameFileContentException (gopherstack-8pe4):
+// that's CreateCommit's sibling PutFile's own declared exception for the same
+// identical-content check; CreateCommit's declared error set has no
+// SameFileContentException at all (verified against codecommit@v1.36.4's
+// deserializeOpErrorCreateCommit) — its closest declared equivalent is
+// NoChangeException.
+func TestHandler_CreateCommit_NoChange(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
@@ -546,7 +550,7 @@ func TestHandler_CreateCommit_SameFileContent(t *testing.T) {
 
 	var errResp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
-	assert.Equal(t, "SameFileContentException", errResp["__type"])
+	assert.Equal(t, "NoChangeException", errResp["__type"])
 
 	branchRec := doRequest(t, h, "GetBranch", map[string]any{
 		"repositoryName": "same-content-commit-repo", "branchName": "main",
@@ -693,6 +697,65 @@ func TestGetCommit_FullFieldSet(t *testing.T) {
 	committer, ok := commit["committer"].(map[string]any)
 	require.True(t, ok, "committer sub-object must be present")
 	assert.NotNil(t, committer["name"])
+}
+
+// TestHandler_GetCommit_CommitIDNotFound verifies GetCommit rejects an
+// unresolvable commitId with CommitIdDoesNotExistException, not
+// CommitDoesNotExistException (gopherstack-8pe4): GetCommit's own declared
+// error set (codecommit@v1.36.4's deserializeOpErrorGetCommit) has
+// CommitIdDoesNotExistException, a distinct exception from
+// CommitDoesNotExistException — the code the other commit-specifier-resolving
+// ops (CreateBranch, the merge family) correctly use for a different scenario.
+func TestHandler_GetCommit_CommitIDNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, "CreateRepository", map[string]any{"repositoryName": "get-commit-notfound-repo"})
+
+	rec := doRequest(t, h, "GetCommit", map[string]any{
+		"repositoryName": "get-commit-notfound-repo",
+		"commitId":       "0000000000000000000000000000000000000",
+	})
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Equal(t, "CommitIdDoesNotExistException", resp["__type"])
+}
+
+// TestHandler_BatchGetCommits_ErrorCodeIsCommitIdDoesNotExist verifies the
+// per-entry BatchGetCommitsError.errorCode for an unresolvable commit ID is
+// CommitIdDoesNotExistException, not CommitDoesNotExistException
+// (gopherstack-pfyr). This is document data in a 200 response, so it isn't
+// constrained by BatchGetCommits' declared error set (confirmed empty of
+// both codes in codecommit@v1.36.4's deserializeOpErrorBatchGetCommits), but
+// api-2.json types both GetCommitInput.commitId and BatchGetCommitsError.commitId
+// as the ObjectId shape — the same shape GetCommit uses for the field that
+// throws CommitIdDoesNotExistException — while CreateBranchInput.commitId and
+// every other CommitDoesNotExistException-throwing op use the distinct CommitId
+// shape reserved for specifier-resolution fields.
+func TestHandler_BatchGetCommits_ErrorCodeIsCommitIdDoesNotExist(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	doRequest(t, h, "CreateRepository", map[string]any{"repositoryName": "batch-commits-errorcode-repo"})
+
+	rec := doRequest(t, h, "BatchGetCommits", map[string]any{
+		"repositoryName": "batch-commits-errorcode-repo",
+		"commitIds":      []string{"0000000000000000000000000000000000000"},
+	})
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+
+	errs, ok := resp["errors"].([]any)
+	require.True(t, ok)
+	require.Len(t, errs, 1)
+
+	entry, ok := errs[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "CommitIdDoesNotExistException", entry["errorCode"])
 }
 
 func TestHandler_GetDifferences(t *testing.T) {

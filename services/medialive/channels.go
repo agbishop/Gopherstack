@@ -236,6 +236,11 @@ func (b *InMemoryBackend) UpdateChannel(
 }
 
 // DeleteChannel deletes a channel.
+// api_op_DeleteChannel.go's doc comment ("Starts deletion of channel.")
+// mirrors StartChannel's "Starts an existing channel" -- the channel is
+// removed immediately (deterministic emulation), but the response carries
+// DELETING to match the same intermediate-state contract StartChannel/
+// StopChannel already follow in this file.
 func (b *InMemoryBackend) DeleteChannel(channelID string) (*Channel, error) {
 	b.mu.Lock("DeleteChannel")
 	defer b.mu.Unlock()
@@ -249,8 +254,8 @@ func (b *InMemoryBackend) DeleteChannel(channelID string) (*Channel, error) {
 		return nil, fmt.Errorf("%w: channel must be idle before deleting", ErrConflict)
 	}
 
-	ch.State = stateDeleted
 	out := b.toChannelWithDerived(ch)
+	out.State = stateDeleting
 	b.channels.Delete(channelID)
 
 	return out, nil

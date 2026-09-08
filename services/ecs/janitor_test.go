@@ -61,6 +61,42 @@ func TestJanitor_SweepsStoppedTasksOlderThanTTL(t *testing.T) {
 	assert.Empty(t, listed)
 }
 
+func TestJanitor_SweptTaskLosesResourceTags(t *testing.T) {
+	t.Parallel()
+
+	backend := setupJanitorBackend(t)
+
+	tasks, err := backend.RunTask(ecs.RunTaskInput{
+		Cluster:        "test-cluster",
+		TaskDefinition: "test-family",
+		Count:          1,
+		Tags:           []ecs.Tag{{Key: "env", Value: "test"}},
+	})
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+
+	taskArn := tasks[0].TaskArn
+
+	tags, err := backend.ListTagsForResource(taskArn)
+	require.NoError(t, err)
+	require.NotEmpty(t, tags, "tags should be recorded immediately after RunTask")
+
+	_, err = backend.StopTask("test-cluster", taskArn, "testing")
+	require.NoError(t, err)
+
+	janitor := ecs.NewJanitor(backend, time.Second)
+	janitor.SetTaskTTL(1 * time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
+
+	janitor.SweepOnce(context.Background())
+
+	// The task is gone; its resourceTags side-map entry must go with it, or a
+	// stale ARN keeps answering ListTagsForResource forever.
+	tags, err = backend.ListTagsForResource(taskArn)
+	require.NoError(t, err)
+	assert.Empty(t, tags, "resourceTags leaked a ghost row for a swept task")
+}
+
 func TestJanitor_DoesNotSweepRunningTasks(t *testing.T) {
 	t.Parallel()
 

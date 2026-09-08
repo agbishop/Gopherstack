@@ -142,8 +142,11 @@ func (b *InMemoryBackend) TaggedResources() []TaggedEntry {
 	return out
 }
 
-// isKnownResource returns true if the ARN corresponds to a known agent, location, or task.
+// isKnownResource returns true if the ARN corresponds to a known agent,
+// location, task, or task execution. Task executions are taggable resources
+// too: TagResource's doc comment (datasync@v1.61.4 api_op_TagResource.go)
+// names "locations, tasks, and task executions" explicitly.
 // Must be called with at least a read lock held.
 func (b *InMemoryBackend) isKnownResource(a string) bool {
-	return b.agents.Has(a) || b.locations.Has(a) || b.tasks.Has(a)
+	return b.agents.Has(a) || b.locations.Has(a) || b.tasks.Has(a) || b.executions.Has(a)
 }

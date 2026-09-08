@@ -58,6 +58,7 @@ func (b *InMemoryBackend) DeleteStage(restAPIID, stageName string) error {
 	if !b.stages.Delete(stageKey(restAPIID, stageName)) {
 		return fmt.Errorf("%w: stage %s not found", ErrResourceNotFound, stageName)
 	}
+	b.clearStageThrottleBuckets(restAPIID, stageName)
 
 	return nil
 }
@@ -132,6 +133,21 @@ func (b *InMemoryBackend) UpdateStage(restAPIID, stageName string, input UpdateS
 	if !ok {
 		return nil, fmt.Errorf("%w: stage %q not found", ErrStageNotFound, stageName)
 	}
+	if input.DeploymentID != "" && !b.deployments.Has(deploymentKey(restAPIID, input.DeploymentID)) {
+		return nil, fmt.Errorf("%w: deployment %s not found", ErrDeploymentNotFound, input.DeploymentID)
+	}
+
+	applyUpdateStageFields(stage, input)
+	stage.LastUpdatedDate = unixEpochTime{time.Now()}
+	cp := *stage
+
+	return &cp, nil
+}
+
+// applyUpdateStageFields merges every UpdateStageInput field provided (the
+// zero value means "not provided") onto stage in place. Split out of
+// UpdateStage to keep that function's own cyclomatic complexity low.
+func applyUpdateStageFields(stage *Stage, input UpdateStageInput) {
 	if input.Description != "" {
 		stage.Description = input.Description
 	}
@@ -166,10 +182,6 @@ func (b *InMemoryBackend) UpdateStage(restAPIID, stageName string, input UpdateS
 	if input.DocumentationVersion != "" {
 		stage.DocumentationVersion = input.DocumentationVersion
 	}
-	stage.LastUpdatedDate = unixEpochTime{time.Now()}
-	cp := *stage
-
-	return &cp, nil
 }
 
 // cacheClusterStatusFor derives the AWS CacheClusterStatus enum value

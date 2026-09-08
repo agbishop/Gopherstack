@@ -358,6 +358,35 @@ func TestApplyIntegrationRequestParams(t *testing.T) {
 	}
 }
 
+// TestDeleteRestAPI_EvictsTrieCache verifies that deleting a REST API evicts its
+// cached routing trie. RestApi IDs are freshly random on every CreateRestApi, so a
+// stale h.trieCache entry from a deleted API can never be overwritten by a later
+// Store -- left unfixed, every RestApi ever routed to and deleted stays in the
+// process's memory for the life of the server.
+func TestDeleteRestAPI_EvictsTrieCache(t *testing.T) {
+	t.Parallel()
+
+	backend := NewInMemoryBackend()
+	h := NewHandler(backend)
+
+	api, err := backend.CreateRestAPI(CreateRestAPIInput{Name: "leak-api"})
+	require.NoError(t, err)
+
+	// Prime the trie cache the same way a proxied request would.
+	_, err = h.routingTrie(api.ID)
+	require.NoError(t, err)
+
+	_, cached := h.trieCache.Load(api.ID)
+	require.True(t, cached, "trie cache should hold an entry after routingTrie")
+
+	status, _, err := h.deleteRestAPIAction([]byte(`{"restApiId":"` + api.ID + `"}`))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, status)
+
+	_, stillCached := h.trieCache.Load(api.ID)
+	assert.False(t, stillCached, "trie cache entry must be evicted on DeleteRestApi")
+}
+
 func TestApplyIntegrationResponseParams(t *testing.T) {
 	t.Parallel()
 
@@ -383,7 +412,7 @@ func TestApplyIntegrationResponseParams(t *testing.T) {
 			},
 			checkResult: func(t *testing.T, w *httptest.ResponseRecorder) {
 				t.Helper()
-				assert.Equal(t, "X-Amzn-Requestid", w.Header().Get("X-Request-Id"))
+				assert.Equal(t, "X-Amzn-Requestid", w.Header().Get("X-Request-ID"))
 			},
 		},
 		{

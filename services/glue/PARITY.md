@@ -1,6 +1,6 @@
 ---
 service: glue
-sdk_module: aws-sdk-go-v2/service/glue@v1.152.0
+sdk_module: aws-sdk-go-v2/service/glue@v1.157.0
 last_audit_commit: a7f9c5fb2  # gopherstack-uult (2026-08-13) fixed after this hash was recorded; hash not yet known at edit time
 last_audit_date: 2026-08-13
 # 2026-08-30 wrapper-key/sort-totality sweep (Class F: a sort that exists but is
@@ -94,7 +94,7 @@ ops:
   CreatePartition: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed this pass: BatchCreatePartition (which CreatePartition delegates to) never checked the parent table existed, silently storing orphaned partitions against a nonexistent db/table; now returns EntityNotFoundException per AWS contract. Also added Partition/PartitionInput.Parameters + Partition.CreationTime/CatalogId"}
   BatchCreatePartition: {wire: ok, errors: ok, state: ok, persist: ok, note: "same table-existence fix as CreatePartition"}
   GetPartition: {wire: ok, errors: ok, state: ok, persist: ok}
-  GetPartitions: {wire: ok, errors: ok, state: ok, persist: ok, note: "expression filter (segment) not re-verified in depth this pass"}
+  GetPartitions: {wire: ok, errors: ok, state: ok, persist: ok, note: "expression filter (segment) not re-verified in depth this pass. Performance fix 2026-09-06 (gopherstack-a9rs): InMemoryBackend.GetPartitions scanned every partition across every table in the backend (store.Table.Snapshot(), full sort) under the read lock and filtered by key prefix, instead of an indexed per-table lookup. Added a partitionsByTable secondary store.Index (see store.AddIndex; keyed by dbName|tableName, populated/maintained automatically by store.Table.Put/Delete) and GetPartitions now looks up that table's group directly, still sorting the (much smaller) per-table result to preserve the pre-existing sorted-by-key order NextToken pagination depends on. Correctness (ordering, pagination, empty-table, cross-table isolation) unchanged and covered by TestGetPartitions_OrderedByValues, TestGetPartitions_EmptyTableReturnsEmpty, TestGetPartitions_DoesNotLeakOtherTables, TestPagination_GetPartitions_RoundTripOrder. BenchmarkGetPartitions_ManyTables (200 tables x 50 partitions, target table in the middle): ~51.7ms/op, ~20.9MB/op, ~1.15M allocs/op before -> ~29µs/op, ~22KB/op, 595 allocs/op after (roughly 1770x faster, ~950x less memory)."}
   BatchGetPartition: {wire: ok, errors: ok, state: ok, persist: ok, note: "SEVERE fix this pass: was a disguised stub — always returned an empty Partitions list regardless of backend state, with a comment falsely claiming \"the mock backend has no partition storage\". Now looks up each PartitionsToGet entry via GetPartition and reports misses in UnprocessedKeys per the real BatchGetPartitionResponse shape"}
   UpdatePartition: {wire: ok, errors: ok, state: ok, persist: ok, note: "now also persists Parameters through both the in-place and rename paths"}
   BatchUpdatePartition: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -122,7 +122,7 @@ ops:
   UpdateJob: {wire: ok, errors: ok, state: ok, persist: ok, note: "same MaxCapacity/NotificationProperty fix as CreateJob"}
   DeleteJob: {wire: ok, errors: ok, state: ok, persist: ok}
   StartJobRun: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed this pass (gopherstack-qd3.4): StartJobRunWithOptions adds real per-run overrides (WorkerType/NumberOfWorkers/MaxCapacity/Timeout/NotificationProperty/SecurityConfiguration) on top of the job-defaults path added last pass, matching StartJobRunRequest and enforcing the MaxCapacity vs WorkerType/NumberOfWorkers mutual-exclusion rule at the run level too. Also fixed a wire-error-code bug: exceeding ExecutionProperty.MaxConcurrentRuns returned generic InvalidInputException instead of the documented ConcurrentRunsExceededException (confirmed in deserializers.go's StartJobRun error switch) — new ErrConcurrentRunsExceeded sentinel, also wired into StartWorkflowRun's new MaxConcurrentRuns check (workflows family)"}
-  GetJobRun: {wire: ok, errors: ok, state: ok, persist: ok}
+  GetJobRun: {wire: ok, errors: ok, state: ok, persist: ok, note: "re-verified this pass (gopherstack-s1u9): GetJobRun calls advanceStates(now) before reading JobRunState, which lazily runs reconcileLocked's STARTING->RUNNING->SUCCEEDED/TIMEOUT transitions even if the background reconciler hasn't ticked yet -- so JobRunState is already a correct, poll-ready completion signal for an external caller (e.g. a future Step Functions .sync integration, gopherstack-tdp6) with no gap to fix. No code changed here; see services/ecs/PARITY.md's matching gopherstack-s1u9 entry for the full design reasoning (a push/broadcast completion API was deliberately NOT added on top of this, for either service, absent a concrete consumer)."}
   GetJobRuns: {wire: ok, errors: ok, state: ok, persist: ok}
   BatchStopJobRun: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (per-item failure sweep): BatchStopJobRunOutput.SuccessfulSubmissions (api_op_BatchStopJobRun.go) had no wire field at all, so a client could see which run IDs errored but never which ones were actually accepted for stopping. Errors was already correctly populated (EntityNotFoundException/IllegalStateException per bad run ID); only the success half of the same response was missing. Proven by TestBatchStopJobRun_ReportsSuccessfulSubmissions (fails without the fix). Per-item failure sweep also checked BatchCreatePartition, BatchDeleteConnection, BatchDeletePartition, BatchDeleteTable, BatchDeleteTableVersion, BatchGetIterableForms, BatchUpdatePartition, BatchGetPartition, BatchGetTableOptimizer, BatchPutDataQualityStatisticAnnotation, DeleteSchemaVersions: all correctly populate their failure field. CreateIntegration/DeleteIntegration/ModifyIntegration's Errors and GetColumnStatisticsFor{Table,Partition}/UpdateColumnStatisticsFor{Table,Partition}'s Errors are correctly left empty -- neither the Integration model nor column-statistics storage in this backend tracks any failure state a real client can trigger (confirmed for the column-statistics ops by three existing SDK-driven tests -- TestColumnStatisticsForTable_RequiredColumnType, TestColumnStatistics -- that already prove a client-constructed StatisticsData with no populated data member round-trips successfully, i.e. AWS does not enforce Type/data-member consistency server-side either)."}
   GetJobBookmark: {wire: ok, errors: ok, state: ok, persist: ok, note: "not re-verified in depth this pass"}
@@ -199,7 +199,7 @@ deferred:
   - "ML transforms: EvaluationMetrics (FindMatchesMetrics) — no real ML evaluation is ever run, so there is no real metric to report (re-confirmed gopherstack-dol3, still correctly absent)"
   - "quota/idempotency exceptions: ResourceNumberLimitExceededException now real for CreateDevEndpoint (gopherstack-dol3); IdempotentParameterMismatchException/OperationTimeoutException/ConcurrentModificationException remain open with real (not blanket) reasoning -- see the quota/idempotency gap-list note above"
   - "tag ARN dispatch: Blueprint/DevEndpoint/MLTransform/UserDefinedFunction fixed (gopherstack-dol3); CustomEntityType still has no ARN/Tags concept at all, out of scope -- see the tag-dispatch gap-list note above"
-leaks: {status: clean, note: "backend_reconciler.go's managed goroutine (StartReconciler/StopReconciler/reconcileLoop) already exits deterministically on ctx.Done() or the stop channel with a WaitGroup — no unmanaged 'go b.runReconciler()' leak. Verified with go test -race this pass too; no new goroutines/timers/tickers introduced (all new run-tracking state — DevEndpoint/Blueprint/MLTransform fields, StartJobRunOptions, CrawlerOptions additions — is plain struct state guarded by the existing coarse b.mu, not new concurrency). No new ghost-map-row risk: no new child/FK resource maps were introduced this pass (all additions are fields on existing resource structs or new sub-structs embedded inline), so no new cascade-delete paths were needed."}
+leaks: {status: clean, note: "backend_reconciler.go's managed goroutine (StartReconciler/StopReconciler/reconcileLoop) already exits deterministically on ctx.Done() or the stop channel with a WaitGroup — no unmanaged 'go b.runReconciler()' leak. Verified with go test -race this pass too; no new goroutines/timers/tickers introduced (all new run-tracking state — DevEndpoint/Blueprint/MLTransform fields, StartJobRunOptions, CrawlerOptions additions — is plain struct state guarded by the existing coarse b.mu, not new concurrency). No new ghost-map-row risk: no new child/FK resource maps were introduced this pass (all additions are fields on existing resource structs or new sub-structs embedded inline), so no new cascade-delete paths were needed. VERIFIED, NOT A LEAK (gopherstack-8907, 2026-09-06): DeleteJob clears b.jobRuns[name] but not jobRunReadyAt/DoneAt/TimeoutAt/StopAt directly -- pruneOrphanJobRunTimersLocked (called at the end of every reconcileLocked, and reconcileLocked is triggered lazily by any read plus at the top of every StartJobRun) is the mechanism that actually drops the now-orphaned timer entries once their deadline has passed. This was previously untested for the delete-then-prune path specifically; added TestReconciler_DeleteJob_PrunesOrphanedTimers (neuter-verified against reconcileLocked's pruneOrphanJobRunTimersLocked call) rather than adding a new exported seam for the timer maps."}
 ---
 
 ## Notes
@@ -1985,3 +1985,18 @@ either op.
 Gates: `go build ./services/glue/...`, `go vet ./...` (repo-wide, clean),
 `go test -race -count=1 ./services/glue/...`, `golangci-lint run
 ./services/glue/...` all clean. No code changed in this service this pass.
+
+## 2026-09-07 (gopherstack-yatn, orphan-code screen)
+
+BatchStopJobRun "IllegalStateException" was flagged by errtargetaudit's new
+orphan-code class (a code declared by no operation anywhere in the module).
+False positive of the per-entry batch shape, not a bug: jobs.go:496-503
+appends the string into BatchStopJobRunError.ErrorDetail.ErrorCode inside the
+`errs` slice returned in a normal 200 BatchStopJobRunOutput.Errors -- it never
+reaches a sentinel or handleError. The real SDK's ErrorDetail.ErrorCode
+(glue types/types.go) is an unconstrained *string with no enum, so there is
+no declared set for it to be missing from; BatchStopJobRun's own
+deserializeOpError models only InternalServiceException, InvalidInputException
+and OperationTimeoutException, which govern the HTTP error path alone.
+
+No code changed. Recorded so a later orphan-code pass does not re-derive this.

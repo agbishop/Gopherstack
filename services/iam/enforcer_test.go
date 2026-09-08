@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/blackbirdworks/gopherstack/services/iam"
 )
 
 func TestGetUserByAccessKeyID(t *testing.T) {
@@ -135,6 +137,68 @@ func TestGetPoliciesForUser(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Len(t, docs, tt.wantCount)
+		})
+	}
+}
+
+// TestGetPoliciesForUser_IncludesInlineAndGroupPolicies guards the policy set
+// consumed by the real enforcement middleware (middleware.go). It must match
+// what collectNamedPrincipalPolicies already aggregates for policy
+// simulation: the user's own inline policies plus managed and inline
+// policies inherited from group membership.
+func TestGetPoliciesForUser_IncludesInlineAndGroupPolicies(t *testing.T) {
+	t.Parallel()
+
+	const policyDoc = `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:*","Resource":"*"}]}`
+
+	tests := []struct {
+		setup func(t *testing.T, b *iam.InMemoryBackend)
+		name  string
+	}{
+		{
+			name: "own_inline_policy",
+			setup: func(t *testing.T, b *iam.InMemoryBackend) {
+				t.Helper()
+				require.NoError(t, b.PutUserPolicy("alice", "Inline1", policyDoc))
+			},
+		},
+		{
+			name: "group_managed_policy",
+			setup: func(t *testing.T, b *iam.InMemoryBackend) {
+				t.Helper()
+				_, err := b.CreateGroup("devs", "/")
+				require.NoError(t, err)
+				require.NoError(t, b.AddUserToGroup("devs", "alice"))
+				pol, err := b.CreatePolicy("GroupManaged", "/", policyDoc)
+				require.NoError(t, err)
+				require.NoError(t, b.AttachGroupPolicy("devs", pol.Arn))
+			},
+		},
+		{
+			name: "group_inline_policy",
+			setup: func(t *testing.T, b *iam.InMemoryBackend) {
+				t.Helper()
+				_, err := b.CreateGroup("ops", "/")
+				require.NoError(t, err)
+				require.NoError(t, b.AddUserToGroup("ops", "alice"))
+				require.NoError(t, b.PutGroupPolicy("ops", "GroupInline", policyDoc))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newIAMBackend(t)
+			_, err := b.CreateUser("alice", "/", "")
+			require.NoError(t, err)
+
+			tt.setup(t, b)
+
+			docs, err := b.GetPoliciesForUser("alice")
+			require.NoError(t, err)
+			assert.Len(t, docs, 1)
 		})
 	}
 }

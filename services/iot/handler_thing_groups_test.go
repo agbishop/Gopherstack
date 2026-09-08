@@ -134,6 +134,24 @@ func TestDynamicThingGroup(t *testing.T) {
 	iotOK(t, h, http.MethodDelete, "/dynamic-thing-groups/my-dynamic-group", nil)
 }
 
+// DeleteDynamicThingGroupInput.ExpectedVersion (iot@v1.77.4
+// api_op_DeleteDynamicThingGroup.go:38-39), expectedVersion is a QUERY
+// parameter (awsRestjson1_serializeOpHttpBindingsDeleteDynamicThingGroupInput),
+// and its deserializeOpError switch declares a VersionConflictException case.
+func TestDeleteDynamicThingGroup_VersionConflict_Rejected(t *testing.T) {
+	t.Parallel()
+	h, _ := newHandlerForBatch3Test(t)
+
+	iotOK(t, h, http.MethodPost, "/dynamic-thing-groups/del-ver-dyn-group", map[string]any{
+		"queryString": "thingName:*",
+	})
+
+	rec := iotRequest(t, h, http.MethodDelete, "/dynamic-thing-groups/del-ver-dyn-group?expectedVersion=99", nil)
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+
+	iotOK(t, h, http.MethodGet, "/thing-groups/del-ver-dyn-group", nil)
+}
+
 // TestDynamicThingGroup_RealWireShape guards CreateDynamicThingGroupInput/
 // UpdateDynamicThingGroupInput's real body shape (iot@v1.77.4
 // api_op_CreateDynamicThingGroup.go/api_op_UpdateDynamicThingGroup.go):
@@ -514,8 +532,24 @@ func TestDeleteThingGroup_NotFound_Error(t *testing.T) {
 	t.Parallel()
 
 	_, b := newR3Handler()
-	err := b.DeleteThingGroup("nonexistent-group")
+	err := b.DeleteThingGroup("nonexistent-group", 0)
 	require.ErrorIs(t, err, iot.ErrThingGroupNotFound)
+}
+
+// DeleteThingGroupInput.ExpectedVersion (iot@v1.77.4/api_op_DeleteThingGroup.go:38-39)
+// and its deserializeOpError switch declares a VersionConflictException case.
+func TestDeleteThingGroup_VersionConflict_Rejected(t *testing.T) {
+	t.Parallel()
+
+	_, b := newR3Handler()
+	_, err := b.CreateThingGroup(&iot.CreateThingGroupInput{ThingGroupName: "del-ver-group"})
+	require.NoError(t, err)
+
+	err = b.DeleteThingGroup("del-ver-group", 99)
+	require.ErrorIs(t, err, iot.ErrVersionConflict)
+
+	_, err = b.DescribeThingGroup("del-ver-group")
+	require.NoError(t, err, "thing group must survive a rejected version-mismatched delete")
 }
 
 func TestCreateThingGroup_VersionStartsAt1(t *testing.T) {

@@ -281,7 +281,10 @@ func (b *InMemoryBackend) ListAcmeExternalAccountBindings(
 }
 
 // GetAcmeExternalAccountBindingCredentials returns the KeyId/MacKey for an
-// active (non-revoked) EAB.
+// active (non-revoked) EAB. Its deserializer declares neither
+// InvalidStateException nor ConflictException, only ValidationException --
+// a revoked EAB is ErrInvalidParameter, not ErrInvalidState --
+// gopherstack-ftkd.
 func (b *InMemoryBackend) GetAcmeExternalAccountBindingCredentials(
 	ctx context.Context, eabARN string,
 ) (string, string, error) {
@@ -296,16 +299,16 @@ func (b *InMemoryBackend) GetAcmeExternalAccountBindingCredentials(
 	}
 
 	if eab.RevokedAt != nil {
-		return "", "", fmt.Errorf("%w: ACME external account binding %s is revoked", ErrInvalidState, eabARN)
+		return "", "", fmt.Errorf("%w: ACME external account binding %s is revoked", ErrInvalidParameter, eabARN)
 	}
 
 	return eab.KeyID, eab.MacKey, nil
 }
 
-// RevokeAcmeExternalAccountBinding marks an EAB revoked. Revoking an
-// already-revoked EAB returns ErrInvalidState (InvalidStateException),
-// matching RevokeCertificate's already-revoked handling elsewhere in this
-// package.
+// RevokeAcmeExternalAccountBinding marks an EAB revoked.
+// RevokeAcmeExternalAccountBinding's deserializer declares
+// ConflictException, not InvalidStateException, for an already-revoked EAB
+// -- gopherstack-ftkd.
 func (b *InMemoryBackend) RevokeAcmeExternalAccountBinding(ctx context.Context, eabARN string) error {
 	region := getRegion(ctx, b.region)
 
@@ -318,7 +321,7 @@ func (b *InMemoryBackend) RevokeAcmeExternalAccountBinding(ctx context.Context, 
 	}
 
 	if eab.RevokedAt != nil {
-		return fmt.Errorf("%w: ACME external account binding %s is already revoked", ErrAlreadyRevoked, eabARN)
+		return fmt.Errorf("%w: ACME external account binding %s is already revoked", ErrConflict, eabARN)
 	}
 
 	now := time.Now().UTC()
@@ -329,6 +332,9 @@ func (b *InMemoryBackend) RevokeAcmeExternalAccountBinding(ctx context.Context, 
 }
 
 // DeleteAcmeExternalAccountBinding removes the EAB with the given ARN.
+// Unlike Describe/List/Revoke, Delete's deserializer declares no
+// ResourceNotFoundException -- a missing ARN is ErrInvalidParameter
+// (ValidationException), not ErrAcmeResourceNotFound -- gopherstack-ftkd.
 func (b *InMemoryBackend) DeleteAcmeExternalAccountBinding(ctx context.Context, eabARN string) error {
 	region := getRegion(ctx, b.region)
 
@@ -337,7 +343,7 @@ func (b *InMemoryBackend) DeleteAcmeExternalAccountBinding(ctx context.Context, 
 
 	eab, ok := b.eabs.Get(eabARN)
 	if !ok || eab.Region != region {
-		return fmt.Errorf("%w: ACME external account binding %s not found", ErrAcmeResourceNotFound, eabARN)
+		return fmt.Errorf("%w: ACME external account binding %s not found", ErrInvalidParameter, eabARN)
 	}
 
 	b.eabs.Delete(eabARN)

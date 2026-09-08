@@ -110,6 +110,10 @@ func (b *InMemoryBackend) GetLifecyclePolicies(filter PolicyFilter) ([]*PolicySu
 			continue
 		}
 
+		if !matchesDefaultPolicyType(p.PolicyDetails, filter.DefaultPolicyType) {
+			continue
+		}
+
 		if !matchesAnyTagPair(policyDetailsTagPairs(p.PolicyDetails, "TargetTags"), wantTargetTags) {
 			continue
 		}

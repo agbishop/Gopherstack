@@ -257,7 +257,7 @@ type updateCertificateOptionsOutput struct{}
 func (h *Handler) jsonRequestCertificate(ctx context.Context, body []byte) (any, error) {
 	var input requestCertificateInput
 	if err := json.Unmarshal(body, &input); err != nil {
-		return nil, ErrInvalidParameter
+		return nil, ErrRequestCertInvalidParameter
 	}
 	certType := ""
 	if input.CertificateAuthorityArn != "" {
@@ -318,7 +318,7 @@ func (h *Handler) jsonRequestCertificate(ctx context.Context, body []byte) (any,
 				kvMap[k] = tag["Value"]
 			}
 		}
-		if setErr := h.setTags(cert.ARN, kvMap); setErr != nil {
+		if setErr := h.setTags(cert.ARN, kvMap, ErrInvalidTag, ErrTooManyTags); setErr != nil {
 			return nil, setErr
 		}
 	}
@@ -449,9 +449,8 @@ func (h *Handler) jsonDescribeCertificate(ctx context.Context, body []byte) (any
 		InUseBy:                 nonNilSlice(cert.InUseBy),
 		KeyUsage:                keyUsages,
 		ExtendedKeyUsage:        extKeyUsages,
-	}
 
-	detail.RenewalSummary = buildRenewalSummaryDetail(cert.RenewalSummary)
+		RenewalSummary: buildRenewalSummaryDetail(cert.RenewalSummary)}
 
 	return &describeCertificateOutput{Certificate: detail}, nil
 }
@@ -592,7 +591,7 @@ func (h *Handler) jsonImportCertificate(ctx context.Context, body []byte) (any, 
 				kvMap[k] = tag["Value"]
 			}
 		}
-		if setErr := h.setTags(cert.ARN, kvMap); setErr != nil {
+		if setErr := h.setTags(cert.ARN, kvMap, ErrInvalidTag, ErrTooManyTags); setErr != nil {
 			return nil, setErr
 		}
 	}

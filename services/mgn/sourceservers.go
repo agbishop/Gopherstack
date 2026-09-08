@@ -27,9 +27,14 @@ import (
 //	CUTTING_OVER -> CUTOVER       via FinalizeCutover (a distinct call, not automatic).
 //	CUTOVER -> DISCONNECTED       via DisconnectFromService, the terminal state.
 //
-// ChangeServerLifeCycleState is the one caller-driven escape hatch: it can force
-// State directly to READY_FOR_TEST/READY_FOR_CUTOVER/CUTOVER, bypassing the table
-// above -- matching real AWS's documented manual-override purpose for this call.
+// ChangeServerLifeCycleState can force State directly to
+// READY_FOR_TEST/READY_FOR_CUTOVER/CUTOVER, bypassing the table above. Real AWS
+// documents a precondition, not a manual-override purpose: "This command only
+// works if the Source Server is already launchable (dataReplicationInfo.
+// lagDuration is not null)" (mgn api_op_ChangeServerLifeCycleState.go:12-15).
+// gopherstack never fabricates LagDuration (models.go's DataReplicationInfo doc
+// comment), so DataReplicationState == CONTINUOUS is the equivalent launchable
+// signal used below; an earlier call is rejected with ConflictException.
 
 // resolveSourceServerLocked resolves sourceServerID to its stored
 // SourceServer. Callers must hold b.mu.
@@ -474,6 +479,13 @@ func (b *InMemoryBackend) ChangeServerLifeCycleState(sourceServerID, targetState
 		return nil, notFoundError(resourceSourceServer, sourceServerID)
 	}
 
+	if s.DataReplicationInfo == nil || s.DataReplicationInfo.DataReplicationState != DataReplicationStateContinuous {
+		return nil, conflictErrorWithResource(
+			resourceSourceServer, sourceServerID,
+			"source server is not yet launchable: "+sourceServerID,
+		)
+	}
+
 	if s.LifeCycle == nil {
 		s.LifeCycle = &LifeCycle{}
 	}
@@ -546,9 +558,10 @@ func (b *InMemoryBackend) FinalizeCutover(sourceServerID string) (*SourceServer,
 	return s.clone(), nil
 }
 
-// MarkAsArchived sets sourceServerID's IsArchived flag -- a visibility/
-// cleanup flag orthogonal to LifeCycleState (an archived server can be in
-// any lifecycle state -- see this file's doc comment).
+// MarkAsArchived sets sourceServerID's IsArchived flag. Real AWS only allows
+// this for a SourceServer whose LifeCycleState is DISCONNECTED or CUTOVER
+// (api_op_MarkAsArchived.go:13-14: "This command only works for SourceServers
+// with a lifecycle. state which equals DISCONNECTED or CUTOVER.").
 func (b *InMemoryBackend) MarkAsArchived(sourceServerID string) (*SourceServer, error) {
 	b.mu.Lock("MarkAsArchived")
 	defer b.mu.Unlock()
@@ -560,6 +573,18 @@ func (b *InMemoryBackend) MarkAsArchived(sourceServerID string) (*SourceServer, 
 	s, ok := b.resolveSourceServerLocked(sourceServerID)
 	if !ok {
 		return nil, notFoundError(resourceSourceServer, sourceServerID)
+	}
+
+	state := ""
+	if s.LifeCycle != nil {
+		state = s.LifeCycle.State
+	}
+
+	if state != LifeCycleStateDisconnected && state != LifeCycleStateCutover {
+		return nil, conflictErrorWithResource(
+			resourceSourceServer, sourceServerID,
+			"source server lifecycle state must be DISCONNECTED or CUTOVER to archive: "+sourceServerID,
+		)
 	}
 
 	s.IsArchived = true
@@ -725,11 +750,11 @@ func (b *InMemoryBackend) TerminateTargetInstances(sourceServerIDs []string, job
 
 // startBatchJob validates sourceServerIDs and each one's LifeCycleState
 // precondition for kind, then delegates Job creation/scheduling to
-// jobs.go's createAndScheduleJobLocked. Preconditions
-// (StartTest requires READY_FOR_TEST, StartCutover requires
-// READY_FOR_CUTOVER, TerminateTargetInstances requires none beyond
-// existing) are this package's own inference from field/enum semantics, not
-// independently SDK-confirmed (PARITY.md).
+// jobs.go's createAndScheduleJobLocked. StartTest requires READY_FOR_TEST
+// and StartCutover requires READY_FOR_CUTOVER -- this package's own
+// inference from field/enum semantics, not independently SDK-confirmed
+// (PARITY.md). TerminateTargetInstances is SDK-doc-confirmed: see
+// requireLifecyclePrecondition.
 func (b *InMemoryBackend) startBatchJob(
 	sourceServerIDs []string,
 	jobTags map[string]string,
@@ -766,6 +791,10 @@ func (b *InMemoryBackend) startBatchJob(
 
 // requireLifecyclePrecondition enforces the (documented, SDK-inferred)
 // legal precondition for starting a batch job of the given kind on s.
+// TerminateTargetInstances' block list is confirmed by
+// api_op_TerminateTargetInstances.go:13-14 ("This command will not work for
+// any Source Server with a lifecycle.state of TESTING, CUTTING_OVER, or
+// CUTOVER").
 func requireLifecyclePrecondition(s *SourceServer, initiatedBy string) error {
 	state := ""
 	if s.LifeCycle != nil {
@@ -785,6 +814,13 @@ func requireLifecyclePrecondition(s *SourceServer, initiatedBy string) error {
 			return conflictErrorWithResource(
 				resourceSourceServer, s.SourceServerID,
 				"source server is not ready for cutover: "+s.SourceServerID,
+			)
+		}
+	case InitiatedByTerminate:
+		if state == LifeCycleStateTesting || state == LifeCycleStateCuttingOver || state == LifeCycleStateCutover {
+			return conflictErrorWithResource(
+				resourceSourceServer, s.SourceServerID,
+				"cannot terminate target instances while source server lifecycle state is "+state+": "+s.SourceServerID,
 			)
 		}
 	}

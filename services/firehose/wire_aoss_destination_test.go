@@ -71,7 +71,7 @@ func TestUpdateDestination_AmazonOpenSearchServerless_RejectedNotConfusing(t *te
 	createOut, err := client.CreateDeliveryStream(t.Context(), &firehosesdk.CreateDeliveryStreamInput{
 		DeliveryStreamName: aws.String("aoss-update-stream"),
 		DeliveryStreamType: firehosetypes.DeliveryStreamTypeDirectPut,
-		S3DestinationConfiguration: &firehosetypes.S3DestinationConfiguration{
+		ExtendedS3DestinationConfiguration: &firehosetypes.ExtendedS3DestinationConfiguration{
 			BucketARN: aws.String("arn:aws:s3:::my-bucket"),
 			RoleARN:   aws.String("arn:aws:iam::123456789012:role/r"),
 		},

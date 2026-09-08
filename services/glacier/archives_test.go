@@ -78,3 +78,45 @@ func TestArchiveCRUD(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteArchive_Idempotent verifies that deleting an archive ID not
+// currently present in an existing vault is a no-op, matching
+// api_op_DeleteArchive.go's doc comment: "This operation is idempotent.
+// Attempting to delete an already-deleted archive does not result in an
+// error.".
+func TestDeleteArchive_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		deleteTwice bool
+	}{
+		{name: "unknown_archive_id_in_existing_vault", deleteTwice: false},
+		{name: "double_delete_of_uploaded_archive", deleteTwice: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			bk := glacier.NewInMemoryBackend()
+			_, err := bk.CreateVault(testAccountID, testRegion, "vault")
+			require.NoError(t, err)
+
+			archiveID := "nonexistent-archive-id"
+
+			if tt.deleteTwice {
+				a, uploadErr := bk.UploadArchive(
+					testAccountID, testRegion, "vault", "desc", "checksum", 4, []byte("data"),
+				)
+				require.NoError(t, uploadErr)
+				archiveID = a.ArchiveID
+
+				require.NoError(t, bk.DeleteArchive(testAccountID, testRegion, "vault", archiveID))
+			}
+
+			err = bk.DeleteArchive(testAccountID, testRegion, "vault", archiveID)
+			assert.NoError(t, err, "deleting an already-deleted/unknown archive must not error")
+		})
+	}
+}

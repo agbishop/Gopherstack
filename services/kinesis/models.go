@@ -527,6 +527,7 @@ type EnableEnhancedMonitoringInput struct {
 // EnableEnhancedMonitoringOutput is the output for EnableEnhancedMonitoring.
 type EnableEnhancedMonitoringOutput struct {
 	StreamName               string
+	StreamARN                string
 	CurrentShardLevelMetrics []string
 	DesiredShardLevelMetrics []string
 }
@@ -540,6 +541,7 @@ type DisableEnhancedMonitoringInput struct {
 // DisableEnhancedMonitoringOutput is the output for DisableEnhancedMonitoring.
 type DisableEnhancedMonitoringOutput struct {
 	StreamName               string
+	StreamARN                string
 	CurrentShardLevelMetrics []string
 	DesiredShardLevelMetrics []string
 }

@@ -78,12 +78,22 @@ func (b *InMemoryBackend) TagResource(ctx context.Context, resourceARN string, t
 	return nil
 }
 
-// UntagResource removes tags from a resource. Region is resolved from the resource ARN.
+// UntagResource removes tags from a resource. Region is resolved from the
+// resource ARN. Real AWS's UntagResource models ResourceNotFoundException,
+// returned when resourceARN matches no trust anchor/profile/CRL (same as
+// TagResource/ListTagsForResource; see
+// aws-sdk-go-v2/service/rolesanywhere/deserializers.go's
+// awsRestjson1_deserializeOpErrorUntagResource).
 func (b *InMemoryBackend) UntagResource(ctx context.Context, resourceARN string, tagKeys []string) error {
 	b.mu.Lock("UntagResource")
 	defer b.mu.Unlock()
 
 	region := regionFromARN(resourceARN, getRegion(ctx, b.defaultRegion))
+
+	if !b.resourceExistsLocked(region, resourceARN) {
+		return ErrResourceNotFound
+	}
+
 	tagStore := b.tagsStore(region)
 	existing := tagStore[resourceARN]
 	keySet := make(map[string]bool, len(tagKeys))
@@ -108,8 +118,7 @@ func (b *InMemoryBackend) UntagResource(ctx context.Context, resourceARN string,
 // ListTagsForResource returns tags for a resource. Region is resolved from
 // the resource ARN. Real AWS's ListTagsForResource models
 // ResourceNotFoundException, returned when resourceARN matches no trust
-// anchor/profile/CRL (unlike UntagResource, which declares no such error and
-// is left to silently no-op against an unknown ARN).
+// anchor/profile/CRL (same as TagResource/UntagResource).
 func (b *InMemoryBackend) ListTagsForResource(ctx context.Context, resourceARN string) ([]TagEntry, error) {
 	b.mu.RLock("ListTagsForResource")
 	defer b.mu.RUnlock()

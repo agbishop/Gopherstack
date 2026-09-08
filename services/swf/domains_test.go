@@ -164,6 +164,26 @@ func TestDeprecateDomain_AlreadyDeprecated(t *testing.T) {
 	assert.ErrorIs(t, err, swf.ErrDeprecated)
 }
 
+// TestRegisterDomain_DeprecatedDomain checks that re-registering a deprecated
+// domain returns ErrAlreadyExists (DomainAlreadyExistsFault), not ErrDeprecated
+// (DomainDeprecatedFault) -- per aws-sdk-go-v2's DomainAlreadyExistsFault doc
+// comment: "You may get this fault if you are registering a domain that is
+// either already registered or deprecated". RegisterDomain's modelled error
+// set has no DomainDeprecatedFault at all.
+func TestRegisterDomain_DeprecatedDomain(t *testing.T) {
+	t.Parallel()
+
+	b := swf.NewInMemoryBackend()
+	require.NoError(t, b.RegisterDomain("dom", "", "NONE"))
+	require.NoError(t, b.DeprecateDomain("dom"))
+
+	err := b.RegisterDomain("dom", "", "NONE")
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, swf.ErrAlreadyExists)
+	assert.NotErrorIs(t, err, swf.ErrDeprecated)
+}
+
 // TestDeprecateDomain_CascadesToRegisteredTypes verifies the real AWS
 // documented behavior ("Deprecating a domain also deprecates all activity
 // and workflow types registered in the domain") -- every REGISTERED

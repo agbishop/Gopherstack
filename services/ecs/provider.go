@@ -11,6 +11,15 @@ import (
 // ErrNilAppContext is returned when Provider.Init is called with a nil AppContext.
 var ErrNilAppContext = errors.New("AppContext is required")
 
+// taskCompletionRunner is implemented by TaskRunners that can report when a
+// container they started exits on its own, not via an explicit StopTask call
+// (currently only realDockerRunner). Runners that don't implement it
+// (noopRunner, test fakes) stay unwired: their tasks only reach STOPPED via
+// StopTask.
+type taskCompletionRunner interface {
+	SetTaskCompletionHandler(fn func(taskArn, containerName string, exitCode int))
+}
+
 // Provider implements service.Provider for Amazon ECS.
 type Provider struct{}
 
@@ -45,6 +54,11 @@ func (p *Provider) Init(appCtx *service.AppContext) (service.Registerable, error
 	}
 
 	backend := NewInMemoryBackend(accountID, region, runner)
+
+	if r, ok := runner.(taskCompletionRunner); ok {
+		r.SetTaskCompletionHandler(backend.markTaskStoppedByContainerExit)
+	}
+
 	reconciler := NewReconciler(backend)
 	janitor := NewJanitor(backend, 0)
 

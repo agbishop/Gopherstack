@@ -21,7 +21,7 @@ func (b *InMemoryBackend) SynthesizeSpeech(options SynthesisOptions) (*Synthesiz
 		return nil, fmt.Errorf("%w: text exceeds maximum length of %d characters", ErrTextLengthExceeded, limit)
 	}
 
-	normal, err := b.validateOptions(options)
+	normal, err := b.validateOptions(options, false)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func (b *InMemoryBackend) SynthesizeSpeech(options SynthesisOptions) (*Synthesiz
 	}, nil
 }
 
-func (b *InMemoryBackend) validateOptions(options SynthesisOptions) (SynthesisOptions, error) {
+func (b *InMemoryBackend) validateOptions(options SynthesisOptions, forTask bool) (SynthesisOptions, error) {
 	options = defaultOptions(options)
 	if options.Text == "" || options.VoiceID == "" {
 		return options, fmt.Errorf("%w: Text and VoiceId are required", ErrValidation)
@@ -60,7 +60,7 @@ func (b *InMemoryBackend) validateOptions(options SynthesisOptions) (SynthesisOp
 	if !slices.Contains(validTextTypes(), options.TextType) {
 		return options, fmt.Errorf("%w: invalid TextType %q", ErrValidation, options.TextType)
 	}
-	if !validSampleRate(options.OutputFormat, options.SampleRate) {
+	if !validSampleRate(options.OutputFormat, options.SampleRate, forTask) {
 		return options, fmt.Errorf(
 			"%w: invalid SampleRate %q for %s",
 			ErrInvalidSampleRate,
@@ -205,7 +205,13 @@ func validateSSML(textType, text string) error {
 	return nil
 }
 
-func validSampleRate(format, rate string) bool {
+// validSampleRate reports whether rate is a documented value for format.
+// mp3/ogg_vorbis differ by operation: SynthesizeSpeech's doc comment lists
+// "8000, 16000, 22050, 24000, 44100 and 48000" but
+// StartSpeechSynthesisTask's lists only "8000, 16000, 22050, and 24000" --
+// both api_op_*.go SampleRate field docs, aws-sdk-go-v2/service/polly@v1.60.4.
+// Every other format's valid set is identical across both operations.
+func validSampleRate(format, rate string, forTask bool) bool {
 	rates := map[string][]string{
 		outputFormatMP3:     {"8000", "16000", "22050", "24000", "44100", "48000"},
 		outputFormatOGG:     {"8000", "16000", "22050", "24000", "44100", "48000"},
@@ -214,6 +220,9 @@ func validSampleRate(format, rate string) bool {
 		outputFormatMulaw:   {"8000"},
 		outputFormatAlaw:    {"8000"},
 		outputFormatJSON:    {"8000", "16000", "22050", "24000"},
+	}
+	if forTask && (format == outputFormatMP3 || format == outputFormatOGG) {
+		return slices.Contains([]string{"8000", "16000", "22050", "24000"}, rate)
 	}
 
 	return slices.Contains(rates[format], rate)

@@ -176,13 +176,15 @@ func TestHandleAWSProxy(t *testing.T) {
 			wantStatus:   http.StatusServiceUnavailable,
 		},
 		{
+			// Unmatched resource path on a deployed stage: AWS returns 403
+			// "Missing Authentication Token", not 404.
 			name: "not_found",
 			path: "/unknown/path",
 			body: `{}`,
 			setupInvoker: func(h *apigateway.Handler) {
 				h.SetLambdaInvoker(&proxyMockInvoker{})
 			},
-			wantStatus: http.StatusNotFound,
+			wantStatus: http.StatusForbidden,
 		},
 		{
 			name: "base64_response",
@@ -552,13 +554,15 @@ func TestUserRequestEndpoint(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			// Unmatched resource path on a deployed stage: AWS returns 403
+			// "Missing Authentication Token", not 404.
 			name:         "not_found",
 			resourcePath: "items",
 			requestPath:  "/unknown",
 			setupInvoker: func(h *apigateway.Handler) {
 				h.SetLambdaInvoker(&proxyMockInvoker{})
 			},
-			wantStatus: http.StatusNotFound,
+			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:         "no_lambda_invoker",
@@ -620,10 +624,12 @@ func TestPathVariableMatching(t *testing.T) {
 			},
 		},
 		{
+			// Unmatched resource path on a deployed stage: AWS returns 403
+			// "Missing Authentication Token", not 404.
 			name:         "param_no_match_wrong_depth",
 			resourcePath: "items/{id}/details",
 			requestPath:  "/items/42",
-			wantStatus:   http.StatusNotFound,
+			wantStatus:   http.StatusForbidden,
 		},
 		{
 			name:         "exact_match_resource",
@@ -803,6 +809,103 @@ func TestExtractLambdaFunctionName(t *testing.T) {
 			t.Parallel()
 			got := apigateway.ExtractLambdaFunctionName(tt.uri)
 			assert.Equal(t, tt.wantFn, got)
+		})
+	}
+}
+
+// TestHandleProxyRequest_RequiresDeployedStage verifies that AWS's real contract --
+// a request only routes to an integration when its URL names a stage that a real
+// CreateDeployment actually produced -- is enforced. AWS returns 403 "Missing
+// Authentication Token" (not 404, and not a silent 200) for an invalid/undeployed
+// stage; before this fix gopherstack routed to the RestApi's live, current resource
+// tree regardless of whether any deployment had ever been created or whether the
+// stage name in the URL matched a real stage.
+func TestHandleProxyRequest_RequiresDeployedStage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		stageName  string
+		wantStatus int
+		deploy     bool
+	}{
+		{
+			name:       "never_deployed",
+			deploy:     false,
+			stageName:  "prod",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "deployed_but_wrong_stage_in_url",
+			deploy:     true,
+			stageName:  "totally-made-up-stage",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "deployed_correct_stage",
+			deploy:     true,
+			stageName:  testStageName,
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := apigateway.NewInMemoryBackend()
+			h := apigateway.NewHandler(backend)
+			e := echo.New()
+			h.SetLambdaInvoker(&proxyMockInvoker{})
+
+			createRec := postWithHandler(t, h, e, "CreateRestApi", `{"name":"gate-api"}`)
+			require.Equal(t, http.StatusCreated, createRec.Code)
+			var createResp map[string]any
+			require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createResp))
+			apiID := createResp["id"].(string)
+
+			listRec := postWithHandler(t, h, e, "GetResources", `{"restApiId":"`+apiID+`"}`)
+			require.Equal(t, http.StatusOK, listRec.Code)
+			var listResp map[string]any
+			require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &listResp))
+			rootID := listResp["item"].([]any)[0].(map[string]any)["id"].(string)
+
+			childRec := postWithHandler(t, h, e, "CreateResource",
+				`{"restApiId":"`+apiID+`","parentId":"`+rootID+`","pathPart":"items"}`)
+			require.Equal(t, http.StatusCreated, childRec.Code)
+			var childResp map[string]any
+			require.NoError(t, json.Unmarshal(childRec.Body.Bytes(), &childResp))
+			childID := childResp["id"].(string)
+
+			methodRec := postWithHandler(t, h, e, "PutMethod",
+				`{"restApiId":"`+apiID+`","resourceId":"`+childID+`","httpMethod":"GET","authorizationType":"NONE"}`)
+			require.Equal(t, http.StatusCreated, methodRec.Code)
+
+			integRec := postWithHandler(t, h, e, "PutIntegration",
+				`{"restApiId":"`+apiID+`","resourceId":"`+childID+`","httpMethod":"GET","type":"MOCK"}`)
+			require.Equal(t, http.StatusCreated, integRec.Code)
+
+			integRespRec := postWithHandler(t, h, e, "PutIntegrationResponse",
+				`{"restApiId":"`+apiID+`","resourceId":"`+childID+`","httpMethod":"GET","statusCode":"200"}`)
+			require.Equal(t, http.StatusCreated, integRespRec.Code)
+
+			if tt.deploy {
+				deplRec := postWithHandler(t, h, e, "CreateDeployment",
+					`{"restApiId":"`+apiID+`","stageName":"`+testStageName+`"}`)
+				require.Equal(t, http.StatusCreated, deplRec.Code)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/proxy/"+apiID+"/"+tt.stageName+"/items", nil)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+			require.NoError(t, h.Handler()(c))
+
+			assert.Equal(t, tt.wantStatus, rec.Code)
+
+			if tt.wantStatus == http.StatusForbidden {
+				assert.Equal(t, "MissingAuthenticationTokenException", rec.Header().Get("X-Amzn-Errortype"))
+				assert.Contains(t, rec.Body.String(), "Missing Authentication Token")
+			}
 		})
 	}
 }

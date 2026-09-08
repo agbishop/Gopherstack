@@ -175,8 +175,8 @@ func (h *Handler) handleListConfigurationPolicies(c *echo.Context) error {
 			"Arn":            p.Arn,
 			"Id":             p.Id,
 			"Name":           p.Name,
-			"Description":    p.Description, //nolint:goconst // existing issue.
-			"UpdatedAt":      p.UpdatedAt,   //nolint:goconst // existing issue.
+			"Description":    p.Description,
+			"UpdatedAt":      p.UpdatedAt, //nolint:goconst // existing issue.
 			"ServiceEnabled": configPolicyServiceEnabled(p),
 		})
 	}

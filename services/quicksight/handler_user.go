@@ -204,7 +204,7 @@ func (h *Handler) handleListUserGroups(c *echo.Context) error {
 }
 
 func userToMap(u *User) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"Active":       u.Active,
 		keyArn:         u.Arn,
 		"Email":        u.Email,
@@ -214,4 +214,9 @@ func userToMap(u *User) map[string]any {
 		"Role":         u.Role,
 		"UserName":     u.UserName,
 	}
+	if u.CustomPermissionsName != "" {
+		m["CustomPermissionsName"] = u.CustomPermissionsName
+	}
+
+	return m
 }

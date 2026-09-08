@@ -31,7 +31,7 @@ func (b *InMemoryBackend) createNamespace(
 
 		props = &NamespaceProperties{
 			DNSProperties: &DNSProperties{
-				HostedZoneID: syntheticHostedZoneID(),
+				HostedZoneID: b.hostedZoneID(id, name, nsType == namespaceTypeDNSPrivate, vpc),
 				SOA:          &SOA{TTL: ttl},
 			},
 		}

@@ -1,14 +1,80 @@
 package integration_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	ec2sdk "github.com/aws/aws-sdk-go-v2/service/ec2"
 	elbv2sdk "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mustCreateELBv2NetworkPrereqs creates n real EC2 subnets (in a fresh VPC
+// rooted at cidrBase, e.g. "10.91") plus one security group, for ELBv2 test
+// fixtures. Now that ELBv2 validates SecurityGroups/Subnets against the real
+// EC2 backend (gopherstack-t74c), fabricated IDs like "subnet-aaaaaaaa" are
+// rejected by CreateLoadBalancer once cli.go's composition root wires the two
+// services together, which the full-server integration container does.
+// Cleanup is registered automatically.
+func mustCreateELBv2NetworkPrereqs(t *testing.T, cidrBase string, n int) ([]string, string) {
+	t.Helper()
+
+	ec2Client := createEC2Client(t)
+	ctx := t.Context()
+
+	vpcOut, err := ec2Client.CreateVpc(ctx, &ec2sdk.CreateVpcInput{
+		CidrBlock: aws.String(cidrBase + ".0.0/16"),
+	})
+	require.NoError(t, err, "CreateVpc should succeed")
+	vpcID := aws.ToString(vpcOut.Vpc.VpcId)
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := cleanupContext(t)
+		defer cancel()
+
+		_, _ = ec2Client.DeleteVpc(cleanupCtx, &ec2sdk.DeleteVpcInput{VpcId: aws.String(vpcID)})
+	})
+
+	subnetIDs := make([]string, 0, n)
+
+	for i := range n {
+		subnetOut, subnetErr := ec2Client.CreateSubnet(ctx, &ec2sdk.CreateSubnetInput{
+			VpcId:     aws.String(vpcID),
+			CidrBlock: aws.String(fmt.Sprintf("%s.%d.0/24", cidrBase, i+1)),
+		})
+		require.NoError(t, subnetErr, "CreateSubnet should succeed")
+		subnetID := aws.ToString(subnetOut.Subnet.SubnetId)
+		subnetIDs = append(subnetIDs, subnetID)
+
+		t.Cleanup(func() {
+			cleanupCtx, cancel := cleanupContext(t)
+			defer cancel()
+
+			_, _ = ec2Client.DeleteSubnet(cleanupCtx, &ec2sdk.DeleteSubnetInput{SubnetId: aws.String(subnetID)})
+		})
+	}
+
+	sgOut, err := ec2Client.CreateSecurityGroup(ctx, &ec2sdk.CreateSecurityGroupInput{
+		GroupName:   aws.String("elbv2-it-sg-" + uuid.NewString()[:8]),
+		Description: aws.String("elbv2 integration test sg"),
+		VpcId:       aws.String(vpcID),
+	})
+	require.NoError(t, err, "CreateSecurityGroup should succeed")
+	sgID := aws.ToString(sgOut.GroupId)
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := cleanupContext(t)
+		defer cancel()
+
+		_, _ = ec2Client.DeleteSecurityGroup(cleanupCtx, &ec2sdk.DeleteSecurityGroupInput{GroupId: aws.String(sgID)})
+	})
+
+	return subnetIDs, sgID
+}
 
 // TestIntegration_ELBv2_ALBLifecycle exercises the most common Application Load Balancer
 // workflow end-to-end via the AWS SDK v2: create LB, target group, listener with rules,
@@ -33,14 +99,16 @@ func TestIntegration_ELBv2_ALBLifecycle(t *testing.T) {
 		targetIP2       = "10.0.1.11"
 	)
 
+	subnetIDs, sgID := mustCreateELBv2NetworkPrereqs(t, "10.91", 2)
+
 	// CreateLoadBalancer (ALB).
 	createLBOut, err := client.CreateLoadBalancer(ctx, &elbv2sdk.CreateLoadBalancerInput{
 		Name:           aws.String(lbName),
 		Scheme:         elbv2types.LoadBalancerSchemeEnumInternetFacing,
 		Type:           elbv2types.LoadBalancerTypeEnumApplication,
 		IpAddressType:  elbv2types.IpAddressTypeIpv4,
-		Subnets:        []string{"subnet-aaaaaaaa", "subnet-bbbbbbbb"},
-		SecurityGroups: []string{"sg-00000001"},
+		Subnets:        subnetIDs,
+		SecurityGroups: []string{sgID},
 		Tags: []elbv2types.Tag{
 			{Key: aws.String("env"), Value: aws.String("test")},
 		},
@@ -64,7 +132,7 @@ func TestIntegration_ELBv2_ALBLifecycle(t *testing.T) {
 	// Duplicate name should fail.
 	_, dupErr := client.CreateLoadBalancer(ctx, &elbv2sdk.CreateLoadBalancerInput{
 		Name:    aws.String(lbName),
-		Subnets: []string{"subnet-aaaaaaaa", "subnet-bbbbbbbb"},
+		Subnets: subnetIDs,
 	})
 	require.Error(t, dupErr)
 
@@ -309,11 +377,13 @@ func TestIntegration_ELBv2_NLB(t *testing.T) {
 		tgName  = "it-nlb-tg"
 	)
 
+	subnetIDs, _ := mustCreateELBv2NetworkPrereqs(t, "10.92", 1)
+
 	createOut, err := client.CreateLoadBalancer(ctx, &elbv2sdk.CreateLoadBalancerInput{
 		Name:    aws.String(nlbName),
 		Type:    elbv2types.LoadBalancerTypeEnumNetwork,
 		Scheme:  elbv2types.LoadBalancerSchemeEnumInternal,
-		Subnets: []string{"subnet-aaaaaaaa"},
+		Subnets: subnetIDs,
 	})
 	require.NoError(t, err)
 	require.Len(t, createOut.LoadBalancers, 1)

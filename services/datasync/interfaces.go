@@ -37,7 +37,7 @@ type StorageBackend interface {
 	ListTasks(filters []TaskFilter, maxResults int32, nextToken string) ([]*TaskListEntry, string, error)
 
 	// Task execution operations
-	StartTaskExecution(taskArn string) (*TaskExecution, error)
+	StartTaskExecution(taskArn string, overrides TaskExecutionOverrides, tags map[string]string) (*TaskExecution, error)
 	CancelTaskExecution(taskExecutionArn string) error
 	DescribeTaskExecution(taskExecutionArn string) (*TaskExecution, error)
 	ListTaskExecutions(taskArn string, maxResults int32, nextToken string) ([]*TaskExecutionListEntry, string, error)
@@ -333,13 +333,29 @@ type TaskFilter struct {
 type TaskExecution struct {
 	StartTime                time.Time
 	Options                  map[string]any
+	ManifestConfig           map[string]any
+	TaskReportConfig         map[string]any
 	TaskExecutionArn         string
 	Status                   string
 	TaskMode                 string
+	Excludes                 []FilterRule
+	Includes                 []FilterRule
 	EstimatedFilesToTransfer int64
 	EstimatedBytesToTransfer int64
 	FilesTransferred         int64
 	BytesTransferred         int64
+}
+
+// TaskExecutionOverrides carries the per-execution overrides
+// StartTaskExecutionInput accepts on top of the parent task's persisted
+// settings (datasync@v1.61.4 api_op_StartTaskExecution.go: Excludes,
+// Includes, ManifestConfig, OverrideOptions, TaskReportConfig).
+type TaskExecutionOverrides struct {
+	Options          map[string]any
+	ManifestConfig   map[string]any
+	TaskReportConfig map[string]any
+	Excludes         []FilterRule
+	Includes         []FilterRule
 }
 
 // TaskExecutionListEntry is a task execution entry in a list response.

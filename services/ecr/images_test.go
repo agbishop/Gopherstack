@@ -859,7 +859,7 @@ func TestOps2_DescribeImages_ByImageID_Found_ReturnsDetail(t *testing.T) {
 	assert.Len(t, details, 1, "existing image must be returned")
 }
 
-func TestOps2_ListImageReferrers_SubjectNotFound_ImageNotFoundException(t *testing.T) {
+func TestOps2_ListImageReferrers_SubjectNotFound_ReturnsEmpty(t *testing.T) {
 	t.Parallel()
 
 	h := newAccuracyHandler()
@@ -871,15 +871,33 @@ func TestOps2_ListImageReferrers_SubjectNotFound_ImageNotFoundException(t *testi
 			"imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 		},
 	})
-	require.Equal(t, http.StatusBadRequest, rec.Code)
+	// ListImageReferrers declares no not-found error for the subject (only
+	// RepositoryNotFoundException et al., per deserializeOpErrorListImageReferrers) --
+	// an unknown subject digest returns 200 with an empty list.
+	require.Equal(t, http.StatusOK, rec.Code)
 
 	out := parseAccuracy(t, rec)
-	assert.Equal(
-		t,
-		"ImageNotFoundException",
-		out["__type"],
-		"ListImageReferrers with non-existent subject must return ImageNotFoundException, not RepositoryNotFoundException",
-	)
+	assert.NotEqual(t, "ImageNotFoundException", out["__type"])
+	referrers, _ := out["referrers"].([]any)
+	assert.Empty(t, referrers, "non-existent subject must return an empty referrer list, not an error")
+}
+
+func TestOps2_ListImageReferrers_RepositoryNotFound_Errors(t *testing.T) {
+	t.Parallel()
+
+	h := newAccuracyHandler()
+
+	rec := doAccuracy(t, h, "ListImageReferrers", map[string]any{
+		"repositoryName": "lir-no-such-repo",
+		"subjectId": map[string]any{
+			"imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		},
+	})
+	require.Equal(t, http.StatusNotFound, rec.Code)
+
+	out := parseAccuracy(t, rec)
+	assert.Equal(t, "RepositoryNotFoundException", out["__type"],
+		"ListImageReferrers on a non-existent repository must still return RepositoryNotFoundException")
 }
 
 func TestOps2_ListImageReferrers_SubjectFound_ReturnsEmpty(t *testing.T) {
@@ -920,7 +938,7 @@ func TestListImageReferrers_NoReferrers_ReturnsEmpty(t *testing.T) {
 	assert.Empty(t, referrers, "image with no referrers must return an empty list")
 }
 
-func TestListImageReferrers_NonExistentImage_Errors(t *testing.T) {
+func TestListImageReferrers_NonExistentImage_ReturnsEmpty(t *testing.T) {
 	t.Parallel()
 
 	h := newAccuracyHandler()
@@ -932,8 +950,12 @@ func TestListImageReferrers_NonExistentImage_Errors(t *testing.T) {
 			"imageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
 		},
 	})
-	assert.NotEqual(t, http.StatusOK, rec.Code,
-		"non-existent image digest must return an error")
+	require.Equal(t, http.StatusOK, rec.Code,
+		"non-existent image digest must return 200 with an empty list, not an error")
+
+	out := parseAccuracy(t, rec)
+	referrers, _ := out["referrers"].([]any)
+	assert.Empty(t, referrers)
 }
 
 func TestUpdateImageStorageClass_Archive(t *testing.T) {

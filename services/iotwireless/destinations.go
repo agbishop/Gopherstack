@@ -88,7 +88,11 @@ func (b *InMemoryBackend) ListDestinations(accountID, region string) []*Destinat
 	return result
 }
 
-// DeleteDestination deletes a destination by name.
+// DeleteDestination deletes a destination by name. Real AWS models
+// ConflictException on this op; a wireless device's DestinationName is the
+// only referrer a destination has (CreateWirelessDeviceInput.DestinationName
+// is required), so deletion is refused while any device in the
+// account/region still references it.
 func (b *InMemoryBackend) DeleteDestination(accountID, region, name string) error {
 	b.mu.Lock("DeleteDestination")
 	defer b.mu.Unlock()
@@ -98,6 +102,12 @@ func (b *InMemoryBackend) DeleteDestination(accountID, region, name string) erro
 	dest, ok := b.destinations.Get(key)
 	if !ok {
 		return ErrDestinationNotFound
+	}
+
+	for _, d := range b.devices.All() {
+		if d.AccountID == accountID && d.Region == region && d.DestinationName == name {
+			return ErrDestinationInUse
+		}
 	}
 
 	delete(b.resourceTags, dest.ARN)

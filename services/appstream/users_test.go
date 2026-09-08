@@ -211,6 +211,7 @@ func TestAppStream_UserStackAssociations(t *testing.T) {
 			action: "BatchAssociateUserStack",
 			setup: func(h *appstream.Handler) {
 				createUser(t, h, "ba-user")
+				createStack(t, h, "any-stack")
 			},
 			body: map[string]any{
 				"UserStackAssociations": []map[string]any{
@@ -256,6 +257,7 @@ func TestAppStream_UserStackAssociations(t *testing.T) {
 			action: "DescribeUserStackAssociations",
 			setup: func(h *appstream.Handler) {
 				createUser(t, h, "list-ba-user")
+				createStack(t, h, "list-stk")
 				rec := doRequest(t, h, "BatchAssociateUserStack", map[string]any{
 					"UserStackAssociations": []map[string]any{
 						{
@@ -282,6 +284,7 @@ func TestAppStream_UserStackAssociations(t *testing.T) {
 			action: "BatchDisassociateUserStack",
 			setup: func(h *appstream.Handler) {
 				createUser(t, h, "dis-ba-user")
+				createStack(t, h, "dis-stk")
 				rec := doRequest(t, h, "BatchAssociateUserStack", map[string]any{
 					"UserStackAssociations": []map[string]any{
 						{
@@ -327,7 +330,7 @@ func TestAppStream_BatchAssociateUserStackErrors(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	// Associate to a nonexistent stack — should get per-item error, not 500
+	// Associate to a nonexistent user — should get a per-item error, not 500.
 	rec := doRequest(t, h, "BatchAssociateUserStack", map[string]any{
 		"UserStackAssociations": []any{
 			map[string]any{
@@ -345,6 +348,43 @@ func TestAppStream_BatchAssociateUserStackErrors(t *testing.T) {
 	// errors field may be empty or present depending on implementation
 	// but response must be 200 with valid JSON
 	assert.NotNil(t, resp)
+}
+
+// TestAppStream_BatchAssociateUserStack_StackNotFound proves an association
+// naming a stack that doesn't exist gets a per-item STACK_NOT_FOUND error
+// (types/enums.go UserStackAssociationErrorCodeStackNotFound) rather than
+// being silently accepted. Regression for gopherstack-65w: the backend
+// previously validated only the user, never the stack, so any StackName --
+// existing or not -- was written straight into userStackAssoc.
+func TestAppStream_BatchAssociateUserStack_StackNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	createUser(t, h, "real-user")
+
+	rec := doRequest(t, h, "BatchAssociateUserStack", map[string]any{
+		"UserStackAssociations": []any{
+			map[string]any{
+				"UserName":           "real-user",
+				"StackName":          "nonexistent-stack",
+				"AuthenticationType": "USERPOOL",
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errs := resp["errors"].([]any)
+	require.Len(t, errs, 1)
+	assert.Equal(t, "STACK_NOT_FOUND", errs[0].(map[string]any)["ErrorCode"])
+
+	descRec := doRequest(t, h, "DescribeUserStackAssociations", map[string]any{"StackName": "nonexistent-stack"})
+	require.Equal(t, http.StatusOK, descRec.Code)
+
+	var descResp map[string]any
+	require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &descResp))
+	assert.Empty(t, descResp["UserStackAssociations"])
 }
 
 // TestAppStream_DescribeUserStackAssociations verifies that user-stack associations
@@ -382,4 +422,32 @@ func TestAppStream_DescribeUserStackAssociations(t *testing.T) {
 	assoc := assocs[0].(map[string]any)
 	assert.Equal(t, "assoc-user", assoc["UserName"])
 	assert.Equal(t, "assoc-stack", assoc["StackName"])
+}
+
+// TestAppStream_BatchDisassociateUserStack_StackNotFound proves an
+// association naming a stack that doesn't exist gets a per-item
+// STACK_NOT_FOUND error, mirroring BatchAssociateUserStack's own check.
+// Regression for gopherstack-65w.
+func TestAppStream_BatchDisassociateUserStack_StackNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	createUser(t, h, "dis-real-user")
+
+	rec := doRequest(t, h, "BatchDisassociateUserStack", map[string]any{
+		"UserStackAssociations": []any{
+			map[string]any{
+				"UserName":           "dis-real-user",
+				"StackName":          "nonexistent-stack",
+				"AuthenticationType": "USERPOOL",
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	errs := resp["errors"].([]any)
+	require.Len(t, errs, 1)
+	assert.Equal(t, "STACK_NOT_FOUND", errs[0].(map[string]any)["ErrorCode"])
 }

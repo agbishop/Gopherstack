@@ -339,6 +339,9 @@ func elbv2ErrorCode(opErr error) (string, int) {
 		{ErrOperationNotPermitted, "OperationNotPermitted", http.StatusBadRequest},
 		{ErrInvalidConfigurationRequest, "InvalidConfigurationRequest", http.StatusBadRequest},
 		{ErrUnknownAction, "InvalidAction", http.StatusBadRequest},
+		{ErrCertificateNotFound, "CertificateNotFound", http.StatusBadRequest},
+		{ErrInvalidSecurityGroup, "InvalidSecurityGroup", http.StatusBadRequest},
+		{ErrSubnetNotFound, "SubnetNotFound", http.StatusBadRequest},
 		{awserr.ErrInvalidParameter, "ValidationError", http.StatusBadRequest},
 	}
 

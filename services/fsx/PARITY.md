@@ -48,7 +48,7 @@ overall: A            # genuine wire-format + error-code bugs found and fixed
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
 families:
   FileSystem: {wire: ok, errors: ok, state: ok, persist: ok, note: "Fixed this pass: CreateFileSystem/UpdateFileSystem now accept and CreateFileSystem/DescribeFileSystems/UpdateFileSystem/CreateFileSystemFromBackup now return real WindowsConfiguration/OntapConfiguration/OpenZFSConfiguration blocks (previously only LustreConfiguration was ever modeled). Windows requires WindowsConfiguration.ThroughputCapacity; ONTAP requires OntapConfiguration.DeploymentType + (ThroughputCapacity or ThroughputCapacityPerHAPair); OpenZFS requires OpenZFSConfiguration.DeploymentType + ThroughputCapacity -- an absent config block on these three types returns MissingFileSystemConfiguration, a present-but-incomplete block returns BadRequest, matching real AWS's required-member validation (field-diffed against CreateFileSystemWindowsConfiguration/CreateFileSystemOntapConfiguration/CreateFileSystemOpenZFSConfiguration in types/types.go). OpenZFS file systems now get a real, describable RootVolumeId (a genuine storedVolume row is created, not a disguised placeholder string) matching AWS auto-creating a root volume per OpenZFS file system. CreateFileSystemFromBackup now carries the source file system's type-specific config fields (ThroughputCapacity, DeploymentType, etc.) onto the restored file system instead of returning an all-zero-valued config block, and now sets DNSName (previously left empty). DeleteFileSystem now cascades to child StorageVirtualMachines/Volumes/Snapshots/DataRepositoryAssociations (see leaks note) -- previously only removed the file system + its own tags. UpdateFileSystem applies WindowsConfiguration/OntapConfiguration/OpenZFSConfiguration update sub-blocks (ThroughputCapacity, backup schedule fields, HAPairs) with real AWS's 'only overwrites non-null values' semantics. CreationTime already used epochTime pre-audit (correct). FIXED THIS PASS (gopherstack-wjjl): CreateFileSystem now implements real ClientRequestToken idempotency -- createFileSystemInput gained the field (previously entirely absent, so a retried create silently made a second resource); a repeat call with the same token and identical parameters now returns the ORIGINAL FileSystem (verified via FileSystemId/ResourceARN/CreationTime equality + unchanged resource count, not merely 'no error'); a repeat call with the same token but different parameters returns IncompatibleParameterError (new sentinel, field-diffed against types/errors.go), matching real AWS's documented CreateFileSystem contract verbatim. Dedup state (createFileSystemTokens) is a plain map guarded by the same coarse b.mu as the fileSystems table (the token check-then-set must be atomic with the resource write) and is now part of backendSnapshot (fsxSnapshotVersion bumped 1->2), so it survives Snapshot/Restore -- proven in TestInMemoryBackend_SnapshotRestore_FullState. ALSO FIXED THIS PASS: SubnetIds/SecurityGroupIds, when supplied to CreateFileSystem, are now format-validated against the real ID patterns from the API reference (subnet-[0-9a-f]{8,} / sg-[0-9a-f]{8,}) and rejected with the real InvalidNetworkSettings exception if malformed. This is real-format validation only, not existence/topology validation -- see gaps below for what's still not covered (SubnetIds required-ness, AZ-count-per-deployment-type rules). FIXED (gopherstack-cgq3) — CreateFileSystemFromBackup was missing the real optional FileSystemTypeVersion field (*string, the Lustre engine-version override; per api_op_CreateFileSystemFromBackup.go, real AWS lets a restore specify a newer Lustre version than the backup's own setting, defaulting to the backup's if omitted). Now modeled on FileSystem/storedFileSystem and threaded through: an explicit request value wins, otherwise it falls back to the source file system's own FileSystemTypeVersion. Note CreateFileSystem (the non-backup create path) still has no way to set FileSystemTypeVersion at all, so that fallback is currently always empty in practice — a related, distinct gap (real CreateFileSystemInput also has this field) left unfixed since it's out of this op's scope; see gaps: below."}
-  Backup: {wire: ok, errors: ok, state: ok, persist: ok, note: "Create/Describe/Delete/Copy + CreateFileSystemFromBackup verified against real BackupId/FileSystemId shapes. CreationTime already epochTime pre-audit. Confirmed this pass: DeleteFileSystem does NOT cascade-delete backups, matching real AWS (backups persist independently of their source file system)."}
+  Backup: {wire: ok, errors: ok, state: ok, persist: ok, note: "Create/Describe/Delete/Copy + CreateFileSystemFromBackup verified against real BackupId/FileSystemId shapes. CreationTime already epochTime pre-audit. Confirmed this pass: DeleteFileSystem does NOT cascade-delete backups, matching real AWS (backups persist independently of their source file system). 2026-09-08 (gopherstack-u7rl): BackupInProgress/BackupRestoring/BackupBeingCopied (DeleteBackup's three lifecycle-precondition errors) reconfirmed structurally unobservable, not a bug -- see Notes. Found and fixed instead, same pass: CreateBackup/CopyBackup accepted more than 50 Tags (the shared real \"Tags\" shape's own max:50, never checked -- see Notes)."}
   FileSystemAliases: {wire: ok, errors: ok, state: ok, persist: ok, note: "Associate/Disassociate/Describe verified; insertion-order preserved via plain map+slice (documented in store_setup.go), matches DescribeFileSystemAliases pagination expectations. DeleteFileSystem now clears aliases[fileSystemID] on delete (fixed this pass; see leaks note)."}
   DataRepositoryAssociation: {wire: ok, errors: ok, state: ok, persist: ok, note: "CreationTime wire bug fixed in a prior pass. Tag storage + arnExists coverage fixed in a prior sweep. Fixed this pass: DeleteFileSystem now cascade-deletes DRAs belonging to the deleted file system (previously left as ghost rows; see leaks note)."}
   DataRepositoryTask: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "CreationTime wire bug fixed in a prior pass. Cancel/Create/Describe verified; Lifecycle EXECUTING/CANCELING matches real enum values. Intentionally NOT cascade-deleted on DeleteFileSystem: DataRepositoryTasks are historical execution records in real AWS, not live child resources. FIXED this pass (gopherstack-4ggy): Report (a required CreateDataRepositoryTaskInput member, api_op_CreateDataRepositoryTask.go:49-129, whose own Enabled member is required per validateCompletionReport) was dropped entirely -- the request read only FileSystemId/Type/Paths/Tags. Now required, validated, stored, and echoed back on DataRepositoryTask.Report (the real DescribeDataRepositoryTasks/CreateDataRepositoryTask response member); Format/Path/Scope accepted but not enforced, matching the SDK's own client-side validator (only Enabled is checked there, despite the doc comment saying the other three are 'required if Enabled is true')."}
@@ -540,3 +540,115 @@ Re-run after fix: `errtargetaudit -dir fsx` now reports 0 class-A findings.
 
 Gates: `go build`, `go vet` (repo-wide, clean), `go test -race -count=1`,
 `golangci-lint run` — all clean (`./services/fsx/...`).
+
+## 2026-09-08 (gopherstack-u7rl) — Backup lifecycle errors reconfirmed structurally unobservable; tag-limit gap found and fixed
+
+**The issue's claim, re-derived independently.** fsx ships a real `deserializers.go`
+(not one of the eleven schema-codegen modules with no deserializer file), so declared
+error sets were read from it directly, cross-checked against botocore
+`fsx/2018-03-01/service-2.json.gz` (`operations.<Op>.errors`) — identical on every op
+checked, both oracles agree.
+
+Three errors, verbatim doc comments (`aws-sdk-go-v2/service/fsx@v1.68.4/types/errors.go`):
+- `BackupBeingCopied` (`errors.go:68`): "You can't delete a backup while it's being copied."
+- `BackupInProgress` (`errors.go:96-97`): "Another backup is already under way. Wait for
+  completion before initiating additional backups of this file system."
+- `BackupRestoring` (`errors.go:149`): "You can't delete a backup while it's being used
+  to restore a file system."
+
+Declaring ops, read from each op's own `awsAwsjson11_deserializeOpError<Op>` switch
+(`deserializers.go`), botocore's `operations.<Op>.errors` agrees exactly:
+- `CreateBackup`: `BackupInProgress, BadRequest, FileSystemNotFound,
+  IncompatibleParameterError, InternalServerError, ServiceLimitExceeded,
+  UnsupportedOperation, VolumeNotFound`
+- `DeleteBackup`: `BackupBeingCopied, BackupInProgress, BackupNotFound, BackupRestoring,
+  BadRequest, IncompatibleParameterError, InternalServerError` — the only op that declares
+  all three named errors together; `DeleteBackup`'s own doc comment plus each shape's own
+  doc comment establish all three as `DeleteBackup`-time preconditions on the backup being
+  deleted (in progress being created / being restored from / being copied), not on any other
+  op's target.
+- `CopyBackup` and `CreateFileSystemFromBackup` (the two other ops with a plausible claim on
+  these errors, since they're the ones that could put a backup "in use") declare neither
+  `BackupRestoring` nor `BackupBeingCopied` at all — confirmed via both oracles.
+
+**Backup.Lifecycle write-site enumeration** (`grep -n "Lifecycle:" services/fsx/backups.go`,
+plus `handleDeleteBackup` in `handler_backups.go`): exactly two places ever set
+`storedBackup.Lifecycle`, both to `lifecycleAvailable` ("AVAILABLE") unconditionally —
+`CreateBackup` (`backups.go:101`) and `CopyBackup` (`backups.go:289`). `DeleteBackup`
+(`backups.go:229-242`) never sets `storedBackup.Lifecycle` at all; it deletes the row
+outright, and the handler (`handler_backups.go:59`) returns a hardcoded `lifecycleDeleted`
+string in the response, not a value read from stored state. No code path anywhere in the
+package ever produces a `storedBackup` with `Lifecycle` other than `AVAILABLE` — `CREATING`,
+`PENDING`, `TRANSFERRING`, `COPYING`, `PARTIALLY_COPIED`, `RESTORING`, `DELETED` are all
+absent from the persisted set (`DELETED` only ever appears transiently in a `DeleteBackup`
+response, never stored).
+
+**Janitor check**: `services/fsx/` has no `janitor.go` (confirmed:
+`ls services/fsx/janitor.go` — no such file; repo-wide, 38 of 161 services have one, fsx is
+not among them) and no goroutine/timer of any kind (`leaks:` above already documents this:
+"Single InMemoryBackend with no goroutines, timers, or janitors"). Unlike stepfunctions
+(closed this campaign by wiring `DELETING` through a pre-existing janitor sweep),
+there is no existing background-transition mechanism here to hang a fix on.
+
+**Verdict: (a), genuinely unobservable — the issue's title holds.** `CreateBackup` and
+`CopyBackup` both complete synchronously within a single handler call, holding the
+package's one coarse `lockmetrics.RWMutex` (`b.mu`) for the call's full duration; a
+concurrent `DeleteBackup` on the same or a different goroutine blocks on that same mutex
+and only proceeds after the create/copy has already fully committed (`AVAILABLE`) or failed
+(no row written). There is no window, even under genuine goroutine concurrency from two real
+HTTP requests, in which a backup is observably "in progress," "restoring," or "being
+copied" for `DeleteBackup` to reject — the coarse lock serializes exactly the interleaving
+that would need to exist. This is the same shape as the campaign's other closed
+structurally-unobservable calls (amplify, networkmonitor, support, detective): reaching any
+of the three requires an async backup lifecycle this synchronous, single-mutex emulator does
+not have and was not asked to add (adding one would be inventing a mechanism to justify the
+issue, not fixing a defect — same trap the amplify/networkmonitor/support/detective issues
+correctly avoided).
+
+**Smaller defect found while checking the "is there an easier win nearby" candidates named
+in this audit's brief**: `CreateBackup`'s and `CopyBackup`'s `Tags` input. Real
+`CreateBackupInput.Tags`/`CopyBackupInput.Tags` (and every other `Create*Input.Tags` in this
+service) reuse a single shared `Tags` list shape, documented in botocore
+(`fsx/2018-03-01/service-2.json.gz`, shape `Tags`) as "A list of Tag values, with a maximum
+of 50 elements" (`max: 50`). The real SDK's own client-side validator
+(`validateOpCreateBackupInput` -> `validateTags`, `aws-sdk-go-v2/service/fsx@v1.68.4/
+validators.go:1928,1679`) only validates each tag's own key/value constraints — it never
+checks the list's length — so a real typed client CAN put 51+ tags on the wire, and
+gopherstack's own `validateTags` (`tags.go`, pre-fix) had the identical gap: per-tag checks
+only, no length check, on every one of its 12 call sites. Confirmed reachable via the real
+SDK client, not merely constructible: `TestCreateBackup_TagLimitExceeded` /
+`TestCopyBackup_TagLimitExceeded` (`tag_limit_test.go`) drive
+`aws-sdk-go-v2/service/fsx`'s real `CreateBackup`/`CopyBackup` with 51 distinct-keyed tags;
+both confirmed FAILING pre-fix (`require.Error` got `nil` — the backup was silently created
+with all 51 tags, no rejection).
+
+**Fix**: `validateCreateTags` (`tags.go`), which runs the existing per-tag `validateTags`
+then rejects `len(tags) > maxTagsPerResource` (50, pre-existing constant, already used by
+`TagResource`'s own separate cumulative check) with `ErrTagLimitExceeded`
+(`ServiceLimitExceeded`, pre-existing sentinel). Wired at all 11 `Create*` call sites that
+previously called `validateTags(input.Tags)` directly (`backups.go` x2 — `CreateBackup`/
+`CopyBackup`; `data_repository_associations.go`; `data_repository_tasks.go`;
+`file_caches.go`; `file_systems.go` x2 — `CreateFileSystem`/`CreateFileSystemFromBackup`;
+`snapshots.go`; `storage_virtual_machines.go`; `volumes.go` x2 — `CreateVolume`/
+`CreateVolumeFromBackup`). `ServiceLimitExceeded` independently confirmed legitimately
+declared by every one of those 11 ops' own `deserializeOpError<Op>` switch /
+botocore `errors` list before wiring (not assumed from the `Tags` shape's constraint alone).
+
+**`TagResource`'s own call (`tags.go:25`) deliberately left on plain `validateTags`, not
+`validateCreateTags`**: `TagResource` does not declare `ServiceLimitExceeded` at all (its
+own switch: `BadRequest, InternalServerError, NotServiceResourceError,
+ResourceDoesNotSupportTagging, ResourceNotFound` — already established by the 2026-08-31
+error-envelope sweep above, which for the same reason corrected `TagResource`'s *separate*
+cumulative-tag-count check from `ServiceLimitExceeded` to `BadRequest`). `TagResource`'s
+`Tags` input reuses the same shape and so has the identical un-enforced max-50-per-call gap,
+but fixing it is out of this pass's scope (a distinct call site needing its own `BadRequest`
+variant, not `validateCreateTags` as written) — disclosed, not fixed:
+`TagResource(resourceARN, tags)` can also be called with 51+ tags in a single request
+without the per-call list-length being rejected (only the pre-existing cumulative
+existing-plus-new check at `tags.go:48` applies, which is a different constraint).
+
+No persisted type's fields changed (`storedBackup` untouched) — `fsxSnapshotVersion`
+correctly not touched, `go test ./pkgs/persistence/...` not required.
+
+Gates: `go build ./services/fsx/...`, `go test -race -count=1 ./services/fsx/...` (pass,
+including the two new regression tests), `golangci-lint run ./services/fsx/...` (0 issues).

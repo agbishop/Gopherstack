@@ -97,3 +97,15 @@ var ErrInvalidKmsKeyArn = fmt.Errorf(
 		"(key IDs, aliases, and alias ARNs are not accepted)",
 	ErrValidation,
 )
+
+// ErrAlarmFamilyFilterExclusive is returned when DescribeAlarms combines
+// ChildrenOfAlarmName or ParentsOfAlarmName with any parameter other than
+// MaxRecords/NextToken. Per DescribeAlarmsInput's doc comment (both fields,
+// aws-sdk-go-v2/service/cloudwatch@v1.66.3/api_op_DescribeAlarms.go): you
+// cannot specify any other parameters in the request except for MaxRecords
+// and NextToken -- if you do so, you receive a validation error.
+var ErrAlarmFamilyFilterExclusive = fmt.Errorf(
+	"%w: ChildrenOfAlarmName and ParentsOfAlarmName cannot be combined with "+
+		"each other or with any other parameter except MaxRecords and NextToken",
+	ErrValidation,
+)

@@ -7,6 +7,7 @@ import (
 	workmailsdk "github.com/aws/aws-sdk-go-v2/service/workmail"
 	"github.com/aws/aws-sdk-go-v2/service/workmail/types"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/blackbirdworks/gopherstack/services/workmail"
@@ -118,4 +119,129 @@ func TestRegisterToWorkMail_EmailInUse(t *testing.T) {
 
 	var apiErr *types.EmailAddressInUseException
 	require.ErrorAs(t, err, &apiErr, "expected a real EmailAddressInUseException from the SDK deserializer")
+}
+
+// TestRegisterToWorkMail_NoOpWhenAlreadyEnabled proves a second
+// RegisterToWorkMail on an already-ENABLED user/group/resource leaves its
+// email untouched, per the op's own doc (api_op_RegisterToWorkMail.go):
+// "It performs no change if the user, group, or resource is enabled".
+func TestRegisterToWorkMail_NoOpWhenAlreadyEnabled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		create func(t *testing.T, client *workmailsdk.Client, orgID *string) *string
+		email  func(t *testing.T, client *workmailsdk.Client, orgID, entityID *string) string
+		name   string
+	}{
+		{
+			name: "user",
+			create: func(t *testing.T, client *workmailsdk.Client, orgID *string) *string {
+				t.Helper()
+
+				name := "noop-user-" + uuid.NewString()[:8]
+				u, err := client.CreateUser(t.Context(), &workmailsdk.CreateUserInput{
+					OrganizationId: orgID,
+					Name:           aws.String(name),
+					DisplayName:    aws.String(name),
+				})
+				require.NoError(t, err)
+
+				return u.UserId
+			},
+			email: func(t *testing.T, client *workmailsdk.Client, orgID, entityID *string) string {
+				t.Helper()
+
+				d, err := client.DescribeUser(t.Context(), &workmailsdk.DescribeUserInput{
+					OrganizationId: orgID,
+					UserId:         entityID,
+				})
+				require.NoError(t, err)
+
+				return aws.ToString(d.Email)
+			},
+		},
+		{
+			name: "group",
+			create: func(t *testing.T, client *workmailsdk.Client, orgID *string) *string {
+				t.Helper()
+
+				g, err := client.CreateGroup(t.Context(), &workmailsdk.CreateGroupInput{
+					OrganizationId: orgID,
+					Name:           aws.String("noop-group-" + uuid.NewString()[:8]),
+				})
+				require.NoError(t, err)
+
+				return g.GroupId
+			},
+			email: func(t *testing.T, client *workmailsdk.Client, orgID, entityID *string) string {
+				t.Helper()
+
+				d, err := client.DescribeGroup(t.Context(), &workmailsdk.DescribeGroupInput{
+					OrganizationId: orgID,
+					GroupId:        entityID,
+				})
+				require.NoError(t, err)
+
+				return aws.ToString(d.Email)
+			},
+		},
+		{
+			name: "resource",
+			create: func(t *testing.T, client *workmailsdk.Client, orgID *string) *string {
+				t.Helper()
+
+				r, err := client.CreateResource(t.Context(), &workmailsdk.CreateResourceInput{
+					OrganizationId: orgID,
+					Name:           aws.String("noop-resource-" + uuid.NewString()[:8]),
+					Type:           types.ResourceTypeRoom,
+				})
+				require.NoError(t, err)
+
+				return r.ResourceId
+			},
+			email: func(t *testing.T, client *workmailsdk.Client, orgID, entityID *string) string {
+				t.Helper()
+
+				d, err := client.DescribeResource(t.Context(), &workmailsdk.DescribeResourceInput{
+					OrganizationId: orgID,
+					ResourceId:     entityID,
+				})
+				require.NoError(t, err)
+
+				return aws.ToString(d.Email)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := workmail.NewInMemoryBackend("000000000000", "us-east-1")
+			client := newWorkMailSDKClient(t, workmail.NewHandler(backend))
+			orgID := newWorkMailOrg(t, client)
+
+			entityID := tc.create(t, client, orgID)
+			origEmail := "orig-" + uuid.NewString()[:8] + "@example.com"
+
+			_, err := client.RegisterToWorkMail(t.Context(), &workmailsdk.RegisterToWorkMailInput{
+				OrganizationId: orgID,
+				EntityId:       entityID,
+				Email:          aws.String(origEmail),
+			})
+			require.NoError(t, err)
+			require.Equal(t, origEmail, tc.email(t, client, orgID, entityID))
+
+			newEmail := "new-" + uuid.NewString()[:8] + "@example.com"
+			_, err = client.RegisterToWorkMail(t.Context(), &workmailsdk.RegisterToWorkMailInput{
+				OrganizationId: orgID,
+				EntityId:       entityID,
+				Email:          aws.String(newEmail),
+			})
+			require.NoError(t, err, "re-registering an already-ENABLED entity must be a no-op, not an error")
+
+			assert.Equal(t, origEmail, tc.email(t, client, orgID, entityID),
+				"already-ENABLED entity's email must not change on re-registration")
+		})
+	}
 }

@@ -210,7 +210,12 @@ func matchesResourceFilter(p *Policy, f ListPoliciesFilter) bool {
 	return true
 }
 
-// UpdatePolicy updates an existing policy.
+// UpdatePolicy updates an existing static policy. Real AWS's
+// UpdatePolicyDefinition union has only a "static" member -- there is no
+// templateLinked variant -- and the operation doc is explicit: "You can
+// directly update only static policies. To change a template-linked policy,
+// you must update the template instead, using UpdatePolicyTemplate." A
+// template-linked target is therefore always rejected here.
 func (b *InMemoryBackend) UpdatePolicy(policyStoreID, policyID string, params UpdatePolicyParams) (*Policy, error) {
 	b.mu.Lock("UpdatePolicy")
 	defer b.mu.Unlock()
@@ -224,36 +229,22 @@ func (b *InMemoryBackend) UpdatePolicy(policyStoreID, policyID string, params Up
 		return nil, fmt.Errorf("%w: policy %s not found", ErrPolicyNotFound, policyID)
 	}
 
-	switch p.PolicyType {
-	case policyTypeStatic:
-		if params.Statement != "" {
-			if err := parseCedarStatement(params.Statement); err != nil {
-				return nil, err
-			}
+	if p.PolicyType != policyTypeStatic {
+		return nil, fmt.Errorf(
+			"%w: policy %s is template-linked; update the policy template instead", ErrValidation, policyID,
+		)
+	}
 
-			p.Statement = params.Statement
-		}
-
-		if params.Description != "" {
-			p.Description = params.Description
-		}
-	case policyTypeTemplateLinked:
-		// Policy template ID is immutable; only principal/resource bindings may change.
-		if params.PrincipalEntityType != "" {
-			p.PrincipalEntityType = params.PrincipalEntityType
+	if params.Statement != "" {
+		if err := parseCedarStatement(params.Statement); err != nil {
+			return nil, err
 		}
 
-		if params.PrincipalEntityID != "" {
-			p.PrincipalEntityID = params.PrincipalEntityID
-		}
+		p.Statement = params.Statement
+	}
 
-		if params.ResourceEntityType != "" {
-			p.ResourceEntityType = params.ResourceEntityType
-		}
-
-		if params.ResourceEntityID != "" {
-			p.ResourceEntityID = params.ResourceEntityID
-		}
+	if params.Description != "" {
+		p.Description = params.Description
 	}
 
 	p.LastUpdated = time.Now()
@@ -262,7 +253,13 @@ func (b *InMemoryBackend) UpdatePolicy(policyStoreID, policyID string, params Up
 	return clonePolicy(p), nil
 }
 
-// DeletePolicy removes a policy from the given policy store.
+// DeletePolicy removes a policy from the given policy store. Idempotent for
+// a nonexistent policyID, matching the real SDK's documented idempotency
+// ("This operation is idempotent; if you specify a policy that doesn't
+// exist, the request response returns a successful HTTP 200 status code").
+// A nonexistent policyStoreID still errors: ResourceNotFoundException
+// remains in DeletePolicy's modelled error set (unlike DeletePolicyStore's),
+// so the idempotency only covers the policy, not its store.
 func (b *InMemoryBackend) DeletePolicy(policyStoreID, policyID string) error {
 	b.mu.Lock("DeletePolicy")
 	defer b.mu.Unlock()
@@ -272,7 +269,7 @@ func (b *InMemoryBackend) DeletePolicy(policyStoreID, policyID string) error {
 	}
 
 	if !b.policies.Has(policyKey(policyStoreID, policyID)) {
-		return fmt.Errorf("%w: policy %s not found", ErrPolicyNotFound, policyID)
+		return nil
 	}
 
 	resourceARN := policyARN(b.accountID, policyStoreID, policyID)

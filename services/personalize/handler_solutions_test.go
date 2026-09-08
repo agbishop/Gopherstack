@@ -360,6 +360,49 @@ func TestPersonalize_DeleteSolutionVersion_NotARealOperation(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
+// TestPersonalize_DeleteSolution_InUse locks that DeleteSolution rejects a
+// solution that still has a campaign based on it
+// (api_op_DeleteSolution.go: "Before deleting a solution, you must delete
+// all campaigns based on the solution.").
+func TestPersonalize_DeleteSolution_InUse(t *testing.T) {
+	t.Parallel()
+
+	h := personalizeHandler(t)
+	svArn := personalizeCreateSolutionVersion(t, h, "del-sol-in-use")
+	solArn := svArn[:strings.LastIndex(svArn, "/")]
+
+	rec := personalizeDo(t, h, "CreateCampaign", map[string]any{
+		"name":               "del-sol-in-use-campaign",
+		"solutionVersionArn": svArn,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = personalizeDo(t, h, "DeleteSolution", map[string]any{"solutionArn": solArn})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	m := personalizeUnmarshal(t, rec)
+	assert.Equal(t, "ResourceInUseException", m["__type"])
+}
+
+// TestPersonalize_DeleteSolution_CascadesVersions locks that DeleteSolution
+// removes every solution version along with the solution itself
+// (api_op_DeleteSolution.go: "Deletes all versions of a solution and the
+// Solution object itself.").
+func TestPersonalize_DeleteSolution_CascadesVersions(t *testing.T) {
+	t.Parallel()
+
+	h := personalizeHandler(t)
+	svArn := personalizeCreateSolutionVersion(t, h, "del-sol-cascade")
+	solArn := svArn[:strings.LastIndex(svArn, "/")]
+
+	rec := personalizeDo(t, h, "DeleteSolution", map[string]any{"solutionArn": solArn})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = personalizeDo(t, h, "DescribeSolutionVersion", map[string]any{"solutionVersionArn": svArn})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	m := personalizeUnmarshal(t, rec)
+	assert.Equal(t, "ResourceNotFoundException", m["__type"])
+}
+
 func TestPersonalize_StopSolutionVersionCreation(t *testing.T) {
 	t.Parallel()
 

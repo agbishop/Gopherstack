@@ -28,6 +28,10 @@ func (b *InMemoryBackend) CreateDeploymentGroup(
 		return nil, fmt.Errorf("%w: deployment group %s already exists", ErrDeploymentGroupAlreadyExists, dgName)
 	}
 
+	if err := validateDeploymentGroupTagFilters(input); err != nil {
+		return nil, err
+	}
+
 	dgID := uuid.NewString()
 	t := tags.New("codedeploy.dg." + appName + "." + dgName + ".tags")
 	if len(kv) > 0 {
@@ -104,6 +108,10 @@ func (b *InMemoryBackend) UpdateDeploymentGroup(
 	dg, ok := b.deploymentGroups.Get(oldKey)
 	if !ok {
 		return false, fmt.Errorf("%w: deployment group %s not found", ErrDeploymentGroupNotFound, currentDGName)
+	}
+
+	if err := validateDeploymentGroupTagFilters(input); err != nil {
+		return false, err
 	}
 
 	// Track whether hooks/alarms were previously configured and are now being removed.
@@ -195,6 +203,12 @@ func (b *InMemoryBackend) DeleteDeploymentGroup(appName, dgName string) error {
 	defer b.mu.Unlock()
 
 	if !b.applications.Has(appName) {
+		// DeleteDeploymentGroup's deserializer models neither
+		// ApplicationDoesNotExistException nor DeploymentGroupDoesNotExistException
+		// (aws-sdk-go-v2/service/codedeploy deserializers.go) -- both this code and
+		// the one below are provably wrong here, but idempotent-success vs. a
+		// different code is unconfirmed. Do NOT "fix" this by guessing; needs real
+		// evidence (gopherstack-3pz8).
 		return fmt.Errorf("%w: application %s not found", ErrNotFound, appName)
 	}
 

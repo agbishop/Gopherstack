@@ -169,6 +169,25 @@ func (b *InMemoryBackend) UpdateRepositoryLink(
 	// (region|RepositoryLinkID) or the byRegion index, so mutating the
 	// stored *RepositoryLink in place is safe -- no Delete+Put needed.
 	if connectionArn != "" {
+		// UpdateRepositoryLinkInput.ConnectionArn's own doc comment
+		// (api_op_UpdateRepositoryLink.go): "The updated connection ARN must
+		// have the same providerType (such as GitHub) as the original
+		// connection ARN for the repo link." UpdateRepositoryLink's own
+		// error switch (deserializers.go
+		// awsAwsjson10_deserializeOpErrorUpdateRepositoryLink) carries both
+		// ResourceNotFoundException and InvalidInputException.
+		conn, connOK := b.connections.Get(connectionArn)
+		if !connOK || regionFromARN(connectionArn, b.defaultRegion) != region {
+			return nil, fmt.Errorf("%w: connection %q does not exist", ErrNotFound, connectionArn)
+		}
+
+		if conn.ProviderType != link.ProviderType {
+			return nil, fmt.Errorf(
+				"%w: updated connection provider type %q must match the repository link's provider type %q",
+				ErrValidation, conn.ProviderType, link.ProviderType,
+			)
+		}
+
 		link.ConnectionArn = connectionArn
 	}
 

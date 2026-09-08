@@ -141,6 +141,49 @@ func TestObservabilityConfigurationDescribeDeleteList(t *testing.T) { //nolint:p
 	}
 }
 
+// TestDeleteObservabilityConfiguration_RejectsWhenServiceUsesIt verifies
+// DeleteObservabilityConfiguration fails while a service still has it
+// enabled (api_op_DeleteObservabilityConfiguration.go: "You can't delete a
+// configuration that's used by one or more App Runner services."), and
+// succeeds once that service no longer references it.
+func TestDeleteObservabilityConfiguration_RejectsWhenServiceUsesIt(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, "CreateObservabilityConfiguration", map[string]any{
+		"ObservabilityConfigurationName": "obs-in-use",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var obsResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &obsResp))
+	obsArn := obsResp["ObservabilityConfiguration"].(map[string]any)["ObservabilityConfigurationArn"].(string)
+
+	rec = doRequest(t, h, "CreateService", map[string]any{
+		"ServiceName": "obs-svc",
+		"SourceConfiguration": map[string]any{
+			"ImageRepository": map[string]any{"ImageIdentifier": "img", "ImageRepositoryType": "ECR_PUBLIC"},
+		},
+		"ObservabilityConfiguration": map[string]any{
+			"ObservabilityEnabled":          true,
+			"ObservabilityConfigurationArn": obsArn,
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var svcResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &svcResp))
+	svcArn := svcResp["Service"].(map[string]any)["ServiceArn"].(string)
+
+	rec = doRequest(t, h, "DeleteObservabilityConfiguration", map[string]any{"ObservabilityConfigurationArn": obsArn})
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "config still referenced by obs-svc must not be deletable")
+
+	rec = doRequest(t, h, "DeleteService", map[string]any{"ServiceArn": svcArn})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "DeleteObservabilityConfiguration", map[string]any{"ObservabilityConfigurationArn": obsArn})
+	assert.Equal(t, http.StatusOK, rec.Code, "config must be deletable once no service references it")
+}
+
 // LatestOnly's doc (aws-sdk-go-v2/service/apprunner@v1.42.4
 // api_op_ListObservabilityConfigurations.go): "Default: true" -- an omitted
 // LatestOnly must behave the same as an explicit true, not the same as an

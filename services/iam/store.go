@@ -185,7 +185,7 @@ type StorageBackend interface {
 	ResyncMFADevice(userName, serialNumber, authCode1, authCode2 string) error
 	GetMFADeviceOwner(serialNumber string) string
 	GetVirtualMFADevice(serialNumber string) (VirtualMFADevice, string, error)
-	ListMFADevicesForUser(userName string) ([]VirtualMFADevice, error)
+	ListMFADevicesForUser(userName, marker string, maxItems int) (page.Page[VirtualMFADevice], error)
 
 	// SSH Public Keys
 	UploadSSHPublicKey(userName, body string) (*SSHPublicKey, error)
@@ -355,6 +355,7 @@ type InMemoryBackend struct {
 	currentPassword            string
 	globalEndpointTokenVersion string
 	accountAliases             []string
+	currentPasswordHistory     []string
 	sortedUserNames            []string
 	sortedRoleNames            []string
 	sortedPolicyNames          []string
@@ -673,6 +674,10 @@ func (b *InMemoryBackend) Reset() {
 	b.sortedPolicyNames = nil
 	b.sortedGroupNames = nil
 	b.sortedIPNames = nil
+	b.passwordPolicy = nil
+	b.currentPassword = ""
+	b.currentPasswordHistory = nil
+	b.outboundFederationEnabled = true
 	b.resetComprehensiveLocked()
 }
 

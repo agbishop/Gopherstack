@@ -26,12 +26,15 @@ const maxParamNameLength = 2048
 // maximum of 15 levels" — e.g. /L1/L2/.../L15/name is valid, one more is not.
 const maxParamHierarchyLevels = 15
 
-// validateParameterName returns a ValidationException error when the name is invalid.
+// validateParameterName returns a ParameterPatternMismatchException error
+// when the name is invalid -- PutParameter's own declared exception for a
+// malformed Name (ssm@v1.73.4 deserializers.go:13901), not the generic
+// ValidationException.
 func validateParameterName(name string) error {
 	if len(name) > maxParamNameLength {
 		return fmt.Errorf(
 			"%w: parameter name exceeds maximum length of %d",
-			ErrValidationException,
+			ErrParameterNamePattern,
 			maxParamNameLength,
 		)
 	}
@@ -39,7 +42,7 @@ func validateParameterName(name string) error {
 	if strings.Contains(name, "//") {
 		return fmt.Errorf(
 			"%w: parameter name must not contain double slashes",
-			ErrValidationException,
+			ErrParameterNamePattern,
 		)
 	}
 
@@ -49,14 +52,14 @@ func validateParameterName(name string) error {
 		if strings.HasPrefix(lower, prefix) {
 			return fmt.Errorf(
 				"%w: parameter name must not start with reserved namespace %q",
-				ErrValidationException,
+				ErrParameterNamePattern,
 				prefix,
 			)
 		}
 	}
 
 	if !validParamNameRegex.MatchString(name) {
-		return fmt.Errorf("%w: parameter name contains invalid characters", ErrValidationException)
+		return fmt.Errorf("%w: parameter name contains invalid characters", ErrParameterNamePattern)
 	}
 
 	if levels := parameterHierarchyLevels(name); levels > maxParamHierarchyLevels {
@@ -96,8 +99,9 @@ func (b *InMemoryBackend) parameterLabelsStore(region string) map[string]map[int
 }
 
 // isValidParameterType returns true when t is one of the three supported SSM
-// parameter types. Real AWS rejects missing or unrecognised types with
-// ValidationException.
+// parameter types. Real AWS rejects an unrecognised type with
+// UnsupportedParameterType, PutParameter's own declared exception for this
+// (ssm@v1.73.4 deserializers.go:13910).
 func isValidParameterType(t string) bool {
 	switch t {
 	case StringType, StringListType, SecureStringType:
@@ -117,7 +121,10 @@ func isValidDataType(dt string) bool {
 	return false
 }
 
-// validateAllowedPattern compiles the pattern and checks the value against it.
+// validateAllowedPattern compiles the pattern and checks the value against
+// it, returning InvalidAllowedPatternException -- PutParameter's own
+// declared exception for this (ssm@v1.73.4 deserializers.go:13880) -- not
+// the generic ValidationException.
 func validateAllowedPattern(pattern, value string) error {
 	if pattern == "" {
 		return nil
@@ -125,13 +132,13 @@ func validateAllowedPattern(pattern, value string) error {
 
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return fmt.Errorf("%w: invalid AllowedPattern: %w", ErrValidationException, err)
+		return fmt.Errorf("%w: invalid AllowedPattern: %w", ErrInvalidAllowedPattern, err)
 	}
 
 	if !re.MatchString(value) {
 		return fmt.Errorf(
 			"%w: parameter value does not match AllowedPattern %q",
-			ErrValidationException, pattern,
+			ErrInvalidAllowedPattern, pattern,
 		)
 	}
 
@@ -315,7 +322,7 @@ func validatePutParameterInput(input *PutParameterInput) (putParameterValidated,
 	if !isValidParameterType(input.Type) {
 		return putParameterValidated{}, fmt.Errorf(
 			"%w: invalid Type %q, must be String, StringList, or SecureString",
-			ErrValidationException, input.Type,
+			ErrUnsupportedParameterType, input.Type,
 		)
 	}
 
@@ -325,6 +332,8 @@ func validatePutParameterInput(input *PutParameterInput) (putParameterValidated,
 	}
 
 	if !isValidDataType(dataType) {
+		// No declared PutParameter exception fits an invalid DataType
+		// (checked ssm@v1.73.4 deserializers.go); ValidationException stays.
 		return putParameterValidated{}, fmt.Errorf(
 			"%w: invalid DataType %q", ErrValidationException, dataType,
 		)
@@ -600,6 +609,7 @@ func (b *InMemoryBackend) DeleteParameter(
 
 	params.Delete(input.Name)
 	delete(b.historyStore(region), input.Name)
+	delete(b.parameterLabelsStore(region), input.Name)
 	b.clearParameterPolicyNotificationStateLocked(region, input.Name)
 
 	tags := b.tagsStore(region)
@@ -636,6 +646,7 @@ func (b *InMemoryBackend) DeleteParameters(
 		if params.Has(name) {
 			params.Delete(name)
 			delete(history, name)
+			delete(b.parameterLabelsStore(region), name)
 			b.clearParameterPolicyNotificationStateLocked(region, name)
 			if t, ok := tags[name]; ok {
 				t.Close()

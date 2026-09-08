@@ -318,6 +318,13 @@ func (b *InMemoryBackend) CreateCluster(ctx context.Context, req *createClusterR
 	if req.SnapshotName != "" {
 		s, ok := b.snapshotsStore(region).Get(req.SnapshotName)
 		if !ok {
+			// LANDMINE (gopherstack-2i0c, formerly -me2v): CreateCluster's declared
+			// error set (deserializers.go; matches the live AWS API reference
+			// exactly) omits SnapshotNotFoundFault -- confirmed genuine, not model
+			// staleness, since CopySnapshot/DeleteSnapshot DO declare it
+			// (right-code-wrong-op). InvalidParameterValueException is declared
+			// here and is the likely remedy, but no doc sentence confirms it for
+			// this specific case. Do not guess; still unproven.
 			return nil, fmt.Errorf("snapshot %q not found: %w", req.SnapshotName, ErrSnapshotNotFound)
 		}
 		restoreSnap = s

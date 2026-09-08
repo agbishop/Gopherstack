@@ -48,6 +48,26 @@ func TestBatch_StartStopDelete(t *testing.T) {
 	}
 }
 
+// TestBatch_DeleteChannelReportsDeleting locks in a fix for gopherstack-1um:
+// BatchDelete's per-channel successful result reported State DELETED,
+// inconsistent with DeleteChannel's own DELETING fix (both share
+// api_op_BatchDelete.go's "Starts delete of resources." doc comment).
+func TestBatch_DeleteChannelReportsDeleting(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	channelID := createTestChannel(t, h)
+
+	rec := doRequest(t, h, http.MethodPost, "/prod/batch/delete", map[string]any{
+		"channelIds": []any{channelID},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	resp := decodeBody(t, rec.Body.Bytes())
+	successful := resp["successful"].([]any)
+	require.Len(t, successful, 1)
+	assert.Equal(t, "DELETING", successful[0].(map[string]any)["state"])
+}
+
 func TestBatch_StartStopKnownChannels(t *testing.T) {
 	t.Parallel()
 

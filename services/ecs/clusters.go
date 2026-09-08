@@ -146,7 +146,35 @@ func (b *InMemoryBackend) enrichCluster(c *Cluster) Cluster {
 	return cp
 }
 
-// DeleteCluster removes a cluster.
+// clusterDependencyViolationLocked returns the AWS ClusterContains*Exception
+// naming the first dependent resource type blocking deletion of clusterName,
+// or nil if the cluster has none. Mirrors real AWS: DeleteCluster refuses
+// rather than cascading -- services and tasks must be deleted, and container
+// instances deregistered, first. Must be called with b.mu held.
+func (b *InMemoryBackend) clusterDependencyViolationLocked(clusterName string) error {
+	if svcs := b.servicesInClusterLocked(clusterName); len(svcs) > 0 {
+		return fmt.Errorf("%w: cluster %s still has services", ErrClusterContainsServices, clusterName)
+	}
+
+	for _, task := range b.tasksInClusterLocked(clusterName) {
+		if task.LastStatus != statusStopped {
+			return fmt.Errorf("%w: cluster %s still has active tasks", ErrClusterContainsTasks, clusterName)
+		}
+	}
+
+	if ci := b.containerInstancesInClusterLocked(clusterName); len(ci) > 0 {
+		return fmt.Errorf(
+			"%w: cluster %s still has registered container instances",
+			ErrClusterContainsContainerInstances, clusterName,
+		)
+	}
+
+	return nil
+}
+
+// DeleteCluster removes a cluster. Matching real AWS, this fails with a
+// ClusterContains*Exception if the cluster still has services, active tasks,
+// or registered container instances -- it does NOT cascade-delete them.
 func (b *InMemoryBackend) DeleteCluster(clusterName string) (*Cluster, error) {
 	key := clusterKey(clusterName)
 
@@ -156,36 +184,35 @@ func (b *InMemoryBackend) DeleteCluster(clusterName string) (*Cluster, error) {
 		tasksToStop []*Task
 	)
 
-	// Snapshot task pointers while still holding the lock so we can stop their
-	// Docker containers after releasing it.  Performing Docker API calls under
-	// the backend lock would unnecessarily serialize all other operations.
-	func() {
+	// Snapshot task pointers while still holding the lock so we can defensively
+	// tell the runner to stop their containers after releasing it. Performing
+	// Docker API calls under the backend lock would unnecessarily serialize
+	// other operations; StopTask is a no-op for a task with no tracked
+	// container, so this is safe even though these tasks are already STOPPED.
+	guardErr := func() error {
 		b.mu.Lock("DeleteCluster")
 		defer b.mu.Unlock()
 
 		c, ok := b.clusters.Get(key)
 		if !ok {
-			return
+			return nil
 		}
 
 		found = true
 
-		clusterTasks := b.tasksInClusterLocked(key)
-		tasksToStop = make([]*Task, 0, len(clusterTasks))
+		if err := b.clusterDependencyViolationLocked(key); err != nil {
+			return err
+		}
 
+		// Only already-STOPPED tasks (and empty service/container-instance
+		// sets) can remain here -- clusterDependencyViolationLocked already
+		// refused anything else. Clear their bookkeeping so a later
+		// same-named cluster doesn't inherit stale entries.
+		clusterTasks := b.tasksInClusterLocked(key)
 		if b.runner != nil {
 			tasksToStop = append(tasksToStop, clusterTasks...)
 		}
 
-		// Delete task sets and service deployments for all services in this cluster
-		// before removing the services map, preventing stale entries on cluster recreation.
-		for _, svc := range b.servicesInClusterLocked(key) {
-			b.deleteTaskSetsForServiceLocked(svc.ServiceArn)
-			b.deleteServiceDeploymentsForServiceLocked(svc.ServiceArn)
-			delete(b.serviceIndex, svcRef{cluster: key, name: svc.ServiceName})
-		}
-
-		// Clean up per-task state for all tasks in this cluster to avoid memory leaks.
 		for _, task := range clusterTasks {
 			b.taskProtections.Delete(task.TaskArn)
 			delete(b.lifecycle, task.TaskArn)
@@ -200,10 +227,16 @@ func (b *InMemoryBackend) DeleteCluster(clusterName string) (*Cluster, error) {
 		delete(b.tasksByInstance, key)
 
 		cp = *c
+
+		return nil
 	}()
 
 	if !found {
 		return nil, fmt.Errorf("%w: %s", ErrClusterNotFound, clusterName)
+	}
+
+	if guardErr != nil {
+		return nil, guardErr
 	}
 
 	// Docker API calls happen outside the lock so other backend operations are

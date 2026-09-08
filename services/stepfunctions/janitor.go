@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	sfnWorkerService = "stepfunctions"
-	prunerName       = "ExecutionPruner"
+	sfnWorkerService   = "stepfunctions"
+	prunerName         = "ExecutionPruner"
+	deletionReaperName = "StateMachineDeletionReaper"
 )
 
 // Janitor is the Step Functions background worker that manages resource cleanup.
@@ -38,9 +39,25 @@ func NewJanitor(backend *InMemoryBackend, settings Settings) *Janitor {
 func (j *Janitor) Run(ctx context.Context) {
 	g := worker.NewGroup(ctx, sfnWorkerService)
 	g.Ticker(prunerName, j.Interval, j.TaskTimeout, j.sweepExecutions)
+	g.Ticker(deletionReaperName, j.Interval, j.TaskTimeout, j.sweepDeletingStateMachines)
 
 	<-ctx.Done()
 	g.Stop()
+}
+
+// sweepDeletingStateMachines completes DeleteStateMachine for state machines
+// that were left marked DELETING because executions were still running.
+// AWS: a state machine is deleted only once all its executions complete.
+func (j *Janitor) sweepDeletingStateMachines(ctx context.Context) {
+	swept := j.Backend.SweepDeletingStateMachines(ctx)
+
+	telemetry.RecordWorkerTask(sfnWorkerService, deletionReaperName, "success")
+	if swept > 0 {
+		telemetry.RecordWorkerItems(sfnWorkerService, deletionReaperName, swept)
+		logger.Load(ctx).InfoContext(
+			ctx, "Step Functions janitor: completed deferred state machine deletions", "count", swept,
+		)
+	}
 }
 
 func (j *Janitor) sweepExecutions(ctx context.Context) {

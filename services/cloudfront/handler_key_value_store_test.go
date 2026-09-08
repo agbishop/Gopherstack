@@ -1,6 +1,7 @@
 package cloudfront_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -393,6 +394,29 @@ func TestInMemoryBackend_KeyValueStore(t *testing.T) {
 				t.Helper()
 				err := b.DeleteKeyValueStore("doesnotexist")
 				require.Error(t, err)
+			},
+		},
+		{
+			name: "delete_clears_data_plane_state",
+			run: func(t *testing.T, b *cloudfront.InMemoryBackend) {
+				t.Helper()
+				kvs, err := b.CreateKeyValueStore("kvs-ghost", "c", nil)
+				require.NoError(t, err)
+				_, err = b.PutKVSValue(kvs.ID, "k", "v", "")
+				require.NoError(t, err)
+
+				require.NoError(t, b.DeleteKeyValueStore(kvs.ID))
+
+				snap := b.Snapshot(t.Context())
+				var decoded struct {
+					KeyValueStoreData map[string]map[string]string `json:"keyValueStoreData"`
+					KeyValueDataETags map[string]string            `json:"keyValueDataETags"`
+				}
+				require.NoError(t, json.Unmarshal(snap, &decoded))
+				assert.NotContains(t, decoded.KeyValueStoreData, kvs.ID,
+					"deleted KVS's data-plane values must not survive in the persisted snapshot")
+				assert.NotContains(t, decoded.KeyValueDataETags, kvs.ID,
+					"deleted KVS's data-plane ETag must not survive in the persisted snapshot")
 			},
 		},
 	}

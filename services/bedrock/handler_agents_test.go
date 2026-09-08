@@ -367,6 +367,33 @@ func TestAgentsHandler_DeleteAgent(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec3.Code)
 }
 
+// TestAgentsHandler_DeleteAgent_ClearsTags verifies DeleteAgent clears
+// agentTags for the deleted agent's ARN. TagAgentResource/ListAgentResourceTags
+// key on ARN with no existence check against the agent itself, so a leaked
+// entry is directly observable: querying tags for a deleted agent's ARN would
+// otherwise still return them, and agentTags is persisted verbatim in
+// Snapshot(), so the leak also grows the snapshot without bound.
+func TestAgentsHandler_DeleteAgent_ClearsTags(t *testing.T) {
+	t.Parallel()
+
+	h, b := newTestAgentsHandler(t)
+	ag, err := b.CreateAgent("delete-agent-tags", "", "", "", nil)
+	require.NoError(t, err)
+	otherAg, err := b.CreateAgent("delete-agent-tags-sibling", "", "", "", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, b.TagAgentResource(ag.AgentArn, map[string]string{"k": "v"}))
+	require.NoError(t, b.TagAgentResource(otherAg.AgentArn, map[string]string{"k": "v"}))
+	require.NotEmpty(t, b.ListAgentResourceTags(ag.AgentArn))
+
+	rec := doAgentRequest(t, h, http.MethodDelete, "/agents/"+ag.AgentID, nil)
+	assert.Equal(t, http.StatusAccepted, rec.Code)
+
+	assert.Empty(t, b.ListAgentResourceTags(ag.AgentArn))
+	assert.NotEmpty(t, b.ListAgentResourceTags(otherAg.AgentArn),
+		"deleting one agent must not disturb another agent's tags")
+}
+
 func TestAgentsHandler_PrepareAgent(t *testing.T) {
 	t.Parallel()
 

@@ -56,12 +56,24 @@ func (b *InMemoryBackend) EnableHub(enableDefaultStandards bool, tags map[string
 	return nil
 }
 
+// DisableHub disables Security Hub. AWS documents that this is refused
+// while the account is currently the Security Hub administrator for other
+// member accounts (api_op_DisableSecurityHub.go) -- CreateMembers is this
+// backend's only path to that relationship (Organizations delegated-admin
+// never creates Member records, see organizations.go), so an account with
+// at least one non-Removed member is administering it.
 func (b *InMemoryBackend) DisableHub() error {
 	b.mu.Lock("DisableHub")
 	defer b.mu.Unlock()
 
 	if !b.hubEnabled {
 		return ErrHubNotEnabled
+	}
+
+	for _, m := range b.members.Snapshot() {
+		if m.MemberStatus != "Removed" {
+			return ErrHubIsAdministrator
+		}
 	}
 
 	b.hubEnabled = false

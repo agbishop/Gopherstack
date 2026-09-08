@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	sdk_s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/labstack/echo/v5"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/awserr"
@@ -166,6 +168,11 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err 
 			keyTypeField:    "ResourceAlreadyExistsException",
 			keyMessageField: err.Error(),
 		})
+	case errors.Is(err, ErrInvalidS3Object):
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			keyTypeField:    "InvalidS3ObjectException",
+			keyMessageField: err.Error(),
+		})
 	case errors.Is(err, awserr.ErrInvalidParameter):
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			keyTypeField:    "InvalidParameterException",
@@ -194,6 +201,46 @@ type imageRef struct {
 		Version string `json:"Version"`
 	} `json:"S3Object"`
 	Bytes []byte `json:"Bytes"`
+}
+
+// checkS3Object returns ErrInvalidS3Object if bucket is set and the wired S3
+// backend cannot find bucket/key. A no-op when Backend isn't
+// *InMemoryBackend, S3 is unwired, or bucket=="" (inline Bytes, no
+// S3Object), per this repo's unwired-hook-stays-permissive convention.
+func (h *Handler) checkS3Object(ctx context.Context, bucket, key string) error {
+	b, ok := h.Backend.(*InMemoryBackend)
+	if !ok || b.s3 == nil || bucket == "" {
+		return nil
+	}
+
+	if _, err := b.s3.HeadObject(ctx, &sdk_s3.HeadObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	}); err != nil {
+		return fmt.Errorf("%w: s3://%s/%s", ErrInvalidS3Object, bucket, key)
+	}
+
+	return nil
+}
+
+// checkImageRef is checkS3Object for the common Image wire shape (either an
+// S3Object or inline Bytes).
+func (h *Handler) checkImageRef(ctx context.Context, img imageRef) error {
+	if img.S3Object == nil {
+		return nil
+	}
+
+	return h.checkS3Object(ctx, img.S3Object.Bucket, img.S3Object.Name)
+}
+
+// checkVideoRef is checkS3Object for the Video wire shape used by async
+// Start* video-job requests.
+func (h *Handler) checkVideoRef(ctx context.Context, v videoRef) error {
+	if v.S3Object == nil {
+		return nil
+	}
+
+	return h.checkS3Object(ctx, v.S3Object.Bucket, v.S3Object.Name)
 }
 
 // imageRefKey returns a stable string derived from the image reference for similarity hashing.

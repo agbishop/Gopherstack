@@ -178,8 +178,41 @@ func cloneCluster(c *Cluster) Cluster {
 	return cp
 }
 
-// CreateCluster creates a new Redshift cluster.
-func (b *InMemoryBackend) CreateCluster(id, nodeType, dbName, masterUser string) (*Cluster, error) {
+// validateClusterAssociationsLocked checks that every referenced cluster
+// security group and the cluster parameter group (if any) already exist.
+// Caller must hold b.mu. Extracted from CreateCluster to keep its cyclop
+// score down.
+func (b *InMemoryBackend) validateClusterAssociationsLocked(
+	clusterSecurityGroups []string,
+	clusterParameterGroupName string,
+) error {
+	for _, sgName := range clusterSecurityGroups {
+		if _, exists := b.securityGroups.Get(sgName); !exists {
+			return fmt.Errorf("%w: security group %s not found", ErrSecurityGroupNotFound, sgName)
+		}
+	}
+
+	if clusterParameterGroupName != "" {
+		if _, exists := b.parameterGroups.Get(clusterParameterGroupName); !exists {
+			return fmt.Errorf("%w: parameter group %s not found", ErrParameterGroupNotFound, clusterParameterGroupName)
+		}
+	}
+
+	return nil
+}
+
+// CreateCluster creates a new Redshift cluster. clusterSecurityGroups and
+// clusterParameterGroupName associate the cluster with existing
+// ClusterSecurityGroup/ClusterParameterGroup resources (real
+// CreateClusterInput.ClusterSecurityGroups/ClusterParameterGroupName); a
+// group or parameter group that does not already exist is rejected, matching
+// CreateCluster's declared ClusterSecurityGroupNotFound/
+// ClusterParameterGroupNotFound errors.
+func (b *InMemoryBackend) CreateCluster(
+	id, nodeType, dbName, masterUser string,
+	clusterSecurityGroups []string,
+	clusterParameterGroupName string,
+) (*Cluster, error) {
 	if id == "" {
 		return nil, fmt.Errorf("%w: ClusterIdentifier is required", ErrInvalidParameter)
 	}
@@ -200,6 +233,10 @@ func (b *InMemoryBackend) CreateCluster(id, nodeType, dbName, masterUser string)
 		return nil, fmt.Errorf("%w: cluster %s already exists", ErrClusterAlreadyExists, id)
 	}
 
+	if err := b.validateClusterAssociationsLocked(clusterSecurityGroups, clusterParameterGroupName); err != nil {
+		return nil, err
+	}
+
 	if nodeType == "" {
 		nodeType = defaultNodeType
 	}
@@ -218,16 +255,18 @@ func (b *InMemoryBackend) CreateCluster(id, nodeType, dbName, masterUser string)
 	}
 
 	cluster := &Cluster{
-		ClusterIdentifier: id,
-		NodeType:          nodeType,
-		ClusterType:       clusterTypeMultiNode,
-		Endpoint:          endpoint,
-		Status:            initialStatus,
-		DBName:            dbName,
-		MasterUsername:    masterUser,
-		Port:              defaultPort,
-		NumberOfNodes:     1,
-		Tags:              tags.New("redshift.cluster." + id + ".tags"),
+		ClusterIdentifier:         id,
+		NodeType:                  nodeType,
+		ClusterType:               clusterTypeMultiNode,
+		Endpoint:                  endpoint,
+		Status:                    initialStatus,
+		DBName:                    dbName,
+		MasterUsername:            masterUser,
+		Port:                      defaultPort,
+		NumberOfNodes:             1,
+		Tags:                      tags.New("redshift.cluster." + id + ".tags"),
+		ClusterSecurityGroups:     clusterSecurityGroups,
+		ClusterParameterGroupName: clusterParameterGroupName,
 	}
 	b.clusters.Put(cluster)
 
@@ -276,6 +315,7 @@ func (b *InMemoryBackend) DeleteCluster(id string) (*Cluster, error) {
 
 	cp := cloneCluster(cluster)
 	delete(b.clusterTransitions, id)
+	delete(b.loggingStatuses, id)
 	cluster.Tags.Close()
 	b.clusters.Delete(id)
 

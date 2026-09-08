@@ -315,8 +315,13 @@ type Job struct {
 type JobExtras struct {
 	// ProfileConfiguration stays untyped -- see Job.ProfileConfiguration's
 	// doc comment.
-	ProfileConfiguration     map[string]any
-	JobSample                *JobSample
+	ProfileConfiguration map[string]any
+	JobSample            *JobSample
+	// RecipeVersion is the caller-specified CreateRecipeJobInput.RecipeReference.RecipeVersion.
+	// Empty means the recipe's LATEST_WORKING draft, matching real
+	// aws-sdk-go-v2/service/databrew/types.RecipeReference.RecipeVersion
+	// (optional, "The identifier for the version for the recipe").
+	RecipeVersion            string
 	EncryptionMode           string
 	EncryptionKeyArn         string
 	LogSubscription          string

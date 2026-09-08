@@ -222,6 +222,66 @@ func TestTags_OriginEndpointCreationTags(t *testing.T) {
 	}
 }
 
+// TestTags_TagResourceTargetsCorrectResourceAmongMany verifies that
+// TagResource/UntagResource sync the resource-level Tags field of the
+// specific channel or origin endpoint the ARN names, not a sibling with a
+// different ID -- the invariant findChannelByARN/findOriginEndpointByARN
+// must preserve now that they derive the target ID directly from the ARN's
+// "<resourceType>/<id>" segment instead of scanning every row.
+func TestTags_TagResourceWithColonInResourceID(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	_, arn := createChannelWithTags(t, h, "ch:with:colons", nil)
+
+	code, _ := doRequestJSON(t, h, http.MethodPost, "/tags/"+arn, map[string]any{
+		"tags": map[string]any{"owner": "team-a"},
+	})
+	require.Equal(t, http.StatusNoContent, code)
+
+	_, resp := doRequestJSON(t, h, http.MethodGet, "/channels/ch:with:colons", nil)
+	tags, _ := resp["tags"].(map[string]any)
+	assert.Equal(t, "team-a", tags["owner"])
+}
+
+func TestTags_TagResourceTargetsCorrectResourceAmongMany(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	_, arnA := createChannelWithTags(t, h, "ch-a", nil)
+	chB, _ := createChannelWithTags(t, h, "ch-b", nil)
+	epA := createEndpointWithTags(t, h, "ch-a", "ep-a", nil)
+	createEndpointWithTags(t, h, chB, "ep-b", nil)
+
+	code, _ := doRequestJSON(t, h, http.MethodPost, "/tags/"+arnA, map[string]any{
+		"tags": map[string]any{"owner": "team-a"},
+	})
+	require.Equal(t, http.StatusNoContent, code)
+
+	code, _ = doRequestJSON(t, h, http.MethodPost, "/tags/"+epA, map[string]any{
+		"tags": map[string]any{"owner": "team-a"},
+	})
+	require.Equal(t, http.StatusNoContent, code)
+
+	_, respA := doRequestJSON(t, h, http.MethodGet, "/channels/ch-a", nil)
+	tagsA, _ := respA["tags"].(map[string]any)
+	assert.Equal(t, "team-a", tagsA["owner"])
+
+	_, respB := doRequestJSON(t, h, http.MethodGet, "/channels/ch-b", nil)
+	tagsB, _ := respB["tags"].(map[string]any)
+	assert.NotContains(t, tagsB, "owner", "tagging ch-a must not sync onto ch-b")
+
+	_, respEpA := doRequestJSON(t, h, http.MethodGet, "/origin_endpoints/ep-a", nil)
+	epTagsA, _ := respEpA["tags"].(map[string]any)
+	assert.Equal(t, "team-a", epTagsA["owner"])
+
+	_, respEpB := doRequestJSON(t, h, http.MethodGet, "/origin_endpoints/ep-b", nil)
+	epTagsB, _ := respEpB["tags"].(map[string]any)
+	assert.NotContains(t, epTagsB, "owner", "tagging ep-a must not sync onto ep-b")
+}
+
 // TestTags_ListChannelsIncludesTags verifies that ListChannels response
 // includes tags set at creation time.
 func TestTags_ListChannelsIncludesTags(t *testing.T) {

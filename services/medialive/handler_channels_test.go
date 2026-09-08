@@ -161,6 +161,24 @@ func TestChannel_PipelinesRunningCount(t *testing.T) {
 	assert.InDelta(t, 2, descResp["pipelinesRunningCount"], 0, "RUNNING STANDARD channel reports 2 running pipelines")
 }
 
+// TestChannel_DeleteReportsDeleting locks in a fix for gopherstack-1um:
+// DeleteChannel's response reported State DELETED, but api_op_DeleteChannel.
+// go's doc comment ("Starts deletion of channel.") mirrors StartChannel's
+// "Starts an existing channel" -- which this same file already reports as
+// the intermediate STARTING state, not the eventual RUNNING one. DeleteChannel
+// should carry the matching intermediate DELETING state.
+func TestChannel_DeleteReportsDeleting(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	channelID := createTestChannel(t, h)
+
+	rec := doRequest(t, h, http.MethodDelete, "/prod/channels/"+channelID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	deleted := decodeBody(t, rec.Body.Bytes())
+	assert.Equal(t, "DELETING", deleted["state"])
+}
+
 func TestChannel_DeleteRunning(t *testing.T) {
 	t.Parallel()
 

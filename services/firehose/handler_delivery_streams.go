@@ -1061,33 +1061,14 @@ type listDeliveryStreamsOutput struct {
 	HasMoreDeliveryStreams bool     `json:"HasMoreDeliveryStreams"`
 }
 
-// isValidDeliveryStreamType reports whether s is a DeliveryStreamType filter value AWS
-// accepts on ListDeliveryStreams. The real DeliveryStreamType enum
-// (aws-sdk-go-v2/service/firehose/types/enums.go@v1.46.4) has 4 values -- DirectPut,
-// KinesisStreamAsSource, MSKAsSource, DatabaseAsSource -- not just the first 2; a filter
-// on the latter 2 previously errored instead of returning a (possibly empty) list.
-func isValidDeliveryStreamType(s string) bool {
-	switch s {
-	case deliveryStreamTypeDirectPut, deliveryStreamTypeKinesisSource,
-		deliveryStreamTypeMSKSource, deliveryStreamTypeDatabaseSource:
-		return true
-	default:
-		return false
-	}
-}
-
 func (h *Handler) handleListDeliveryStreams(
 	ctx context.Context,
 	in *listDeliveryStreamsInput,
 ) (*listDeliveryStreamsOutput, error) {
-	if in.DeliveryStreamType != "" && !isValidDeliveryStreamType(in.DeliveryStreamType) {
-		return nil, fmt.Errorf(
-			"%w: invalid DeliveryStreamType %q",
-			ErrValidation,
-			in.DeliveryStreamType,
-		)
-	}
-
+	// ListDeliveryStreams declares no exception beyond UnknownError
+	// (deserializers.go: deserializeOpErrorListDeliveryStreams), so an
+	// unrecognized DeliveryStreamType cannot be rejected -- it just matches
+	// no stored stream, same as any other unmatched filter value.
 	names := h.Backend.ListDeliveryStreamsByType(ctx, in.DeliveryStreamType)
 
 	// Apply ExclusiveStartDeliveryStreamName cursor.

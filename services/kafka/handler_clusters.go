@@ -351,9 +351,14 @@ func (h *Handler) handleCreateClusterV2(ctx context.Context, c *echo.Context, bo
 
 func (h *Handler) handleListClusters(ctx context.Context, c *echo.Context) error {
 	clusters := h.Backend.ListClusters(ctx)
+	nameFilter := c.Request().URL.Query().Get("clusterNameFilter")
 	all := make([]*clusterInfoV1, 0, len(clusters))
 
 	for _, cl := range clusters {
+		if nameFilter != "" && !strings.HasPrefix(cl.ClusterName, nameFilter) {
+			continue
+		}
+
 		all = append(all, toClusterInfoV1(cl))
 	}
 
@@ -377,9 +382,20 @@ func (h *Handler) handleListClusters(ctx context.Context, c *echo.Context) error
 
 func (h *Handler) handleListClustersV2(ctx context.Context, c *echo.Context) error {
 	clusters := h.Backend.ListClusters(ctx)
+	query := c.Request().URL.Query()
+	nameFilter := query.Get("clusterNameFilter")
+	typeFilter := query.Get("clusterTypeFilter")
 	all := make([]*clusterInfoV2, 0, len(clusters))
 
 	for _, cl := range clusters {
+		if nameFilter != "" && !strings.HasPrefix(cl.ClusterName, nameFilter) {
+			continue
+		}
+
+		if typeFilter != "" && !strings.EqualFold(cl.ClusterType, typeFilter) {
+			continue
+		}
+
 		all = append(all, toClusterInfoV2(cl))
 	}
 

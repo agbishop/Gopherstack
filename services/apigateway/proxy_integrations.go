@@ -101,7 +101,12 @@ func (h *Handler) minCompressSize(apiID string) int {
 	return api.MinimumCompressionSize
 }
 
-// handleAWSIntegration handles an AWS (non-proxy) Lambda integration using VTL templates.
+// handleAWSIntegration handles an AWS (non-proxy) integration using VTL templates.
+// The integration URI names its target service (see awsIntegrationTarget); when that
+// target is sqs or sns and the corresponding hook is wired, the request is dispatched
+// there instead of Lambda. Every other target -- including sqs/sns with no hook wired,
+// dynamodb, kinesis, states, and lambda itself -- keeps the original Lambda-invoke path
+// unchanged.
 func (h *Handler) handleAWSIntegration(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -111,51 +116,26 @@ func (h *Handler) handleAWSIntegration(
 	stageVars map[string]string,
 	integration *Integration,
 ) {
+	region, service, kind, spec := awsIntegrationTarget(integration.URI)
+	if h.canDispatchToTarget(service, kind, spec) {
+		h.handleAWSServiceIntegration(
+			ctx, w, r, apiID, stageName, resource, stageVars, integration, region, service, spec,
+		)
+
+		return
+	}
+
 	if h.lambda == nil {
 		http.Error(w, "Lambda integration not configured", http.StatusServiceUnavailable)
 
 		return
 	}
 
-	// Read the raw request body.
-	rawBody, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, maxProxyRequestBodyBytes))
+	payload, vtlCtx, readErr := h.buildAWSIntegrationPayload(w, r, apiID, stageName, resource, stageVars, integration)
 	if readErr != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(readErr, &maxErr) {
-			http.Error(w, "Request entity too large", http.StatusRequestEntityTooLarge)
-
-			return
-		}
-
-		logger.Load(ctx).ErrorContext(ctx, "APIGateway AWS integration: failed to read body", "error", readErr)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		writeAWSIntegrationReadError(ctx, w, readErr)
 
 		return
-	}
-
-	resourcePath := "/"
-	if resource != nil && resource.Path != "" {
-		resourcePath = resource.Path
-	}
-
-	vtlCtx := VTLContext{
-		Body:           string(rawBody),
-		RequestID:      r.Header.Get("X-Amzn-Requestid"),
-		HTTPMethod:     r.Method,
-		ResourcePath:   resourcePath,
-		Path:           r.URL.Path,
-		Stage:          stageName,
-		APIID:          apiID,
-		SourceIP:       realClientIP(r),
-		UserAgent:      r.Header.Get("User-Agent"),
-		StageVariables: stageVars,
-	}
-
-	// Apply request mapping template (content-type "application/json" is standard).
-	payload := rawBody
-	if tpl, ok := integration.RequestTemplates[contentTypeJSON]; ok && tpl != "" {
-		rendered := RenderTemplate(tpl, vtlCtx)
-		payload = []byte(rendered)
 	}
 
 	// Invoke Lambda.
@@ -181,6 +161,211 @@ func (h *Handler) handleAWSIntegration(
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(statusCode)
 	_, _ = w.Write(responseBody) //nolint:gosec // local emulation: response passthrough is intentional
+}
+
+// buildAWSIntegrationPayload reads the request body, builds the VTL request context,
+// and applies the integration's request mapping template (if any). Shared by the
+// Lambda and wired-service AWS integration paths.
+func (h *Handler) buildAWSIntegrationPayload(
+	w http.ResponseWriter,
+	r *http.Request,
+	apiID, stageName string,
+	resource *Resource,
+	stageVars map[string]string,
+	integration *Integration,
+) ([]byte, VTLContext, error) {
+	rawBody, readErr := io.ReadAll(http.MaxBytesReader(w, r.Body, maxProxyRequestBodyBytes))
+	if readErr != nil {
+		return nil, VTLContext{}, readErr
+	}
+
+	resourcePath := "/"
+	if resource != nil && resource.Path != "" {
+		resourcePath = resource.Path
+	}
+
+	vtlCtx := VTLContext{
+		Body:           string(rawBody),
+		RequestID:      r.Header.Get("X-Amzn-Requestid"),
+		HTTPMethod:     r.Method,
+		ResourcePath:   resourcePath,
+		Path:           r.URL.Path,
+		Stage:          stageName,
+		APIID:          apiID,
+		SourceIP:       realClientIP(r),
+		UserAgent:      r.Header.Get("User-Agent"),
+		StageVariables: stageVars,
+	}
+
+	// Apply request mapping template (content-type "application/json" is standard).
+	payload := rawBody
+	if tpl, ok := integration.RequestTemplates[contentTypeJSON]; ok && tpl != "" {
+		payload = []byte(RenderTemplate(tpl, vtlCtx))
+	}
+
+	return payload, vtlCtx, nil
+}
+
+// writeAWSIntegrationReadError writes the appropriate error response for a
+// buildAWSIntegrationPayload failure.
+func writeAWSIntegrationReadError(ctx context.Context, w http.ResponseWriter, readErr error) {
+	if _, ok := errors.AsType[*http.MaxBytesError](readErr); ok {
+		http.Error(w, "Request entity too large", http.StatusRequestEntityTooLarge)
+
+		return
+	}
+
+	logger.Load(ctx).ErrorContext(ctx, "APIGateway AWS integration: failed to read body", "error", readErr)
+	http.Error(w, "Internal server error", http.StatusInternalServerError)
+}
+
+// handleAWSServiceIntegration dispatches an AWS integration to a wired non-Lambda
+// target (sqs SendMessage, sns Publish). This is a simplified passthrough, not VTL
+// mapping-template evaluation: the rendered request payload becomes the target's
+// message body/text verbatim, with no AWS query-protocol (Action=...&...) encoding,
+// and the HTTP response is a bare "{}" run back through the same status-code /
+// response-template matching the Lambda path uses. See PARITY.md.
+func (h *Handler) handleAWSServiceIntegration(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	apiID, stageName string,
+	resource *Resource,
+	stageVars map[string]string,
+	integration *Integration,
+	region, service, spec string,
+) {
+	payload, vtlCtx, readErr := h.buildAWSIntegrationPayload(w, r, apiID, stageName, resource, stageVars, integration)
+	if readErr != nil {
+		writeAWSIntegrationReadError(ctx, w, readErr)
+
+		return
+	}
+
+	var dispatchErr error
+
+	switch service {
+	case "sqs":
+		dispatchErr = h.dispatchSQS(ctx, region, spec, payload)
+	case "sns":
+		dispatchErr = h.dispatchSNS(ctx, r, integration, payload)
+	}
+
+	if dispatchErr != nil {
+		logger.Load(ctx).WarnContext(ctx, "APIGateway AWS integration: target service call failed",
+			"uri", integration.URI, "service", service, "error", dispatchErr)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+
+		return
+	}
+
+	responseBody, statusCode := h.applyResponseTemplate([]byte("{}"), integration, vtlCtx.RequestID)
+	responseBody = maybeCompressResponse(w, r, responseBody, h.minCompressSize(apiID))
+	w.Header().Set("Content-Type", contentTypeJSON)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(statusCode)
+	_, _ = w.Write(responseBody) //nolint:gosec // local emulation: response passthrough is intentional
+}
+
+// sqsQueuePathSegments is the expected segment count of the path-style sqs
+// service_api: "{accountId}/{queueName}".
+const sqsQueuePathSegments = 2
+
+// dispatchSQS sends payload as the message body to the SQS queue named in spec
+// ("{accountId}/{queueName}", the path-style AWS integration service_api).
+func (h *Handler) dispatchSQS(ctx context.Context, region, spec string, payload []byte) error {
+	segments := strings.Split(spec, "/")
+	if len(segments) != sqsQueuePathSegments {
+		// Unreachable today (canDispatchToTarget validates spec first) -- must never report success.
+		return errSQSQueuePathMalformed
+	}
+
+	queueARN := "arn:aws:sqs:" + region + ":" + segments[0] + ":" + segments[1]
+
+	return h.sqsSender.SendMessageToQueue(ctx, queueARN, string(payload))
+}
+
+// errSQSQueuePathMalformed is returned when dispatchSQS's spec fails the
+// "{accountId}/{queueName}" path-segment check.
+var errSQSQueuePathMalformed = errors.New("apigateway: sqs integration service_api path is malformed")
+
+// errSNSTopicArnUnresolved is returned when an sns action/Publish integration has no
+// resolvable TopicArn -- neither via its RequestParameters mapping nor a TopicArn
+// query parameter on the incoming request.
+var errSNSTopicArnUnresolved = errors.New("apigateway: sns integration request has no resolvable TopicArn")
+
+// dispatchSNS publishes payload as the message to the SNS topic resolved from the
+// integration's RequestParameters mapping or, absent one, the incoming request's
+// "TopicArn" query parameter -- real API Gateway supplies the topic ARN this way for
+// action-style sns integrations, since it is not encoded in the integration URI.
+func (h *Handler) dispatchSNS(ctx context.Context, r *http.Request, integration *Integration, payload []byte) error {
+	topicARN := resolveRequestParamSource(r, integration.RequestParameters["integration.request.querystring.TopicArn"])
+	if topicARN == "" {
+		topicARN = r.URL.Query().Get("TopicArn")
+	}
+
+	if topicARN == "" {
+		return errSNSTopicArnUnresolved
+	}
+
+	return h.snsPublisher.PublishToTopic(ctx, topicARN, string(payload))
+}
+
+// awsIntegrationURIFields is the colon-delimited field count of an AWS/AWS_PROXY
+// integration URI matching arn:aws:apigateway:{region}:{service}:path|action/{service_api}.
+const awsIntegrationURIFields = 6
+
+// awsIntegrationTarget parses an AWS/AWS_PROXY integration URI of the documented form
+//
+//	arn:aws:apigateway:{region}:{subdomain.service|service}:path|action/{service_api}
+//
+// (aws-sdk-go-v2 service/apigateway/types/types.go, Integration.Uri godoc). It returns
+// the region and service tokens, whether the service_api is "path" or "action" style,
+// and spec: for "path" style the raw path after "path/"; for "action" style the action
+// name only (any literal "&..." query params on the URI are dropped). Returns all
+// empty strings if uri doesn't match this shape (e.g. a bare Lambda ARN/name, which the
+// Lambda path already handles via ExtractLambdaFunctionName).
+func awsIntegrationTarget(uri string) (string, string, string, string) {
+	parts := strings.SplitN(uri, ":", awsIntegrationURIFields)
+	if len(parts) != awsIntegrationURIFields {
+		return "", "", "", ""
+	}
+
+	region, service := parts[3], parts[4]
+
+	kind, rest, ok := strings.Cut(parts[5], "/")
+	if !ok {
+		return region, service, "", ""
+	}
+
+	if kind == "action" {
+		action, _, _ := strings.Cut(rest, "&")
+
+		return region, service, kind, action
+	}
+
+	return region, service, kind, rest
+}
+
+// canDispatchToTarget reports whether service/kind/spec (from awsIntegrationTarget)
+// names a wired non-Lambda target this handler can dispatch to.
+func (h *Handler) canDispatchToTarget(service, kind, spec string) bool {
+	switch {
+	case service == "sqs" && kind == "path" && h.sqsSender != nil:
+		return sqsQueuePathValid(spec)
+	case service == "sns" && kind == "action" && spec == "Publish" && h.snsPublisher != nil:
+		return true
+	default:
+		return false
+	}
+}
+
+// sqsQueuePathValid reports whether spec is a well-formed "{accountId}/{queueName}"
+// path-style sqs service_api.
+func sqsQueuePathValid(spec string) bool {
+	segments := strings.Split(spec, "/")
+
+	return len(segments) == sqsQueuePathSegments && segments[0] != "" && segments[1] != ""
 }
 
 // applyResponseTemplate selects the best-matching integration response by status code pattern

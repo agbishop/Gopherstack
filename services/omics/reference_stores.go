@@ -45,7 +45,11 @@ func (b *InMemoryBackend) CreateReferenceStore(
 	return &result, nil
 }
 
-// DeleteReferenceStore deletes a reference store by ID.
+// DeleteReferenceStore deletes a reference store by ID. Real AWS only
+// permits this when the store contains no reference genomes
+// (api_op_DeleteReferenceStore.go: "You can only delete a reference store
+// when it does not contain any reference genomes. To empty a reference
+// store, use DeleteReference.").
 func (b *InMemoryBackend) DeleteReferenceStore(id string) error {
 	b.mu.Lock("DeleteReferenceStore")
 	defer b.mu.Unlock()
@@ -53,6 +57,13 @@ func (b *InMemoryBackend) DeleteReferenceStore(id string) error {
 	rs, ok := b.referenceStores.Get(id)
 	if !ok {
 		return fmt.Errorf("%w: reference store %s not found", ErrNotFound, id)
+	}
+
+	if refs := b.referencesByStore.Get(id); len(refs) > 0 {
+		return fmt.Errorf(
+			"%w: reference store %s still contains %d reference(s), delete them first",
+			ErrInvalidState, id, len(refs),
+		)
 	}
 
 	delete(b.tags, rs.Arn)
@@ -115,7 +126,11 @@ func (b *InMemoryBackend) ListReferenceStores(
 // Reference
 // ────────────────────────────────────────────────────────────────────────────
 
-// DeleteReference deletes a reference by store ID and reference ID.
+// DeleteReference deletes a reference by store ID and reference ID. Real AWS
+// requires any read set associated with the reference genome to be deleted
+// first (api_op_DeleteReference.go: "The read set associated with the
+// reference genome must first be deleted before deleting the reference
+// genome.").
 func (b *InMemoryBackend) DeleteReference(referenceStoreID, id string) error {
 	b.mu.Lock("DeleteReference")
 	defer b.mu.Unlock()
@@ -127,6 +142,15 @@ func (b *InMemoryBackend) DeleteReference(referenceStoreID, id string) error {
 	ref, ok := b.references.Get(parentKey(referenceStoreID, id))
 	if !ok {
 		return fmt.Errorf("%w: reference %s not found", ErrNotFound, id)
+	}
+
+	for _, rs := range b.readSets.All() {
+		if rs.ReferenceARN == ref.Arn {
+			return fmt.Errorf(
+				"%w: reference %s still has read set %s associated with it, delete it first",
+				ErrInvalidState, id, rs.ID,
+			)
+		}
 	}
 
 	delete(b.tags, ref.Arn)

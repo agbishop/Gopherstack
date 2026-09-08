@@ -148,6 +148,10 @@ func (b *InMemoryBackend) DeleteFirewallRuleGroup(ctx context.Context, id string
 
 	// Clean up tags.
 	delete(b.tagsStore(region), grp.ARN)
+	// Clean up the resource policy. Direct map access (not the lazy-creating
+	// Store helper) so deleting a group whose region never had a policy set
+	// doesn't leave behind an empty region entry.
+	delete(b.firewallRuleGroupPolicies[region], grp.ARN)
 
 	// Cascade: delete rules belonging to this group. slices.Clone before
 	// deleting in the loop -- see DeleteResolverEndpoint's comment.

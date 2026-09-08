@@ -10,8 +10,93 @@ import (
 // requiredChannelDefinitionCount is the exact number of channel definitions required for call analytics.
 const requiredChannelDefinitionCount = 2
 
+// minCallAnalyticsRules and maxCallAnalyticsRules bound the number of rules a
+// category may contain ("you must create between 1 and 20 rules").
+const (
+	minCallAnalyticsRules = 1
+	maxCallAnalyticsRules = 20
+)
+
 // supportedCallAnalyticsInputTypes returns the set of call analytics category input types.
 func supportedCallAnalyticsInputTypes() []string { return []string{"REAL_TIME", "POST_CALL"} }
+
+// supportedTranscriptFilterTypes returns the set of TranscriptFilter.TranscriptFilterType values.
+func supportedTranscriptFilterTypes() []string { return []string{"EXACT"} }
+
+// supportedSentimentValues returns the set of SentimentFilter.Sentiments values.
+func supportedSentimentValues() []string { return []string{"POSITIVE", "NEGATIVE", "NEUTRAL", "MIXED"} }
+
+// validateTranscriptFilterRule checks TranscriptFilter's required sub-fields
+// when the filter is set on a Call Analytics rule.
+func validateTranscriptFilterRule(i int, tf *TranscriptFilter) error {
+	if tf == nil {
+		return nil
+	}
+
+	if tf.TranscriptFilterType == "" {
+		return fmt.Errorf("%w: Rules[%d].TranscriptFilter.TranscriptFilterType is required", ErrValidation, i)
+	}
+
+	if !slices.Contains(supportedTranscriptFilterTypes(), tf.TranscriptFilterType) {
+		return fmt.Errorf("%w: Rules[%d].TranscriptFilter.TranscriptFilterType %q must be one of %v",
+			ErrValidation, i, tf.TranscriptFilterType, supportedTranscriptFilterTypes())
+	}
+
+	if tf.Targets == nil {
+		return fmt.Errorf("%w: Rules[%d].TranscriptFilter.Targets is required", ErrValidation, i)
+	}
+
+	return nil
+}
+
+// validateSentimentFilterRule checks SentimentFilter's required sub-fields
+// when the filter is set on a Call Analytics rule.
+func validateSentimentFilterRule(i int, sf *SentimentFilter) error {
+	if sf == nil {
+		return nil
+	}
+
+	if sf.Sentiments == nil {
+		return fmt.Errorf("%w: Rules[%d].SentimentFilter.Sentiments is required", ErrValidation, i)
+	}
+
+	for _, sentiment := range sf.Sentiments {
+		if !slices.Contains(supportedSentimentValues(), sentiment) {
+			return fmt.Errorf("%w: Rules[%d].SentimentFilter.Sentiments %q must be one of %v",
+				ErrValidation, i, sentiment, supportedSentimentValues())
+		}
+	}
+
+	return nil
+}
+
+// validateCallAnalyticsRules checks the Rules field required by
+// CreateCallAnalyticsCategory/UpdateCallAnalyticsCategory: it must be present,
+// contain 1-20 entries, and each populated filter must carry its own required
+// sub-fields (TranscriptFilter.Targets/TranscriptFilterType,
+// SentimentFilter.Sentiments).
+func validateCallAnalyticsRules(rules []CallAnalyticsRule) error {
+	if rules == nil {
+		return fmt.Errorf("%w: Rules is required", ErrValidation)
+	}
+
+	if len(rules) < minCallAnalyticsRules || len(rules) > maxCallAnalyticsRules {
+		return fmt.Errorf("%w: Rules must contain between %d and %d entries, got %d",
+			ErrValidation, minCallAnalyticsRules, maxCallAnalyticsRules, len(rules))
+	}
+
+	for i := range rules {
+		if err := validateTranscriptFilterRule(i, rules[i].TranscriptFilter); err != nil {
+			return err
+		}
+
+		if err := validateSentimentFilterRule(i, rules[i].SentimentFilter); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
 
 // validateCallAnalyticsInputType checks that an InputType is valid.
 func validateCallAnalyticsInputType(inputType string) error {
@@ -67,6 +152,10 @@ func (b *InMemoryBackend) CreateCallAnalyticsCategory(input *CallAnalyticsCatego
 	}
 
 	if err := validateCallAnalyticsInputType(input.InputType); err != nil {
+		return nil, err
+	}
+
+	if err := validateCallAnalyticsRules(input.Rules); err != nil {
 		return nil, err
 	}
 
@@ -141,6 +230,10 @@ func (b *InMemoryBackend) UpdateCallAnalyticsCategory(input *CallAnalyticsCatego
 	}
 
 	if err := validateCallAnalyticsInputType(input.InputType); err != nil {
+		return nil, err
+	}
+
+	if err := validateCallAnalyticsRules(input.Rules); err != nil {
 		return nil, err
 	}
 

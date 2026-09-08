@@ -34,7 +34,7 @@ type StorageBackend interface {
 	// Schedule group operations
 	CreateScheduleGroup(
 		ctx context.Context,
-		name, description string,
+		name string,
 		initialTags map[string]string,
 	) (*ScheduleGroup, error)
 	GetScheduleGroup(ctx context.Context, name string) (*ScheduleGroup, error)

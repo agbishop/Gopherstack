@@ -27,17 +27,15 @@ func (b *InMemoryBackend) CreateAllowList(
 	id := uuid.New().String()
 	now := time.Now().UTC()
 	al := &storedAllowList{
-		AllowListDetail: AllowListDetail{
-			ID:          id,
-			Arn:         b.allowListARN(id),
-			Name:        name,
-			Description: description,
-			Criteria:    criteria,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-			Status:      AllowListStatus{Code: "OK"},
-			Tags:        maps.Clone(tags),
-		},
+		ID:          id,
+		Arn:         b.allowListARN(id),
+		Name:        name,
+		Description: description,
+		Criteria:    criteria,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Status:      AllowListStatus{Code: "OK"},
+		Tags:        maps.Clone(tags),
 	}
 
 	b.allowLists.Put(al)
@@ -112,6 +110,7 @@ func (b *InMemoryBackend) DeleteAllowList(id string) error {
 	if !b.allowLists.Delete(id) {
 		return ErrAllowListNotFound
 	}
+	delete(b.tags, b.allowListARN(id))
 
 	return nil
 }

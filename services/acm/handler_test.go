@@ -317,7 +317,8 @@ func TestACMHandler_AcmeEndpoints(t *testing.T) {
 
 				rec := postACMJSON(t, h, "DescribeAcmeEndpoint", `{"AcmeEndpointArn":"not-an-arn"}`)
 				assert.Equal(t, http.StatusBadRequest, rec.Code)
-				assert.Contains(t, rec.Body.String(), "InvalidArnException")
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+				assert.NotContains(t, rec.Body.String(), "InvalidArnException")
 			},
 		},
 		{
@@ -358,6 +359,27 @@ func TestACMHandler_AcmeEndpoints(t *testing.T) {
 
 				descRec := postACMJSON(t, h, "DescribeAcmeEndpoint", string(delBody))
 				assert.Equal(t, http.StatusBadRequest, descRec.Code)
+			},
+		},
+		{
+			// DeleteAcmeEndpoint's deserializer declares no
+			// ResourceNotFoundException, only ValidationException --
+			// gopherstack-ftkd.
+			name: "Delete_NotFound_ReturnsValidationException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				epARN := createTestAcmeEndpoint(t, h)
+
+				delBody := `{"AcmeEndpointArn":"arn:aws:acm:us-east-1:000000000000:acme-endpoint/nope"}`
+				delRec := postACMJSON(t, h, "DeleteAcmeEndpoint", delBody)
+				assert.Equal(t, http.StatusBadRequest, delRec.Code)
+				assert.Contains(t, delRec.Body.String(), "ValidationException")
+				assert.NotContains(t, delRec.Body.String(), "ResourceNotFoundException")
+
+				descBody, _ := json.Marshal(map[string]string{"AcmeEndpointArn": epARN})
+				descRec := postACMJSON(t, h, "DescribeAcmeEndpoint", string(descBody))
+				assert.Equal(t, http.StatusOK, descRec.Code, "unrelated endpoint must be untouched")
 			},
 		},
 		{
@@ -520,16 +542,31 @@ func TestACMHandler_AcmeExternalAccountBindings(t *testing.T) {
 				revokeRec := postACMJSON(t, h, "RevokeAcmeExternalAccountBinding", string(credBody))
 				require.Equal(t, http.StatusOK, revokeRec.Code)
 
-				// Revoking again must fail (InvalidStateException, matching
-				// RevokeCertificate's already-revoked handling).
+				descBeforeRec := postACMJSON(t, h, "DescribeAcmeExternalAccountBinding", string(credBody))
+				require.Equal(t, http.StatusOK, descBeforeRec.Code)
+
+				// Revoking again must fail with ConflictException --
+				// RevokeAcmeExternalAccountBinding's deserializer declares
+				// ConflictException, not InvalidStateException, for an
+				// already-revoked EAB (gopherstack-ftkd).
 				revokeAgainRec := postACMJSON(t, h, "RevokeAcmeExternalAccountBinding", string(credBody))
 				assert.Equal(t, http.StatusBadRequest, revokeAgainRec.Code)
-				assert.Contains(t, revokeAgainRec.Body.String(), "InvalidStateException")
+				assert.Contains(t, revokeAgainRec.Body.String(), "ConflictException")
+				assert.NotContains(t, revokeAgainRec.Body.String(), "InvalidStateException")
 
+				// The rejected second revoke must not have mutated the EAB.
+				descAfterRec := postACMJSON(t, h, "DescribeAcmeExternalAccountBinding", string(credBody))
+				require.Equal(t, http.StatusOK, descAfterRec.Code)
+				assert.JSONEq(t, descBeforeRec.Body.String(), descAfterRec.Body.String())
+
+				// GetAcmeExternalAccountBindingCredentials declares neither
+				// ConflictException nor InvalidStateException, only
+				// ValidationException, for a revoked EAB (gopherstack-ftkd).
 				credAfterRevokeRec := postACMJSON(t, h, "GetAcmeExternalAccountBindingCredentials", string(credBody))
 				assert.Equal(t, http.StatusBadRequest, credAfterRevokeRec.Code,
 					"credentials must not be issued for a revoked EAB")
-				assert.Contains(t, credAfterRevokeRec.Body.String(), "InvalidStateException")
+				assert.Contains(t, credAfterRevokeRec.Body.String(), "ValidationException")
+				assert.NotContains(t, credAfterRevokeRec.Body.String(), "InvalidStateException")
 			},
 		},
 		{
@@ -576,6 +613,42 @@ func TestACMHandler_AcmeExternalAccountBindings(t *testing.T) {
 				})
 				delRec := postACMJSON(t, h, "DeleteAcmeExternalAccountBinding", string(delBody))
 				assert.Equal(t, http.StatusOK, delRec.Code)
+			},
+		},
+		{
+			// DeleteAcmeExternalAccountBinding's deserializer declares no
+			// ResourceNotFoundException, only ValidationException --
+			// gopherstack-ftkd.
+			name: "Delete_NotFound_ReturnsValidationException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				epARN := createTestAcmeEndpoint(t, h)
+				createBody, _ := json.Marshal(map[string]string{
+					"AcmeEndpointArn": epARN,
+					"RoleArn":         "arn:aws:iam::000000000000:role/acme-role",
+				})
+				createRec := postACMJSON(t, h, "CreateAcmeExternalAccountBinding", string(createBody))
+				require.Equal(t, http.StatusOK, createRec.Code)
+
+				var createOut struct {
+					ExternalAccountBinding struct {
+						AcmeExternalAccountBindingArn string `json:"AcmeExternalAccountBindingArn"`
+					} `json:"ExternalAccountBinding"`
+				}
+				require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createOut))
+				eabARN := createOut.ExternalAccountBinding.AcmeExternalAccountBindingArn
+
+				delBody := `{"AcmeExternalAccountBindingArn":"` + epARN +
+					`/acme-external-account-binding/nope"}`
+				delRec := postACMJSON(t, h, "DeleteAcmeExternalAccountBinding", delBody)
+				assert.Equal(t, http.StatusBadRequest, delRec.Code)
+				assert.Contains(t, delRec.Body.String(), "ValidationException")
+				assert.NotContains(t, delRec.Body.String(), "ResourceNotFoundException")
+
+				descBody, _ := json.Marshal(map[string]string{"AcmeExternalAccountBindingArn": eabARN})
+				descRec := postACMJSON(t, h, "DescribeAcmeExternalAccountBinding", string(descBody))
+				assert.Equal(t, http.StatusOK, descRec.Code, "unrelated EAB must be untouched")
 			},
 		},
 	}
@@ -727,6 +800,41 @@ func TestACMHandler_AcmeDomainValidations(t *testing.T) {
 				)
 				delRec := postACMJSON(t, h, "DeleteAcmeDomainValidation", string(delBody))
 				assert.Equal(t, http.StatusOK, delRec.Code)
+			},
+		},
+		{
+			// DeleteAcmeDomainValidation's deserializer declares no
+			// ResourceNotFoundException, only ValidationException --
+			// gopherstack-ftkd.
+			name: "Delete_NotFound_ReturnsValidationException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				epARN := createTestAcmeEndpoint(t, h)
+				body, _ := json.Marshal(map[string]any{
+					"AcmeEndpointArn":      epARN,
+					"DomainName":           "dv6.example.com",
+					"PrevalidationOptions": map[string]any{"DnsPrevalidation": map[string]any{}},
+				})
+				createRec := postACMJSON(t, h, "CreateAcmeDomainValidation", string(body))
+				require.Equal(t, http.StatusOK, createRec.Code)
+
+				var createOut struct {
+					AcmeDomainValidationArn string `json:"AcmeDomainValidationArn"`
+				}
+				require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createOut))
+
+				delBody := `{"AcmeDomainValidationArn":"` + epARN + `/acme-domain-validation/nope"}`
+				delRec := postACMJSON(t, h, "DeleteAcmeDomainValidation", delBody)
+				assert.Equal(t, http.StatusBadRequest, delRec.Code)
+				assert.Contains(t, delRec.Body.String(), "ValidationException")
+				assert.NotContains(t, delRec.Body.String(), "ResourceNotFoundException")
+
+				descBody, _ := json.Marshal(
+					map[string]string{"AcmeDomainValidationArn": createOut.AcmeDomainValidationArn},
+				)
+				descRec := postACMJSON(t, h, "DescribeAcmeDomainValidation", string(descBody))
+				assert.Equal(t, http.StatusOK, descRec.Code, "unrelated domain validation must be untouched")
 			},
 		},
 	}

@@ -214,14 +214,12 @@ func TestMain(m *testing.M) {
 	}
 
 	req := testcontainers.ContainerRequest{
-		FromDockerfile: testcontainers.FromDockerfile{
-			Context:       "../../",
-			Dockerfile:    dockerfile,
-			PrintBuildLog: true,
-			BuildOptionsModifier: func(options *client.ImageBuildOptions) {
-				options.NoCache = false
-				options.PullParent = false
-			},
+		Context:       "../../",
+		Dockerfile:    dockerfile,
+		PrintBuildLog: true,
+		BuildOptionsModifier: func(options *client.ImageBuildOptions) {
+			options.NoCache = false
+			options.PullParent = false
 		},
 		AutoRemove:   true,
 		ExposedPorts: []string{"8000/tcp"},

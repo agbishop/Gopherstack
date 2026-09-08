@@ -247,6 +247,72 @@ func TestPattern_AnythingButMatch(t *testing.T) {
 	}
 }
 
+// TestPattern_AnythingButNonScalarListElement_RejectedAtCompile pins the
+// gopherstack-lrgk fix: {"anything-but": [{"x":1}]} is structurally valid
+// JSON but not a form real AWS supports (anything-but lists hold only
+// strings or only numbers), so compilePattern -- and by extension PutRule --
+// must reject it rather than silently accepting a pattern that later panics
+// while matching.
+func TestPattern_AnythingButNonScalarListElement_RejectedAtCompile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+	}{
+		{
+			name:    "object element",
+			pattern: `{"foo": [{"anything-but": [{"x":1}]}]}`,
+		},
+		{
+			name:    "array element",
+			pattern: `{"foo": [{"anything-but": [["x"]]}]}`,
+		},
+		{
+			name:    "bare object value",
+			pattern: `{"foo": [{"anything-but": {"unknown-key": 1}}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := eventbridge.CompilePatternErrorForTest(tt.pattern)
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestPattern_AnythingButNonScalarListElement_NoPanic reproduces
+// gopherstack-lrgk directly: MatchPatternForTest calls compilePattern then
+// matchCompiledPattern, exactly the real matching path used by PutEvents
+// delivery. Before the fix, compilePattern accepted this pattern and
+// matchCompiledPattern panicked comparing map[string]any with ==; now
+// compilePattern rejects it, so matching never runs and the call returns
+// false instead of crashing.
+func TestPattern_AnythingButNonScalarListElement_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	got := eventbridge.MatchPatternForTest(`{"foo": [{"anything-but": [{"x":1}]}]}`, `{"foo": {"x": 1}}`)
+	assert.False(t, got)
+}
+
+// TestPattern_AnythingBut_DefenseInDepth_NoPanicWhenValidationBypassed proves
+// matchAnythingBut's reflect.DeepEqual fix (gopherstack-lrgk) holds on its
+// own, independent of validateAnythingButValue: it builds a compiledPattern
+// directly (skipping compilePattern's validation) so a non-scalar
+// anything-but list element reaches matchCompiledPattern regardless of
+// validation, and asserts matching still completes without panicking.
+func TestPattern_AnythingBut_DefenseInDepth_NoPanicWhenValidationBypassed(t *testing.T) {
+	t.Parallel()
+
+	got := eventbridge.MatchCompiledPatternBypassingValidationForTest(
+		`{"foo": [{"anything-but": [{"x":1}]}]}`, `{"foo": {"x": 1}}`,
+	)
+	assert.False(t, got)
+}
+
 // TestPattern_AnythingButNested covers the object form of anything-but, which
 // negates a nested matcher (prefix/suffix/wildcard/equals-ignore-case/numeric).
 // AWS EventBridge supports these; see the content-filtering documentation.

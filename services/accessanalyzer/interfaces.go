@@ -43,7 +43,10 @@ type StorageBackend interface {
 		maxResults int,
 		nextToken string,
 	) ([]*Finding, string, error)
-	UpdateFindings(analyzerName string, findingIDs []string, status FindingStatus) error
+	// UpdateFindings updates findings selected by findingIDs when non-empty,
+	// otherwise by resourceArn (UpdateFindingsInput.ResourceArn,
+	// serializers.go:3312-3315, an independent optional wire field).
+	UpdateFindings(analyzerName string, findingIDs []string, resourceArn string, status FindingStatus) error
 	GetFindingV2(analyzerArn, findingID string) (*Finding, error)
 	ListFindingsV2(
 		analyzerArn, status string,
@@ -76,7 +79,7 @@ type StorageBackend interface {
 	) (*PolicyGeneration, error)
 	GetPolicyGeneration(jobID string) (*PolicyGeneration, error)
 	CancelPolicyGeneration(jobID string) error
-	ListPolicyGenerations(principalArn string) ([]*PolicyGeneration, error)
+	ListPolicyGenerations(principalArn string, maxResults int, nextToken string) ([]*PolicyGeneration, string, error)
 
 	// Access previews
 	CreateAccessPreview(analyzerArn string, configurations map[string]json.RawMessage) (*AccessPreview, error)

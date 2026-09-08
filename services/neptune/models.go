@@ -145,11 +145,13 @@ type DBInstance struct {
 	EnableIAMDatabaseAuthentication bool   `json:"EnableIAMDatabaseAuthentication"`
 	MultiAZ                         bool   `json:"MultiAZ"`
 	PubliclyAccessible              bool   `json:"PubliclyAccessible"`
+	DeletionProtection              bool   `json:"DeletionProtection"`
 }
 
 // DBInstanceCreateOptions holds optional fields for CreateDBInstance.
 type DBInstanceCreateOptions struct {
 	DBParameterGroupName            string
+	DBSubnetGroupName               string
 	PreferredMaintenanceWindow      string
 	PreferredBackupWindow           string
 	AvailabilityZone                string
@@ -158,6 +160,7 @@ type DBInstanceCreateOptions struct {
 	CopyTagsToSnapshot              bool
 	EnableIAMDatabaseAuthentication bool
 	StorageEncrypted                bool
+	DeletionProtection              bool
 }
 
 // DBInstanceModifyOptions holds optional fields for ModifyDBInstance.
@@ -174,6 +177,8 @@ type DBInstanceModifyOptions struct {
 	EnableIAMDatabaseAuthentication bool
 	IamAuthSet                      bool
 	PromotionTierSet                bool
+	DeletionProtection              bool
+	DeletionProtectionSet           bool
 }
 
 // DBSubnetGroup represents a Neptune DB subnet group.

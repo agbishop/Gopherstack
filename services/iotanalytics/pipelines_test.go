@@ -11,6 +11,26 @@ import (
 	"github.com/blackbirdworks/gopherstack/services/iotanalytics"
 )
 
+// validPipelineActivities returns a minimal channel+datastore activity pair satisfying
+// CreatePipeline/UpdatePipeline's documented 2-25/channel+datastore requirement
+// (api_op_CreatePipeline.go).
+func validPipelineActivities() []iotanalytics.PipelineActivity {
+	return []iotanalytics.PipelineActivity{
+		{
+			Channel: &iotanalytics.PipelineChannelActivity{
+				Name:        "ch_act",
+				ChannelName: "src_channel",
+			},
+		},
+		{
+			Datastore: &iotanalytics.PipelineDatastoreActivity{
+				Name:          "ds_act",
+				DatastoreName: "sink_datastore",
+			},
+		},
+	}
+}
+
 func TestInMemoryBackend_Pipeline(t *testing.T) {
 	t.Parallel()
 
@@ -51,7 +71,12 @@ func TestInMemoryBackend_Pipeline(t *testing.T) {
 				require.Error(t, err)
 				assert.Equal(t, iotanalytics.ErrPipelineNotFound, err)
 			default:
-				p, err := b.CreatePipeline(context.Background(), tt.pipelineName, nil, nil)
+				p, err := b.CreatePipeline(
+					context.Background(),
+					tt.pipelineName,
+					nil,
+					validPipelineActivities(),
+				)
 				require.NoError(t, err)
 				assert.Equal(t, tt.pipelineName, p.Name)
 
@@ -93,7 +118,12 @@ func TestInMemoryBackend_DeepCopy_Pipeline(t *testing.T) {
 	t.Parallel()
 
 	b := iotanalytics.NewInMemoryBackend()
-	_, err := b.CreatePipeline(context.Background(), "immutable_pipe", map[string]string{"env": "prod"}, nil)
+	_, err := b.CreatePipeline(
+		context.Background(),
+		"immutable_pipe",
+		map[string]string{"env": "prod"},
+		validPipelineActivities(),
+	)
 	require.NoError(t, err)
 
 	p, err := b.DescribePipeline("immutable_pipe")
@@ -185,7 +215,11 @@ func TestInMemoryBackend_RunPipelineActivity_AttributeActivities(t *testing.T) {
 
 			b := iotanalytics.NewInMemoryBackend()
 
-			out, err := b.RunPipelineActivity(t.Context(), tt.activity, [][]byte{[]byte(tt.payload)})
+			out, err := b.RunPipelineActivity(
+				t.Context(),
+				tt.activity,
+				[][]byte{[]byte(tt.payload)},
+			)
 			require.NoError(t, err)
 			require.Len(t, out, 1)
 
@@ -223,7 +257,12 @@ func TestInMemoryBackend_NonNilReprocessingSummaries(t *testing.T) {
 			t.Parallel()
 
 			b := iotanalytics.NewInMemoryBackend()
-			p, err := b.CreatePipeline(context.Background(), tt.pipelineName, nil, nil)
+			p, err := b.CreatePipeline(
+				context.Background(),
+				tt.pipelineName,
+				nil,
+				validPipelineActivities(),
+			)
 			require.NoError(t, err)
 			require.NotNil(t, p.Reprocessings)
 			assert.Empty(t, p.Reprocessings)

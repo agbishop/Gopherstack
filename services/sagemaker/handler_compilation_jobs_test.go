@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -110,34 +111,39 @@ func TestHandler_DescribeCompilationJob(t *testing.T) {
 func TestHandler_StopCompilationJob(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateCompilationJob itself schedules a delayed InProgress->Completed
+	// transition, so the whole body has to stay in one bubble from the
+	// start: runDelayed's goroutine touches the backend's WaitGroup, and
+	// that must not happen both inside and outside a bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	doSageMakerRequest(
-		t,
-		h,
-		"CreateCompilationJob",
-		map[string]any{
-			"CompilationJobName": "cj-stop",
-			"RoleArn":            "arn:test",
-			"OutputConfig":       map[string]any{"S3OutputLocation": "s3://bucket/out/"},
-			"StoppingCondition":  map[string]any{"MaxRuntimeInSeconds": 3600},
-		},
-	)
-	rec := doSageMakerRequest(t, h, "StopCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
-	assert.Equal(t, http.StatusOK, rec.Code)
+		doSageMakerRequest(
+			t,
+			h,
+			"CreateCompilationJob",
+			map[string]any{
+				"CompilationJobName": "cj-stop",
+				"RoleArn":            "arn:test",
+				"OutputConfig":       map[string]any{"S3OutputLocation": "s3://bucket/out/"},
+				"StoppingCondition":  map[string]any{"MaxRuntimeInSeconds": 3600},
+			},
+		)
+		rec := doSageMakerRequest(t, h, "StopCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
+		assert.Equal(t, http.StatusOK, rec.Code)
 
-	rec = doSageMakerRequest(t, h, "DescribeCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
-	var resp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Equal(t, "STOPPING", resp["CompilationJobStatus"])
+		rec = doSageMakerRequest(t, h, "DescribeCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "STOPPING", resp["CompilationJobStatus"])
 
-	require.Eventually(t, func() bool {
-		descRec := doSageMakerRequest(t, h, "DescribeCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
-		var out map[string]any
-		require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &out))
+		time.Sleep(time.Second)
+		synctest.Wait()
 
-		return out["CompilationJobStatus"] == "STOPPED"
-	}, 2*time.Second, 10*time.Millisecond)
+		rec = doSageMakerRequest(t, h, "DescribeCompilationJob", map[string]any{"CompilationJobName": "cj-stop"})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "STOPPED", resp["CompilationJobStatus"])
+	})
 }
 
 func TestHandler_ListCompilationJobs(t *testing.T) {
@@ -569,6 +575,19 @@ func TestHandler_CompilationJob_ReachesCompleted_RealClient(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, smtypes.CompilationJobStatusInprogress, out.CompilationJobStatus)
 
+	// require.Eventually stays here deliberately (gopherstack-k3ae): wrapping
+	// this test in synctest.Test, including newTestSageMakerClient's real
+	// httptest.NewServer, deadlocks. The accept/read/write goroutines behind
+	// the real socket join the bubble (they're spawned from inside it) but
+	// block on real network I/O, which synctest does not count as "durably
+	// blocked" -- so the bubble never goes quiescent, the fake clock never
+	// advances, and runDelayed's timer for the InProgress->Completed
+	// transition never fires. Confirmed: 35s of zero output, goroutine dump
+	// showing accept/read/write parked in real IO wait, not "(durable)".
+	// The callback this polls already re-checks CompilationJobStatus before
+	// writing (compilation_jobs.go's scheduleCompilationJobCompletion), so
+	// this doesn't have the missed-intermediate-state shape gopherstack-7lrq
+	// hid behind Eventually.
 	require.Eventually(t, func() bool {
 		polled, pollErr := client.DescribeCompilationJob(t.Context(), &sagemakersdk.DescribeCompilationJobInput{
 			CompilationJobName: aws.String("cj-completes"),

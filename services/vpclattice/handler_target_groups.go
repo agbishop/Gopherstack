@@ -64,9 +64,9 @@ func (h *Handler) handleListTargetGroups(c *echo.Context) error {
 	maxResults := queryInt32(c)
 	nextToken := c.QueryParam("nextToken")
 	tgType := c.QueryParam("targetGroupType")
-	svcArn := c.QueryParam("serviceArn")
+	vpcID := c.QueryParam("vpcIdentifier")
 
-	items, next, err := h.Backend.ListTargetGroups(ctx, tgType, svcArn, maxResults, nextToken)
+	items, next, err := h.Backend.ListTargetGroups(ctx, tgType, vpcID, maxResults, nextToken)
 	if err != nil {
 		return h.handleError(c, err)
 	}

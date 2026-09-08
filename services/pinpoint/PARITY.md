@@ -37,6 +37,7 @@ ops:
   DeleteUserEndpoints: {wire: ok, errors: ok, state: ok, persist: n/a, note: "gopherstack-r80d batch 5: DeleteUserEndpointsOutput.EndpointsResponse is required (pinpoint@v1.42.4 api_op_DeleteUserEndpoints.go:44-51) and the wire is the entire body deserialized directly into it (deserializers.go:5482), not a wrapper key. The handler wrote a bare 204 No Content; the real client's decoder treats the empty body as EOF (tolerated, deserializers.go:5472) so the call succeeded with EndpointsResponse left nil — same empty-body class as batch one's lambda DeleteCapacityProvider. Fixed to return the deleted endpoints as EndpointsResponse.Item with a 200 body, matching the sibling DeleteEndpoint (singular)'s existing pattern. Locked by TestDeleteUserEndpoints_EndpointsResponse_RealClient"}
   # ops carried forward unchanged from the 2026-07-12 pass (files not touched this pass, still trusted):
   CreateJourney: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-wksweep-pp-2 (2026-08-28, acceptguard): neither WriteJourneyRequest nor JourneyResponse has a Tags member at all (pinpoint@v1.42.4 types/types.go:7118, 4227) -- journeys are taggable only through the generic TagResource/ListTagsForResource ARN-based API (tags.go), same as every other Pinpoint resource. A prior version accepted a tags field on CreateJourney/UpdateJourney and echoed it back in journeyResponse -- fabricated on BOTH the request and response sides, matching this sweep's appstream Email precedent. Fixed by removing tags/Tags from createJourneyRequest, updateJourneyRequest, and journeyResponse; the real TagResource path (already correct, storage-only via the tagHolder interface) is untouched. Real client can't send/read the field, so proof is raw-body (TestCreateJourney_RawTagsFieldIgnored, wire_field_fixes_test.go), which also exercises the real TagResource/ListTagsForResource round trip on the same journey to prove tagging still works the real way."}
+  UpdateJourney: {wire: ok, errors: fixed, state: ok, persist: ok, note: "gopherstack-os7o (2026-09-08): its only backend-emitted BadRequestException (ErrJourneyActive, rejecting an edit to an ACTIVE journey's fields) was wire-shape-declared but semantically wrong -- an ACTIVE-state rejection is a conflict with the resource's current state, not a malformed request, and botocore's per-op error docs for UpdateJourney say exactly that ('The request failed due to a conflict with the current state of the specified resource' for ConflictException vs 'The request contains a syntax error' for BadRequestException). UpdateJourney already legitimately declares ConflictException (confirmed gopherstack-uox6, 2026-08-31) but nothing emitted it. Fixed by rewiring ErrJourneyActive to awserr.ErrConflict and adding the 409 ConflictException branch in handleUpdateJourney. The other BadRequestException site (unmarshalBody's malformed-JSON path) is a real syntax error and is unchanged."}
   GetJourneyExecutionMetrics: {wire: ok, errors: ok, state: ok, persist: ok, note: "route fix from prior pass; now covered by full-state persistence too"}
   GetJourneyExecutionActivityMetrics: {wire: ok, errors: ok, state: ok, persist: ok}
   GetJourneyRunExecutionMetrics: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -81,7 +82,9 @@ families:
   Phone: {status: ok, note: "gopherstack-lffs (2026-08-20): same wrapper-key bug as Messaging, both directions on PhoneNumberValidate (see ops)."}
   Route matcher: {status: ok, note: "gopherstack-jqh2: added TestExtractOperation_SDKRouteTable (handler_paths_sdk_diff_test.go), a permanent per-op method+path diff of all 122 real ops extracted from pinpoint@v1.42.4 serializers.go against ExtractOperation, including the generic {TemplateName}/{TemplateType}/versions and /active-version paths (discriminated from the per-type Create/Get/Update/Delete paths, which use a literal type segment, not a placeholder). 122/122 pass; no route-matcher bugs found, no duplicate op-resolution table, no query-flag-discriminated ops, no wrong-date-prefix paths."}
   Persistence: {status: ok, note: "was the biggest structural gap: persistRegistry() excluded voiceTemplates/endpoints/eventStreams/channels (all store.Table-backed — mechanical fix, just needed registering) and appSettings/campaignVersions/segmentVersions/templateVersionHistory/campaignActivities/journeyRuns/appEvents/sentMessages/otpCodes (map-shaped state, added as direct JSON fields on backendSnapshot since every value type is already plain-JSON-friendly). Snapshot version bumped 1->2 so an old on-disk snapshot is cleanly discarded (not partially misdecoded) rather than silently accepted with a shape mismatch. Locked by the rewritten TestSnapshotRestore_FullStateRoundTrip, which now asserts these resource kinds SURVIVE a restart instead of asserting they don't"}
-gaps: []                 # no known divergences left open this pass
+gaps:
+  - "gopherstack-coib: PutEvents' documented per-individual-event size quota (1,000 KB) is not enforced -- only its request-level 4 MB quota is. See the gopherstack-coib Notes section."
+  - "gopherstack-coib: PayloadTooLargeException size checks are wired for the 39 ops that both model the exception (digit-safe-extracted from deserializers.go: 113 of 122 ops) and have an observable non-trivial request body in this handler. The other 74 modeled ops (GET/DELETE with an empty body) and TagResource/UntagResource/ListTagsForResource/Create{Email,InApp,Push,Sms,Voice}Template (the 9 ops that don't model the exception at all) are left unenforced -- see Notes."
 deferred:                 # consciously not audited this pass (scope) — next pass targets
   - "GetApplicationDateRangeKpi/GetCampaignDateRangeKpi/GetJourneyDateRangeKpi always return an empty KpiResult.Rows — acceptable stub-shaped-but-real-state pattern (queries real backend, returns AWS-accurate empty analytics), not re-flagged"
   - "SendMessages has thin per-channel-type payload assertions (SMS/EMAIL/push body shape) — response envelope itself is fully covered, but content-shape assertions per channel type could be deepened in a future pass"
@@ -397,3 +400,201 @@ all 5 fail against unmodified code (`api error ConflictException`).
 
 Gates: `go build`, `go vet` (repo-wide, clean), `go test -race -count=1`,
 `golangci-lint run` — all clean (`./services/pinpoint/...`).
+
+### gopherstack-coib (2026-09-06): PayloadTooLargeException wired for the ops with an observable request body
+
+`PayloadTooLargeException` (`pinpoint@v1.42.4/types/errors.go:179`) is modeled by 113 of the
+122 ops with a `deserializeOpError<Op>` function (digit-safe-extracted:
+`awk "/^func awsRestjson1_deserializeOpError<Op>\(/,/^}/" deserializers.go | grep -oE
+'"[A-Za-z0-9]+"'`) but the handler never emitted it. `types/errors.go`'s doc comment on the
+type ("Provides information about an API request or response.") is generic boilerplate shared
+verbatim by all 8 exception types in that file, not resource-specific documentation, so it
+carries no numeric information.
+
+The pinned SDK has no numeric size field to verify a threshold against, so the number is
+**sourced from AWS documentation, not the SDK**: https://docs.aws.amazon.com/pinpoint/latest/developerguide/quotas.html,
+API request quotas section, verbatim: "The maximum size of an invocation (request and response)
+payload is 7 MB, unless otherwise specified for a particular type of resource." That qualifier
+matters: the same page specifies smaller limits for two resource types --
+
+- Event ingestion quotas: "Maximum size of a request | 4 MB" (supersedes the general 7 MB for
+  `PutEvents`).
+- Endpoint quotas: "Endpoint size | Maximum size 15 KB" (supersedes the general 7 MB for a
+  single `UpdateEndpoint` body). The same table's `EndpointBatchItem`/`EndpointBatchRequest`
+  row reaffirms the general 7 MB for `UpdateEndpointsBatch` rather than overriding it, so that
+  op keeps the general limit.
+
+A single blanket 7 MB check across every op would have contradicted the page it cites, so
+implementation is scoped: the general 7 MB ceiling (`maxInvocationPayloadBytes`,
+`payload_size.go`) applies to every op below that models the exception and has no more specific
+documented limit; `PutEvents` and `UpdateEndpoint` get their own, smaller constants.
+
+**39 ops enforced** (every write handler where `httputils.ReadBody`'s raw byte length is
+observable before JSON-decoding): `CreateApp`, `CreateCampaign`, `CreateExportJob`,
+`CreateImportJob`, `CreateJourney`, `CreateRecommenderConfiguration`, `CreateSegment`,
+`PhoneNumberValidate`, `PutEventStream`, `PutEvents`, `RemoveAttributes`, `SendMessages`,
+`SendOTPMessage`, `SendUsersMessages`, `Update{Adm,Apns,ApnsSandbox,ApnsVoip,ApnsVoipSandbox,
+Baidu,Email,Gcm,Sms,Voice}Channel`, `UpdateApplicationSettings`, `UpdateCampaign`,
+`UpdateEndpoint`, `UpdateEndpointsBatch`, `Update{Email,InApp,Push,Sms,Voice}Template`,
+`UpdateJourney`, `UpdateJourneyState`, `UpdateRecommenderConfiguration`, `UpdateSegment`,
+`UpdateTemplateActiveVersion`, `VerifyOTPMessage`.
+
+**Deliberately left unenforced**, both disclosed as `gaps` above:
+
+- The other 74 ops that model `PayloadTooLargeException` are GET/DELETE ops with no
+  meaningful request body in this handler (an empty body can never exceed any positive
+  threshold), plus the 9 ops the SDK does *not* model the exception on at all
+  (`TagResource`/`UntagResource`/`ListTagsForResource`,
+  `Create{Email,InApp,Push,Sms,Voice}Template`) are untouched. AWS's own exception applies to
+  the response side too ("invocation (request **and response**) payload"), which would in
+  principle apply to these read ops' output, but this backend has no chokepoint that measures
+  an assembled response body's size before writing it, and retrofitting one is a materially
+  larger change than wiring the modeled-but-unemitted exception this bug is about.
+- `PutEvents`' per-individual-event quota ("Maximum size of an individual event | 1,000 KB",
+  same Event ingestion quotas table) is not enforced. Once the raw body is JSON-decoded into
+  `putEventsRequest` (`wire.go`), an individual event's raw byte length is no longer observable
+  without a raw-message decode path (e.g. `map[string]json.RawMessage`) this handler doesn't
+  have; adding one is a distinct, larger change than the request-level check, which reuses the
+  same raw-`body`-length pattern already used everywhere else in this fix.
+
+7 MB / 4 MB are implemented as `7 * 1024 * 1024` / `4 * 1024 * 1024` bytes (binary, not decimal)
+to match this repo's existing convention for AWS's own "MB" quota language
+(`pkgs/httputils.MaxRequestBodyBytes` documents Lambda's "6 MB" synchronous-invoke limit as
+6 MiB); 15 KB is `15 * 1024` bytes for the same reason.
+
+Regression coverage: `payload_size_test.go` boundary-tests all three thresholds (at-limit
+succeeds, one byte over is rejected with `PayloadTooLargeException`/413) via `CreateApp`
+(general), `PutEvents` (event-specific, plus a case between 4 MB and 7 MB proving the specific
+limit — not the general one — governs), and `UpdateEndpoint` (endpoint-specific, plus a case
+between 15 KB and 7 MB proving the same). All three failed against pre-fix code (verified by
+reverting the 15 touched files to `HEAD`, confirming the package still built, running the new
+tests to see them fail with the exact predicted status-code mismatch, then restoring the fix
+byte-for-byte).
+
+## 2026-09-08: writeErrorResponse nil-on-write fall-through audit (gopherstack-246v) -- found and fixed
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `writeErrorResponse`
+(`handler.go:506`) writes the JSON error body and unconditionally `return nil`s. Any helper
+that rejects via `return writeErrorResponse(...)` and is called by code storing and checking
+the result would get a silent nil and fall through past the rejection.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test file in this
+package (26k lines, the largest in this batch after quicksight, flat, no subdirectories)
+computed the fixed-point closure seeded with `writeErrorResponse`: find every function with a
+bare `return <sink>(...)`, add it, repeat to convergence. `ServeHTTP` (`handler.go:383`,
+returned as-is by `Handler()` and registered directly with echo) is pinpoint's dispatch
+entry; its own unrecognized-path fallback and every `dispatchXxx` sub-router it calls end
+their default cases in a direct `return writeErrorResponse(...)`, pulling them into the
+closure automatically along with the ~85 `handleXxx` op handlers those routers call — no
+separate dispatch/non-dispatch partition was needed, since the same call-site sweep covers
+both.
+
+The closure converged at 107 functions. Every call site of every one of those 107 was
+re-walked and classified: 340 total call sites. 336 are `return <fn>(...)` (direct-return,
+safe) -- this includes 3 sites where `writeErrorResponse`'s result is stored but explicitly
+discarded (`_ = writeErrorResponse(...)`) inside a `bool`-returning checked-helper
+(`unmarshalBody`, `checkPayloadSize`, mirroring mwaa's `decodeJSONBody` pattern), which is
+safe: callers check the returned `bool`, never the discarded `error`.
+
+**One broken instance found**, at `handler_templates.go:355` (now fixed) in
+`handleUpdateTemplate`:
+
+```go
+if updateErr := h.applyTemplateUpdate(c, body, templateName, templateType); updateErr != nil {
+    return updateErr
+}
+httputils.WriteJSON(c.Request().Context(), c.Response(), http.StatusAccepted,
+    messageBodyResponse{Message: acceptedMessage})
+return nil
+```
+
+`applyTemplateUpdate` and the five `update{Email,InApp,Push,SMS,Voice}TemplateFromBody`
+functions it dispatched to each had exactly one caller and each rejected (unknown template
+type, invalid JSON body, or a backend error such as the template not existing) via a direct
+`return writeErrorResponse(...)` / `return writeNotFoundOrInternal(...)` — correct in
+isolation, but that made `applyTemplateUpdate` return `nil` on *every* path, success or
+rejected. `handleUpdateTemplate`'s `updateErr != nil` guard therefore never fired, and a
+rejected `PUT /v1/templates/{name}/{type}` always fell through to writing a second, spurious
+`202 Accepted` response on top of the already-committed rejection.
+
+Unlike elasticache's instance, no double *backend* mutation results (none of the five
+`update*FromBody` functions call the backend again after a rejection), so the observable
+damage is a corrupted HTTP response body, not a phantom-created resource. Status code alone
+does not distinguish fixed from broken: echo's own `Response.WriteHeader` guards on
+`Committed` and silently drops the second status, so `rec.Code` is 404 either way. But the
+`httptest.ResponseRecorder` used by this package's tests has no `Content-Length`
+enforcement (unlike a real `net/http` server, which would return `http.ErrContentLength`
+from the second `Write` and truncate it) — so the second write's bytes land in `rec.Body`
+verbatim. `TestUpdateTemplate_RejectedUpdate_DoesNotDoubleWrite`
+(`handler_templates_rejection_test.go`) asserts on that: against unmodified code it fails
+with body
+`{"__type":"NotFoundException","message":"NotFoundException: app not found"}{"Message":"Accepted"}`
+(concatenated, invalid JSON; `json.Unmarshal` on it fails with `invalid character '{' after
+top-level value`), and an `echo: response already written to client` ERROR log fires from
+echo's own guard. Confirmed failing against the pre-fix tree before applying the fix, then
+passing after.
+
+**Fix** (one caller at each level, so per the elasticache pattern: raw unwritten error mapped
+at the call site, no sentinel needed): `applyTemplateUpdate` and the five
+`update*TemplateFromBody` functions no longer take `*echo.Context` or write anything — they
+return the raw backend error, or the existing `errInvalidRequestBody` sentinel (already used
+elsewhere in this file for the same "bad JSON" case) for a decode failure, or a new
+`errUnknownTemplateType` sentinel for an unrecognized type. `handleUpdateTemplate` maps and
+writes the result exactly once, directly returning in every branch.
+
+Gates: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/pinpoint/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/pinpoint/...` ok (includes the new
+regression test). No handler dispatch table changed, so no repo-wide blast-radius run was
+needed beyond the package itself.
+
+## 2026-09-08 gopherstack-os7o: UpdateJourney's BadRequestException on an ACTIVE journey retargeted to ConflictException
+
+Filed title-only ("UpdateJourney returns BadRequestException where ConflictException may
+fit"), hedged. Enumerated every `BadRequestException` emission reachable from
+`UpdateJourney`: two sites. (1) `unmarshalBody` (`handler.go`), on malformed JSON --
+a real syntax error, correct as-is, unchanged. (2) `handler_journeys.go`'s
+`errors.Is(backendErr, awserr.ErrInvalidParameter)` branch in `handleUpdateJourney`,
+wrapping `ErrJourneyActive` (`errors.go`), emitted from `journeys.go`'s
+`UpdateJourney` when `j.State == journeyStateActive` -- the only condition that function
+checks before applying field updates.
+
+Read `UpdateJourney`'s full modeled error set from
+`awsRestjson1_deserializeOpErrorUpdateJourney` (`pinpoint@v1.42.4` `deserializers.go:18741`,
+switch at `18781-18800+`): `BadRequestException`, `ConflictException`,
+`ForbiddenException`, `InternalServerErrorException`, `MethodNotAllowedException`,
+`NotFoundException`, `PayloadTooLargeException`, plus `TooManyRequestsException` further
+down (truncated in the read range but present per the errtargetaudit sweep's count).
+Both `types/errors.go`'s `BadRequestException` and `ConflictException` doc comments are
+identical generic boilerplate ("Provides information about an API request or response.") --
+the Go SDK carries no per-type distinction, consistent with gopherstack-coib's finding on the
+same file.
+
+Second oracle, decisive: botocore's `pinpoint/2016-12-01/service-2.json.gz`. `UpdateJourney`'s
+own `errors` list carries **per-operation** documentation distinct from the generic shape
+docs: `BadRequestException` -- "The request contains a syntax error (BadRequestException)";
+`ConflictException` -- "The request failed due to a conflict with the current state of the
+specified resource (ConflictException)". Rejecting a structurally-valid `UpdateJourney`
+request solely because the target journey is currently ACTIVE is exactly "a conflict with
+the current state of the specified resource," not a syntax error -- the request body itself
+is fine. This also lines up with gopherstack-uox6 (2026-08-31)'s finding that `UpdateJourney`
+is the package's only op that legitimately declares `ConflictException`, which until this
+fix nothing in the package ever emitted.
+
+**Verdict: (a) wrong code, fixed.** `ErrJourneyActive` (`errors.go`) now wraps
+`awserr.ErrConflict` instead of `awserr.ErrInvalidParameter`; `handleUpdateJourney`
+(`handler_journeys.go`) gained an `errors.Is(backendErr, awserr.ErrConflict)` branch writing
+`409 ConflictException`, following the exact pattern already used by `handleCreateApp`
+(`handler_apps.go:98-99`).
+
+**Pre-existing test asserted the old code**: `TestJourneyUpdate_BlockedWhenActive`
+(`journeys_test.go`) asserted only `http.StatusBadRequest` on the update-while-ACTIVE path.
+Updated in place to assert `http.StatusConflict` plus the response body's `__type` ==
+`"ConflictException"`; confirmed it fails against unmodified code first, with the exact body
+`{"__type":"BadRequestException","message":"BadRequestException: journey is ACTIVE and cannot
+be modified"}`. Added `TestJourneyUpdate_BlockedWhenActive_RealClient`, driving the real
+`aws-sdk-go-v2/service/pinpoint` client and asserting `errors.As` unwraps to
+`*types.ConflictException` and explicitly does NOT unwrap to `*types.BadRequestException` --
+the errors.As-matching concern this whole error-code campaign exists to catch.
+
+Gates: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/pinpoint/...` -- 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/pinpoint/...` -- ok.

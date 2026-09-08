@@ -58,6 +58,55 @@ func (b *InMemoryBackend) CancelReplicationTaskAssessmentRun(
 	return nil
 }
 
+// StartReplicationTaskAssessment validates and returns the replication task
+// for a premigration data-type assessment. Real AWS requires the task to be
+// stopped with successful prior connection tests to both endpoints, else it
+// throws InvalidResourceStateFault (databasemigrationservice@v1.66.4
+// api_op_StartReplicationTaskAssessment.go:16-23).
+func (b *InMemoryBackend) StartReplicationTaskAssessment(
+	ctx context.Context,
+	taskArn string,
+) (*ReplicationTask, error) {
+	b.mu.RLock("StartReplicationTaskAssessment")
+	defer b.mu.RUnlock()
+
+	rt := b.findTask(ctx, taskArn)
+	if rt == nil {
+		return nil, fmt.Errorf("%w: replication task %s not found", ErrNotFound, taskArn)
+	}
+
+	if rt.Status != statusStopped {
+		return nil, fmt.Errorf(
+			"%w: replication task %s must be stopped to start an assessment; current status is %s",
+			ErrInvalidState,
+			taskArn,
+			rt.Status,
+		)
+	}
+
+	region := getRegion(ctx, b.region)
+	if !b.hasSuccessfulConnection(region, rt.ReplicationInstanceArn, rt.SourceEndpointArn) ||
+		!b.hasSuccessfulConnection(region, rt.ReplicationInstanceArn, rt.TargetEndpointArn) {
+		return nil, fmt.Errorf(
+			"%w: replication task %s requires successful TestConnection results for its source and target endpoints",
+			ErrInvalidState,
+			taskArn,
+		)
+	}
+
+	cp := *rt
+
+	return &cp, nil
+}
+
+// hasSuccessfulConnection reports whether a prior TestConnection between the
+// given replication instance and endpoint recorded status "successful".
+func (b *InMemoryBackend) hasSuccessfulConnection(region, replicationInstanceArn, endpointArn string) bool {
+	conn, ok := b.connections.Get(regionKey(region, replicationInstanceArn+":"+endpointArn))
+
+	return ok && conn.Status == statusSuccessful
+}
+
 // resolveAssessmentNames computes the set of individual assessment names an
 // assessment run should execute: includeOnly if given, else the default
 // catalog minus exclude, else the full default catalog.

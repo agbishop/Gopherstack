@@ -104,7 +104,7 @@ func TestKMSGenerateDataKeyWithoutPlaintext(t *testing.T) {
 // ValidationException, not a 500 InternalServiceError. Before the fix,
 // generateKeyMaterial's "unsupported key spec" sentinel was never wrapped with
 // ErrValidation, so classifyKMSError fell through to its default 500 branch.
-func TestKMS_InvalidKeySpec_Returns400ValidationException(t *testing.T) {
+func TestKMS_InvalidKeySpec_Returns400UnsupportedOperationException(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -166,7 +166,7 @@ func TestKMS_InvalidKeySpec_Returns400ValidationException(t *testing.T) {
 
 			var errResp kms.ErrorResponse
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
-			assert.Equal(t, "ValidationException", errResp.Type)
+			assert.Equal(t, "UnsupportedOperationException", errResp.Type)
 		})
 	}
 }

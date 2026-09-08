@@ -196,10 +196,14 @@ func (b *InMemoryBackend) ListDomainsForPackage(ctx context.Context, packageID s
 }
 
 // ListPackagesForDomain returns all packages associated with a domain.
-func (b *InMemoryBackend) ListPackagesForDomain(ctx context.Context, domainName string) []*Package {
+func (b *InMemoryBackend) ListPackagesForDomain(ctx context.Context, domainName string) ([]*Package, error) {
 	region := getRegion(ctx, b.region)
 	b.mu.RLock("ListPackagesForDomain")
 	defer b.mu.RUnlock()
+
+	if _, exists := b.domainGet(region, domainName); !exists {
+		return nil, fmt.Errorf("%w: domain %s not found", ErrDomainNotFound, domainName)
+	}
 
 	var result []*Package
 	for packageID, assocs := range b.packageAssociationsStoreRO(region) {
@@ -211,7 +215,7 @@ func (b *InMemoryBackend) ListPackagesForDomain(ctx context.Context, domainName 
 		}
 	}
 
-	return result
+	return result, nil
 }
 
 // UpdatePackage updates a package description.

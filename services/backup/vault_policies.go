@@ -134,12 +134,26 @@ func (b *InMemoryBackend) GetBackupVaultLockConfig(vaultName string) (*VaultLock
 }
 
 // DeleteBackupVaultLockConfiguration deletes the lock configuration for a vault.
+// PutBackupVaultLockConfiguration's own doc comment: "On and after the lock
+// date, the Vault Lock becomes immutable and cannot be changed or deleted" --
+// PutBackupVaultLockConfiguration already enforces this for updates; this was
+// its unenforced sibling for deletes.
 func (b *InMemoryBackend) DeleteBackupVaultLockConfiguration(vaultName string) error {
 	b.mu.Lock("DeleteBackupVaultLockConfiguration")
 	defer b.mu.Unlock()
 
 	if !b.vaults.Has(vaultName) {
 		return fmt.Errorf("%w: vault %s not found", ErrNotFound, vaultName)
+	}
+
+	if existing, ok := b.vaultLockConfigs.Get(vaultName); ok {
+		if existing.LockDate != nil && time.Now().UTC().After(*existing.LockDate) {
+			return fmt.Errorf(
+				"%w: vault lock configuration is immutable: LockDate %s has passed",
+				ErrInvalidRequest,
+				existing.LockDate.Format(time.RFC3339),
+			)
+		}
 	}
 
 	b.vaultLockConfigs.Delete(vaultName)

@@ -3,6 +3,7 @@ package rds_test
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -541,4 +542,30 @@ func TestInMemoryBackend_FullStateSnapshotRestoreRoundTrip(t *testing.T) {
 	assert.Equal(t, 1, rds.InstanceRoleCount(fresh, "inst1"))
 	snapTenants := fresh.DescribeDBSnapshotTenantDatabases("snap1", "")
 	assert.Len(t, snapTenants, 1)
+}
+
+func TestRestore_ReconcilesPendingInstanceTransition(t *testing.T) {
+	t.Parallel()
+
+	b := rds.NewInMemoryBackend("000000000000", "us-east-1")
+	_, err := b.CreateDBInstance(
+		"pending-restore", "postgres", "db.t3.micro", "", "", "", 20, rds.DBInstanceOptions{},
+	)
+	require.NoError(t, err)
+
+	// Simulate a snapshot taken mid-transition, and a restart happening well
+	// after the transition should have completed.
+	rds.SetInstanceReadyAtForTest(b, "pending-restore", time.Now().Add(-time.Hour))
+
+	snap := b.Snapshot(t.Context())
+	require.NotNil(t, snap)
+
+	restored := rds.NewInMemoryBackend("000000000000", "us-east-1")
+	require.NoError(t, restored.Restore(t.Context(), snap))
+
+	instances, err := restored.DescribeDBInstances("pending-restore")
+	require.NoError(t, err)
+	require.Len(t, instances, 1)
+	assert.Equal(t, "available", instances[0].DBInstanceStatus,
+		"instance should have completed its pending transition on restore, not stay stuck")
 }

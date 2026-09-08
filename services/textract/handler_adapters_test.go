@@ -2,6 +2,7 @@ package textract_test
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"testing"
 
@@ -156,6 +157,15 @@ func TestHandler_DeleteAdapter_CascadesVersions(t *testing.T) {
 	// Create a version
 	versionResp := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
 		"AdapterId": adapterID,
+		"DatasetConfig": map[string]any{
+			"ManifestS3Object": map[string]any{
+				"Bucket": "test-dataset-bucket",
+				"Name":   "manifest.json",
+			},
+		},
+		"OutputConfig": map[string]any{
+			"S3Bucket": "test-output-bucket",
+		},
 	})
 	require.Equal(t, http.StatusOK, versionResp.Code)
 
@@ -219,8 +229,10 @@ func TestHandler_CreateAdapter_ClientRequestTokenDedup(t *testing.T) {
 }
 
 // TestHandler_UpdateAdapter_PreservesNameAndFeatureTypes verifies that
-// UpdateAdapter does not modify AdapterName or FeatureTypes; only Description
-// and AutoUpdate are mutable.
+// omitting AdapterName leaves it unchanged, and that FeatureTypes is never
+// mutable (real AWS: "FeatureTypes configurations cannot be updated",
+// api_op_UpdateAdapter.go:14). AdapterName itself IS updatable when supplied
+// -- see TestHandler_UpdateAdapter_PartialUpdateSemantics.
 func TestHandler_UpdateAdapter_PreservesNameAndFeatureTypes(t *testing.T) {
 	t.Parallel()
 
@@ -396,6 +408,85 @@ func TestHandler_UpdateAdapter_NotFound(t *testing.T) {
 	var errResp map[string]string
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
 	assert.Equal(t, "ResourceNotFoundException", errResp["__type"])
+}
+
+// TestHandler_UpdateAdapter_PartialUpdateSemantics verifies that
+// UpdateAdapter treats AdapterName and Description as true optionals: an
+// omitted field leaves the existing value unchanged, an explicit value
+// (including "") overwrites it, and AdapterName is in fact updatable (real
+// AWS's UpdateAdapterInput.AdapterName, api_op_UpdateAdapter.go, is not the
+// FeatureTypes field the doc comment says is immutable).
+func TestHandler_UpdateAdapter_PartialUpdateSemantics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		update     map[string]any
+		name       string
+		wantName   string
+		wantDesc   string
+		wantStatus int
+	}{
+		{
+			name:       "adapter name is updatable",
+			update:     map[string]any{"AdapterName": "renamed"},
+			wantName:   "renamed",
+			wantDesc:   "original",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "omitted description is preserved",
+			update:     map[string]any{"AutoUpdate": "ENABLED"},
+			wantName:   "original-name",
+			wantDesc:   "original",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "explicit empty description clears it",
+			update:     map[string]any{"Description": ""},
+			wantName:   "original-name",
+			wantDesc:   "",
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "no fields at all is rejected",
+			update:     map[string]any{},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+
+			createRec := doTextractRequest(t, h, "CreateAdapter", map[string]any{
+				"AdapterName":  "original-name",
+				"FeatureTypes": []string{"FORMS"},
+				"Description":  "original",
+			})
+			require.Equal(t, http.StatusOK, createRec.Code)
+
+			var createResp map[string]string
+			require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createResp))
+			adapterID := createResp["AdapterId"]
+
+			body := map[string]any{"AdapterId": adapterID}
+			maps.Copy(body, tt.update)
+
+			updateRec := doTextractRequest(t, h, "UpdateAdapter", body)
+			require.Equal(t, tt.wantStatus, updateRec.Code)
+
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+
+			var updateResp map[string]any
+			require.NoError(t, json.Unmarshal(updateRec.Body.Bytes(), &updateResp))
+			assert.Equal(t, tt.wantName, updateResp["AdapterName"])
+			assert.Equal(t, tt.wantDesc, updateResp["Description"])
+		})
+	}
 }
 
 // TestHandler_ListAdapters_HappyPath tests ListAdapters with multiple entries.

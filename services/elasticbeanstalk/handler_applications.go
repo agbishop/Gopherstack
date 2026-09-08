@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/url"
+	"strconv"
 )
 
 // --- Application operations ---
@@ -211,7 +212,9 @@ func (h *Handler) handleDeleteApplication(ctx context.Context, vals url.Values) 
 		return nil, fmt.Errorf("%w: ApplicationName is required", ErrInvalidParameter)
 	}
 
-	if err := h.Backend.DeleteApplication(ctx, name); err != nil {
+	terminateEnvByForce, _ := strconv.ParseBool(vals.Get("TerminateEnvByForce"))
+
+	if err := h.Backend.DeleteApplication(ctx, name, terminateEnvByForce); err != nil {
 		return nil, err
 	}
 

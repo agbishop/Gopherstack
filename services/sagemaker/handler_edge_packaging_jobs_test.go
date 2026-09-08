@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -13,103 +14,110 @@ import (
 func TestHandler_EdgePackagingJobLifecycle(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateEdgePackagingJob schedules its own STARTING->COMPLETED
+	// transition immediately, so the whole body stays in one bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	// Create
-	rec := doSageMakerRequest(t, h, "CreateEdgePackagingJob", map[string]any{
-		"EdgePackagingJobName": "my-edge-job",
-		"ModelName":            "my-model",
-		"ModelVersion":         "1.0",
-		"RoleArn":              "arn:aws:iam::000000000000:role/TestRole",
-		"CompilationJobName":   "my-comp-job",
-		"OutputConfig": map[string]any{
-			"S3OutputLocation": "s3://bucket/edge-out",
-		},
-	})
-	assert.Equal(t, http.StatusOK, rec.Code)
+		// Create
+		rec := doSageMakerRequest(t, h, "CreateEdgePackagingJob", map[string]any{
+			"EdgePackagingJobName": "my-edge-job",
+			"ModelName":            "my-model",
+			"ModelVersion":         "1.0",
+			"RoleArn":              "arn:aws:iam::000000000000:role/TestRole",
+			"CompilationJobName":   "my-comp-job",
+			"OutputConfig": map[string]any{
+				"S3OutputLocation": "s3://bucket/edge-out",
+			},
+		})
+		assert.Equal(t, http.StatusOK, rec.Code)
 
-	var createResp map[string]string
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
-	assert.Contains(t, createResp["EdgePackagingJobArn"], "my-edge-job")
+		var createResp map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &createResp))
+		assert.Contains(t, createResp["EdgePackagingJobArn"], "my-edge-job")
 
-	// Describe
-	rec = doSageMakerRequest(t, h, "DescribeEdgePackagingJob", map[string]any{
-		"EdgePackagingJobName": "my-edge-job",
-	})
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var descResp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
-	assert.Equal(t, "my-edge-job", descResp["EdgePackagingJobName"])
-	assert.Equal(t, "my-model", descResp["ModelName"])
-	assert.Equal(t, "1.0", descResp["ModelVersion"])
-	assert.Equal(t, "STARTING", descResp["EdgePackagingJobStatus"])
-
-	outputConfig, ok := descResp["OutputConfig"].(map[string]any)
-	require.True(t, ok, "DescribeEdgePackagingJob must return OutputConfig")
-	assert.Equal(t, "s3://bucket/edge-out", outputConfig["S3OutputLocation"])
-
-	// List
-	rec = doSageMakerRequest(t, h, "ListEdgePackagingJobs", map[string]any{})
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	var listResp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listResp))
-	summaries := listResp["EdgePackagingJobSummaries"].([]any)
-	assert.Len(t, summaries, 1)
-
-	// Stop
-	rec = doSageMakerRequest(t, h, "StopEdgePackagingJob", map[string]any{
-		"EdgePackagingJobName": "my-edge-job",
-	})
-	assert.Equal(t, http.StatusOK, rec.Code)
-
-	// Verify stopping -- correct immediately after Stop, but an assertion that
-	// only checks this moment cannot catch a machine that never advances.
-	rec = doSageMakerRequest(t, h, "DescribeEdgePackagingJob", map[string]any{
-		"EdgePackagingJobName": "my-edge-job",
-	})
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
-	assert.Equal(t, "STOPPING", descResp["EdgePackagingJobStatus"])
-
-	// Confirm it actually reaches STOPPED.
-	require.Eventually(t, func() bool {
-		descRec := doSageMakerRequest(t, h, "DescribeEdgePackagingJob", map[string]any{
+		// Describe
+		rec = doSageMakerRequest(t, h, "DescribeEdgePackagingJob", map[string]any{
 			"EdgePackagingJobName": "my-edge-job",
 		})
-		var out map[string]any
-		require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &out))
+		assert.Equal(t, http.StatusOK, rec.Code)
 
-		return out["EdgePackagingJobStatus"] == "STOPPED"
-	}, 2*time.Second, 10*time.Millisecond)
+		var descResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "my-edge-job", descResp["EdgePackagingJobName"])
+		assert.Equal(t, "my-model", descResp["ModelName"])
+		assert.Equal(t, "1.0", descResp["ModelVersion"])
+		assert.Equal(t, "STARTING", descResp["EdgePackagingJobStatus"])
+
+		outputConfig, ok := descResp["OutputConfig"].(map[string]any)
+		require.True(t, ok, "DescribeEdgePackagingJob must return OutputConfig")
+		assert.Equal(t, "s3://bucket/edge-out", outputConfig["S3OutputLocation"])
+
+		// List
+		rec = doSageMakerRequest(t, h, "ListEdgePackagingJobs", map[string]any{})
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		var listResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listResp))
+		summaries := listResp["EdgePackagingJobSummaries"].([]any)
+		assert.Len(t, summaries, 1)
+
+		// Stop
+		rec = doSageMakerRequest(t, h, "StopEdgePackagingJob", map[string]any{
+			"EdgePackagingJobName": "my-edge-job",
+		})
+		assert.Equal(t, http.StatusOK, rec.Code)
+
+		// Verify stopping -- correct immediately after Stop, but an assertion that
+		// only checks this moment cannot catch a machine that never advances.
+		rec = doSageMakerRequest(t, h, "DescribeEdgePackagingJob", map[string]any{
+			"EdgePackagingJobName": "my-edge-job",
+		})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "STOPPING", descResp["EdgePackagingJobStatus"])
+
+		// Confirm it actually reaches STOPPED.
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		rec = doSageMakerRequest(t, h, "DescribeEdgePackagingJob", map[string]any{
+			"EdgePackagingJobName": "my-edge-job",
+		})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "STOPPED", descResp["EdgePackagingJobStatus"])
+	})
 }
 
 func TestHandler_EdgePackagingJob_ReachesCompleted(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateEdgePackagingJob schedules its own STARTING->COMPLETED
+	// transition immediately, so the whole body stays in one bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	rec := doSageMakerRequest(t, h, "CreateEdgePackagingJob", map[string]any{
-		"EdgePackagingJobName": "edge-job-completes",
-		"ModelName":            "my-model",
-		"ModelVersion":         "1.0",
-		"RoleArn":              "arn:aws:iam::000000000000:role/TestRole",
-		"CompilationJobName":   "my-comp-job",
-		"OutputConfig": map[string]any{
-			"S3OutputLocation": "s3://bucket/edge-out",
-		},
-	})
-	require.Equal(t, http.StatusOK, rec.Code)
+		rec := doSageMakerRequest(t, h, "CreateEdgePackagingJob", map[string]any{
+			"EdgePackagingJobName": "edge-job-completes",
+			"ModelName":            "my-model",
+			"ModelVersion":         "1.0",
+			"RoleArn":              "arn:aws:iam::000000000000:role/TestRole",
+			"CompilationJobName":   "my-comp-job",
+			"OutputConfig": map[string]any{
+				"S3OutputLocation": "s3://bucket/edge-out",
+			},
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
 
-	require.Eventually(t, func() bool {
+		time.Sleep(time.Second)
+		synctest.Wait()
+
 		descRec := doSageMakerRequest(t, h, "DescribeEdgePackagingJob", map[string]any{
 			"EdgePackagingJobName": "edge-job-completes",
 		})
 		var out map[string]any
 		require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &out))
-
-		return out["EdgePackagingJobStatus"] == "COMPLETED"
-	}, 2*time.Second, 10*time.Millisecond)
+		assert.Equal(t, "COMPLETED", out["EdgePackagingJobStatus"])
+	})
 }
 
 func TestHandler_EdgePackagingJob_NotFound(t *testing.T) {

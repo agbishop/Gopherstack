@@ -1,5 +1,7 @@
 package rdsdata
 
+import "time"
+
 // Field represents a single field value in an RDS Data API record.
 //
 // ArrayValue is modeled for wire completeness (it is a real member of the
@@ -90,9 +92,16 @@ type ResultFrame struct {
 }
 
 // Transaction represents an in-progress database transaction.
+//
+// CreatedAt and LastActivityAt back the Janitor's expiry rules (janitor.go),
+// which mirror BeginTransaction's documented lifetime (rdsdata@v1.35.4
+// api_op_BeginTransaction.go): a transaction is rolled back automatically
+// after 24 hours, or after 3 minutes with no call using its transaction ID.
 type Transaction struct {
-	TransactionID string `json:"transactionId"`
-	Status        string `json:"status"`
+	CreatedAt      time.Time `json:"createdAt"`
+	LastActivityAt time.Time `json:"lastActivityAt"`
+	TransactionID  string    `json:"transactionId"`
+	Status         string    `json:"status"`
 }
 
 // ExecutedStatement represents a record of an executed SQL statement.

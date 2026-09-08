@@ -185,7 +185,7 @@ func TestCloudWatchLogsBackend_BoundedMaps(t *testing.T) {
 
 		_, err := b.CreateLogGroup(context.Background(), "g", "", "")
 		require.NoError(t, err)
-		_, err = b.CreateExportTask("", "g", "", "bucket2", "", 1, 2)
+		_, err = b.CreateExportTask(context.Background(), "", "g", "", "bucket2", "", 1, 2)
 		require.ErrorIs(t, err, cloudwatchlogs.ErrValidation)
 	})
 }

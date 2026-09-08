@@ -237,6 +237,55 @@ func TestDeleteDataset_NotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestDeleteDataset_UsedByProject verifies a dataset still referenced by a
+// project cannot be deleted: CreateJob's validateJobResourceRefs already
+// refuses to create a job naming a nonexistent dataset, so allowing
+// DeleteDataset to orphan an existing project's DatasetName would produce
+// the exact dangling reference that check exists to prevent.
+// ConflictException is modeled for DeleteDataset (aws-sdk-go-v2/service/
+// databrew's awsRestjson1_deserializeOpErrorDeleteDataset).
+func TestDeleteDataset_UsedByProject(t *testing.T) {
+	t.Parallel()
+	b := newTestBackend()
+	ctx := context.Background()
+	_, err := b.CreateDataset(ctx, "ds-used-proj", "CSV", s3Input("b", ""), databrew.DatasetFormatOptions{}, nil, nil)
+	require.NoError(t, err)
+	_, err = b.CreateRecipe(ctx, "r-used-proj", "", nil, nil)
+	require.NoError(t, err)
+	_, err = b.CreateProject(ctx, "p-used-ds", "ds-used-proj", "r-used-proj", "", databrew.Sample{}, nil)
+	require.NoError(t, err)
+
+	err = b.DeleteDataset(ctx, "ds-used-proj")
+	require.Error(t, err)
+	require.ErrorIs(t, err, databrew.ErrConflict)
+
+	_, err = b.DescribeDataset(ctx, "ds-used-proj")
+	require.NoError(t, err, "dataset must still exist")
+}
+
+// TestDeleteDataset_UsedByJob is TestDeleteDataset_UsedByProject's job-side
+// counterpart: a dataset referenced by a job's DatasetName must not be
+// deletable either.
+func TestDeleteDataset_UsedByJob(t *testing.T) {
+	t.Parallel()
+	b := newTestBackend()
+	ctx := context.Background()
+	_, err := b.CreateDataset(ctx, "ds-used-job", "CSV", s3Input("b", ""), databrew.DatasetFormatOptions{}, nil, nil)
+	require.NoError(t, err)
+	_, err = b.CreateJob(
+		ctx, "j-used-ds", "PROFILE", "ds-used-job", "", "", "",
+		nil, nil, databrew.JobExtras{},
+	)
+	require.NoError(t, err)
+
+	err = b.DeleteDataset(ctx, "ds-used-job")
+	require.Error(t, err)
+	require.ErrorIs(t, err, databrew.ErrConflict)
+
+	_, err = b.DescribeDataset(ctx, "ds-used-job")
+	require.NoError(t, err, "dataset must still exist")
+}
+
 // ---- Dataset handler ----
 
 func TestHandlerCreateDataset(t *testing.T) {

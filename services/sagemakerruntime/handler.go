@@ -46,6 +46,7 @@ const (
 	headerInferenceID       = "X-Amzn-Sagemaker-Inference-Id"
 	headerOutputLocation    = "X-Amzn-Sagemaker-Outputlocation"
 	headerFailureLocation   = "X-Amzn-Sagemaker-Failurelocation"
+	headerInputLocation     = "X-Amzn-Sagemaker-Inputlocation"
 	headerAsyncAccept       = "X-Amzn-Sagemaker-Accept"
 	headerStreamContentType = "X-Amzn-Sagemaker-Content-Type"
 	headerTargetVariant     = "X-Amzn-Sagemaker-Target-Variant"
@@ -193,6 +194,19 @@ func (h *Handler) handleInvokeEndpointAsync(
 	endpointName string,
 	body []byte,
 ) error {
+	// SDK doc (InvokeEndpointAsyncInput.Body): "Body and InputLocation are
+	// mutually exclusive. Provide exactly one of them." Not enforced by the
+	// client-side validator (only EndpointName is), so real AWS must reject
+	// this at the server -- gopherstack previously accepted both and neither
+	// silently.
+	hasInputLocation := c.Request().Header.Get(headerInputLocation) != ""
+	if (len(body) > 0) == hasInputLocation {
+		return c.JSON(http.StatusBadRequest, errorResponse(
+			"ValidationError",
+			"Body and InputLocation are mutually exclusive. Provide exactly one of them.",
+		))
+	}
+
 	async := h.Backend.RecordAsyncInvocation(
 		endpointName,
 		c.Request().Header.Get(headerInferenceID),

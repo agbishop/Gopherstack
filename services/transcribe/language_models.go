@@ -42,14 +42,16 @@ func (b *InMemoryBackend) CreateLanguageModel(input *LanguageModel) (*LanguageMo
 		return nil, fmt.Errorf("%w: LanguageCode is required", ErrValidation)
 	}
 
-	if input.InputDataConfig != nil {
-		if input.InputDataConfig.S3Uri == "" {
-			return nil, fmt.Errorf("%w: InputDataConfig.S3Uri is required", ErrValidation)
-		}
+	if input.InputDataConfig == nil {
+		return nil, fmt.Errorf("%w: InputDataConfig is required", ErrValidation)
+	}
 
-		if input.InputDataConfig.DataAccessRoleArn == "" {
-			return nil, fmt.Errorf("%w: InputDataConfig.DataAccessRoleArn is required", ErrValidation)
-		}
+	if input.InputDataConfig.S3Uri == "" {
+		return nil, fmt.Errorf("%w: InputDataConfig.S3Uri is required", ErrValidation)
+	}
+
+	if input.InputDataConfig.DataAccessRoleArn == "" {
+		return nil, fmt.Errorf("%w: InputDataConfig.DataAccessRoleArn is required", ErrValidation)
 	}
 
 	b.mu.Lock("CreateLanguageModel")

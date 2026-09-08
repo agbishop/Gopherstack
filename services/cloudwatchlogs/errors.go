@@ -45,6 +45,13 @@ var (
 	ErrTransformerNotFound         = errors.New("ResourceNotFoundException")
 	ErrIntegrationNotFound         = errors.New("ResourceNotFoundException")
 	ErrS3TableIntegrationNotFound  = errors.New("ResourceNotFoundException")
+	// ErrDeliveryDestinationInUse and ErrDeliverySourceInUse are returned by
+	// DeleteDeliveryDestination/DeleteDeliverySource when a Delivery still
+	// references them -- both ops' own deserializeOpError declares
+	// ConflictException (aws-sdk-go-v2/service/cloudwatchlogs@v1.81.1
+	// deserializers.go).
+	ErrDeliveryDestinationInUse = errors.New("ConflictException")
+	ErrDeliverySourceInUse      = errors.New("ConflictException")
 )
 
 var (

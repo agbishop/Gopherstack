@@ -46,6 +46,11 @@ type svcRef struct {
 // keep new fields grouped with their kind rather than by logical concern.
 type InMemoryBackend struct {
 	runner TaskRunner
+	// cwLogs, when set (see SetCWLogsBackend), makes an awslogs-driver
+	// container's log group/stream discoverable in CloudWatch Logs. Nil
+	// preserves the historical behavior of LogConfiguration being stored
+	// and echoed with no effect on CloudWatch Logs.
+	cwLogs CWLogsBackend
 	// elbv2Registrar, when set (see SetELBv2Registrar), registers/deregisters
 	// real ELBv2 targets as tasks belonging to a service with LoadBalancers
 	// reach/leave RUNNING. Nil preserves the historical behavior of

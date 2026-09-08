@@ -164,3 +164,109 @@ func TestGetFirewallConfig_EmptyResourceID_RealClient(t *testing.T) {
 	var ve *types.ValidationException
 	require.ErrorAs(t, err, &ve, "expected a real ValidationException from the SDK deserializer")
 }
+
+// TestAssociateDuplicate_ResourceExistsException_RealClient drives
+// AssociateResolverRule and AssociateResolverQueryLogConfig through the real
+// client, associating the same (ResolverRuleId, VPCId) /
+// (ResolverQueryLogConfigId, ResourceId) pair twice. Both ops declare
+// ResourceExistsException in their own deserializer (verified against
+// deserializers.go's awsAwsjson11_deserializeOpError<Op> switches), and the
+// AWS API reference's Errors section for each op describes it as "The
+// resource that you tried to create already exists" -- but gopherstack had
+// no duplicate-detection logic at all for either op, so a second identical
+// Associate call silently created a second association instead of being
+// rejected (gopherstack-6flj's error-target audit had already flagged this
+// class of gap as "not fixed here, recorded for a future pass").
+// DisassociateResolverRule/DisassociateResolverQueryLogConfig already treat
+// that same pair as the association's identity, so re-associating it is the
+// duplicate condition fixed here.
+func TestAssociateDuplicate_ResourceExistsException_RealClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		run  func(t *testing.T, client *route53resolversdk.Client) error
+		name string
+	}{
+		{
+			name: "resolver_rule",
+			run: func(t *testing.T, client *route53resolversdk.Client) error {
+				t.Helper()
+
+				rule, err := client.CreateResolverRule(t.Context(), &route53resolversdk.CreateResolverRuleInput{
+					CreatorRequestId: aws.String("dup-rule-req"),
+					Name:             aws.String("dup-rule"),
+					DomainName:       aws.String("dup.example.com"),
+					RuleType:         types.RuleTypeOptionForward,
+					TargetIps: []types.TargetAddress{
+						{Ip: aws.String("10.0.0.1"), Port: aws.Int32(53)},
+					},
+				})
+				require.NoError(t, err)
+
+				_, err = client.AssociateResolverRule(t.Context(), &route53resolversdk.AssociateResolverRuleInput{
+					ResolverRuleId: rule.ResolverRule.Id,
+					VPCId:          aws.String("vpc-dup-rule"),
+				})
+				require.NoError(t, err)
+
+				_, err = client.AssociateResolverRule(t.Context(), &route53resolversdk.AssociateResolverRuleInput{
+					ResolverRuleId: rule.ResolverRule.Id,
+					VPCId:          aws.String("vpc-dup-rule"),
+				})
+
+				return err
+			},
+		},
+		{
+			name: "query_log_config",
+			run: func(t *testing.T, client *route53resolversdk.Client) error {
+				t.Helper()
+
+				cfg, err := client.CreateResolverQueryLogConfig(
+					t.Context(),
+					&route53resolversdk.CreateResolverQueryLogConfigInput{
+						CreatorRequestId: aws.String("dup-qlc-req"),
+						Name:             aws.String("dup-qlc"),
+						DestinationArn:   aws.String("arn:aws:s3:::dup-qlc-bucket"),
+					},
+				)
+				require.NoError(t, err)
+
+				_, err = client.AssociateResolverQueryLogConfig(
+					t.Context(),
+					&route53resolversdk.AssociateResolverQueryLogConfigInput{
+						ResolverQueryLogConfigId: cfg.ResolverQueryLogConfig.Id,
+						ResourceId:               aws.String("vpc-dup-qlc"),
+					},
+				)
+				require.NoError(t, err)
+
+				_, err = client.AssociateResolverQueryLogConfig(
+					t.Context(),
+					&route53resolversdk.AssociateResolverQueryLogConfigInput{
+						ResolverQueryLogConfigId: cfg.ResolverQueryLogConfig.Id,
+						ResourceId:               aws.String("vpc-dup-qlc"),
+					},
+				)
+
+				return err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := route53resolver.NewInMemoryBackend("000000000000", "us-east-1")
+			h := route53resolver.NewHandler(backend)
+			client := newTestRoute53ResolverClient(t, h)
+
+			err := tt.run(t, client)
+			require.Error(t, err)
+
+			var ree *types.ResourceExistsException
+			require.ErrorAs(t, err, &ree, "expected a real ResourceExistsException from the SDK deserializer")
+		})
+	}
+}

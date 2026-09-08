@@ -71,6 +71,52 @@ func TestHandler_DBSubnetGroups(t *testing.T) {
 	}
 }
 
+// TestHandler_DeleteDBSubnetGroup_InUse asserts DeleteDBSubnetGroup rejects a
+// subnet group still associated with a DB cluster, matching docdb's sibling
+// guard (api_op_DeleteDBSubnetGroup.go: "The specified database subnet group
+// must not be associated with any DB instances.").
+func TestHandler_DeleteDBSubnetGroup_InUse(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doRequest(t, h, url.Values{
+		"Action":                   {"CreateDBSubnetGroup"},
+		"Version":                  {"2014-10-31"},
+		"DBSubnetGroupName":        {"used-sg"},
+		"DBSubnetGroupDescription": {"in use"},
+	})
+	doRequest(t, h, url.Values{
+		"Action":              {"CreateDBCluster"},
+		"Version":             {"2014-10-31"},
+		"DBClusterIdentifier": {"sg-user-cluster"},
+		"DBSubnetGroupName":   {"used-sg"},
+	})
+
+	recEarly := doRequest(t, h, url.Values{
+		"Action":            {"DeleteDBSubnetGroup"},
+		"Version":           {"2014-10-31"},
+		"DBSubnetGroupName": {"used-sg"},
+	})
+	assert.Equal(t, http.StatusBadRequest, recEarly.Code)
+	assert.Contains(t, recEarly.Body.String(), "InvalidDBSubnetGroupStateFault")
+
+	recDeleteCluster := doRequest(t, h, url.Values{
+		"Action":              {"DeleteDBCluster"},
+		"Version":             {"2014-10-31"},
+		"DBClusterIdentifier": {"sg-user-cluster"},
+		"SkipFinalSnapshot":   {"true"},
+	})
+	require.Equal(t, http.StatusOK, recDeleteCluster.Code)
+
+	recDelete := doRequest(t, h, url.Values{
+		"Action":            {"DeleteDBSubnetGroup"},
+		"Version":           {"2014-10-31"},
+		"DBSubnetGroupName": {"used-sg"},
+	})
+	assert.Equal(t, http.StatusOK, recDelete.Code)
+}
+
 func TestHandler_DescribeSubnetGroupsPagination(t *testing.T) {
 	t.Parallel()
 

@@ -19,7 +19,10 @@ func (b *InMemoryBackend) EnableClientAuthentication(ctx context.Context, direct
 
 	now := time.Now().UTC()
 	if existing, ok := b.clientAuthSettingGet(region, directoryID, authType); ok {
-		existing.Status = "Enabled" //nolint:goconst // existing issue.
+		if existing.Status == "Enabled" { //nolint:goconst // existing issue.
+			return ErrInvalidClientAuthStatus
+		}
+		existing.Status = "Enabled"
 		existing.LastUpdatedDateTime = now
 	} else {
 		b.clientAuthSettingPut(&storedClientAuthSetting{
@@ -46,18 +49,13 @@ func (b *InMemoryBackend) DisableClientAuthentication(ctx context.Context, direc
 	}
 
 	now := time.Now().UTC()
-	if existing, ok := b.clientAuthSettingGet(region, directoryID, authType); ok {
-		existing.Status = "Disabled" //nolint:goconst // existing issue.
-		existing.LastUpdatedDateTime = now
-	} else {
-		b.clientAuthSettingPut(&storedClientAuthSetting{
-			region:              region,
-			DirectoryID:         directoryID,
-			AuthType:            authType,
-			Status:              "Disabled",
-			LastUpdatedDateTime: now,
-		})
+	existing, ok := b.clientAuthSettingGet(region, directoryID, authType)
+	if !ok || existing.Status == "Disabled" { //nolint:goconst // existing issue.
+		return ErrInvalidClientAuthStatus
 	}
+
+	existing.Status = "Disabled"
+	existing.LastUpdatedDateTime = now
 
 	return nil
 }

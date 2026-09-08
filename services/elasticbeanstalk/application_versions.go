@@ -177,7 +177,9 @@ func (b *InMemoryBackend) DescribeApplicationVersions(
 	return list
 }
 
-// DeleteApplicationVersion removes an application version.
+// DeleteApplicationVersion removes an application version. Real AWS: "You
+// cannot delete an application version that is associated with a running
+// environment".
 func (b *InMemoryBackend) DeleteApplicationVersion(ctx context.Context, appName, versionLabel string) error {
 	b.mu.Lock("DeleteApplicationVersion")
 	defer b.mu.Unlock()
@@ -186,6 +188,15 @@ func (b *InMemoryBackend) DeleteApplicationVersion(ctx context.Context, appName,
 
 	if _, ok := b.appVersionGet(region, appName, versionLabel); !ok {
 		return fmt.Errorf("%w: application version %s not found", ErrNotFound, versionLabel)
+	}
+
+	for _, env := range b.environmentsInRegion(region) {
+		if env.ApplicationName == appName && env.VersionLabel == versionLabel {
+			return fmt.Errorf(
+				"%w: application version %s is associated with a running environment",
+				ErrInvalidParameter, versionLabel,
+			)
+		}
 	}
 
 	b.appVersionDelete(region, appName, versionLabel)

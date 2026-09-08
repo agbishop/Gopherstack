@@ -290,6 +290,10 @@ func (h *Handler) handleListStatements(ctx context.Context, body []byte) ([]byte
 		return nil, err
 	}
 
+	if err := ValidateListStatementsConnectionTarget(req.ClusterIdentifier, req.WorkgroupName); err != nil {
+		return nil, err
+	}
+
 	stmts, nextToken, err := h.Backend.ListStatements(ctx, ListStatementsFilter{
 		ClusterIdentifier: req.ClusterIdentifier,
 		WorkgroupName:     req.WorkgroupName,

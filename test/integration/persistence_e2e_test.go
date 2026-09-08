@@ -32,10 +32,8 @@ func startPersistenceContainer(t *testing.T, dataDir string) (testcontainers.Con
 	require.NoError(t, err)
 
 	req := testcontainers.ContainerRequest{
-		FromDockerfile: testcontainers.FromDockerfile{
-			Context:    "../../",
-			Dockerfile: dockerfile,
-		},
+		Context:    "../../",
+		Dockerfile: dockerfile,
 		Env: map[string]string{
 			"PERSIST":              "true",
 			"GOPHERSTACK_DATA_DIR": "/data",

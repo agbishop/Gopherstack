@@ -64,6 +64,35 @@ func TestDeleteEventBus(t *testing.T) {
 	require.ErrorIs(t, err, eventbridge.ErrEventBusNotFound)
 }
 
+func TestDeleteEventBus_ClearsPolicyOnRecreate(t *testing.T) {
+	t.Parallel()
+	b := eventbridge.NewInMemoryBackendWithConfig("123456789012", "us-east-1")
+	ctx := context.Background()
+
+	_, err := b.CreateEventBus(ctx, eventbridge.CreateEventBusParams{Name: "reused-bus"})
+	require.NoError(t, err)
+
+	require.NoError(t, b.PutPermission(ctx, eventbridge.PutPermissionInput{
+		EventBusName: "reused-bus",
+		StatementID:  "AllowAccount",
+		Action:       "events:PutEvents",
+		Principal:    "111122223333",
+	}))
+
+	policy, err := b.GetEventBusPolicy(ctx, "reused-bus")
+	require.NoError(t, err)
+	require.NotEmpty(t, policy)
+
+	require.NoError(t, b.DeleteEventBus(ctx, "reused-bus"))
+
+	_, err = b.CreateEventBus(ctx, eventbridge.CreateEventBusParams{Name: "reused-bus"})
+	require.NoError(t, err)
+
+	recreatedPolicy, err := b.GetEventBusPolicy(ctx, "reused-bus")
+	require.NoError(t, err)
+	assert.Empty(t, recreatedPolicy)
+}
+
 func TestDeleteDefaultEventBusFails(t *testing.T) {
 	t.Parallel()
 	b := eventbridge.NewInMemoryBackendWithConfig("123456789012", "us-east-1")

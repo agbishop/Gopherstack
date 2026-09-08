@@ -190,8 +190,7 @@ func partitionMapResults(items, results []any, errs []error) ([]mapItemRecord, [
 }
 
 func mapResultErrorCode(err error) string {
-	var failErr *FailError
-	if errors.As(err, &failErr) {
+	if failErr, ok := errors.AsType[*FailError](err); ok {
 		return failErr.ErrCode
 	}
 

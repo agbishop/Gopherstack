@@ -70,18 +70,13 @@ func (b *InMemoryBackend) UpdateRule(id, changeToken string, updates []RuleUpdat
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			rule.Predicates = append(rule.Predicates, u.Predicate)
-		case updateDelete:
-			filtered := rule.Predicates[:0]
-			for _, p := range rule.Predicates {
-				if p.DataId != u.Predicate.DataId || p.Type != u.Predicate.Type {
-					filtered = append(filtered, p)
-				}
-			}
-			rule.Predicates = filtered
+		predicates, err := applyEntryUpdate(rule.Predicates, u.Action, u.Predicate,
+			func(a, b Predicate) bool { return a.DataId == b.DataId && a.Type == b.Type })
+		if err != nil {
+			return err
 		}
+
+		rule.Predicates = predicates
 	}
 
 	return nil
@@ -112,6 +107,7 @@ func (b *InMemoryBackend) DeleteRule(id, changeToken string) error {
 	}
 
 	b.rules.Delete(id)
+	delete(b.tags, b.ruleARN(id))
 
 	return nil
 }

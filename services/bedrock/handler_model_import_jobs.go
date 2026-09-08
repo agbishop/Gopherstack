@@ -59,6 +59,10 @@ func (h *Handler) handleCreateModelImportJob(c *echo.Context) error {
 	return c.JSON(http.StatusCreated, modelImportJobToOutput(job))
 }
 
+// parseListModelImportJobsQuery builds the backend filter/sort/pagination
+// input from the real ListModelImportJobs query-string bindings.
+//
+//nolint:dupl // mirrors sibling List*Query parsers over a distinct filter set.
 func parseListModelImportJobsQuery(c *echo.Context) *ListModelImportJobsInput {
 	q := c.Request().URL.Query()
 
@@ -193,24 +197,36 @@ func (h *Handler) handleGetImportedModel(c *echo.Context, modelARN string) error
 	return c.JSON(http.StatusOK, importedModelToWire(job))
 }
 
-func (h *Handler) handleListImportedModels(c *echo.Context) error {
+// parseListImportedModelsQuery builds the backend filter/pagination input
+// from the real ListImportedModels query-string bindings.
+func parseListImportedModelsQuery(c *echo.Context) *ListImportedModelsInput {
 	q := c.Request().URL.Query()
 
-	var creationTimeAfter, creationTimeBefore *time.Time
+	maxResults, _ := strconv.ParseInt(q.Get("maxResults"), 10, 32)
+
+	in := &ListImportedModelsInput{
+		NameContains: q.Get("nameContains"),
+		NextToken:    q.Get("nextToken"),
+		MaxResults:   int32(maxResults),
+	}
+
 	if v := q.Get("creationTimeAfter"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			creationTimeAfter = &t
-		}
-	}
-	if v := q.Get("creationTimeBefore"); v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			creationTimeBefore = &t
+			in.CreationTimeAfter = &t
 		}
 	}
 
-	models, nextToken := h.Backend.ListImportedModels(
-		q.Get("nameContains"), creationTimeAfter, creationTimeBefore, q.Get("nextToken"),
-	)
+	if v := q.Get("creationTimeBefore"); v != "" {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			in.CreationTimeBefore = &t
+		}
+	}
+
+	return in
+}
+
+func (h *Handler) handleListImportedModels(c *echo.Context) error {
+	models, nextToken := h.Backend.ListImportedModels(parseListImportedModelsQuery(c))
 
 	summaries := make([]map[string]any, 0, len(models))
 	for _, m := range models {

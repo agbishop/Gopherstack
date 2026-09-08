@@ -180,6 +180,53 @@ func TestWAF_WebACL_UpdateRules_InsertAndDelete(t *testing.T) {
 	assert.Empty(t, rules)
 }
 
+func TestWAF_WebACL_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		aclID := wafCreateWebACL(t, h, "noop-insert-acl")
+		ruleID := wafCreateRule(t, h, "noop-insert-rule")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateWebACL", map[string]any{
+			"ChangeToken": token,
+			"WebACLId":    aclID,
+			"Updates":     []map[string]any{wafActivateRuleUpdate("INSERT", ruleID, 1)},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateWebACL", map[string]any{
+			"ChangeToken": token,
+			"WebACLId":    aclID,
+			"Updates":     []map[string]any{wafActivateRuleUpdate("INSERT", ruleID, 2)},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		aclID := wafCreateWebACL(t, h, "noop-delete-acl")
+		ruleID := wafCreateRule(t, h, "noop-delete-rule")
+
+		// The WebACL never contained ruleID, so this DELETE is itself a no-op.
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateWebACL", map[string]any{
+			"ChangeToken": token,
+			"WebACLId":    aclID,
+			"Updates":     []map[string]any{wafActivateRuleUpdate("DELETE", ruleID, 1)},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestWAF_WebACL_RulesPrioritySorted(t *testing.T) {
 	t.Parallel()
 

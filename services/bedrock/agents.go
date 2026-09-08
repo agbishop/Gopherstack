@@ -171,7 +171,7 @@ func (b *InMemoryBackend) UpdateAgentWithConfiguration(agentID string, config Ag
 
 // DeleteAgent deletes a Bedrock Agent.
 // AWS rejects deletion when the agent has active aliases (ConflictException).
-func (b *InMemoryBackend) DeleteAgent(agentID string) error {
+func (b *InMemoryBackend) DeleteAgent(agentID string, skipResourceInUseCheck bool) error {
 	b.mu.Lock("DeleteAgent")
 	defer b.mu.Unlock()
 
@@ -192,11 +192,40 @@ func (b *InMemoryBackend) DeleteAgent(agentID string) error {
 		return true
 	})
 
-	if hasAlias {
+	if hasAlias && !skipResourceInUseCheck {
 		return fmt.Errorf("%w: agent %q has active aliases and cannot be deleted", ErrAlreadyExists, agentID)
 	}
 
 	delete(b.agentsByName, ag.AgentName)
+	delete(b.agentTags, ag.AgentArn)
+	delete(b.agentVersionCounters, agentID)
+
+	// SkipResourceInUseCheck bypassed the guard above; the aliases still
+	// exist and must not outlive their agent as ghost rows, so cascade them
+	// the same way DeleteFlow cascades flowAliases.
+	b.agentAliases.Range(func(alias *AgentAlias) bool {
+		if alias.AgentID == agentID {
+			delete(b.agentTags, alias.AgentAliasArn)
+			b.agentAliases.Delete(agentAliasKey(alias.AgentID, alias.AgentAliasID))
+		}
+
+		return true
+	})
+
+	// Reset, not delete: agentVersionsStore/agentCollaboratorsStore register
+	// the table under "agentVersions:"+agentID / "agentCollaborators:"+agentID
+	// in b.registry once; deleting the map entry here would make a later
+	// call to either accessor re-Register the same name and panic. Reset
+	// clears the rows in place so GetAgentVersion/ListAgentVersions and their
+	// collaborator equivalents stop returning ghost rows for this agent.
+	if versions, versionsOK := b.agentVersions[agentID]; versionsOK {
+		versions.Reset()
+	}
+
+	if collaborators, collabOK := b.agentCollaborators[agentID]; collabOK {
+		collaborators.Reset()
+	}
+
 	b.agents.Delete(agentID)
 
 	return nil

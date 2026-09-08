@@ -475,9 +475,7 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err 
 // singleErrStatus maps a single sentinel error to its HTTP status and AWS
 // error type string; classifyError ranges over it with errors.Is so each
 // entry adds a table row instead of a branch, keeping cyclomatic complexity
-// low regardless of how many sentinel errors ECR grows. notFoundGroupErrs are
-// distinct sentinel errors that all map to the same generic 404
-// NotFoundException response.
+// low regardless of how many sentinel errors ECR grows.
 func (h *Handler) classifyError(err error) (int, string) {
 	singleErrStatus := []struct {
 		err     error
@@ -502,24 +500,26 @@ func (h *Handler) classifyError(err error) (int, string) {
 		{ErrEmptyUpload, "EmptyUploadException", http.StatusBadRequest},
 		{ErrLayerPartTooSmall, "LayerPartTooSmallException", http.StatusBadRequest},
 		{ErrImageAlreadyExists, "ImageAlreadyExistsException", http.StatusBadRequest},
+		// Each of these four wraps its real AWS exception name as its own
+		// message (see errors.go's awserr.New calls); ecr@v1.60.4's
+		// deserializers.go dispatches on that exact code string per op
+		// (e.g. line 1124 for DeleteLifecyclePolicy) and recognises no
+		// generic "NotFoundException" — so each needs its own entry rather
+		// than a shared fallback string.
+		{ErrPullThroughCacheRuleNotFound, "PullThroughCacheRuleNotFoundException", http.StatusNotFound},
+		{ErrLifecyclePolicyNotFound, "LifecyclePolicyNotFoundException", http.StatusNotFound},
+		{
+			ErrLifecyclePolicyPreviewNotFound,
+			"LifecyclePolicyPreviewNotFoundException",
+			http.StatusNotFound,
+		},
+		{ErrRepositoryCreationTemplateNotFound, "TemplateNotFoundException", http.StatusNotFound},
+		{ErrRegistryPolicyNotFound, "RegistryPolicyNotFoundException", http.StatusNotFound},
 	}
 
 	for _, e := range singleErrStatus {
 		if errors.Is(err, e.err) {
 			return e.status, e.errType
-		}
-	}
-
-	notFoundGroupErrs := []error{
-		ErrPullThroughCacheRuleNotFound,
-		ErrLifecyclePolicyNotFound,
-		ErrRepositoryCreationTemplateNotFound,
-		ErrRegistryPolicyNotFound,
-	}
-
-	for _, e := range notFoundGroupErrs {
-		if errors.Is(err, e) {
-			return http.StatusNotFound, "NotFoundException"
 		}
 	}
 

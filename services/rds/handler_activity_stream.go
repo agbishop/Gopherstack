@@ -49,6 +49,9 @@ func (h *Handler) handleStopActivityStream(vals url.Values) (any, error) {
 func (h *Handler) handleModifyActivityStream(vals url.Values) (any, error) {
 	resourceARN := vals.Get("ResourceArn")
 	auditPolicy := vals.Get("AuditPolicyState")
+	// arnToClusterID's name is a misnomer here: this op's ARN is instance-shaped,
+	// not cluster-shaped -- see InMemoryBackend.ModifyActivityStream's landmine
+	// (gopherstack-mial: reconciling needs activity-stream state on DBInstance too).
 	clusterID := arnToClusterID(resourceARN)
 
 	cluster, err := h.Backend.ModifyActivityStream(clusterID, auditPolicy)

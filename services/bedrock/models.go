@@ -695,6 +695,7 @@ type ListModelInvocationJobsInput struct {
 	SortBy           string // CreationTime (default)
 	SortOrder        string // Ascending (default) | Descending
 	NextToken        string
+	MaxResults       int32
 }
 
 // ListEvaluationJobsInput holds filter/pagination params for ListEvaluationJobs.
@@ -707,6 +708,7 @@ type ListEvaluationJobsInput struct {
 	SortBy                string // CreationTime (default)
 	SortOrder             string // Ascending (default) | Descending
 	NextToken             string
+	MaxResults            int32
 }
 
 // ListModelCustomizationJobsInput holds filter/pagination params for
@@ -719,6 +721,7 @@ type ListModelCustomizationJobsInput struct {
 	SortBy             string // CreationTime (default)
 	SortOrder          string // Ascending (default) | Descending
 	NextToken          string
+	MaxResults         int32
 }
 
 // ListCustomModelsInput holds filter/pagination params for ListCustomModels.
@@ -733,6 +736,7 @@ type ListCustomModelsInput struct {
 	SortBy                   string
 	SortOrder                string
 	NextToken                string
+	MaxResults               int32
 }
 
 // ListModelCopyJobsInput holds filter/pagination params for ListModelCopyJobs
@@ -759,6 +763,19 @@ type ListModelImportJobsInput struct {
 	NameContains       string
 	SortBy             string
 	SortOrder          string
+	NextToken          string
+	MaxResults         int32
+}
+
+// ListImportedModelsInput holds filter/pagination params for
+// ListImportedModels (bedrock@v1.66.4 api_op_ListImportedModels.go). Real
+// SortBy/SortOrder not modeled here: gopherstack has always sorted
+// CreationTime ascending regardless of client input; out of scope for
+// gopherstack-kkfs's MaxResults fix.
+type ListImportedModelsInput struct {
+	CreationTimeAfter  *time.Time
+	CreationTimeBefore *time.Time
+	NameContains       string
 	NextToken          string
 	MaxResults         int32
 }

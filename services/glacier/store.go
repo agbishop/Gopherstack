@@ -31,16 +31,21 @@ type InMemoryBackend struct {
 	s3                      S3Accessor
 	multipartUploadsByVault *store.Index[MultipartUpload]
 	multipartParts          map[uploadKey][]MultipartPart
-	jobs                    *store.Table[Job]
-	jobsByVault             *store.Index[Job]
-	multipartUploads        *store.Table[MultipartUpload]
-	registry                *store.Registry
-	vaultLocks              *store.Table[VaultLock]
-	vaultsByAccountRegion   *store.Index[Vault]
-	provisionedCapacity     map[string][]*ProvisionedCapacity
-	dataRetrievalPolicies   map[string]string
-	archiveData             map[string][]byte
-	vaults                  *store.Table[Vault]
+	// multipartPartData holds the raw uploaded bytes for each in-progress part,
+	// keyed by the same uploadKey as multipartParts and then by RangeInBytes. Kept
+	// separate from MultipartPart (the wire DTO) so raw bytes never leak into
+	// ListParts JSON. Like archiveData, it is never persisted (see persistence.go).
+	multipartPartData     map[uploadKey]map[string][]byte
+	jobs                  *store.Table[Job]
+	jobsByVault           *store.Index[Job]
+	multipartUploads      *store.Table[MultipartUpload]
+	registry              *store.Registry
+	vaultLocks            *store.Table[VaultLock]
+	vaultsByAccountRegion *store.Index[Vault]
+	provisionedCapacity   map[string][]*ProvisionedCapacity
+	dataRetrievalPolicies map[string]string
+	archiveData           map[string][]byte
+	vaults                *store.Table[Vault]
 	// retrievalDelay is the simulated asynchronous retrieval window applied to newly
 	// initiated jobs. Jobs stay InProgress until CreationDate+retrievalDelay, matching
 	// AWS, which does not make archive/inventory output available immediately.
@@ -53,6 +58,7 @@ func NewInMemoryBackend() *InMemoryBackend {
 	b := &InMemoryBackend{
 		registry:              store.NewRegistry(),
 		multipartParts:        make(map[uploadKey][]MultipartPart),
+		multipartPartData:     make(map[uploadKey]map[string][]byte),
 		provisionedCapacity:   make(map[string][]*ProvisionedCapacity),
 		dataRetrievalPolicies: make(map[string]string),
 		archiveData:           make(map[string][]byte),
@@ -111,16 +117,14 @@ func vaultARN(accountID, region, vaultName string) string {
 }
 
 // Reset clears all backend state, resetting to an empty store.
-//
-// archiveData is deliberately NOT cleared here, matching the pre-conversion
-// behaviour: raw archive bytes have always leaked across Reset() calls (they
-// were never part of any of the maps this method used to reinitialise).
 func (b *InMemoryBackend) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	b.registry.ResetAll()
 	b.multipartParts = make(map[uploadKey][]MultipartPart)
+	b.multipartPartData = make(map[uploadKey]map[string][]byte)
 	b.provisionedCapacity = make(map[string][]*ProvisionedCapacity)
 	b.dataRetrievalPolicies = make(map[string]string)
+	b.archiveData = make(map[string][]byte)
 }

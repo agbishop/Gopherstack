@@ -3,6 +3,7 @@ package bedrock
 import (
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -172,8 +173,12 @@ func (h *Handler) handleGetEvaluationJob(c *echo.Context, jobARN string) error {
 // from the real ListEvaluationJobs query-string bindings (nameContains,
 // statusEquals, applicationTypeEquals, creationTimeAfter/Before, sortBy,
 // sortOrder, nextToken).
+//
+//nolint:dupl // mirrors sibling List*Query parsers over a distinct filter set.
 func parseListEvaluationJobsQuery(c *echo.Context) *ListEvaluationJobsInput {
 	q := c.Request().URL.Query()
+
+	maxResults, _ := strconv.ParseInt(q.Get("maxResults"), 10, 32)
 
 	in := &ListEvaluationJobsInput{
 		StatusEquals:          q.Get("statusEquals"),
@@ -182,6 +187,7 @@ func parseListEvaluationJobsQuery(c *echo.Context) *ListEvaluationJobsInput {
 		SortBy:                q.Get("sortBy"),
 		SortOrder:             q.Get("sortOrder"),
 		NextToken:             q.Get("nextToken"),
+		MaxResults:            int32(maxResults),
 	}
 
 	if v := q.Get("creationTimeAfter"); v != "" {

@@ -2,7 +2,6 @@ package s3tables
 
 import (
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -189,34 +188,30 @@ func (b *InMemoryBackend) GetTableBucket(bucketARN string) (*TableBucket, error)
 	return cloneTableBucket(tb), nil
 }
 
-// DeleteTableBucket deletes a TableBucket by ARN, cascading to namespaces and tables.
+// DeleteTableBucket deletes a TableBucket by ARN. Real S3 Tables requires
+// the bucket to contain no namespaces (transitively, no tables, since a
+// namespace can't be deleted while it has tables) first ("Before you delete
+// a table bucket, you must first delete all namespaces and tables within
+// the bucket" -- AWS docs, s3-tables-buckets-delete.html); a non-empty
+// bucket returns ErrTableBucketNotEmpty.
 func (b *InMemoryBackend) DeleteTableBucket(bucketARN string) error {
 	b.muBuckets.Lock("DeleteTableBucket")
-	b.muNamespaces.Lock("DeleteTableBucket")
-	b.muTables.Lock("DeleteTableBucket")
+	b.muNamespaces.RLock("DeleteTableBucket")
 	b.muState.Lock("DeleteTableBucket")
 	defer b.muBuckets.Unlock()
-	defer b.muNamespaces.Unlock()
-	defer b.muTables.Unlock()
+	defer b.muNamespaces.RUnlock()
 	defer b.muState.Unlock()
 
 	if !b.tableBuckets.Has(bucketARN) {
 		return fmt.Errorf("%w: table bucket %q not found", ErrTableBucketNotFound, bucketARN)
 	}
 
-	// Cascade: delete all tables belonging to this bucket. Clone the index
-	// result before deleting, since Table.Delete mutates the same index
-	// this slice is a view into.
-	for _, t := range slices.Clone(b.tablesByBucket.Get(bucketARN)) {
-		b.tables.Delete(t.ARN)
-		b.tableReplication.Delete(t.ARN)
-		b.tableRecordExpiry.Delete(t.ARN)
-		delete(b.tags, t.ARN)
-	}
-
-	// Cascade: delete all namespaces belonging to this bucket.
-	for _, ns := range slices.Clone(b.namespacesByBucket.Get(bucketARN)) {
-		b.namespaces.Delete(namespaceKey(ns.TableBucketARN, joinNamespace(ns.Namespace)))
+	if len(b.namespacesByBucket.Get(bucketARN)) > 0 {
+		return fmt.Errorf(
+			"%w: table bucket %q still contains namespaces",
+			ErrTableBucketNotEmpty,
+			bucketARN,
+		)
 	}
 
 	b.bucketReplication.Delete(bucketARN)

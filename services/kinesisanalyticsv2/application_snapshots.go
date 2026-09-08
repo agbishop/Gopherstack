@@ -85,7 +85,11 @@ func (b *InMemoryBackend) ListApplicationSnapshots(
 	out := slices.Clone(b.snapshotsByApp.Get(appParentKey(region, appName)))
 
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].SnapshotCreation.Before(out[j].SnapshotCreation)
+		if !out[i].SnapshotCreation.Equal(out[j].SnapshotCreation) {
+			return out[i].SnapshotCreation.Before(out[j].SnapshotCreation)
+		}
+
+		return out[i].SnapshotName < out[j].SnapshotName
 	})
 
 	startIdx := parseNextToken(nextToken)

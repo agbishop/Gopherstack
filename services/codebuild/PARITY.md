@@ -4,8 +4,18 @@ sdk_module: aws-sdk-go-v2/service/codebuild@v1.72.4   # version audited against
 last_audit_commit: 0627d5d3                             # HEAD when the PRIOR manifest was written;
                                                           # this pass ran under the "no git" constraint
                                                           # and could not read/update this hash
-last_audit_date: 2026-08-28
-overall: A                # 2026-08-28 pass (gopherstack-6flj write-only-state sweep): 7 genuine
+last_audit_date: 2026-09-04
+overall: A                # 2026-09-04 pass (parity sweep): 2 genuine bugs found and fixed.
+                           # (1) DeleteProject cascade-deleted a project's builds; the real doc
+                           # comment (api_op_DeleteProject.go) says plainly builds are NOT deleted.
+                           # A prior pass had (incorrectly) recorded the cascade as intentional in
+                           # this very file, and janitor_test.go asserted it -- that test was
+                           # rewritten, not just the code; see DeleteProject/Notes below.
+                           # (2) closed the 2026-08-31 (gopherstack-uox6) gaps: entry --
+                           # ListBuildsForProject now rejects sortOrder when the project has more
+                           # than 100 builds, per that op's own SortOrder doc comment. Both fixed
+                           # with regression tests; golangci-lint 0 issues before and after.
+                           # 2026-08-28 pass (gopherstack-6flj write-only-state sweep): 7 genuine
                            # bugs found and fixed via the write-only-state method (backend-persisted
                            # fields with no read path, or request fields accepted then silently
                            # dropped before reaching the backend at all) -- see Notes. All fixed
@@ -59,14 +69,14 @@ overall: A                # 2026-08-28 pass (gopherstack-6flj write-only-state s
 ops:
   CreateProject:   {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-28: badgeEnabled, Source.buildStatusConfig/gitSubmodulesConfig, Environment.computeConfiguration/dockerServer/fleet/hostKernel were all silently dropped; see Notes. Prior fix: now threads top-level sourceVersion, see gaps fixed below"}
   UpdateProject:   {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-28, same fields as CreateProject (badgeEnabled/Source/Environment gaps). Prior fix: same as CreateProject"}
-  DeleteProject:   {wire: ok, errors: ok, state: ok, persist: ok, note: "cascades build deletion via buildsByProject index. FIXED this pass: now idempotent on a nonexistent name -- real AWS declares no ResourceNotFoundException for this op, gopherstack previously invented one"}
+  DeleteProject:   {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-09-04: no longer cascade-deletes the project's builds -- api_op_DeleteProject.go states plainly 'When you delete a project, its builds are not deleted', but the backend deleted them via the buildsByProject index anyway; a prior pass's PARITY note had misdescribed this as an intentional cleanup. The stale janitor_test.go assertion of the cascade (TestDeleteProject_CleanupBuilds) was rewritten to TestDeleteProject_DoesNotCleanupBuilds asserting the correct survive-deletion behavior. Also idempotent on a nonexistent name -- real AWS declares no ResourceNotFoundException for this op, gopherstack previously invented one"}
   BatchGetProjects: {wire: ok, errors: ok, state: ok, persist: ok, note: "includes webhook and sourceVersion fields"}
   ListProjects:    {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: nextToken/sortBy(NAME|CREATED_TIME|LAST_MODIFIED_TIME)/sortOrder all implemented via ListProjectsSortedBy + paginateIDs, 100-item default page matching real AWS"}
   StartBuild:      {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-28: sourceVersion override was corrupting Source.Location (Build had no SourceVersion field at all); artifactsOverride was parsed off the wire then silently dropped, never reaching the backend; ~20 more real override fields (cacheOverride/environmentTypeOverride/fleetOverride/etc.) were entirely unmodeled. AutoRetryConfig (real Build field) added. env var override uses correct AWS replace-by-name-else-append merge semantics"}
   StopBuild:       {wire: ok, errors: ok, state: ok, persist: ok}
   BatchGetBuilds:  {wire: ok, errors: ok, state: ok, persist: ok, note: "accepts both build ID and ARN via buildsByARN index"}
   ListBuilds:      {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: nextToken/sortOrder via paginateIDs (ListBuilds has no sortBy/maxResults in the real request shape)"}
-  ListBuildsForProject: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: nextToken/sortOrder via paginateIDs"}
+  ListBuildsForProject: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: nextToken/sortOrder via paginateIDs. FIXED 2026-09-04: sortOrder is now rejected with InvalidInputException when the project has more than 100 builds, per api_op_ListBuildsForProject.go's SortOrder doc comment ('If the project has more than 100 builds, setting the sort order will result in an error') -- previously accepted and silently sorted anyway; see former gaps: entry (gopherstack-uox6), now closed"}
   RetryBuild:      {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-28: now maintains the real AutoRetryConfig chain (AutoRetryNumber/PreviousAutoRetry/NextAutoRetry), a real Build field with no prior model support. inherits env/source/artifacts/role/timeouts from original build, matching AWS"}
   BatchDeleteBuilds: {wire: ok, errors: ok, state: ok, persist: ok}
   StartBuildBatch: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -127,7 +137,7 @@ gaps:                      # known divergences NOT fixed — link bd issue ids. 
                            # ComputeConfiguration/ProxyConfiguration/VpcConfig/ScalingConfiguration
                            # (found genuinely unmodeled in the first 2026-07-25 pass) were
                            # implemented end to end in the second 2026-07-25 pass -- see Notes.
-  - "2026-08-31 (value-semantics sweep, gopherstack-uox6): ListBuildsForProjectInput.SortOrder's own doc comment (api_op_ListBuildsForProject.go) states 'If the project has more than 100 builds, setting the sort order will result in an error', but handleListBuildsForProject (handler_builds.go) never checks the project's build count before applying sortOrder -- it just sorts. This is a MISSING REJECTION (validation axis), not a wrong value read or a wrong default; recorded separately per this pass's own discipline for keeping the two classes distinct, not fixed."
+  - "FIXED 2026-09-04 (see ListBuildsForProject above): the 2026-08-31 (gopherstack-uox6) ListBuildsForProjectInput.SortOrder>100-builds gap is closed."
 deferred:                 # consciously not audited this pass (scope) — next pass targets
   - "Report-content ingestion (DescribeCodeCoverages/DescribeTestCases/GetReportGroupTrend real data) — see items_still_open above for why this is a substantially larger feature (build artifact parsing), not a quick fix."
 leaks: {status: clean, note: "janitor.Run selects on ctx.Done() and calls worker.Group.Stop(); TestCodeBuildJanitor_RunContext passes under -race. paginateIDs/ListProjectsSortedBy/ListFleetsSortedBy/ListReportGroupsSortedBy are pure functions under the existing RLock scope — no new goroutines, no new lock paths, all backend locks remain defer-released."}
@@ -712,3 +722,76 @@ apply anywhere in codebuild's current filter surface — every real `Filter` typ
 
 Gates: `go build ./services/codebuild/...`, `go vet ./...` (repo-wide, clean), `go test -race -count=1
 ./services/codebuild/...`, `golangci-lint run ./services/codebuild/...` (0 issues).
+
+## 2026-09-04 parity sweep: 2 bugs found and fixed (DeleteProject cascade, ListBuildsForProject sort-order limit)
+
+Ran the standard mechanical checks (sentinel round-trip, parsed-then-dropped fields,
+lifecycle preconditions, ghost rows after delete, fabricated/unreachable error codes)
+across the whole package before pursuing leads. Baseline before any edit: `go build`
+clean, `golangci-lint run ./services/codebuild/...` reported 0 issues.
+
+**Bug 1 — DeleteProject cascade-deleted a project's builds; real AWS does not.**
+`api_op_DeleteProject.go` (pinned `codebuild@v1.72.4`): "Deletes a build project. When
+you delete a project, its builds are not deleted." `projects.go`'s `DeleteProject`
+walked the `buildsByProject` index and called `b.builds.Delete(id)` for every build of
+the deleted project — the opposite of the documented behavior. This file's own prior
+`DeleteProject` PARITY note had (incorrectly) described the cascade as a deliberate
+cleanup rather than flagging it, and `janitor_test.go`'s
+`TestDeleteProject_CleanupBuilds` asserted the cascade outright — a case of a test
+encoding the bug, called out per this campaign's own instructions rather than quietly
+rewritten: the test is now `TestDeleteProject_DoesNotCleanupBuilds` and asserts builds
+survive project deletion (`BuildCount`/`BuildARNIndexSize`/`BuildsByProjectSize` all stay
+at 2, not 0). Fix: `DeleteProject` now only calls `b.projects.Delete(name)`; idempotency
+on a nonexistent name is preserved because `store.Table.Delete` is a safe no-op on a
+missing key. `DeleteProject` models only `InvalidInputException`
+(`botocore codebuild/2016-10-06/service-2.json operations.DeleteProject.errors`) so no
+error-path change was needed.
+Fail-before: neutered by re-inserting the cascade-delete loop under `if true {}` in
+`DeleteProject` (verified by printing the function body post-edit); rerunning
+`TestDeleteProject_DoesNotCleanupBuilds` failed with:
+`Not equal: expected: 2 actual: 0` on all three assertions (BuildCount,
+BuildARNIndexSize, BuildsByProjectSize). Restored from a scratchpad copy and reverified
+`0 issues` / all package tests green.
+
+**Bug 2 — ListBuildsForProject didn't enforce its own documented sortOrder limit.**
+`api_op_ListBuildsForProject.go`'s `SortOrder` field doc: "If the project has more than
+100 builds, setting the sort order will result in an error." (Already correctly
+identified as an open gap by the 2026-08-31 gopherstack-uox6 pass but left unfixed.)
+`handleListBuildsForProject` (`handler_builds.go`) called `paginateIDs` with whatever
+`sortOrder` the client sent regardless of how many builds the project had. Fix: added a
+check right after fetching the project's build IDs — `sortOrder != "" && len(ids) >
+defaultListPageSize` now returns `%w: sortOrder cannot be set...` wrapping
+`ErrValidation` (→ `InvalidInputException`, matching the only error
+`ListBuildsForProject` models).
+New test `TestHandler_ListBuildsForProject_SortOrderBuildCountLimit`
+(`pagination_test.go`) covers three cases: 101 builds + sortOrder → 400; 100 builds +
+sortOrder → 200 (boundary); 101 builds + no sortOrder → 200 (unaffected). Fail-before:
+neutered the guard's condition to `if false && ...` (verified by printing the line
+post-edit and confirming the build still compiled); only the
+`over_100_builds_rejects_sort_order` subtest failed, with `Not equal: expected: 400
+actual: 200` — the other two subtests correctly still passed, proving the guard's single
+condition is exactly what the test exercises. Restored from a scratchpad copy and
+reverified `0 issues` / all package tests green.
+
+**Other mechanical checks, no further bugs found**: sentinel round-trip (all three
+package sentinels — `ResourceNotFoundException`/`ResourceAlreadyExistsException`/
+`InvalidInputException` — are both defined and reachable via `handleError`; no handler
+returns any of the other three real CodeBuild error types
+(`AccountLimitExceededException`/`OAuthProviderException`/`AccountSuspendedException`),
+which is correct since none of those conditions (account-level resource limits, OAuth
+provider handshake failures, account suspension) are modeled anywhere in this emulator
+and fabricating them would be worse than omitting them. `StatusType`'s `FAILED`/`FAULT`/
+`TIMED_OUT` values are declared but structurally unreachable — the janitor's
+`advanceInProgressBuilds` only ever advances `IN_PROGRESS` builds to `SUCCEEDED`,
+because no build-execution/failure semantics exist in this emulator to source a real
+failure from; this is the same category of structural gap as the already-documented
+`items_still_open` report-content entries, not a fixable per-op bug, and is left
+unfixed here for the same reason. `BuildBatch`'s deeper lifecycle gaps are the
+previously-identified unmodelled-capability structural gap (full batch group/environment
+lifecycle design), not touched this pass.
+
+Gates: `go build ./services/codebuild/...`, `go test -race -count=1
+./services/codebuild/...`, `golangci-lint run ./services/codebuild/...` (0 issues before
+and after). Cross-service check: `services/cloudformation/resources_codebuild.go` calls
+`InMemoryBackend.DeleteProject` with an unchanged signature — `go test -race -count=1 .
+./services/cloudformation/...` passes.

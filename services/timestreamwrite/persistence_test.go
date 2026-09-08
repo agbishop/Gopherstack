@@ -77,7 +77,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 			MeasureName:      "cpu",
 			MeasureValue:     "42.5",
 			MeasureValueType: "DOUBLE",
-			Time:             "1700000000",
+			Time:             recentTimeSeconds(),
 			TimeUnit:         "SECONDS",
 			Dimensions:       []timestreamwrite.Dimension{{Name: "host", Value: "a"}},
 		},
@@ -139,7 +139,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 			MeasureName:      "cpu",
 			MeasureValue:     "43.1",
 			MeasureValueType: "DOUBLE",
-			Time:             "1700000000",
+			Time:             recentTimeSeconds(),
 			TimeUnit:         "SECONDS",
 			Dimensions:       []timestreamwrite.Dimension{{Name: "host", Value: "a"}},
 			Version:          2,
@@ -318,7 +318,7 @@ func TestInMemoryBackend_SnapshotRestore_PreservesRecordIndex(t *testing.T) {
 
 	rec := timestreamwrite.Record{
 		MeasureName: "metric", MeasureValue: "7", MeasureValueType: "BIGINT",
-		Time: "1609459200000", TimeUnit: "MILLISECONDS", Version: 4,
+		Time: recentTimeMillis(0), TimeUnit: "MILLISECONDS", Version: 4,
 	}
 	_, err = b1.WriteRecords("snap-idx-db", "snap-idx-tbl", []timestreamwrite.Record{rec})
 	require.NoError(t, err)

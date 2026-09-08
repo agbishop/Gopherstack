@@ -14,12 +14,16 @@ import "errors"
 // deterministic trigger in this synchronous, single-lock, unbounded
 // in-memory emulator (no internal faults, no real service outages) any more
 // than TooManyRequestsException (no rate limiting) or
-// ConcurrentModificationException (no real concurrent-write races) or
 // DetectedLanguageLowConfidenceException (no real Comprehend-backed
 // detection). Generic throttling/5xx injection for any operation is
 // available instead through the chaos fault-injection system
 // (ChaosOperations/ChaosServiceName), matching services/comprehend's
 // documented precedent for the same class of unmodeled-but-real exceptions.
+// ConcurrentModificationException is the one exception in that "no
+// deterministic trigger" family that turned out to have one: this emulator's
+// own CREATING/UPDATING -> ACTIVE async lifecycle (parallel_data.go) is a
+// real, observable non-terminal window, not a genuine goroutine race -- see
+// ErrConcurrentModification below.
 var (
 	// ErrNotFound is returned when a requested resource is absent. Also used
 	// (per the real per-operation error models) for operations whose only
@@ -32,11 +36,10 @@ var (
 	// operation never throws.
 	ErrNotFound = errors.New("ResourceNotFoundException")
 	// ErrConflict is returned when a named resource already exists (name
-	// conflict on CreateParallelData) or another update is racing
-	// (UpdateParallelData). Real Amazon Translate has no
+	// conflict on CreateParallelData). Real Amazon Translate has no
 	// "ResourceInUseException" shape at all (confirmed: absent from
-	// types/errors.go and the smithy model) -- CreateParallelData/
-	// UpdateParallelData model ConflictException for exactly this case.
+	// types/errors.go and the smithy model) -- CreateParallelData models
+	// ConflictException for exactly this case.
 	ErrConflict = errors.New("ConflictException")
 	// ErrValidation is returned for invalid/missing request values on
 	// operations whose modeled error list includes InvalidRequestException:
@@ -82,4 +85,11 @@ var (
 	// ErrInvalidFilter is returned when ListTextTranslationJobs is given a
 	// Filter.JobStatus value outside the modeled JobStatus enum.
 	ErrInvalidFilter = errors.New("InvalidFilterException")
+	// ErrConcurrentModification is returned when UpdateParallelData targets a
+	// parallel data resource that is still CREATING or UPDATING from a prior
+	// call. types/errors.go's ConcurrentModificationException doc: "Another
+	// modification is being made. That modification must complete before you
+	// can make your change." UpdateParallelData models this exception
+	// (deserializers.go's awsAwsjson11_deserializeOpErrorUpdateParallelData).
+	ErrConcurrentModification = errors.New("ConcurrentModificationException")
 )

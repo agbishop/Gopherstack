@@ -196,12 +196,12 @@ func (b *InMemoryBackend) StopDBInstanceAutomatedBackupsReplication(
 		}
 	}
 
-	// Return a stub record indicating replication stopped even if not found.
-	return &DBInstanceAutomatedBackup{
-		DBInstanceArn:        sourceInstanceARN,
-		DBInstanceIdentifier: sourceInstanceARN,
-		Status:               instanceStatusStopped,
-	}, nil
+	// StopDBInstanceAutomatedBackupsReplication only models
+	// DBInstanceNotFoundFault and InvalidDBInstanceStateFault (rds
+	// deserializers.go awsAwsquery_deserializeOpErrorStopDBInstanceAutomatedBackupsReplication);
+	// there's no dedicated "replication not active" fault, so a source ARN
+	// with no replication entry is DBInstanceNotFound, not a fabricated success.
+	return nil, fmt.Errorf("%w: %s", ErrInstanceNotFound, sourceInstanceARN)
 }
 
 const (

@@ -13,7 +13,7 @@ import (
 func (h *Handler) handleAssociateTargetsWithJob(c *echo.Context) error {
 	// Path: /jobs/{jobId}/targets
 	after := strings.TrimPrefix(c.Request().URL.Path, "/jobs/")
-	jobID := strings.SplitN(after, "/", maxPathSegments)[0]
+	jobID, _, _ := strings.Cut(after, "/")
 
 	var body struct {
 		Comment     string   `json:"comment"`

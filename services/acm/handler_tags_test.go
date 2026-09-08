@@ -2,7 +2,9 @@ package acm_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -199,6 +201,148 @@ func TestACMHandler_GenericResourceTags_RouteByArnType(t *testing.T) {
 
 			h := newACMHandler()
 			tt.run(t, h)
+		})
+	}
+}
+
+// TestACMHandler_NewStyleTagValidation_UsesValidationAndServiceQuota verifies
+// that the ACME resource families (CreateAcmeEndpoint et al.) and the
+// generic TagResource op reject bad tags with ValidationException/
+// ServiceQuotaExceededException, not the legacy certificate-tag codes
+// InvalidTagException/TooManyTagsException that AddTagsToCertificate/
+// ImportCertificate/RequestCertificate declare -- gopherstack-ftkd.
+func TestACMHandler_NewStyleTagValidation_UsesValidationAndServiceQuota(t *testing.T) {
+	t.Parallel()
+
+	tooManyTags := func() []map[string]string {
+		tags := make([]map[string]string, 0, 51)
+		for i := range 51 {
+			tags = append(tags, map[string]string{"Key": fmt.Sprintf("k%d", i), "Value": "v"})
+		}
+
+		return tags
+	}
+
+	tests := []struct {
+		run  func(t *testing.T, h *acm.Handler)
+		name string
+	}{
+		{
+			name: "CreateAcmeEndpoint_ReservedTagPrefix_ValidationException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				body := `{"AuthorizationBehavior":"PRE_APPROVED",` +
+					`"CertificateAuthority":{"PublicCertificateAuthority":{}},` +
+					`"Tags":[{"Key":"aws:reserved","Value":"v"}]}`
+				rec := postACMJSON(t, h, "CreateAcmeEndpoint", body)
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+				assert.NotContains(t, rec.Body.String(), "InvalidTagException")
+			},
+		},
+		{
+			name: "CreateAcmeEndpoint_TooManyTags_ServiceQuotaExceededException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				body, err := json.Marshal(map[string]any{
+					"AuthorizationBehavior": "PRE_APPROVED",
+					"CertificateAuthority":  map[string]any{"PublicCertificateAuthority": map[string]any{}},
+					"Tags":                  tooManyTags(),
+				})
+				require.NoError(t, err)
+
+				rec := postACMJSON(t, h, "CreateAcmeEndpoint", string(body))
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ServiceQuotaExceededException")
+				assert.NotContains(t, rec.Body.String(), "TooManyTagsException")
+			},
+		},
+		{
+			name: "TagResource_ReservedTagPrefix_ValidationException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				epARN := createTestAcmeEndpoint(t, h)
+				body, err := json.Marshal(map[string]any{
+					"ResourceArn": epARN,
+					"Tags":        []map[string]string{{"Key": "aws:reserved", "Value": "v"}},
+				})
+				require.NoError(t, err)
+
+				rec := postACMJSON(t, h, "TagResource", string(body))
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+				assert.NotContains(t, rec.Body.String(), "InvalidTagException")
+
+				listBody, _ := json.Marshal(map[string]string{"ResourceArn": epARN})
+				listRec := postACMJSON(t, h, "ListTagsForResource", string(listBody))
+				require.Equal(t, http.StatusOK, listRec.Code)
+				assert.JSONEq(t, `{"Tags":[]}`, listRec.Body.String(), "rejected tag must not be stored")
+			},
+		},
+		{
+			name: "TagResource_TooManyTags_ServiceQuotaExceededException",
+			run: func(t *testing.T, h *acm.Handler) {
+				t.Helper()
+
+				epARN := createTestAcmeEndpoint(t, h)
+
+				body, err := json.Marshal(map[string]any{"ResourceArn": epARN, "Tags": tooManyTags()})
+				require.NoError(t, err)
+
+				rec := postACMJSON(t, h, "TagResource", string(body))
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ServiceQuotaExceededException")
+				assert.NotContains(t, rec.Body.String(), "TooManyTagsException")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newACMHandler()
+			tt.run(t, h)
+		})
+	}
+}
+
+// TestACMHandler_LegacyTagOps_KeyOrValueTooLong_InvalidTagException guards a bug where setTags'
+// tag-key/value length checks (handler_tags.go) hardcoded ErrInvalidParameter instead of using the
+// caller-supplied invalidTagErr -- unlike the sibling empty-key/reserved-prefix checks just above
+// them, which already did. For the legacy certificate-tag ops (RequestCertificate here), that
+// meant a too-long key or value returned ValidationException, a code RequestCertificate's real
+// deserializer does not declare, instead of InvalidTagException, which it does. gopherstack-bzyl.
+func TestACMHandler_LegacyTagOps_KeyOrValueTooLong_InvalidTagException(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		tags []map[string]string
+	}{
+		{name: "key_too_long", tags: []map[string]string{{"Key": strings.Repeat("k", 129), "Value": "v"}}},
+		{name: "value_too_long", tags: []map[string]string{{"Key": "k", "Value": strings.Repeat("v", 257)}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newACMHandler()
+
+			body, err := json.Marshal(map[string]any{
+				"DomainName": "toolong.example.com",
+				"Tags":       tt.tags,
+			})
+			require.NoError(t, err)
+
+			rec := postACMJSON(t, h, "RequestCertificate", string(body))
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Contains(t, rec.Body.String(), "InvalidTagException")
+			assert.NotContains(t, rec.Body.String(), "ValidationException")
 		})
 	}
 }

@@ -78,7 +78,12 @@ func (b *InMemoryBackend) collectExportStreams(task *ExportTask) []exportStream 
 	b.mu.RLock("collectExportStreams")
 	defer b.mu.RUnlock()
 
-	groupStreams := b.streamsInGroup(b.region, task.LogGroupName)
+	region := task.Region
+	if region == "" {
+		region = b.region
+	}
+
+	groupStreams := b.streamsInGroup(region, task.LogGroupName)
 	streamsByName := make(map[string]*LogStream, len(groupStreams))
 	names := make([]string, 0, len(groupStreams))
 	for _, s := range groupStreams {

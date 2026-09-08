@@ -21,6 +21,7 @@ func (b *InMemoryBackend) DeleteCertificate(certificateID string) error {
 	}
 
 	b.certificates.Delete(certificateID)
+	delete(b.tagsStore, certificateARN(b.accountID, b.region, certificateID))
 
 	return nil
 }

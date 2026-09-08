@@ -110,6 +110,72 @@ func TestInMemoryBackend_PutObject(t *testing.T) {
 	}
 }
 
+func TestInMemoryBackend_PutObject_SizeLimit(t *testing.T) {
+	t.Parallel()
+
+	// aws-sdk-go-v2/service/mediastoredata/api_op_PutObject.go:13-14: "Object
+	// sizes are limited to 25 MB for standard upload availability and 10 MB
+	// for streaming upload availability."
+	const (
+		standardLimit  = 25 * 1024 * 1024
+		streamingLimit = 10 * 1024 * 1024
+	)
+
+	tests := []struct {
+		name               string
+		uploadAvailability string
+		bodySize           int
+		wantErr            bool
+	}{
+		{name: "standard_at_limit_accepted", uploadAvailability: "STANDARD", bodySize: standardLimit},
+		{
+			name:               "standard_over_limit_rejected",
+			uploadAvailability: "STANDARD",
+			bodySize:           standardLimit + 1,
+			wantErr:            true,
+		},
+		{name: "streaming_at_limit_accepted", uploadAvailability: "STREAMING", bodySize: streamingLimit},
+		{
+			name:               "streaming_over_limit_rejected",
+			uploadAvailability: "STREAMING",
+			bodySize:           streamingLimit + 1,
+			wantErr:            true,
+		},
+		// A body over the streaming limit but under the standard limit must
+		// still be rejected when upload availability is STREAMING -- the
+		// limit depends on which availability was requested, not a single
+		// global cap.
+		{
+			name:               "over_streaming_limit_but_under_standard_limit_still_rejected",
+			uploadAvailability: "STREAMING", bodySize: streamingLimit + 1024,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestBackend()
+			body := make([]byte, tt.bodySize)
+
+			_, err := b.PutObject(
+				context.Background(),
+				"/size/file.mp4", body, "video/mp4", "", "TEMPORAL", tt.uploadAvailability,
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				require.ErrorIs(t, err, mediastoredata.ErrObjectTooLarge)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestInMemoryBackend_GetObject(t *testing.T) {
 	t.Parallel()
 

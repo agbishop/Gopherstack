@@ -67,10 +67,11 @@ func scopedKey(groupName, name string) string { return groupName + "/" + name }
 
 // ---- primary key functions ----
 
-func groupsKeyFn(v *AutoScalingGroup) string                  { return v.AutoScalingGroupName }
-func launchConfigurationsKeyFn(v *LaunchConfiguration) string { return v.LaunchConfigurationName }
-func warmPoolsKeyFn(v *WarmPool) string                       { return v.AutoScalingGroupName }
-func pendingHookTokensKeyFn(v *pendingHookAction) string      { return v.Token }
+func groupsKeyFn(v *AutoScalingGroup) string                    { return v.AutoScalingGroupName }
+func launchConfigurationsKeyFn(v *LaunchConfiguration) string   { return v.LaunchConfigurationName }
+func warmPoolsKeyFn(v *WarmPool) string                         { return v.AutoScalingGroupName }
+func pendingHookTokensKeyFn(v *pendingHookAction) string        { return v.Token }
+func pendingRefreshActionsKeyFn(v *pendingRefreshAction) string { return v.ID }
 
 func scheduledActionsKeyFn(v *ScheduledAction) string {
 	return scopedKey(v.AutoScalingGroupName, v.ScheduledActionName)
@@ -130,11 +131,13 @@ func registerAllTables(b *InMemoryBackend) {
 	b.scalingPolicies = store.Register(b.registry, "scalingPolicies", store.New(scalingPoliciesKeyFn))
 	b.scalingPoliciesByGroup = b.scalingPolicies.AddIndex("byGroup", scalingPoliciesGroupIndexKeyFn)
 
-	// pendingHookTokens is intentionally NOT registered on b.registry: it
-	// holds live *time.Timer state that must never be persisted (see
-	// Snapshot/Restore in persistence.go, which cancel and rebuild timers
-	// explicitly instead of round-tripping them through JSON).
+	// pendingHookTokens and pendingRefreshActions are intentionally NOT
+	// registered on b.registry: both hold live *time.Timer state that must
+	// never be persisted (see Snapshot/Restore in persistence.go, which
+	// cancel and rebuild timers explicitly instead of round-tripping them
+	// through JSON).
 	b.pendingHookTokens = store.New(pendingHookTokensKeyFn)
+	b.pendingRefreshActions = store.New(pendingRefreshActionsKeyFn)
 }
 
 // ---- per-group helpers ----

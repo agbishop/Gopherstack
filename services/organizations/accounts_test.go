@@ -184,6 +184,54 @@ func TestBackend_RemoveAccountFromOrganization(t *testing.T) {
 	}
 }
 
+// TestBackend_RemoveAccountFromOrganization_MasterAccount verifies AWS
+// behaviour: RemoveAccountFromOrganization's own per-op error switch
+// (deserializers.go) models MasterCannotLeaveOrganizationException for the
+// management account, not the generic InvalidInputException.
+func TestBackend_RemoveAccountFromOrganization_MasterAccount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{name: "management_account_cannot_be_removed"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b, _ := newOrgBackend(t)
+
+			org, err := b.DescribeOrganization()
+			require.NoError(t, err)
+
+			err = b.RemoveAccountFromOrganization(org.MasterAccountID)
+			require.ErrorIs(t, err, organizations.ErrMasterCannotLeaveOrganization)
+			require.NotErrorIs(t, err, organizations.ErrInvalidInput)
+		})
+	}
+}
+
+// TestBackend_RemoveAccountFromOrganization_FreesEmailForReuse verifies that
+// removing an account clears its email from the duplicate-email index, so a
+// new account can be created with the same email afterward. Previously the
+// stale index entry caused CreateAccount to wrongly reject the same email
+// with ErrInvalidInput even though no account was using it any more.
+func TestBackend_RemoveAccountFromOrganization_FreesEmailForReuse(t *testing.T) {
+	t.Parallel()
+
+	b, _ := newOrgBackend(t)
+
+	status, err := b.CreateAccount("reused-account", "reused@example.com", "", "", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, b.RemoveAccountFromOrganization(status.AccountID))
+
+	_, err = b.CreateAccount("reused-account-2", "reused@example.com", "", "", nil)
+	require.NoError(t, err, "email should be free for reuse after account removal")
+}
+
 // TestBackend_MoveAccount tests moving an account between OUs.
 func TestBackend_MoveAccount(t *testing.T) {
 	t.Parallel()
@@ -399,6 +447,50 @@ func TestMoveAccount_Scenarios(t *testing.T) {
 	}
 }
 
+// TestMoveAccount_ErrorCodes verifies AWS behaviour: MoveAccount's own
+// per-op error switch (deserializers.go) models SourceParentNotFoundException
+// and DestinationParentNotFoundException, not the generic
+// InvalidInputException.
+func TestMoveAccount_ErrorCodes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		wantErr   error
+		name      string
+		badSource bool
+		badDest   bool
+	}{
+		{name: "bad_source", badSource: true, wantErr: organizations.ErrSourceParentNotFound},
+		{name: "bad_dest", badDest: true, wantErr: organizations.ErrDestinationParentNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b, rootID := newOrgBackend(t)
+
+			status, err := b.CreateAccount("move-me", "move-err@example.com", "", "", nil)
+			require.NoError(t, err)
+			accountID := status.AccountID
+
+			sourceID := rootID
+			if tt.badSource {
+				sourceID = "r-doesnotexist"
+			}
+
+			destID := rootID
+			if tt.badDest {
+				destID = "ou-doesnotexist-00000000"
+			}
+
+			err = b.MoveAccount(accountID, sourceID, destID)
+			require.ErrorIs(t, err, tt.wantErr)
+			require.NotErrorIs(t, err, organizations.ErrInvalidInput)
+		})
+	}
+}
+
 // TestCloseAccount_Scenarios verifies close account behavior.
 func TestCloseAccount_Scenarios(t *testing.T) {
 	t.Parallel()
@@ -454,9 +546,14 @@ func TestCloseAccount_Scenarios(t *testing.T) {
 	}
 }
 
-// TestRemoveAccount_CleansDelegatedAdmins verifies delegated admin
-// records are removed when an account leaves.
-func TestRemoveAccount_CleansDelegatedAdmins(t *testing.T) {
+// TestRemoveAccount_RejectsWhileDelegatedAdmin verifies AWS behaviour:
+// RemoveAccountFromOrganization's doc comment requires the target account to
+// not be a delegated administrator for any service ("you must first change
+// the delegated administrator account to another account"), backed by
+// ConstraintViolationExceptionReasonCannotRemoveDelegatedAdministratorFromOrg
+// (types/enums.go). Once deregistered, removal succeeds and leaves no ghost
+// delegated-admin rows.
+func TestRemoveAccount_RejectsWhileDelegatedAdmin(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -487,6 +584,13 @@ func TestRemoveAccount_CleansDelegatedAdmins(t *testing.T) {
 			for _, svc := range tt.services {
 				require.NoError(t, b.EnableAWSServiceAccess(svc))
 				require.NoError(t, b.RegisterDelegatedAdministrator(accountID, svc))
+			}
+
+			err = b.RemoveAccountFromOrganization(accountID)
+			require.ErrorIs(t, err, organizations.ErrCannotRemoveDelegatedAdministratorFromOrg)
+
+			for _, svc := range tt.services {
+				require.NoError(t, b.DeregisterDelegatedAdministrator(accountID, svc))
 			}
 
 			require.NoError(t, b.RemoveAccountFromOrganization(accountID))
@@ -688,11 +792,7 @@ func TestCreateAccount_EmailUniqueness_AfterReset(t *testing.T) {
 func TestRemoveAccount_CleansPolicyTargets(t *testing.T) {
 	t.Parallel()
 
-	b, rootID := newOrgBackend(t)
-
-	// Enable SCP and create an account.
-	_, err := b.EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
-	require.NoError(t, err)
+	b, _ := newOrgBackend(t)
 
 	status, err := b.CreateAccount("to-remove", "remove@example.com", "", "", nil)
 	require.NoError(t, err)

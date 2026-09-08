@@ -1,6 +1,7 @@
 package iot_test
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -457,6 +458,43 @@ func TestSecurityProfile_RoutingWireShapesAndBehaviorCriteriaType_SDKRoundTrip(t
 // silently no-op'ing; DeleteSecurityProfile cleans up the profile's target
 // attachments so a re-created profile with the same name doesn't inherit
 // the old ghost row in securityProfileTargets.
+// DeleteSecurityProfileInput.ExpectedVersion (iot@v1.77.4/api_op_DeleteSecurityProfile.go:38-41):
+// "If you specify a value that is different from the actual version, a
+// VersionConflictException is thrown." expectedVersion is a QUERY parameter
+// (awsRestjson1_serializeOpHttpBindingsDeleteSecurityProfileInput).
+func TestDeleteSecurityProfileExpectedVersion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		expectedVer int
+		wantStatus  int
+	}{
+		{"matching_version_succeeds", 1, http.StatusOK},
+		{"stale_version_conflicts", 99, http.StatusConflict},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newIoTHandlerBatch1(t)
+			iotOK(t, h, http.MethodPost, "/security-profiles/my-profile", map[string]any{})
+
+			path := fmt.Sprintf("/security-profiles/my-profile?expectedVersion=%d", tt.expectedVer)
+			rec := iotRequest(t, h, http.MethodDelete, path, nil)
+
+			require.Equal(t, tt.wantStatus, rec.Code, "body: %s", rec.Body.String())
+
+			if tt.wantStatus == http.StatusOK {
+				iotExpectError(t, h, "/security-profiles/my-profile")
+			} else {
+				iotOK(t, h, http.MethodGet, "/security-profiles/my-profile", nil)
+			}
+		})
+	}
+}
+
 func TestSecurityProfile_DetachNotFoundAndDeleteCascade(t *testing.T) {
 	t.Parallel()
 

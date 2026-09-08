@@ -469,6 +469,10 @@ func (h *Handler) mapError(c *echo.Context, err error) error {
 		return c.JSON(http.StatusBadRequest, errResp("DirectoryAlreadyInRegionException", err.Error()))
 	case errors.Is(err, ErrCertificateDoesNotExist):
 		return c.JSON(http.StatusBadRequest, errResp("CertificateDoesNotExistException", err.Error()))
+	case errors.Is(err, ErrInvalidLDAPSStatus):
+		return c.JSON(http.StatusBadRequest, errResp("InvalidLDAPSStatusException", err.Error()))
+	case errors.Is(err, ErrInvalidClientAuthStatus):
+		return c.JSON(http.StatusBadRequest, errResp("InvalidClientAuthStatusException", err.Error()))
 	case errors.Is(err, awserr.ErrNotFound):
 		return c.JSON(http.StatusBadRequest, errResp("EntityDoesNotExistException", err.Error()))
 	case errors.Is(err, awserr.ErrAlreadyExists):

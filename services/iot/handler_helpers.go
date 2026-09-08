@@ -169,3 +169,22 @@ func parseInt32QueryParam(c *echo.Context, name string) int32 {
 
 	return int32(n)
 }
+
+// parseExpectedVersionQueryParam reads the `expectedVersion` query param,
+// defaulting to 0 (unset) when absent or invalid. Several Delete* ops
+// declare it (e.g. awsRestjson1_serializeOpHttpBindingsDeleteThingInput,
+// iot@v1.77.4/serializers.go) -- 0 is a safe "not specified" sentinel since
+// AWS IoT resource versions start at 1.
+func parseExpectedVersionQueryParam(c *echo.Context) int64 {
+	v := c.QueryParam("expectedVersion")
+	if v == "" {
+		return 0
+	}
+
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0
+	}
+
+	return n
+}

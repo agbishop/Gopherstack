@@ -154,3 +154,54 @@ func TestInMemoryBackend_StartJob_UnknownAppOrBranch(t *testing.T) {
 		require.ErrorIs(t, err, awserr.ErrNotFound)
 	})
 }
+
+// TestInMemoryBackend_StopJob_RejectsTerminalJob verifies real Amplify's
+// StopJob doc ("[s]tops a job that is in progress") is enforced: a job
+// already in a terminal state can't be stopped, so its recorded outcome
+// (SUCCEED/FAILED/CANCELLED) is never silently overwritten.
+func TestInMemoryBackend_StopJob_RejectsTerminalJob(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		terminate func(t *testing.T, b *amplify.InMemoryBackend, appID, branchName, jobID string)
+		name      string
+	}{
+		{
+			name: "already_cancelled",
+			terminate: func(t *testing.T, b *amplify.InMemoryBackend, appID, branchName, jobID string) {
+				t.Helper()
+
+				_, err := b.StopJob(appID, branchName, jobID)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "already_succeeded_via_janitor",
+			terminate: func(t *testing.T, b *amplify.InMemoryBackend, _, _, _ string) {
+				t.Helper()
+
+				j := amplify.NewJanitor(b, time.Millisecond)
+				j.SweepOnce(t.Context())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestBackend()
+			app := seedApp(t, b, "StopTerminalApp-"+tt.name)
+			branch := seedMainBranch(t, b, app.AppID)
+
+			job, err := b.StartJob(app.AppID, branch.BranchName, "RELEASE", "", "", "", time.Time{})
+			require.NoError(t, err)
+
+			tt.terminate(t, b, app.AppID, branch.BranchName, job.JobID)
+
+			_, err = b.StopJob(app.AppID, branch.BranchName, job.JobID)
+			require.Error(t, err)
+			require.ErrorIs(t, err, awserr.ErrInvalidParameter)
+		})
+	}
+}

@@ -722,3 +722,21 @@ func TestDeleteConfigurationSet(t *testing.T) {
 		})
 	}
 }
+
+func TestDeleteConfigurationSet_ClearsResourceTagsOnRecreate(t *testing.T) {
+	t.Parallel()
+
+	h := newHandler()
+
+	_, err := h.Backend.CreateConfigurationSet("reused-config", map[string]string{"env": "prod"})
+	require.NoError(t, err)
+
+	require.NoError(t, h.Backend.DeleteConfigurationSet("reused-config"))
+
+	_, err = h.Backend.CreateConfigurationSet("reused-config", nil)
+	require.NoError(t, err)
+
+	recreated, err := h.Backend.GetConfigurationSet("reused-config")
+	require.NoError(t, err)
+	assert.Empty(t, recreated.Tags)
+}

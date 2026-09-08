@@ -121,6 +121,13 @@ func TestFullStateSnapshotRestore(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, versions.Versions, 2)
 
-	// Overall counts: two distinct secrets (same name, different regions).
-	assert.Equal(t, 2, SecretCount(fresh))
+	// Overall counts: two secrets created directly (same name, different
+	// regions) plus the real mirrored replica in eu-west-1 (see
+	// upsertReplicaSecretLocked -- ReplicateSecretToRegions creates an
+	// independently readable replica Secret, not just status bookkeeping).
+	assert.Equal(t, 3, SecretCount(fresh))
+
+	replicaVal, err := fresh.GetSecretValue(smCtxRegion("eu-west-1"), &GetSecretValueInput{SecretID: "shared-name"})
+	require.NoError(t, err, "the replica secret must survive the snapshot/restore round trip")
+	assert.Equal(t, "east-string-value-v2", replicaVal.SecretString)
 }

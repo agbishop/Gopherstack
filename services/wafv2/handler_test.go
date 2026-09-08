@@ -275,6 +275,125 @@ func TestLockTokenEnforcement(t *testing.T) {
 	assert.Equal(t, http.StatusOK, recGood.Code)
 }
 
+// TestLockTokenRequired_MissingTokenRejected: LockToken is a required member
+// on every Update*/Delete* op across the WebACL/IPSet/RuleGroup/
+// RegexPatternSet families (wafv2@v1.77.3 validators.go,
+// validateOpUpdateWebACLInput et al. all call
+// invalidParams.Add(smithy.NewErrParamRequired("LockToken"))), but the
+// handlers only checked it for a mismatch when non-empty -- an omitted
+// LockToken silently bypassed optimistic locking entirely.
+func TestLockTokenRequired_MissingTokenRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		setup  func(t *testing.T, h *wafv2.Handler) map[string]any
+		name   string
+		target string
+	}{
+		{
+			name:   "update_web_acl",
+			target: "UpdateWebACL",
+			setup: func(t *testing.T, h *wafv2.Handler) map[string]any {
+				t.Helper()
+				id, _ := createWebACLWithRules(t, h, "acl-no-token", "REGIONAL")
+
+				return map[string]any{"Id": id, "Name": "acl-no-token", "Scope": "REGIONAL", "Description": "x"}
+			},
+		},
+		{
+			name:   "delete_web_acl",
+			target: "DeleteWebACL",
+			setup: func(t *testing.T, h *wafv2.Handler) map[string]any {
+				t.Helper()
+				id, _ := createWebACLWithRules(t, h, "acl-no-token-del", "REGIONAL")
+
+				return map[string]any{"Id": id, "Name": "acl-no-token-del", "Scope": "REGIONAL"}
+			},
+		},
+		{
+			name:   "update_ip_set",
+			target: "UpdateIPSet",
+			setup: func(t *testing.T, h *wafv2.Handler) map[string]any {
+				t.Helper()
+				id, _ := createIPSetHelper2(t, h, "ipset-no-token", nil)
+
+				return map[string]any{
+					"Id": id, "Name": "ipset-no-token", "Scope": "REGIONAL", "Addresses": []string{"10.0.0.0/8"},
+				}
+			},
+		},
+		{
+			name:   "delete_ip_set",
+			target: "DeleteIPSet",
+			setup: func(t *testing.T, h *wafv2.Handler) map[string]any {
+				t.Helper()
+				id, _ := createIPSetHelper2(t, h, "ipset-no-token-del", nil)
+
+				return map[string]any{"Id": id, "Name": "ipset-no-token-del", "Scope": "REGIONAL"}
+			},
+		},
+		{
+			name:   "update_rule_group",
+			target: "UpdateRuleGroup",
+			setup: func(t *testing.T, h *wafv2.Handler) map[string]any {
+				t.Helper()
+				id, _ := createRuleGroupHelper(t, h, "rg-no-token")
+
+				return map[string]any{"Id": id, "Name": "rg-no-token", "Scope": "REGIONAL", "Description": "x"}
+			},
+		},
+		{
+			name:   "delete_rule_group",
+			target: "DeleteRuleGroup",
+			setup: func(t *testing.T, h *wafv2.Handler) map[string]any {
+				t.Helper()
+				id, _ := createRuleGroupHelper(t, h, "rg-no-token-del")
+
+				return map[string]any{"Id": id, "Name": "rg-no-token-del", "Scope": "REGIONAL"}
+			},
+		},
+		{
+			name:   "update_regex_pattern_set",
+			target: "UpdateRegexPatternSet",
+			setup: func(t *testing.T, h *wafv2.Handler) map[string]any {
+				t.Helper()
+				id := createRegexPatternSetHelper(t, h, "rps-no-token")
+
+				return map[string]any{"Id": id, "Name": "rps-no-token", "Scope": "REGIONAL", "Description": "x"}
+			},
+		},
+		{
+			name:   "delete_regex_pattern_set",
+			target: "DeleteRegexPatternSet",
+			setup: func(t *testing.T, h *wafv2.Handler) map[string]any {
+				t.Helper()
+				id := createRegexPatternSetHelper(t, h, "rps-no-token-del")
+
+				return map[string]any{"Id": id, "Name": "rps-no-token-del", "Scope": "REGIONAL"}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			body := tt.setup(t, h)
+
+			rec := doWafv2Request(t, h, tt.target, body)
+			assert.Equal(
+				t, http.StatusBadRequest, rec.Code,
+				"missing LockToken must be rejected: %s", rec.Body.String(),
+			)
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			assert.Equal(t, "WAFInvalidParameterException", resp["__type"])
+		})
+	}
+}
+
 // ---- Gap 4: Managed rule group catalog --------------------------------------
 
 func TestVisibilityConfigMissingMetricName(t *testing.T) {
@@ -639,7 +758,7 @@ func TestValidation_ScopeMismatch(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHandler(t)
-		id, _ := createIPSetHelper2(t, h, "my-ipset", "REGIONAL", "IPV4", nil)
+		id, _ := createIPSetHelper2(t, h, "my-ipset", nil)
 
 		rec := doWafv2Request(t, h, "GetIPSet", map[string]any{
 			"Id":    id,

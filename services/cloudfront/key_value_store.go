@@ -105,6 +105,8 @@ func (b *InMemoryBackend) DeleteKeyValueStore(id string) error {
 
 	delete(b.keyValueStoreByName, kvs.Name)
 	b.keyValueStores.Delete(id)
+	delete(b.keyValueStoreData, kvs.ID)
+	delete(b.keyValueDataETags, kvs.ID)
 
 	return nil
 }

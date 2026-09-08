@@ -17,6 +17,8 @@ func TestHandler_HandleError_InternalError(t *testing.T) {
 
 	h, b := newTestHandler()
 	api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
+	key, keyErr := b.CreateAPIKey(api.APIID, "", 0)
+	require.NoError(t, keyErr)
 
 	// Schema with unsupported data source causes InternalFailure.
 	_, _ = b.StartSchemaCreation(api.APIID, `type Query { hello: String }`)
@@ -30,7 +32,8 @@ func TestHandler_HandleError_InternalError(t *testing.T) {
 	})
 
 	body := map[string]any{"query": `query { hello }`}
-	rec := doRequest(t, h, http.MethodPost, "/v1/apis/"+api.APIID+"/graphql", body)
+	rec := doRequestWithHeaders(t, h, "/v1/apis/"+api.APIID+"/graphql", body,
+		map[string]string{"x-api-key": key.ID})
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 

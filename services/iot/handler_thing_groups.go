@@ -242,7 +242,8 @@ func (h *Handler) handleUpdateThingGroup(c *echo.Context) error {
 
 func (h *Handler) handleDeleteThingGroup(c *echo.Context) error {
 	thingGroupName := strings.TrimPrefix(c.Request().URL.Path, "/thing-groups/")
-	if err := h.Backend.DeleteThingGroup(thingGroupName); err != nil {
+	expectedVersion := parseExpectedVersionQueryParam(c)
+	if err := h.Backend.DeleteThingGroup(thingGroupName, expectedVersion); err != nil {
 		// DeleteThingGroup's own deserializeOpError switch declares no
 		// ResourceNotFoundException case.
 		return respondAsInvalidRequest(c, err, ErrThingGroupNotFound)
@@ -369,7 +370,8 @@ func (h *Handler) handleCreateDynamicThingGroup(c *echo.Context) error {
 
 func (h *Handler) handleDeleteDynamicThingGroup(c *echo.Context) error {
 	name := strings.TrimPrefix(c.Request().URL.Path, "/dynamic-thing-groups/")
-	if err := h.Backend.DeleteDynamicThingGroup(name); err != nil {
+	expectedVersion := parseExpectedVersionQueryParam(c)
+	if err := h.Backend.DeleteDynamicThingGroup(name, expectedVersion); err != nil {
 		// DeleteDynamicThingGroup's own deserializeOpError switch declares
 		// no ResourceNotFoundException case.
 		return respondAsInvalidRequest(c, err, ErrThingGroupNotFound)

@@ -228,13 +228,40 @@ func TestHandler_DeleteApplication_CascadesToRelatedResources(t *testing.T) {
 	assert.Equal(t, 2, h.Backend.ConfigTemplateCount())
 
 	rec := postEBForm(t, h,
-		"Version=2010-12-01&Action=DeleteApplication&ApplicationName=my-app")
+		"Version=2010-12-01&Action=DeleteApplication&ApplicationName=my-app&TerminateEnvByForce=true")
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	assert.Equal(t, 0, h.Backend.ApplicationCount())
 	assert.Equal(t, 0, h.Backend.EnvironmentCount())
 	assert.Equal(t, 0, h.Backend.AppVersionCount())
 	assert.Equal(t, 0, h.Backend.ConfigTemplateCount())
+}
+
+// TestHandler_DeleteApplication_RefusesRunningEnvironment locks real AWS's
+// DeleteApplication doc comment: "You cannot delete an application that has
+// a running environment." Passing TerminateEnvByForce=true terminates the
+// environment first and lets the delete proceed.
+func TestHandler_DeleteApplication_RefusesRunningEnvironment(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+
+	postEBForm(t, h, "Version=2010-12-01&Action=CreateApplication&ApplicationName=eb-app")
+	postEBForm(t, h,
+		"Version=2010-12-01&Action=CreateEnvironment&ApplicationName=eb-app&EnvironmentName=eb-env")
+	require.Equal(t, 1, h.Backend.EnvironmentCount())
+
+	rec := postEBForm(t, h, "Version=2010-12-01&Action=DeleteApplication&ApplicationName=eb-app")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "running environment")
+	assert.Equal(t, 1, h.Backend.ApplicationCount())
+	assert.Equal(t, 1, h.Backend.EnvironmentCount())
+
+	rec = postEBForm(t, h,
+		"Version=2010-12-01&Action=DeleteApplication&ApplicationName=eb-app&TerminateEnvByForce=true")
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, 0, h.Backend.ApplicationCount())
+	assert.Equal(t, 0, h.Backend.EnvironmentCount())
 }
 
 func TestHandler_UpdateApplication(t *testing.T) {

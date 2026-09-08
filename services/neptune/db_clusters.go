@@ -395,9 +395,36 @@ func (b *InMemoryBackend) DeleteDBCluster(
 			b.clusterEndpointDelete(region, ep.DBClusterEndpointIdentifier)
 		}
 	}
+
+	b.detachDeletedClusterFromGlobalCluster(region, id, c.GlobalClusterIdentifier)
 	b.recordEvent(region, id, sourceTypeDBCluster, "DB cluster deleted", "deletion")
 
 	return &cp, nil
+}
+
+// detachDeletedClusterFromGlobalCluster removes a just-deleted DB cluster
+// from its global cluster's membership list, if it belonged to one. Per
+// api_op_DeleteGlobalCluster.go, membership only blocks DeleteGlobalCluster
+// while a member is "detached or deleted" -- without this, a member cluster
+// deleted directly (not via RemoveFromGlobalCluster) would leave a ghost
+// entry that blocks its global cluster from ever being deleted. Callers must
+// hold the write lock.
+func (b *InMemoryBackend) detachDeletedClusterFromGlobalCluster(region, id, globalClusterID string) {
+	if globalClusterID == "" {
+		return
+	}
+	gc, ok := b.globalClusters.Get(globalClusterID)
+	if !ok {
+		return
+	}
+	clusterARN := b.clusterARN(region, id)
+	kept := make([]GlobalClusterMember, 0, len(gc.GlobalClusterMembers))
+	for _, m := range gc.GlobalClusterMembers {
+		if m.DBClusterARN != clusterARN {
+			kept = append(kept, m)
+		}
+	}
+	gc.GlobalClusterMembers = kept
 }
 
 // ModifyDBCluster modifies a Neptune DB cluster.

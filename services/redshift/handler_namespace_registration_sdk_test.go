@@ -33,7 +33,7 @@ func TestSDKRoundTrip_RegisterNamespace(t *testing.T) {
 		client := newTestRedshiftClient(t, h)
 		ctx := t.Context()
 
-		_, err := backend.CreateCluster("rt-ns-cluster1", "dc2.large", "dev", "admin")
+		_, err := backend.CreateCluster("rt-ns-cluster1", "dc2.large", "dev", "admin", nil, "")
 		require.NoError(t, err)
 
 		out, err := client.RegisterNamespace(ctx, &redshiftsdk.RegisterNamespaceInput{
@@ -74,7 +74,7 @@ func TestSDKRoundTrip_RegisterNamespace(t *testing.T) {
 		client := newTestRedshiftClient(t, h)
 		ctx := t.Context()
 
-		_, err := backend.CreateCluster("rt-ns-cluster2", "dc2.large", "dev", "admin")
+		_, err := backend.CreateCluster("rt-ns-cluster2", "dc2.large", "dev", "admin", nil, "")
 		require.NoError(t, err)
 		_, err = backend.PauseCluster("rt-ns-cluster2")
 		require.NoError(t, err)
@@ -148,7 +148,7 @@ func TestSDKRoundTrip_RegisterNamespace(t *testing.T) {
 		client := newTestRedshiftClient(t, h)
 		ctx := t.Context()
 
-		_, err := backend.CreateCluster("rt-ns-cluster3", "dc2.large", "dev", "admin")
+		_, err := backend.CreateCluster("rt-ns-cluster3", "dc2.large", "dev", "admin", nil, "")
 		require.NoError(t, err)
 
 		namespaceID := &types.NamespaceIdentifierUnionMemberProvisionedIdentifier{
@@ -185,7 +185,7 @@ func TestNamespaceRegistration_ConsumerIdentifiersStateMutation(t *testing.T) {
 
 	backend := redshift.NewInMemoryBackend("000000000000", rtTestRegion)
 
-	_, err := backend.CreateCluster("rt-ns-mutation", "dc2.large", "dev", "admin")
+	_, err := backend.CreateCluster("rt-ns-mutation", "dc2.large", "dev", "admin", nil, "")
 	require.NoError(t, err)
 
 	reg, err := backend.RegisterNamespace([]string{"111111111111", "222222222222"}, "rt-ns-mutation", "", "")

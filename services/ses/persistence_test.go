@@ -203,7 +203,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "verify@example.com", cvt.FromEmailAddress)
 
-	policies, err := fresh.GetIdentityPolicies("verified@example.com", nil)
+	policies, err := fresh.GetIdentityPolicies("verified@example.com", []string{"policy1"})
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"Version":"2012-10-17"}`, policies["policy1"])
 
@@ -316,7 +316,7 @@ func TestSnapshot_IncludesPolicies(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"pol1", "pol2"}, names)
 
-	pols, err := fresh.GetIdentityPolicies("snap@example.com", nil)
+	pols, err := fresh.GetIdentityPolicies("snap@example.com", []string{"pol1", "pol2"})
 	require.NoError(t, err)
 	assert.Equal(t, `{"v":1}`, pols["pol1"])
 	assert.Equal(t, `{"v":2}`, pols["pol2"])

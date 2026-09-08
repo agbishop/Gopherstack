@@ -1,10 +1,13 @@
 package elbv2_test
 
 import (
+	"context"
+	"encoding/json"
 	"encoding/xml"
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -182,6 +185,87 @@ func TestDeleteTargetGroup(t *testing.T) {
 		"TargetGroupArns.member.1": {tgArn},
 	})
 	require.Equal(t, http.StatusBadRequest, rec2.Code)
+}
+
+// TestDeleteTargetGroup_LifecycleMapsCleaned verifies that deleting a target
+// group with targets still mid-initial-health-check or mid-drain releases
+// their entries from the backend's targetReadyAt/targetDrainingUntil maps,
+// rather than leaking them under the now-deleted target group's ARN forever.
+func TestDeleteTargetGroup_LifecycleMapsCleaned(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		setup func(t *testing.T, h *elbv2.Handler, tgArn string)
+		name  string
+		field string
+	}{
+		{
+			name:  "target still in initial health check",
+			field: "targetReadyAt",
+			setup: func(t *testing.T, h *elbv2.Handler, tgArn string) {
+				t.Helper()
+
+				rec := doELBv2(t, h, url.Values{
+					"Action":              {"RegisterTargets"},
+					"Version":             {"2015-12-01"},
+					"TargetGroupArn":      {tgArn},
+					"Targets.member.1.Id": {"10.0.0.1"},
+				})
+				require.Equal(t, http.StatusOK, rec.Code)
+			},
+		},
+		{
+			name:  "target still draining",
+			field: "targetDrainingUntil",
+			setup: func(t *testing.T, h *elbv2.Handler, tgArn string) {
+				t.Helper()
+
+				vals := url.Values{
+					"Version":             {"2015-12-01"},
+					"TargetGroupArn":      {tgArn},
+					"Targets.member.1.Id": {"10.0.0.1"},
+				}
+
+				vals.Set("Action", "RegisterTargets")
+				require.Equal(t, http.StatusOK, doELBv2(t, h, vals).Code)
+
+				vals.Set("Action", "DeregisterTargets")
+				require.Equal(t, http.StatusOK, doELBv2(t, h, vals).Code)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler()
+			tgArn := mustCreateTG(t, h, "leak-tg-"+tc.field)
+
+			tc.setup(t, h, tgArn)
+
+			rec := doELBv2(t, h, url.Values{
+				"Action":         {"DeleteTargetGroup"},
+				"Version":        {"2015-12-01"},
+				"TargetGroupArn": {tgArn},
+			})
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var snap struct {
+				TargetReadyAt       map[string]map[string]time.Time `json:"targetReadyAt"`
+				TargetDrainingUntil map[string]map[string]time.Time `json:"targetDrainingUntil"`
+			}
+			require.NoError(t, json.Unmarshal(h.Snapshot(context.Background()), &snap))
+
+			byField := map[string]map[string]map[string]time.Time{
+				"targetReadyAt":       snap.TargetReadyAt,
+				"targetDrainingUntil": snap.TargetDrainingUntil,
+			}
+
+			assert.Empty(t, byField[tc.field][tgArn],
+				"deleted target group's ARN must not linger in the backend's %s lifecycle map", tc.field)
+		})
+	}
 }
 
 // TestModifyTargetGroup tests target group modification.

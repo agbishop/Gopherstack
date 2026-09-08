@@ -111,6 +111,7 @@ func (b *InMemoryBackend) DeleteDBClusterEndpoint(
 	}
 	cp := *ep
 	b.clusterEndpointDelete(region, endpointID)
+	delete(b.tagsStore(region), b.clusterEndpointARN(region, endpointID))
 
 	return &cp, nil
 }

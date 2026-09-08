@@ -30,7 +30,17 @@ func TestBackend_CompositeAlarm_EvaluatesOnCreate(t *testing.T) {
 		AlarmRule: "ALARM(child)",
 	}))
 
-	_, compositeAlarms, _, err := b.DescribeAlarms([]string{"composite"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, compositeAlarms, _, err := b.DescribeAlarms(
+		[]string{"composite"},
+		[]string{"CompositeAlarm"},
+		"",
+		"",
+		"",
+		0,
+		"",
+		"",
+		"",
+	)
 	require.NoError(t, err)
 	require.Len(t, compositeAlarms.Data, 1)
 	assert.Equal(t, "ALARM", compositeAlarms.Data[0].StateValue,
@@ -51,14 +61,14 @@ func TestBackend_CompositeAlarm_UpdatesOnChildChange(t *testing.T) {
 	}))
 
 	// Child initially INSUFFICIENT_DATA → composite should be non-ALARM.
-	_, compPages, _, _ := b.DescribeAlarms([]string{"composite"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, compPages, _, _ := b.DescribeAlarms([]string{"composite"}, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 	require.Len(t, compPages.Data, 1)
 	initialState := compPages.Data[0].StateValue
 
 	// Trigger child alarm.
 	require.NoError(t, b.SetAlarmState(t.Context(), "child", "ALARM", "trigger", ""))
 
-	_, compPages, _, _ = b.DescribeAlarms([]string{"composite"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, compPages, _, _ = b.DescribeAlarms([]string{"composite"}, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 	require.Len(t, compPages.Data, 1)
 	afterState := compPages.Data[0].StateValue
 
@@ -79,12 +89,12 @@ func TestBackend_EnableDisableAlarmActions_Composite(t *testing.T) {
 	}))
 
 	require.NoError(t, b.DisableAlarmActions([]string{"c1"}))
-	_, cp, _, _ := b.DescribeAlarms([]string{"c1"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, cp, _, _ := b.DescribeAlarms([]string{"c1"}, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 	require.Len(t, cp.Data, 1)
 	assert.False(t, cp.Data[0].ActionsEnabled)
 
 	require.NoError(t, b.EnableAlarmActions([]string{"c1"}))
-	_, cp, _, _ = b.DescribeAlarms([]string{"c1"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, cp, _, _ = b.DescribeAlarms([]string{"c1"}, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 	assert.True(t, cp.Data[0].ActionsEnabled)
 }
 
@@ -116,7 +126,7 @@ func TestCompositeAlarm_StateTransitionedTimestamp_SetAlarmState(t *testing.T) {
 
 			require.NoError(t, b.SetAlarmState(t.Context(), "comp", tc.stateValue, "manual", ""))
 
-			_, p, _, err := b.DescribeAlarms([]string{"comp"}, []string{"CompositeAlarm"}, "", "", "", 0)
+			_, p, _, err := b.DescribeAlarms([]string{"comp"}, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 			require.NoError(t, err)
 			require.Len(t, p.Data, 1)
 
@@ -144,7 +154,7 @@ func TestCompositeAlarm_StateTransitionedTimestamp_ReEvalOnChildChange(t *testin
 		AlarmRule: "ALARM(child)",
 	}))
 
-	_, before, _, err := b.DescribeAlarms([]string{"parent"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, before, _, err := b.DescribeAlarms([]string{"parent"}, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, before.Data, 1)
 	assert.False(t, before.Data[0].StateTransitionedTimestamp.IsZero(),
@@ -153,7 +163,7 @@ func TestCompositeAlarm_StateTransitionedTimestamp_ReEvalOnChildChange(t *testin
 	// Trigger composite re-evaluation by setting child to ALARM.
 	require.NoError(t, b.SetAlarmState(t.Context(), "child", "ALARM", "test", ""))
 
-	_, after, _, err := b.DescribeAlarms([]string{"parent"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, after, _, err := b.DescribeAlarms([]string{"parent"}, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, after.Data, 1)
 	assert.Equal(t, "ALARM", after.Data[0].StateValue)
@@ -279,7 +289,7 @@ func TestCloudWatchBackend_PutCompositeAlarm(t *testing.T) {
 				"",
 				"",
 				0,
-			)
+				"", "", "")
 			require.NoError(t, err2)
 			require.Len(t, compositeAlarms.Data, 1)
 			assert.Equal(t, tt.wantState, compositeAlarms.Data[0].StateValue)
@@ -300,13 +310,33 @@ func TestCloudWatchBackend_CompositeAlarmReevalOnChildChange(t *testing.T) {
 	}))
 
 	// Initially composite should be OK since child is OK
-	_, compositeAlarms, _, err := b.DescribeAlarms([]string{"parent"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, compositeAlarms, _, err := b.DescribeAlarms(
+		[]string{"parent"},
+		[]string{"CompositeAlarm"},
+		"",
+		"",
+		"",
+		0,
+		"",
+		"",
+		"",
+	)
 	require.NoError(t, err)
 	assert.Equal(t, "OK", compositeAlarms.Data[0].StateValue)
 
 	// Change child to ALARM; composite should re-evaluate
 	require.NoError(t, b.SetAlarmState(t.Context(), "child", "ALARM", "test", ""))
-	_, compositeAlarms2, _, err2 := b.DescribeAlarms([]string{"parent"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, compositeAlarms2, _, err2 := b.DescribeAlarms(
+		[]string{"parent"},
+		[]string{"CompositeAlarm"},
+		"",
+		"",
+		"",
+		0,
+		"",
+		"",
+		"",
+	)
 	require.NoError(t, err2)
 	assert.Equal(t, "ALARM", compositeAlarms2.Data[0].StateValue)
 }
@@ -345,13 +375,13 @@ func TestCloudWatchBackend_CompositeAlarmActionsFireOnChildChange(t *testing.T) 
 	// regardless of which kind of alarm actually fired it), so
 	// DescribeAlarmHistory's AlarmType filter can find it.
 	composite, err := b.DescribeAlarmHistory(
-		"parent2", []string{"CompositeAlarm"}, "Action", "", time.Time{}, time.Time{}, 0,
+		"parent2", []string{"CompositeAlarm"}, "Action", "", "", time.Time{}, time.Time{}, 0,
 	)
 	require.NoError(t, err)
 	require.NotEmpty(t, composite.Data, "composite alarm's Action history should be tagged CompositeAlarm")
 
 	metricTyped, err := b.DescribeAlarmHistory(
-		"parent2", []string{"MetricAlarm"}, "Action", "", time.Time{}, time.Time{}, 0,
+		"parent2", []string{"MetricAlarm"}, "Action", "", "", time.Time{}, time.Time{}, 0,
 	)
 	require.NoError(t, err)
 	assert.Empty(t, metricTyped.Data,
@@ -375,7 +405,7 @@ func TestCloudWatchBackend_EvalCompositeRule_NestedComposite(t *testing.T) {
 		AlarmRule: `ALARM("mid")`,
 	}))
 
-	_, composites, _, err := b.DescribeAlarms([]string{"top"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, composites, _, err := b.DescribeAlarms([]string{"top"}, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, composites.Data, 1)
 	// top should be ALARM since leaf is ALARM -> mid is ALARM -> top is ALARM
@@ -403,7 +433,17 @@ func TestCloudWatchBackend_PutCompositeAlarm_UpdateExisting(t *testing.T) {
 		AlarmDescription: "updated",
 	}))
 
-	_, composites, _, err := b.DescribeAlarms([]string{"comp-update"}, []string{"CompositeAlarm"}, "", "", "", 0)
+	_, composites, _, err := b.DescribeAlarms(
+		[]string{"comp-update"},
+		[]string{"CompositeAlarm"},
+		"",
+		"",
+		"",
+		0,
+		"",
+		"",
+		"",
+	)
 	require.NoError(t, err)
 	require.Len(t, composites.Data, 1)
 	assert.Equal(t, "updated", composites.Data[0].AlarmDescription)
@@ -423,7 +463,7 @@ func TestCloudWatchBackend_EnableDisableAlarmActions_CompositeAlarm(t *testing.T
 
 	_, composites, _, err := b.DescribeAlarms(
 		[]string{"comp-enable-disable"}, []string{"CompositeAlarm"}, "", "", "", 0,
-	)
+		"", "", "")
 	require.NoError(t, err)
 	require.Len(t, composites.Data, 1)
 	assert.True(t, composites.Data[0].ActionsEnabled)
@@ -432,7 +472,7 @@ func TestCloudWatchBackend_EnableDisableAlarmActions_CompositeAlarm(t *testing.T
 
 	_, composites2, _, err2 := b.DescribeAlarms(
 		[]string{"comp-enable-disable"}, []string{"CompositeAlarm"}, "", "", "", 0,
-	)
+		"", "", "")
 	require.NoError(t, err2)
 	require.Len(t, composites2.Data, 1)
 	assert.False(t, composites2.Data[0].ActionsEnabled)
@@ -490,7 +530,17 @@ func TestCloudWatchBackend_CompositeAlarm_CircularDependency(t *testing.T) {
 			b := cloudwatch.NewInMemoryBackendWithConfig("123456789012", "us-east-1")
 			tt.setup(t, b)
 
-			_, composites, _, err := b.DescribeAlarms([]string{tt.alarmName}, []string{"CompositeAlarm"}, "", "", "", 0)
+			_, composites, _, err := b.DescribeAlarms(
+				[]string{tt.alarmName},
+				[]string{"CompositeAlarm"},
+				"",
+				"",
+				"",
+				0,
+				"",
+				"",
+				"",
+			)
 			require.NoError(t, err)
 			require.Len(t, composites.Data, 1)
 			assert.Equal(t, tt.wantState, composites.Data[0].StateValue)

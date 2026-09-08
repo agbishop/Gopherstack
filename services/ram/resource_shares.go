@@ -3,12 +3,33 @@ package ram
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
 )
+
+// isValidResourceARN reports whether s is syntactically ARN-shaped: it starts
+// with "arn:" and has at least five colon separators (six colon-delimited
+// segments), matching the resourcegroups package's own resource-ARN check.
+func isValidResourceARN(s string) bool {
+	return strings.HasPrefix(s, "arn:") && strings.Count(s, ":") >= 5
+}
+
+// validateResourceARNs returns ErrMalformedArn if any resourceARNs entry isn't
+// ARN-shaped. CreateResourceShare and AssociateResourceShare both model
+// MalformedArnException for a malformed resourceArns entry (see ErrMalformedArn).
+func validateResourceARNs(resourceARNs []string) error {
+	for _, r := range resourceARNs {
+		if !isValidResourceARN(r) {
+			return fmt.Errorf("%w: %q is not a valid ARN", ErrMalformedArn, r)
+		}
+	}
+
+	return nil
+}
 
 // CreateResourceShare creates a new resource share.
 func (b *InMemoryBackend) CreateResourceShare(
@@ -39,6 +60,10 @@ func (b *InMemoryBackend) CreateResourceShare(
 				ErrValidation,
 			)
 		}
+	}
+
+	if err := validateResourceARNs(resourceARNs); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()
@@ -251,10 +276,19 @@ func (b *InMemoryBackend) DeleteResourceShare(shareARN string) error {
 	return nil
 }
 
-// isExternalPrincipal returns true if the principal does not look like an AWS account ID
-// owned by the backend account. AWS account IDs are 12-digit strings.
+// isExternalPrincipal returns true if principal is not owned by the backend account.
+// AllowExternalPrincipals ("Specifies whether principals outside your organization...
+// can be associated", api_op_CreateResourceShare.go) gates OTHER ACCOUNTS, not IAM
+// identities within this account -- an IAM role/user ARN is only ever associable
+// within the resource share's own account (AssociateResourceShare's Principals doc:
+// "An ARN of an IAM role"/"An ARN of an IAM user"), so a same-account one is never
+// external regardless of AllowExternalPrincipals. Organization/OU ARNs are always
+// external even when their account segment (the org's management account) matches
+// b.accountID: unlike an IAM ARN, an org/OU principal can admit arbitrary other member
+// accounts, so it must still be gated.
 func (b *InMemoryBackend) isExternalPrincipal(principal string) bool {
-	// An account-ID principal is exactly accountIDLen digits. Anything else is external.
+	// An account-ID principal is exactly accountIDLen digits. Anything else is external
+	// unless it is a same-account IAM role/user ARN (handled below).
 	if len(principal) == accountIDLen {
 		for _, c := range principal {
 			if c < '0' || c > '9' {
@@ -263,6 +297,11 @@ func (b *InMemoryBackend) isExternalPrincipal(principal string) bool {
 		}
 
 		return principal != b.accountID
+	}
+
+	parts := strings.SplitN(principal, ":", arnPartCountPrincipal)
+	if len(parts) >= arnAccountIdx+1 && parts[0] == arnPrefix && parts[arnServiceIdx] == arnServiceIAM {
+		return parts[arnAccountIdx] != b.accountID
 	}
 
 	return true

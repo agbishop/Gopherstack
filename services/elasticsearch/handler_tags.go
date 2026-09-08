@@ -91,16 +91,28 @@ func (h *Handler) handleAddTags(w http.ResponseWriter, r *http.Request) {
 
 	ctx := h.reqContext(r)
 	existing, _ := h.Backend.ListTags(ctx, req.ARN)
-	maps.Copy(existing, tagMap)
 
-	if len(existing) > maxTagsPerResource {
+	merged := make(map[string]string, len(existing)+len(tagMap))
+	maps.Copy(merged, existing)
+	maps.Copy(merged, tagMap)
+
+	if len(merged) > maxTagsPerResource {
 		h.writeError(r, w, http.StatusBadRequest, "ValidationException",
 			fmt.Sprintf("resource cannot have more than %d tags", maxTagsPerResource))
 
 		return
 	}
 
-	_ = h.Backend.AddTags(ctx, req.ARN, tagMap)
+	// AddTags's own deserializer (elasticsearchservice@v1.45.4 deserializers.go,
+	// awsRestjson1_deserializeOpErrorAddTags) has no ResourceNotFoundException
+	// case -- an unrecognized ARN here is ValidationException, matching
+	// services/opensearch's identical fix for the same sibling API.
+	if addErr := h.Backend.AddTags(ctx, req.ARN, tagMap); addErr != nil {
+		h.writeError(r, w, http.StatusBadRequest, "ValidationException", addErr.Error())
+
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -124,6 +136,14 @@ func (h *Handler) handleRemoveTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = h.Backend.RemoveTags(h.reqContext(r), req.ARN, req.TagKeys)
+	// RemoveTags's own deserializer (elasticsearchservice@v1.45.4 deserializers.go,
+	// awsRestjson1_deserializeOpErrorRemoveTags) has no ResourceNotFoundException
+	// case -- an unrecognized ARN here is ValidationException, matching AddTags above.
+	if removeErr := h.Backend.RemoveTags(h.reqContext(r), req.ARN, req.TagKeys); removeErr != nil {
+		h.writeError(r, w, http.StatusBadRequest, "ValidationException", removeErr.Error())
+
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 }

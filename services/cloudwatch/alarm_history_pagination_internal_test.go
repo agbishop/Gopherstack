@@ -42,7 +42,7 @@ func TestDescribeAlarmHistory_PaginationStableAcrossTiedTimestamps(t *testing.T)
 		var next string
 
 		for {
-			page, err := b.DescribeAlarmHistory("", nil, "", next, time.Time{}, time.Time{}, 3)
+			page, err := b.DescribeAlarmHistory("", nil, "", next, "", time.Time{}, time.Time{}, 3)
 			if err != nil {
 				t.Fatalf("iter %d: DescribeAlarmHistory: %v", iter, err)
 			}

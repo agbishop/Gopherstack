@@ -264,7 +264,11 @@ func isTerminalExecutionStatus(status string) bool {
 // ("For each task, you can only run one task execution at a time.", per the
 // StartTaskExecution API docs); attempting to start another while one is
 // still running is rejected as an invalid request.
-func (b *InMemoryBackend) StartTaskExecution(taskArn string) (*TaskExecution, error) {
+func (b *InMemoryBackend) StartTaskExecution(
+	taskArn string,
+	overrides TaskExecutionOverrides,
+	tags map[string]string,
+) (*TaskExecution, error) {
 	b.mu.Lock("StartTaskExecution")
 	defer b.mu.Unlock()
 
@@ -291,11 +295,21 @@ func (b *InMemoryBackend) StartTaskExecution(taskArn string) (*TaskExecution, er
 		Status:           executionStatusLaunching,
 		TaskMode:         t.TaskMode,
 		StartTime:        now,
+		Options:          overrides.Options,
+		ManifestConfig:   overrides.ManifestConfig,
+		TaskReportConfig: overrides.TaskReportConfig,
+		Excludes:         toStoredFilterRules(overrides.Excludes),
+		Includes:         toStoredFilterRules(overrides.Includes),
 	}
 
 	b.executions.Put(e)
 	t.CurrentTaskExecutionArn = execArn
 	t.Status = taskStatusRunning
+
+	if len(tags) > 0 {
+		b.tags[execArn] = make(map[string]string, len(tags))
+		maps.Copy(b.tags[execArn], tags)
+	}
 
 	cp := e.toTaskExecution()
 

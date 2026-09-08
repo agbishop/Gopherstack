@@ -131,3 +131,19 @@ func (b *InMemoryBackend) ForceJobStatus(jobID, status string) {
 		j.Status = status
 	}
 }
+
+// SetJobStartedAtForTest backdates a job's StartedAt timestamp. Used to
+// simulate a RUNNING job whose attempt has run longer than its JobTimeout
+// without a real sleep.
+func (b *InMemoryBackend) SetJobStartedAtForTest(jobID string, startedAt time.Time) {
+	b.mu.Lock("SetJobStartedAtForTest")
+	defer b.mu.Unlock()
+
+	j, ok := b.jobs.Get(regionKey(b.region, jobID))
+	if !ok {
+		return
+	}
+
+	ms := startedAt.UnixMilli()
+	j.StartedAt = &ms
+}

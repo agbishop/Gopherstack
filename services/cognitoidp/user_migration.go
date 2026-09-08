@@ -104,14 +104,15 @@ func (b *InMemoryBackend) tryUserMigrationForgotPassword(pool *UserPool, clientI
 
 	now := time.Now()
 	user := &User{
-		Sub:        uuid.New().String(),
-		Username:   username,
-		UserPoolID: pool.ID,
-		Status:     UserStatusForceChangePassword,
-		Attributes: resp.UserAttributes,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-		Enabled:    true,
+		Sub:                  uuid.New().String(),
+		Username:             username,
+		UserPoolID:           pool.ID,
+		Status:               UserStatusForceChangePassword,
+		Attributes:           resp.UserAttributes,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+		TempPasswordIssuedAt: now,
+		Enabled:              true,
 	}
 
 	b.users.Put(user)
@@ -135,4 +136,5 @@ func (b *InMemoryBackend) applyPostMigrationFinalStatus(poolID, username, finalU
 
 	user.Status = UserStatusForceChangePassword
 	user.UpdatedAt = time.Now()
+	user.TempPasswordIssuedAt = user.UpdatedAt
 }

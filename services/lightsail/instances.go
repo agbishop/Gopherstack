@@ -107,7 +107,7 @@ func (b *InMemoryBackend) CreateInstances(req CreateInstancesRequest) ([]Operati
 			DiskSizeInGb:     bd.DiskSizeInGb,
 			MonthlyTransfer:  bd.TransferPerMonthInGb,
 			PrivateIPAddress: privateIPForName(name),
-			PublicIPAddress:  publicIPForName(name),
+			PublicIPAddress:  publicIPForName(name, 0),
 			IPAddressType:    ipType,
 			SSHKeyName:       req.KeyPairName,
 			Username:         defaultUsernameForBlueprint(bp),
@@ -186,7 +186,7 @@ func (b *InMemoryBackend) CreateInstancesFromSnapshot(req CreateInstancesFromSna
 			DiskSizeInGb:     bd.DiskSizeInGb,
 			MonthlyTransfer:  bd.TransferPerMonthInGb,
 			PrivateIPAddress: privateIPForName(name),
-			PublicIPAddress:  publicIPForName(name),
+			PublicIPAddress:  publicIPForName(name, 0),
 			IPAddressType:    req.IPAddressType,
 			SSHKeyName:       req.KeyPairName,
 			StateCode:        InstanceStateCodePending,
@@ -222,7 +222,11 @@ func (b *InMemoryBackend) scheduleInstanceRunningLocked(name string) {
 	})
 }
 
-// DeleteInstance deletes the named instance.
+// DeleteInstance deletes the named instance, detaching any disk and
+// releasing any static IP still attached to it first. Lightsail resource
+// names are freed on delete and reusable (unregisterNameLocked below), so a
+// disk or static IP left pointing at name would silently attach itself to
+// whatever unrelated instance is next created under that same name.
 func (b *InMemoryBackend) DeleteInstance(name string) ([]Operation, error) {
 	b.mu.Lock("DeleteInstance")
 	defer b.mu.Unlock()
@@ -230,6 +234,25 @@ func (b *InMemoryBackend) DeleteInstance(name string) ([]Operation, error) {
 	i, ok := b.instances.Get(name)
 	if !ok {
 		return nil, notFoundError("Instance", name)
+	}
+
+	for _, d := range b.disks.All() {
+		if d.AttachedTo == name {
+			d.State = DiskStateAvailable
+			d.IsAttached = false
+			d.AttachedTo = ""
+			d.AttachmentState = ""
+			d.Path = ""
+			d.GbInUse = 0
+			d.AutoMountStatus = ""
+		}
+	}
+
+	for _, sip := range b.staticIPs.All() {
+		if sip.AttachedTo == name {
+			sip.IsAttached = false
+			sip.AttachedTo = ""
+		}
 	}
 
 	if i.Tags != nil {
@@ -298,7 +321,9 @@ func (b *InMemoryBackend) RebootInstance(name string) ([]Operation, error) {
 	return b.newOperationsLocked(opTypeRebootInstance, ResourceTypeInstance, []string{name}), nil
 }
 
-// StartInstance transitions the named instance from stopped to running.
+// StartInstance transitions the named instance from stopped to running,
+// assigning a new dynamic public IP unless a static IP is attached
+// (api_op_StartInstance.go doc comment; gopherstack-i2s6).
 func (b *InMemoryBackend) StartInstance(name string) ([]Operation, error) {
 	b.mu.Lock("StartInstance")
 	defer b.mu.Unlock()
@@ -306,6 +331,11 @@ func (b *InMemoryBackend) StartInstance(name string) ([]Operation, error) {
 	i, ok := b.instances.Get(name)
 	if !ok {
 		return nil, notFoundError("Instance", name)
+	}
+
+	if i.StateCode == InstanceStateCodeStopped && !i.IsStaticIP {
+		i.PublicIPGeneration++
+		i.PublicIPAddress = publicIPForName(i.Name, i.PublicIPGeneration)
 	}
 
 	i.StateCode = InstanceStateCodeRunning
@@ -353,11 +383,18 @@ const (
 // synthetic IPs from a resource name (using an RFC 5737/1918-style
 // documentation range) -- never claimed as real routable addresses, purely
 // so repeated Get calls return a stable value for the same instance.
+//
+// publicIPForName also takes a generation, folded into the hash input, so
+// StartInstance can hand a stopped-to-running instance a new address (api_op_StartInstance.go:
+// "Lightsail assigns a new public IP address") while the result stays a pure,
+// reproducible function of (name, generation) rather than real randomness.
 func privateIPForName(name string) string {
 	return "172.26." + hashOctet(name, octetSalt1) + "." + hashOctet(name, octetSalt2)
 }
 
-func publicIPForName(name string) string { return "203.0.113." + hashOctet(name, octetSalt3) }
+func publicIPForName(name string, generation int32) string {
+	return "203.0.113." + hashOctet(name+"#"+strconv.Itoa(int(generation)), octetSalt3)
+}
 
 func hashOctet(name string, salt int) string {
 	h := 0

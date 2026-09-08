@@ -39,7 +39,7 @@ func (rc *ResourceCreator) deleteIoTThing(arn string) error {
 
 	name := resourceNameFromARN(arn)
 
-	return rc.backends.IoT.Backend.DeleteThing(name)
+	return rc.backends.IoT.Backend.DeleteThing(name, 0)
 }
 
 func (rc *ResourceCreator) createIoTTopicRule(

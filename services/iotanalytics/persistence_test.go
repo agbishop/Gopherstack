@@ -34,6 +34,7 @@ func newPersistenceTestBackend(t *testing.T) *iotanalytics.InMemoryBackend {
 
 	_, err = b.CreatePipeline(ctx, "pipeline1", map[string]string{"stage": "prod"}, []iotanalytics.PipelineActivity{
 		{Channel: &iotanalytics.PipelineChannelActivity{ChannelName: "ch1", Name: "chAct"}},
+		{Datastore: &iotanalytics.PipelineDatastoreActivity{DatastoreName: "ds1", Name: "dsAct"}},
 	})
 	require.NoError(t, err)
 
@@ -97,7 +98,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	pipelines := fresh.ListPipelines()
 	require.Len(t, pipelines, 1)
 	assert.Equal(t, "pipeline1", pipelines[0].Name)
-	require.Len(t, pipelines[0].Activities, 1)
+	require.Len(t, pipelines[0].Activities, 2)
 	require.NotNil(t, pipelines[0].Activities[0].Channel)
 	assert.Equal(t, "ch1", pipelines[0].Activities[0].Channel.ChannelName)
 

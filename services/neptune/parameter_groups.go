@@ -119,7 +119,18 @@ func (b *InMemoryBackend) DeleteDBParameterGroup(ctx context.Context, name strin
 	if !b.parameterGroupHas(region, name) {
 		return fmt.Errorf("%w: parameter group %s not found", ErrParameterGroupNotFound, name)
 	}
+	for _, inst := range b.instancesInRegion(region) {
+		if inst.DBParameterGroupName == name {
+			return fmt.Errorf(
+				"%w: parameter group %s is used by instance %s",
+				ErrParameterGroupInUse,
+				name,
+				inst.DBInstanceIdentifier,
+			)
+		}
+	}
 	b.parameterGroupDelete(region, name)
+	delete(b.tagsStore(region), b.parameterGroupARN(region, name))
 	delete(b.parameterOverrides, regionKey(region, name))
 
 	return nil

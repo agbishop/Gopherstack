@@ -190,6 +190,8 @@ type listCustomModelsOutput struct {
 func parseListCustomModelsQuery(c *echo.Context) *ListCustomModelsInput {
 	q := c.Request().URL.Query()
 
+	maxResults, _ := strconv.ParseInt(q.Get("maxResults"), 10, 32)
+
 	in := &ListCustomModelsInput{
 		ModelStatus:              q.Get("modelStatus"),
 		NameContains:             q.Get("nameContains"),
@@ -198,6 +200,7 @@ func parseListCustomModelsQuery(c *echo.Context) *ListCustomModelsInput {
 		SortBy:                   q.Get("sortBy"),
 		SortOrder:                q.Get("sortOrder"),
 		NextToken:                q.Get("nextToken"),
+		MaxResults:               int32(maxResults),
 	}
 
 	if v := q.Get("isOwned"); v != "" {

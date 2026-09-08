@@ -243,8 +243,7 @@ func (s *runtimeServer) handleInvocationResult(w http.ResponseWriter, r *http.Re
 	defer r.Body.Close()
 
 	if readErr != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(readErr, &maxErr) {
+		if _, ok := errors.AsType[*http.MaxBytesError](readErr); ok {
 			http.Error(w, "response payload too large", http.StatusRequestEntityTooLarge)
 
 			return
@@ -293,8 +292,7 @@ func (s *runtimeServer) handleInitError(w http.ResponseWriter, r *http.Request) 
 	defer r.Body.Close()
 
 	if readErr != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(readErr, &maxErr) {
+		if _, ok := errors.AsType[*http.MaxBytesError](readErr); ok {
 			http.Error(w, "init error payload too large", http.StatusRequestEntityTooLarge)
 
 			return

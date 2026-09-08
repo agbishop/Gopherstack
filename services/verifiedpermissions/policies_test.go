@@ -195,6 +195,44 @@ func TestBackend_UpdatePolicy(t *testing.T) {
 	}
 }
 
+// TestBackend_UpdatePolicy_TemplateLinkedRejected is the regression test for
+// gopherstack-990: real AWS's UpdatePolicy can only update static policies
+// ("You can directly update only static policies. To change a
+// template-linked policy, you must update the template instead, using
+// UpdatePolicyTemplate."). Before the fix, UpdatePolicy silently rebound a
+// template-linked policy's principal/resource -- a capability the real API
+// doesn't expose at all.
+func TestBackend_UpdatePolicy_TemplateLinkedRejected(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	ps, err := b.CreatePolicyStore("desc", nil, "OFF", "", "")
+	require.NoError(t, err)
+
+	tmpl, err := b.CreatePolicyTemplate(
+		ps.PolicyStoreID, "tmpl", `permit(principal == ?principal, action, resource);`, "", "",
+	)
+	require.NoError(t, err)
+
+	linked, err := b.CreatePolicy(ps.PolicyStoreID, verifiedpermissions.CreatePolicyParams{
+		PolicyType:          "TEMPLATE_LINKED",
+		PolicyTemplateID:    tmpl.PolicyTemplateID,
+		PrincipalEntityType: "User",
+		PrincipalEntityID:   "alice",
+	})
+	require.NoError(t, err)
+
+	_, err = b.UpdatePolicy(ps.PolicyStoreID, linked.PolicyID, verifiedpermissions.UpdatePolicyParams{
+		Statement: "forbid(principal, action, resource);",
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, awserr.ErrInvalidParameter)
+
+	unchanged, err := b.GetPolicy(ps.PolicyStoreID, linked.PolicyID)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", unchanged.PrincipalEntityID, "the policy's binding must be untouched")
+}
+
 func TestBackend_DeletePolicy(t *testing.T) {
 	t.Parallel()
 
@@ -225,6 +263,8 @@ func TestBackend_DeletePolicy(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			// DeletePolicy is documented idempotent: deleting a
+			// nonexistent policy (in an existing store) returns success.
 			name: "delete non-existent policy",
 			setup: func(t *testing.T, b *verifiedpermissions.InMemoryBackend) (string, string) {
 				t.Helper()
@@ -234,7 +274,7 @@ func TestBackend_DeletePolicy(t *testing.T) {
 
 				return ps.PolicyStoreID, "nonexistent-policy"
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 	}
 
@@ -292,6 +332,27 @@ func TestBackend_DeletePolicy_NonExistentStore(t *testing.T) {
 	err := b.DeletePolicy("nonexistent-store", "nonexistent-policy")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, awserr.ErrNotFound)
+}
+
+// TestBackend_DeletePolicy_IdempotentOnMissingPolicy is the regression test
+// for the DeletePolicy idempotency fix: gopherstack-990. Real AWS
+// (api_op_DeletePolicy.go doc): "This operation is idempotent; if you
+// specify a policy that doesn't exist, the request response returns a
+// successful HTTP 200 status code." Unlike DeletePolicyStore,
+// ResourceNotFoundException stays in DeletePolicy's modelled error set --
+// TestBackend_DeletePolicy_NonExistentStore above proves that case still
+// errors -- so the idempotency covers only a missing policy, not a missing
+// store.
+func TestBackend_DeletePolicy_IdempotentOnMissingPolicy(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	ps, err := b.CreatePolicyStore("desc", nil, "OFF", "", "")
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeletePolicy(ps.PolicyStoreID, "nonexistent-policy"))
+	require.NoError(t, b.DeletePolicy(ps.PolicyStoreID, "nonexistent-policy"),
+		"a second delete of the same missing policy must also succeed")
 }
 
 func TestBackend_UpdatePolicy_NonExistentPolicy(t *testing.T) {

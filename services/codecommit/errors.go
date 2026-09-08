@@ -31,8 +31,14 @@ var (
 	ErrBranchNotFound = awserr.New("BranchDoesNotExistException", awserr.ErrNotFound)
 	// ErrBranchAlreadyExists is returned when a branch already exists.
 	ErrBranchAlreadyExists = awserr.New("BranchNameExistsException", awserr.ErrConflict)
-	// ErrCommitNotFound is returned when a commit is not found.
+	// ErrCommitNotFound is returned when a commit specifier fails to resolve
+	// (e.g. a branch/merge op looking up a commit by name or ID).
 	ErrCommitNotFound = awserr.New("CommitDoesNotExistException", awserr.ErrNotFound)
+	// ErrCommitIDNotFound is returned by GetCommit specifically: its real AWS
+	// error for an unresolvable commitId is CommitIdDoesNotExistException, a
+	// distinct exception from CommitDoesNotExistException (verified against
+	// codecommit@v1.36.4's deserializeOpErrorGetCommit).
+	ErrCommitIDNotFound = awserr.New("CommitIdDoesNotExistException", awserr.ErrNotFound)
 	// ErrPullRequestNotFound is returned when a pull request is not found.
 	ErrPullRequestNotFound = awserr.New("PullRequestDoesNotExistException", awserr.ErrNotFound)
 	// ErrPullRequestAlreadyMerged is returned when a PR is already merged.
@@ -49,8 +55,16 @@ var (
 	ErrParentCommitIDRequired = awserr.New("ParentCommitIdRequiredException", awserr.ErrInvalidParameter)
 	// ErrParentCommitIDOutdated is returned when parentCommitId doesn't match branch tip.
 	ErrParentCommitIDOutdated = awserr.New("ParentCommitIdOutdatedException", awserr.ErrConflict)
-	// ErrSameFileContent is returned when putFiles has no actual changes.
+	// ErrSameFileContent is returned by PutFile when the written content is
+	// identical to what's already at that path.
 	ErrSameFileContent = awserr.New("SameFileContentException", awserr.ErrConflict)
+	// ErrNoChange is returned by CreateCommit when a putFiles entry's content
+	// is identical to what's already at that path: CreateCommit's own
+	// declared error set has no SameFileContentException (that's PutFile-only,
+	// verified against codecommit@v1.36.4's deserializeOpErrorCreateCommit),
+	// its closest declared equivalent is NoChangeException ("no changes will
+	// be made to the repository as a result of this commit").
+	ErrNoChange = awserr.New("NoChangeException", awserr.ErrConflict)
 	// ErrFilePathConflicts is returned when a file path conflicts with an existing path.
 	ErrFilePathConflicts = awserr.New("FilePathConflictsWithSubmodulePathException", awserr.ErrConflict)
 	// ErrFileNotFound is returned when a file path does not exist in the repository.
@@ -61,6 +75,30 @@ var (
 	ErrCommentNotFound = awserr.New("CommentDoesNotExistException", awserr.ErrNotFound)
 	// ErrApprovalRuleNotFound is returned when a pull request approval rule does not exist.
 	ErrApprovalRuleNotFound = awserr.New("ApprovalRuleDoesNotExistException", awserr.ErrNotFound)
+	// ErrInvalidPullRequestEventType is returned when pullRequestEventType is not a recognized enum value.
+	ErrInvalidPullRequestEventType = awserr.New("InvalidPullRequestEventTypeException", awserr.ErrInvalidParameter)
+	// ErrInvalidMergeOption is returned when mergeOption is not one of the three enum values.
+	// Code is InvalidMergeOptionException -- BatchDescribeMergeConflicts, CreateUnreferencedMergeCommit,
+	// DescribeMergeConflicts, and GetMergeConflicts all declare it (codecommit@v1.36.4
+	// deserializers.go); none of the four declares InvalidParameterException.
+	ErrInvalidMergeOption = awserr.New("InvalidMergeOptionException", awserr.ErrInvalidParameter)
+	// ErrInvalidPullRequestStatus is returned when pullRequestStatus is not OPEN or CLOSED.
+	// Code is InvalidPullRequestStatusException -- ListPullRequests and UpdatePullRequestStatus
+	// both declare it (codecommit@v1.36.4 deserializers.go); neither declares
+	// InvalidParameterException.
+	ErrInvalidPullRequestStatus = awserr.New("InvalidPullRequestStatusException", awserr.ErrInvalidParameter)
+	// ErrInvalidContinuationToken is returned when a nextToken/NextToken fails to decode.
+	// Code is InvalidContinuationTokenException -- GetDifferences and ListFileCommitHistory
+	// both declare it (codecommit@v1.36.4 deserializers.go); neither declares
+	// InvalidParameterException.
+	ErrInvalidContinuationToken = awserr.New("InvalidContinuationTokenException", awserr.ErrInvalidParameter)
+	// ErrInvalidActorArn is returned when DescribePullRequestEventsInput.ActorArn is
+	// not a well-formed ARN. Code is InvalidActorArnException, declared by
+	// DescribePullRequestEvents specifically (codecommit@v1.36.4 deserializers.go);
+	// real AWS also declares ActorDoesNotExistException for a well-formed ARN that
+	// doesn't correspond to any account principal -- not implemented here (would
+	// require cross-service coupling to IAM's user/role store, out of scope).
+	ErrInvalidActorArn = awserr.New("InvalidActorArnException", awserr.ErrInvalidParameter)
 )
 
 // repoNameRe matches valid CodeCommit repository names: alphanumeric, _, -, .
@@ -70,6 +108,24 @@ var repoNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 // Branch names may contain alphanumeric characters, slashes, dashes, underscores, and dots.
 // They may not begin or end with a slash, and may not contain consecutive slashes.
 var branchNameRe = regexp.MustCompile(`^[a-zA-Z0-9._\-/]+$`)
+
+// actorArnRe matches the general ARN shape (arn:partition:service:region:account-id:resource).
+var actorArnRe = regexp.MustCompile(
+	`^arn:(aws|aws-cn|aws-us-gov|aws-iso|aws-iso-b):[a-zA-Z0-9-]+:[a-zA-Z0-9-]*:\d*:.+$`,
+)
+
+// validateActorArn returns ErrInvalidActorArn if arn is non-empty and not a
+// well-formed ARN. An empty arn (the filter omitted) is valid -- absence, not shape.
+func validateActorArn(arn string) error {
+	if arn == "" {
+		return nil
+	}
+	if !actorArnRe.MatchString(arn) {
+		return fmt.Errorf("%w: actorArn %q is not a valid ARN", ErrInvalidActorArn, arn)
+	}
+
+	return nil
+}
 
 // validateBranchName returns an error if the branch name is empty or contains invalid characters.
 func validateBranchName(name string) error {

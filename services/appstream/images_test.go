@@ -481,3 +481,37 @@ func TestAppStream_ImageBuilderARNFormat(t *testing.T) {
 	builder := resp["ImageBuilder"].(map[string]any)
 	assert.Regexp(t, `^arn:aws:appstream:[a-z0-9-]+:\d+:image-builder/arn-builder$`, builder["Arn"])
 }
+
+// TestAppStream_DeleteImage_InUseByFleet proves DeleteImage rejects an image
+// still referenced by a fleet's ImageName or ImageArn. Regression for
+// gopherstack-65w: DeleteImage's own doc comment states "You cannot delete
+// an image when it is in use" (api_op_DeleteImage.go), and the op models
+// ResourceInUseException, but the backend deleted unconditionally.
+func TestAppStream_DeleteImage_InUseByFleet(t *testing.T) {
+	t.Parallel()
+
+	t.Run("referenced by ImageName", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		createImage(t, h, "inuse-img")
+		doRequest(t, h, "CreateFleet", map[string]any{
+			"Name":         "img-user-fleet",
+			"InstanceType": "stream.standard.medium",
+			"ImageName":    "inuse-img",
+		})
+
+		rec := doRequest(t, h, "DeleteImage", map[string]any{"Name": "inuse-img"})
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("not referenced deletes fine", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		createImage(t, h, "free-img")
+
+		rec := doRequest(t, h, "DeleteImage", map[string]any{"Name": "free-img"})
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+}

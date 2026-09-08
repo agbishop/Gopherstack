@@ -301,8 +301,11 @@ func (b *InMemoryBackend) UpdateServiceAttributes(serviceIDOrARN string, attribu
 	return nil
 }
 
-// DeleteServiceAttributes removes all custom attributes for a service.
-func (b *InMemoryBackend) DeleteServiceAttributes(serviceID string) error {
+// DeleteServiceAttributes removes the specified attribute keys from a
+// service, per the real DeleteServiceAttributesInput.Attributes doc comment
+// ("A list of keys corresponding to each attribute that you want to
+// delete") -- it does not clear attributes left unspecified.
+func (b *InMemoryBackend) DeleteServiceAttributes(serviceID string, keys []string) error {
 	b.mu.Lock("DeleteServiceAttributes")
 	defer b.mu.Unlock()
 
@@ -310,7 +313,9 @@ func (b *InMemoryBackend) DeleteServiceAttributes(serviceID string) error {
 		return fmt.Errorf("%w: service %s not found", ErrServiceNotFound, serviceID)
 	}
 
-	delete(b.serviceAttributes, serviceID)
+	for _, k := range keys {
+		delete(b.serviceAttributes[serviceID], k)
+	}
 
 	return nil
 }

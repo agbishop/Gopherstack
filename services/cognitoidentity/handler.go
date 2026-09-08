@@ -223,13 +223,11 @@ func resolveErrorType(err error) (string, int) {
 		}
 	}
 
-	var syntaxErr *json.SyntaxError
-	if errors.As(err, &syntaxErr) {
+	if _, ok := errors.AsType[*json.SyntaxError](err); ok {
 		return ErrInvalidParameter.Error(), http.StatusBadRequest
 	}
 
-	var typeErr *json.UnmarshalTypeError
-	if errors.As(err, &typeErr) {
+	if _, ok := errors.AsType[*json.UnmarshalTypeError](err); ok {
 		return ErrInvalidParameter.Error(), http.StatusBadRequest
 	}
 

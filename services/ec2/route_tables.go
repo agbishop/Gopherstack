@@ -11,6 +11,11 @@ var (
 	ErrRouteNotFound      = errors.New("InvalidRoute.NotFound")
 )
 
+// routeGatewayLocal is the fixed GatewayId AWS assigns to a route table's
+// local route (ec2@v1.319.1 api_op_ReplaceRoute.go:77 documents resetting
+// "the local route to its default target ( local )").
+const routeGatewayLocal = "local"
+
 // Route represents a route table entry.
 type Route struct {
 	DestinationCIDR string `json:"destinationCIDR,omitempty"`
@@ -19,19 +24,28 @@ type Route struct {
 	State           string `json:"state,omitempty"`
 }
 
-// RouteAssociation represents an association between a route table and a subnet.
+// RouteAssociation represents an association between a route table and a
+// subnet, or -- when SubnetID is empty and Main is true -- the implicit
+// VPC-wide association every main route table carries (ec2@v1.319.1
+// types.RouteTableAssociation: "A subnet ID is not returned for an implicit
+// association").
 type RouteAssociation struct {
 	ID           string `json:"id,omitempty"`
 	RouteTableID string `json:"routeTableID,omitempty"`
 	SubnetID     string `json:"subnetID,omitempty"`
+	Main         bool   `json:"main,omitempty"`
 }
 
-// RouteTable represents an EC2 Route Table.
+// RouteTable represents an EC2 Route Table. Main marks the VPC's main route
+// table -- the discriminator vpcDependencyViolationLocked and DeleteVpc use
+// to carve it out of the normal route-table dependency check (it is deleted
+// automatically with the VPC, like the default security group).
 type RouteTable struct {
 	ID           string             `json:"id,omitempty"`
 	VPCID        string             `json:"vpcID,omitempty"`
 	Routes       []Route            `json:"routes,omitempty"`
 	Associations []RouteAssociation `json:"associations,omitempty"`
+	Main         bool               `json:"main,omitempty"`
 }
 
 // CreateRouteTable creates a new route table in a VPC.
@@ -66,6 +80,13 @@ func (b *InMemoryBackend) DeleteRouteTable(id string) error {
 	rt, ok := b.routeTables.Get(id)
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrRouteTableNotFound, id)
+	}
+
+	if rt.Main {
+		return fmt.Errorf(
+			"%w: %s is the main route table for %s and cannot be deleted",
+			ErrDependencyViolation, id, rt.VPCID,
+		)
 	}
 
 	if len(rt.Associations) > 0 {
@@ -188,6 +209,13 @@ func (b *InMemoryBackend) DisassociateRouteTable(assocID string) error {
 	for _, rt := range b.routeTables.All() {
 		for i, assoc := range rt.Associations {
 			if assoc.ID == assocID {
+				if assoc.Main {
+					return fmt.Errorf(
+						"%w: %s is the implicit main-route-table association for %s and cannot be disassociated",
+						ErrInvalidParameter, assocID, rt.VPCID,
+					)
+				}
+
 				rt.Associations = append(rt.Associations[:i], rt.Associations[i+1:]...)
 
 				return nil

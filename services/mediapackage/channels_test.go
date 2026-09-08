@@ -142,3 +142,48 @@ func TestBackend_RotateChannelCredentials_OnlyFirstEndpoint(t *testing.T) {
 
 	assert.Equal(t, beforeSecond, *afterSecond, "second endpoint must be untouched")
 }
+
+// TestBackend_DeleteChannel_ClearsTagsOnRecreate verifies that deleting a
+// channel (and its cascade-deleted origin endpoints) also removes their
+// resource tags, so recreating a channel/endpoint with the same ID does not
+// inherit the deleted resources' tags.
+func TestBackend_DeleteChannel_ClearsTagsOnRecreate(t *testing.T) {
+	t.Parallel()
+
+	b := mediapackage.NewInMemoryBackend("000000000000", "us-east-1")
+
+	ch, err := b.CreateChannel("reused-chan", "desc", map[string]string{"env": "prod"})
+	require.NoError(t, err)
+
+	ep, err := b.CreateOriginEndpoint(
+		"reused-chan", "reused-endpoint", "desc", "",
+		0, 0, "", nil,
+		map[string]string{"env": "prod"},
+		mediapackage.PackagingConfig{},
+	)
+	require.NoError(t, err)
+
+	_, err = b.DeleteChannel("reused-chan")
+	require.NoError(t, err)
+
+	recreatedCh, err := b.CreateChannel("reused-chan", "desc", nil)
+	require.NoError(t, err)
+	require.Equal(t, ch.ARN, recreatedCh.ARN)
+
+	chTags, err := b.ListTagsForResource(recreatedCh.ARN)
+	require.NoError(t, err)
+	assert.Empty(t, chTags)
+
+	recreatedEp, err := b.CreateOriginEndpoint(
+		"reused-chan", "reused-endpoint", "desc", "",
+		0, 0, "", nil,
+		nil,
+		mediapackage.PackagingConfig{},
+	)
+	require.NoError(t, err)
+	require.Equal(t, ep.ARN, recreatedEp.ARN)
+
+	epTags, err := b.ListTagsForResource(recreatedEp.ARN)
+	require.NoError(t, err)
+	assert.Empty(t, epTags)
+}

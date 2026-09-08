@@ -8,36 +8,84 @@ import (
 )
 
 func (rc *ResourceCreator) createSecretsManagerSupplementalResource(
+	ctx context.Context,
 	logicalID, resourceType string,
 	props map[string]any,
 	params, physicalIDs map[string]string,
-) (string, bool) {
+) (string, bool, error) {
 	switch resourceType {
 	case "AWS::SecretsManager::RotationSchedule":
-		id := rc.createSecretsManagerRotationSchedule(logicalID, props, params, physicalIDs)
+		id, err := rc.createSecretsManagerRotationSchedule(ctx, logicalID, props, params, physicalIDs)
 
-		return id, true
+		return id, true, err
 	case "AWS::SecretsManager::SecretTargetAttachment":
 		id := rc.createSecretsManagerSecretTargetAttachment(logicalID, props, params, physicalIDs)
 
-		return id, true
+		return id, true, nil
 	default:
-		return "", false
+		return "", false, nil
 	}
 }
 
+// createSecretsManagerRotationSchedule wires the CFN resource to the real RotateSecret
+// operation (secretsmanager@v1.44.4 api_op_RotateSecret.go's RotateSecretInput /
+// types.RotationRulesType) instead of only computing a physical ID: the prior version never
+// called into the SecretsManager backend at all, so RotationLambdaARN/RotationRules were
+// accepted and silently discarded — the secret's rotation configuration was never actually set.
 func (rc *ResourceCreator) createSecretsManagerRotationSchedule(
+	ctx context.Context,
 	logicalID string,
 	props map[string]any,
 	params, physicalIDs map[string]string,
-) string {
+) (string, error) {
 	secretID := strProp(props, "SecretId", params, physicalIDs)
 	if secretID == "" {
 		secretID = logicalID
 	}
 
+	if rc.backends.SecretsManager == nil {
+		return secretID + "-rotation", nil
+	}
+
+	rotateImmediately := true
+	if v, ok := props["RotateImmediatelyOnUpdate"].(bool); ok {
+		rotateImmediately = v
+	}
+
+	input := &secretsmanagerbackend.RotateSecretInput{
+		SecretID:          secretID,
+		RotationLambdaARN: strProp(props, "RotationLambdaARN", params, physicalIDs),
+		RotationRules:     parseSecretsManagerRotationRules(props, params, physicalIDs),
+		RotateImmediately: &rotateImmediately,
+	}
+
+	if _, err := rc.backends.SecretsManager.Backend.RotateSecret(ctx, input); err != nil {
+		return "", fmt.Errorf("configure Secrets Manager rotation for %s: %w", secretID, err)
+	}
+
 	// Physical ID is the secret ID — the rotation is configured on the secret itself.
-	return secretID + "-rotation"
+	return secretID + "-rotation", nil
+}
+
+func parseSecretsManagerRotationRules(
+	props map[string]any,
+	params, physicalIDs map[string]string,
+) *secretsmanagerbackend.RotationRulesType {
+	rules, ok := props["RotationRules"].(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	out := &secretsmanagerbackend.RotationRulesType{
+		Duration:           strProp(rules, "Duration", params, physicalIDs),
+		ScheduleExpression: strProp(rules, "ScheduleExpression", params, physicalIDs),
+	}
+	if days, hasDays := rules["AutomaticallyAfterDays"].(float64); hasDays {
+		days64 := int64(days)
+		out.AutomaticallyAfterDays = &days64
+	}
+
+	return out
 }
 
 func (rc *ResourceCreator) createSecretsManagerSecretTargetAttachment(

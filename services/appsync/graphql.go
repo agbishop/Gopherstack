@@ -621,6 +621,7 @@ func (b *InMemoryBackend) ExecuteGraphQL(
 	ctx context.Context,
 	apiID, query, operationName string,
 	variables map[string]any,
+	auth GraphQLAuth,
 ) (map[string]any, error) {
 	b.mu.RLock("ExecuteGraphQL")
 
@@ -650,13 +651,30 @@ func (b *InMemoryBackend) ExecuteGraphQL(
 		functionsCopy[fn.FunctionID] = fn
 	}
 
+	// Snapshot the auth-relevant fields under the lock: UpdateGraphqlAPI
+	// mutates *GraphqlAPI in place under b.mu, so api itself is not safe to
+	// read once RUnlock below returns.
+	var (
+		primaryAuth         graphQLAuthConfig
+		additionalAuthProvs []AdditionalAuthenticationProvider
+	)
+
+	if apiOK {
+		primaryAuth = graphQLAuthConfigFromAPI(api)
+		additionalAuthProvs = api.AdditionalAuthenticationProviders
+	}
+
 	b.mu.RUnlock()
 
 	if !apiOK {
 		return nil, fmt.Errorf("%w: api %s not found", ErrNotFound, apiID)
 	}
 
-	_ = api
+	if authErr := b.authorizeGraphQL(
+		ctx, apiID, primaryAuth, additionalAuthProvs, query, operationName, variables, auth,
+	); authErr != nil {
+		return nil, authErr
+	}
 
 	return executeGraphQL(
 		ctx, b, schema, resolversCopy, datasourcesCopy, functionsCopy, query, operationName, variables,

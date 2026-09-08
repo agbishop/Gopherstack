@@ -168,7 +168,9 @@ func (b *InMemoryBackend) UpdateRestoreTestingPlan(
 	return &cp, nil
 }
 
-// DeleteRestoreTestingPlan deletes a restore testing plan and all its selections.
+// DeleteRestoreTestingPlan deletes a restore testing plan. Real AWS
+// (api_op_DeleteRestoreTestingPlan.go) says deletion can only succeed if all
+// associated restore testing selections are deleted first.
 func (b *InMemoryBackend) DeleteRestoreTestingPlan(planName string) error {
 	b.mu.Lock("DeleteRestoreTestingPlan")
 	defer b.mu.Unlock()
@@ -181,16 +183,14 @@ func (b *InMemoryBackend) DeleteRestoreTestingPlan(planName string) error {
 		return fmt.Errorf("%w: restore testing plan %s not found", ErrInvalidRequest, planName)
 	}
 
-	b.restoreTestingPlans.Delete(planName)
-
-	// Cascade-delete every selection under this plan. Clone the index's
-	// result first: deleting from the table while ranging over the live
-	// index slice would mutate it out from under the loop.
-	for _, sel := range slices.Clone(b.restoreTestingSelectionsByPlan.Get(planName)) {
-		b.restoreTestingSelections.Delete(
-			restoreTestingSelectionKey(sel.RestoreTestingPlanName, sel.RestoreTestingSelectionName),
+	if sels := b.restoreTestingSelectionsByPlan.Get(planName); len(sels) > 0 {
+		return fmt.Errorf(
+			"%w: restore testing plan %s has %d active selection(s); delete them first",
+			ErrInvalidRequest, planName, len(sels),
 		)
 	}
+
+	b.restoreTestingPlans.Delete(planName)
 
 	return nil
 }

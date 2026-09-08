@@ -127,6 +127,22 @@ func validateClusterName(name string) error {
 	return nil
 }
 
+// validateAvailabilityZonesLength enforces api_op_CreateCluster.go's ReplicationFactor
+// doc: "If the AvailabilityZones parameter is provided, its length must equal the
+// ReplicationFactor parameter.".
+func validateAvailabilityZonesLength(azs []string, replicationFactor int) error {
+	if len(azs) > 0 && len(azs) != replicationFactor {
+		return fmt.Errorf(
+			"%w: AvailabilityZones has %d entries but ReplicationFactor is %d",
+			ErrInvalidParameterCombination,
+			len(azs),
+			replicationFactor,
+		)
+	}
+
+	return nil
+}
+
 // validateCreateCluster validates the CreateCluster input before acquiring the lock.
 func validateCreateCluster(input *CreateClusterInput) error {
 	if err := validateClusterName(input.ClusterName); err != nil {
@@ -161,6 +177,10 @@ func validateCreateCluster(input *CreateClusterInput) error {
 			input.ReplicationFactor,
 			maxReplicationFactor,
 		)
+	}
+
+	if err := validateAvailabilityZonesLength(input.AvailabilityZones, input.ReplicationFactor); err != nil {
+		return err
 	}
 
 	if input.ClusterEndpointEncryptionType != "" &&

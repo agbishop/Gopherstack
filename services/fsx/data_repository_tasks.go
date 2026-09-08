@@ -48,7 +48,7 @@ type createDataRepositoryTaskInput struct {
 // Enabled member is required whenever Report is present (validateCompletionReport)
 // -- the pre-fix request never read Report at all.
 func (b *InMemoryBackend) CreateDataRepositoryTask(input *createDataRepositoryTaskInput) (*DataRepositoryTask, error) {
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
@@ -65,6 +65,10 @@ func (b *InMemoryBackend) CreateDataRepositoryTask(input *createDataRepositoryTa
 
 	if !b.fileSystems.Has(input.FileSystemID) {
 		return nil, ErrFileSystemNotFound
+	}
+
+	if b.hasExecutingTaskLocked(input.FileSystemID) {
+		return nil, ErrDataRepositoryTaskExecuting
 	}
 
 	id := newDataRepositoryTaskID()
@@ -88,6 +92,24 @@ func (b *InMemoryBackend) CreateDataRepositoryTask(input *createDataRepositoryTa
 	b.tags[arn] = tags
 
 	return t.toPublic(), nil
+}
+
+// hasExecutingTaskLocked reports whether fileSystemID already has a task
+// with Lifecycle EXECUTING. Caller must already hold b.mu.
+func (b *InMemoryBackend) hasExecutingTaskLocked(fileSystemID string) bool {
+	found := false
+
+	b.dataRepositoryTasks.Range(func(t *storedDataRepositoryTask) bool {
+		if t.FileSystemID == fileSystemID && t.Lifecycle == "EXECUTING" {
+			found = true
+
+			return false
+		}
+
+		return true
+	})
+
+	return found
 }
 
 // CancelDataRepositoryTask marks a task as cancelled.

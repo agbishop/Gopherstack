@@ -66,8 +66,13 @@ func (h *Handler) handleCancelElasticsearchServiceSoftwareUpdate(w http.Response
 	})
 }
 
-func (h *Handler) handleDeleteElasticsearchServiceRole(w http.ResponseWriter, _ *http.Request) {
-	_ = h.Backend.DeleteElasticsearchServiceRole()
+func (h *Handler) handleDeleteElasticsearchServiceRole(w http.ResponseWriter, r *http.Request) {
+	if err := h.Backend.DeleteElasticsearchServiceRole(); err != nil {
+		h.writeOperationError(r, w, err)
+
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 

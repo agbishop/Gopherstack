@@ -162,13 +162,9 @@ func (b *InMemoryBackend) PutSecretValue(
 
 	name := resolveSecretID(input.SecretID)
 
-	secret, exists := b.secretGet(region, name)
-	if !exists {
-		return nil, ErrSecretNotFound
-	}
-
-	if secret.DeletedDate != nil {
-		return nil, fmt.Errorf("%w: secret %s is deleted", ErrSecretDeleted, input.SecretID)
+	secret, lookupErr := b.resolvePrimaryOnlySecretLocked(region, input.SecretID, name)
+	if lookupErr != nil {
+		return nil, lookupErr
 	}
 
 	versionID := input.ClientRequestToken

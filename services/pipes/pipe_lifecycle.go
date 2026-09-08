@@ -11,29 +11,51 @@ import (
 
 var pipeNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-func (b *InMemoryBackend) CreatePipe(ctx context.Context, in CreatePipeInput) (*Pipe, error) {
+func validateCreatePipeInput(in CreatePipeInput) error {
 	if err := validatePipeName(in.Name); err != nil {
-		return nil, err
+		return err
 	}
 	if err := validateDesiredState(in.DesiredState); err != nil {
-		return nil, err
+		return err
 	}
 	if in.Source == "" {
-		return nil, fmt.Errorf("%w: Source is required", ErrValidation)
+		return fmt.Errorf("%w: Source is required", ErrValidation)
 	}
 	if in.Target == "" {
-		return nil, fmt.Errorf("%w: Target is required", ErrValidation)
+		return fmt.Errorf("%w: Target is required", ErrValidation)
 	}
 	if in.RoleARN == "" {
-		return nil, fmt.Errorf("%w: RoleArn is required", ErrValidation)
+		return fmt.Errorf("%w: RoleArn is required", ErrValidation)
 	}
 	if err := validateTags(in.Tags); err != nil {
-		return nil, err
+		return err
 	}
 	if len(in.Tags) > maxTagsPerPipe {
-		return nil, fmt.Errorf("%w: pipe would exceed %d tags limit", ErrValidation, maxTagsPerPipe)
+		return fmt.Errorf("%w: pipe would exceed %d tags limit", ErrValidation, maxTagsPerPipe)
 	}
 	if err := validateSourceBatchSize(in.SourceParameters); err != nil {
+		return err
+	}
+	if err := validateSourceStartingPosition(in.SourceParameters); err != nil {
+		return err
+	}
+	if err := validateSourceRequiredFields(in.SourceParameters); err != nil {
+		return err
+	}
+	if in.SourceParameters != nil {
+		if err := validateFilterCriteria(in.SourceParameters.FilterCriteria); err != nil {
+			return err
+		}
+	}
+	if err := validateTargetRequiredFields(in.TargetParameters); err != nil {
+		return err
+	}
+
+	return validateLogConfigurationRequiredFields(in.LogConfiguration)
+}
+
+func (b *InMemoryBackend) CreatePipe(ctx context.Context, in CreatePipeInput) (*Pipe, error) {
+	if err := validateCreatePipeInput(in); err != nil {
 		return nil, err
 	}
 
@@ -146,6 +168,20 @@ func (b *InMemoryBackend) UpdatePipe(ctx context.Context, name string, in Update
 		return nil, err
 	}
 	if err := validateSourceBatchSize(in.SourceParameters); err != nil {
+		return nil, err
+	}
+	if err := validateUpdateSourceRequiredFields(in.SourceParameters); err != nil {
+		return nil, err
+	}
+	if in.SourceParameters != nil {
+		if err := validateFilterCriteria(in.SourceParameters.FilterCriteria); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateTargetRequiredFields(in.TargetParameters); err != nil {
+		return nil, err
+	}
+	if err := validateLogConfigurationRequiredFields(in.LogConfiguration); err != nil {
 		return nil, err
 	}
 	if in.RoleARN == "" {
@@ -378,4 +414,20 @@ func validateDesiredState(state string) error {
 	}
 
 	return fmt.Errorf("%w: DesiredState must be RUNNING or STOPPED, got %q", ErrValidation, state)
+}
+
+// validateLogConfigurationRequiredFields enforces LogConfiguration.Level as
+// required when LogConfiguration is set, matching aws-sdk-go-v2 pipes
+// validators.go's validatePipeLogConfigurationParameters. Reached identically
+// from CreatePipe and UpdatePipe: both validateOpCreatePipeInput and
+// validateOpUpdatePipeInput nest into it only when LogConfiguration != nil.
+func validateLogConfigurationRequiredFields(lc *LogConfiguration) error {
+	if lc == nil {
+		return nil
+	}
+	if lc.Level == "" {
+		return fmt.Errorf("%w: LogConfiguration.Level is required", ErrValidation)
+	}
+
+	return nil
 }

@@ -131,7 +131,8 @@ func TestExportHelpers(t *testing.T) {
 
 			assert.Equal(t, 2, organizations.AccountCount(b), tt.name+": account count")
 			assert.Equal(t, 1, organizations.OUCount(b), tt.name+": ou count")
-			assert.Equal(t, 1, organizations.PolicyCount(b), tt.name+": policy count")
+			// +1 for the default FullAWSAccess SCP every organization is created with.
+			assert.Equal(t, 2, organizations.PolicyCount(b), tt.name+": policy count")
 			assert.Equal(t, 1, organizations.HandshakeCount(b), tt.name+": handshake count")
 			assert.Equal(t, 1, organizations.TagCount(b), tt.name+": tag count")
 

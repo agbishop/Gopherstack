@@ -123,7 +123,8 @@ func (h *Handler) handleUpdateFleetMetric(c *echo.Context) error {
 
 func (h *Handler) handleDeleteFleetMetric(c *echo.Context) error {
 	name := strings.TrimPrefix(c.Request().URL.Path, "/fleet-metric/")
-	if err := h.Backend.DeleteFleetMetric(name); err != nil {
+	expectedVersion := parseExpectedVersionQueryParam(c)
+	if err := h.Backend.DeleteFleetMetric(name, expectedVersion); err != nil {
 		// DeleteFleetMetric's own deserializeOpError switch declares no
 		// ResourceNotFoundException case.
 		return respondAsInvalidRequest(c, err, ErrResourceNotFound)

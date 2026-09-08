@@ -111,14 +111,17 @@ type StorageBackend interface {
 
 	// Dashboards
 	CreateDashboard(
-		accountID, dashboardID, name string,
+		accountID, dashboardID, name, themeArn, versionDescription string,
 		definition map[string]any,
 		permissions []ResourcePermission,
 		tags map[string]string,
 	) (*Dashboard, error)
 	DescribeDashboard(accountID, dashboardID string) (*Dashboard, error)
-	UpdateDashboard(accountID, dashboardID, name string, definition map[string]any) (*Dashboard, error)
-	DeleteDashboard(accountID, dashboardID string) error
+	UpdateDashboard(
+		accountID, dashboardID, name, themeArn, versionDescription string,
+		definition map[string]any,
+	) (*Dashboard, error)
+	DeleteDashboard(accountID, dashboardID string, versionNumber int64) error
 	ListDashboards(accountID string, maxResults int32, nextToken string) ([]*Dashboard, string, error)
 	ListDashboardVersions(
 		accountID, dashboardID string,

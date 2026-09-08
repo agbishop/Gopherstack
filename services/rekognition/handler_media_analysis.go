@@ -28,8 +28,12 @@ type startPersonTrackingReq struct {
 }
 
 func (h *Handler) handleStartPersonTracking(
-	_ context.Context, req *startPersonTrackingReq,
+	ctx context.Context, req *startPersonTrackingReq,
 ) (*startJobResp, error) {
+	if err := h.checkVideoRef(ctx, req.Video); err != nil {
+		return nil, err
+	}
+
 	bucket, name, version := videoRefS3(req.Video)
 
 	jobID, err := h.Backend.StartAsyncJob(StartAsyncJobParams{
@@ -73,8 +77,12 @@ type startSegmentDetectionReq struct {
 }
 
 func (h *Handler) handleStartSegmentDetection(
-	_ context.Context, req *startSegmentDetectionReq,
+	ctx context.Context, req *startSegmentDetectionReq,
 ) (*startJobResp, error) {
+	if err := h.checkVideoRef(ctx, req.Video); err != nil {
+		return nil, err
+	}
+
 	bucket, name, version := videoRefS3(req.Video)
 
 	jobID, err := h.Backend.StartAsyncJob(StartAsyncJobParams{
@@ -170,7 +178,7 @@ type startMediaAnalysisJobResp struct {
 }
 
 func (h *Handler) handleStartMediaAnalysisJob(
-	_ context.Context, req *startMediaAnalysisJobReq,
+	ctx context.Context, req *startMediaAnalysisJobReq,
 ) (*startMediaAnalysisJobResp, error) {
 	// OperationsConfig/Input/OutputConfig are required StartMediaAnalysisJobInput
 	// members, Input.S3Object and OutputConfig.S3Bucket required nested members
@@ -193,6 +201,10 @@ func (h *Handler) handleStartMediaAnalysisJob(
 
 	if req.OutputConfig.S3Bucket == "" {
 		return nil, fmt.Errorf("%w: OutputConfig.S3Bucket is required", ErrValidation)
+	}
+
+	if err := h.checkS3Object(ctx, req.Input.S3Object.Bucket, req.Input.S3Object.Name); err != nil {
+		return nil, err
 	}
 
 	jobName := req.JobName

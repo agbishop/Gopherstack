@@ -50,6 +50,24 @@ func (b *InMemoryBackend) CreateResolverQueryLogConfig(
 		)
 	}
 
+	if creatorRequestID != "" {
+		for _, existing := range b.queryLogConfigsByRegion.Get(region) {
+			if existing.CreatorRequestID != creatorRequestID {
+				continue
+			}
+			if existing.Name == name && existing.DestinationARN == destinationARN {
+				cp := *existing
+
+				return &cp, nil
+			}
+
+			return nil, fmt.Errorf(
+				"%w: a resolver query log config already exists for CreatorRequestId %s with different parameters",
+				ErrAlreadyExists, creatorRequestID,
+			)
+		}
+	}
+
 	now := currentTime()
 	id := "rqlc-" + uuid.New().String()[:8]
 	configARN := arn.Build(
@@ -143,6 +161,10 @@ func (b *InMemoryBackend) DeleteResolverQueryLogConfig(
 
 	// Clean up tags.
 	delete(b.tagsStore(region), cfg.ARN)
+	// Clean up the resource policy. Direct map access (not the lazy-creating
+	// Store helper) so deleting a config whose region never had a policy set
+	// doesn't leave behind an empty region entry.
+	delete(b.queryLogConfigPolicies[region], cfg.ARN)
 
 	// Cascade: remove all associations referencing this config. slices.Clone
 	// before deleting in the loop -- see DeleteResolverEndpoint's comment.

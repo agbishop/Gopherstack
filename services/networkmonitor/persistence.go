@@ -23,10 +23,7 @@ const networkmonitorSnapshotVersion = 1
 
 // backendSnapshot is the top-level on-disk shape for the Network Monitor
 // backend. Tables holds one JSON-encoded array per registered store.Table
-// (just "monitors"), produced by [store.Registry.SnapshotAll]. arnIndex is
-// intentionally absent: it was never persisted even before Phase 3.3 --
-// Restore has always rebuilt it fresh from monitors (see below) -- and
-// remains a plain, unconverted map (see store_setup.go for why).
+// (just "monitors"), produced by [store.Registry.SnapshotAll].
 type backendSnapshot struct {
 	Tables       map[string]json.RawMessage `json:"tables"`
 	NextProbeSeq int64                      `json:"next_probe_seq"`
@@ -83,7 +80,6 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 			"gotVersion", snap.Version, "wantVersion", networkmonitorSnapshotVersion)
 
 		b.registry.ResetAll()
-		b.arnIndex = make(map[string]map[string]string)
 		b.nextProbeSeq = 0
 
 		return nil
@@ -91,12 +87,6 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 
 	if err := b.registry.RestoreAll(snap.Tables); err != nil {
 		return fmt.Errorf("networkmonitor: restore snapshot tables: %w", err)
-	}
-
-	b.arnIndex = make(map[string]map[string]string)
-
-	for _, m := range b.monitors.All() {
-		b.regionARNIndex(m.Region)[m.MonitorArn] = m.MonitorName
 	}
 
 	b.nextProbeSeq = snap.NextProbeSeq

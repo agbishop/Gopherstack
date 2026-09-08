@@ -427,6 +427,35 @@ func TestDeleteResourceTree_TransitiveDelete(t *testing.T) {
 	assert.Equal(t, "ResourceNotFoundException", resp["__type"])
 }
 
+// TestDeleteResourceTree_DatasetGroupCascadesToPredictor verifies that
+// DeleteResourceTree on a DatasetGroup also removes a Predictor that
+// references it, per the api_op_DeleteResourceTree.go doc's "Dataset Group:
+// predictors, ..." hierarchy. The reference lives nested under
+// CreatePredictorInput.InputDataConfig.DatasetGroupArn, not top-level, so
+// this exercises the recursive scan rather than the top-level-only case
+// TestDeleteResourceTree_TransitiveDelete already covers via Forecast's
+// top-level PredictorArn.
+func TestDeleteResourceTree_DatasetGroupCascadesToPredictor(t *testing.T) {
+	t.Parallel()
+
+	h := newHandler()
+	dgARN := createDatasetGroup(t, h)
+
+	_, cp := request(t, h, "CreatePredictor", map[string]any{
+		"PredictorName": "casc-pred", "ForecastHorizon": 5,
+		"InputDataConfig":     map[string]any{"DatasetGroupArn": dgARN},
+		"FeaturizationConfig": map[string]any{},
+	})
+	predARN := cp["PredictorArn"].(string)
+
+	code, _ := request(t, h, "DeleteResourceTree", map[string]any{"ResourceArn": dgARN})
+	require.Equal(t, http.StatusOK, code)
+
+	code, resp := request(t, h, "DescribePredictor", map[string]any{"PredictorArn": predARN})
+	assert.Equal(t, http.StatusBadRequest, code)
+	assert.Equal(t, "ResourceNotFoundException", resp["__type"])
+}
+
 // TestDeleteResourceTree_NotFound verifies that DeleteResourceTree
 // returns ResourceNotFoundException when the target ARN does not exist.
 func TestDeleteResourceTree_NotFound(t *testing.T) {

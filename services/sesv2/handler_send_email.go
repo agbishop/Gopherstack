@@ -20,8 +20,9 @@ type emailDestination struct {
 }
 
 type emailContent struct {
-	Simple *simpleEmailContent `json:"Simple"`
-	Raw    *rawEmailContent    `json:"Raw"`
+	Simple   *simpleEmailContent `json:"Simple"`
+	Raw      *rawEmailContent    `json:"Raw"`
+	Template *bulkEmailTemplate  `json:"Template"`
 }
 
 type simpleEmailContent struct {
@@ -78,7 +79,7 @@ func (h *Handler) handleSendEmail(c *echo.Context) (any, error) {
 		}
 	}
 
-	msgID, err := h.Backend.SendEmail(from, to, subject, bodyHTML, bodyText)
+	msgID, err := h.Backend.SendEmail(from, to, subject, bodyHTML, bodyText, in.Content.Template)
 	if err != nil {
 		return nil, err
 	}

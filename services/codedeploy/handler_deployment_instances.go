@@ -231,7 +231,9 @@ func (h *Handler) handleGetDeploymentTarget(
 }
 
 type listDeploymentInstancesInput struct {
-	DeploymentID string `json:"deploymentId"`
+	DeploymentID         string   `json:"deploymentId"`
+	InstanceStatusFilter []string `json:"instanceStatusFilter"`
+	InstanceTypeFilter   []string `json:"instanceTypeFilter"`
 }
 
 type listDeploymentInstancesOutput struct {
@@ -246,7 +248,10 @@ func (h *Handler) handleListDeploymentInstances(
 		return nil, fmt.Errorf("%w: deploymentId is required", ErrDeploymentIDRequired)
 	}
 
-	ids, err := h.Backend.ListDeploymentInstances(in.DeploymentID)
+	ids, err := h.Backend.ListDeploymentInstances(in.DeploymentID, InstanceListFilter{
+		StatusFilter: in.InstanceStatusFilter,
+		TypeFilter:   in.InstanceTypeFilter,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +260,8 @@ func (h *Handler) handleListDeploymentInstances(
 }
 
 type listDeploymentTargetsInput struct {
-	DeploymentID string `json:"deploymentId"`
+	TargetFilters map[string][]string `json:"targetFilters"`
+	DeploymentID  string              `json:"deploymentId"`
 }
 
 type listDeploymentTargetsOutput struct {
@@ -270,7 +276,10 @@ func (h *Handler) handleListDeploymentTargets(
 		return nil, fmt.Errorf("%w: deploymentId is required", ErrDeploymentIDRequired)
 	}
 
-	ids, err := h.Backend.ListDeploymentTargets(in.DeploymentID)
+	ids, err := h.Backend.ListDeploymentTargets(in.DeploymentID, TargetListFilter{
+		TargetStatus:        in.TargetFilters["TargetStatus"],
+		ServerInstanceLabel: in.TargetFilters["ServerInstanceLabel"],
+	})
 	if err != nil {
 		return nil, err
 	}

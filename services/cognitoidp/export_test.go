@@ -34,6 +34,30 @@ func (b *InMemoryBackend) RefreshTokenCount() int {
 	return len(b.refreshTokens)
 }
 
+// MFASessionCount returns the number of pending MFA challenge sessions. For testing only.
+func (b *InMemoryBackend) MFASessionCount() int {
+	b.mu.RLock("MFASessionCount")
+	defer b.mu.RUnlock()
+
+	return len(b.mfaSessions)
+}
+
+// PoolMfaConfigCount returns the number of pools with a stored full MFA config. For testing only.
+func (b *InMemoryBackend) PoolMfaConfigCount() int {
+	b.mu.RLock("PoolMfaConfigCount")
+	defer b.mu.RUnlock()
+
+	return len(b.poolMfaConfigs)
+}
+
+// AttrVerificationCodeCount returns the number of pending attribute verification codes. For testing only.
+func (b *InMemoryBackend) AttrVerificationCodeCount() int {
+	b.mu.RLock("AttrVerificationCodeCount")
+	defer b.mu.RUnlock()
+
+	return len(b.attrVerificationCodes)
+}
+
 // SetRefreshTokenExpiry sets expiry for a refresh token. For testing only.
 func (b *InMemoryBackend) SetRefreshTokenExpiry(token string, expiresAt time.Time) bool {
 	b.mu.Lock("SetRefreshTokenExpiry")
@@ -118,6 +142,68 @@ func (b *InMemoryBackend) SeedAuthEventForTest(poolID, username string, ev *Auth
 	}
 
 	b.authEvents[key][ev.EventID] = ev
+}
+
+// SeedDeviceForTest directly inserts a Device for a user, bypassing the
+// normal ConfirmDevice flow. For testing only.
+func (b *InMemoryBackend) SeedDeviceForTest(poolID, username string, dev *Device) {
+	b.mu.Lock("SeedDeviceForTest")
+	defer b.mu.Unlock()
+
+	key := userStateKey(poolID, username)
+	if b.devices[key] == nil {
+		b.devices[key] = make(map[string]*Device)
+	}
+
+	b.devices[key][dev.DeviceKey] = dev
+}
+
+// HasDeviceStateForTest reports whether any device or auth-event state is
+// stored under a user's state key. For testing only.
+func (b *InMemoryBackend) HasDeviceStateForTest(poolID, username string) bool {
+	b.mu.RLock("HasDeviceStateForTest")
+	defer b.mu.RUnlock()
+
+	key := userStateKey(poolID, username)
+
+	return len(b.devices[key]) > 0 || len(b.authEvents[key]) > 0
+}
+
+// SeedWebAuthnCredentialForTest directly inserts a WebAuthn credential for a
+// user, bypassing the normal CompleteWebAuthnRegistration flow (which
+// requires an access token). For testing only.
+func (b *InMemoryBackend) SeedWebAuthnCredentialForTest(poolID, username string, cred *WebAuthnCredential) {
+	b.mu.Lock("SeedWebAuthnCredentialForTest")
+	defer b.mu.Unlock()
+
+	key := userStateKey(poolID, username)
+	if b.webauthnCredentials[key] == nil {
+		b.webauthnCredentials[key] = make(map[string]*WebAuthnCredential)
+	}
+
+	b.webauthnCredentials[key][cred.CredentialID] = cred
+}
+
+// AddUserPoolDomainInternal seeds a domain directly into the backend,
+// bypassing CreateUserPoolDomain's pool-existence check. For testing only --
+// simulates a domain orphaned by data that predates DeleteUserPool's guard
+// against deleting a pool with an attached domain (gopherstack-tq5q).
+func (b *InMemoryBackend) AddUserPoolDomainInternal(domain *UserPoolDomain) {
+	b.mu.Lock("AddUserPoolDomainInternal")
+	defer b.mu.Unlock()
+
+	b.domains.Put(domain)
+}
+
+// ExpireAttrVerificationCodeForTest forces an attribute verification code's ExpiresAt to a past time. For testing only.
+func (b *InMemoryBackend) ExpireAttrVerificationCodeForTest(poolID, username, attrName string) {
+	b.mu.Lock("ExpireAttrVerificationCodeForTest")
+	defer b.mu.Unlock()
+
+	key := poolID + ":" + username + ":" + attrName
+	if entry, ok := b.attrVerificationCodes[key]; ok {
+		entry.ExpiresAt = time.Now().Add(-time.Hour)
+	}
 }
 
 // GetAttrVerificationCodeForTest returns the pending verification code for a user attribute. For testing only.

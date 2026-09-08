@@ -95,7 +95,7 @@ func TestExportTask_WritesGzippedObjects(t *testing.T) {
 	sink := newFakeExportSink()
 	b.SetExportSink(sink)
 
-	taskID, err := b.CreateExportTask("t", "/grp", "", "dest-bucket", "myprefix", 1000, 2000)
+	taskID, err := b.CreateExportTask(context.Background(), "t", "/grp", "", "dest-bucket", "myprefix", 1000, 2000)
 	require.NoError(t, err)
 	require.NotEmpty(t, taskID)
 
@@ -132,7 +132,7 @@ func TestExportTask_StreamPrefixFilter(t *testing.T) {
 	sink := newFakeExportSink()
 	b.SetExportSink(sink)
 
-	taskID, err := b.CreateExportTask("t", "/grp", "streamA", "dest", "p", 1000, 6000)
+	taskID, err := b.CreateExportTask(context.Background(), "t", "/grp", "streamA", "dest", "p", 1000, 6000)
 	require.NoError(t, err)
 
 	_, okA := sink.get("p/" + taskID + "/streamA/000000.gz")
@@ -148,7 +148,7 @@ func TestExportTask_DefaultPrefix(t *testing.T) {
 	sink := newFakeExportSink()
 	b.SetExportSink(sink)
 
-	taskID, err := b.CreateExportTask("t", "/grp", "streamA", "dest", "", 1000, 2000)
+	taskID, err := b.CreateExportTask(context.Background(), "t", "/grp", "streamA", "dest", "", 1000, 2000)
 	require.NoError(t, err)
 
 	_, ok := sink.get("exportedlogs/" + taskID + "/streamA/000000.gz")
@@ -160,7 +160,7 @@ func TestExportTask_NoSinkStaysPending(t *testing.T) {
 
 	b := exportBackend(t)
 
-	taskID, err := b.CreateExportTask("t", "/grp", "", "dest", "p", 1000, 2000)
+	taskID, err := b.CreateExportTask(context.Background(), "t", "/grp", "", "dest", "p", 1000, 2000)
 	require.NoError(t, err)
 
 	tasks, _, err := b.DescribeExportTasks(taskID, "", 10, "")

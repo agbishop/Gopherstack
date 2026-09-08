@@ -120,6 +120,7 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 
 		b.registry.ResetAll()
 		b.multipartParts = make(map[uploadKey][]MultipartPart)
+		b.multipartPartData = make(map[uploadKey]map[string][]byte)
 		b.provisionedCapacity = make(map[string][]*ProvisionedCapacity)
 		b.dataRetrievalPolicies = make(map[string]string)
 
@@ -134,6 +135,11 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 	for _, ps := range snap.MultipartParts {
 		b.multipartParts[ps.Key] = ps.Parts
 	}
+
+	// multipartPartData (raw part bytes) is never persisted, like archiveData --
+	// reset it so a restored backend doesn't carry over stale bytes from
+	// whatever state it held before Restore was called.
+	b.multipartPartData = make(map[uploadKey]map[string][]byte)
 
 	b.provisionedCapacity = make(map[string][]*ProvisionedCapacity, len(snap.ProvisionedCapacity))
 	for _, cs := range snap.ProvisionedCapacity {

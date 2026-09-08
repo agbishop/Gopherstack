@@ -71,6 +71,14 @@ func (b *InMemoryBackend) CreateNetwork(
 	b.mu.Lock("CreateNetwork")
 	defer b.mu.Unlock()
 
+	if err := checkTagLimit(nil, tags); err != nil {
+		return nil, nil, err
+	}
+
+	if err := checkTagLimit(nil, memberTags); err != nil {
+		return nil, nil, err
+	}
+
 	for _, n := range b.networks.All() {
 		if n.Name == name {
 			return nil, nil, ErrNetworkAlreadyExists
@@ -175,6 +183,19 @@ func cloneNetworkFrameworkAttributes(fa *NetworkFrameworkAttributesState) *Netwo
 	}
 
 	return cp
+}
+
+// deleteNetworkIfEmptyLocked deletes network once it has no members left: "If
+// MemberId is the last member in a network specified by the last Amazon Web
+// Services account, the network is deleted also." (aws-sdk-go-v2 managedblockchain
+// api_op_DeleteMember.go doc comment, v1.34.4). Must be called with mu held.
+func deleteNetworkIfEmptyLocked(b *InMemoryBackend, network *Network) {
+	if len(b.membersByNetwork.Get(network.ID)) > 0 {
+		return
+	}
+
+	delete(b.arnToResource, network.Arn)
+	b.networks.Delete(network.ID)
 }
 
 // GetNetwork returns the details of a network by ID.

@@ -125,6 +125,28 @@ func TestUpdateRuleset_NotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestUpdateRuleset_OmittedDescriptionPreservesExisting verifies a caller
+// updating only Rules does not have Description clobbered:
+// UpdateRulesetInput's Description member has no "This member is required"
+// marker (only Rules does), so omitting it must leave the ruleset's
+// existing description intact.
+func TestUpdateRuleset_OmittedDescriptionPreservesExisting(t *testing.T) {
+	t.Parallel()
+	b := newTestBackend()
+	ctx := context.Background()
+	_, err := b.CreateRuleset(ctx, "upd-rs-nodesc", "original description", "arn:x", nil, nil)
+	require.NoError(t, err)
+
+	rules := []databrew.Rule{{Name: "new-rule", CheckExpression: "ROWCOUNT > 10"}}
+	err = b.UpdateRuleset(ctx, "upd-rs-nodesc", "", rules)
+	require.NoError(t, err)
+
+	rs, err := b.DescribeRuleset(ctx, "upd-rs-nodesc")
+	require.NoError(t, err)
+	assert.Equal(t, "original description", rs.Description, "omitting Description must not clobber it")
+	assert.Len(t, rs.Rules, 1)
+}
+
 func TestDeleteRuleset_Success(t *testing.T) {
 	t.Parallel()
 	b := newTestBackend()

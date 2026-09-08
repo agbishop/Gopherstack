@@ -92,13 +92,19 @@ func (h *Handler) handleDeleteMetricStream(form url.Values, c *echo.Context) err
 		return h.xmlError(c, http.StatusBadRequest, "InvalidParameterValue", "Name is required")
 	}
 
+	// Look up the real (region+account qualified) ARN before deleting so tag
+	// cleanup targets the same key TagResource was called with -- a
+	// hardcoded "arn:aws:cloudwatch::metric-stream/"+name (no region/account)
+	// previously never matched, leaving tags orphaned after delete.
+	stream, getErr := h.Backend.GetMetricStream(name)
+
 	if err := h.Backend.DeleteMetricStream(name); err != nil {
 		return h.xmlError(c, http.StatusBadRequest, "ResourceNotFoundException", err.Error())
 	}
 
-	// Clean up tags for the deleted metric stream's ARN.
-	streamARN := "arn:aws:cloudwatch::metric-stream/" + name
-	h.deleteResourceTags(streamARN)
+	if getErr == nil {
+		h.deleteResourceTags(stream.Arn)
+	}
 
 	type response struct {
 		XMLName   xml.Name       `xml:"DeleteMetricStreamResponse"`

@@ -26,6 +26,15 @@ func RDSIDFromARNForTest(arnOrID string) string {
 	return rdsIDFromARN(arnOrID)
 }
 
+// SetInstanceReadyAtForTest overrides an instance's pending-transition
+// deadline directly, for testing restore-time reconciliation.
+func SetInstanceReadyAtForTest(b *InMemoryBackend, instanceID string, at time.Time) {
+	b.mu.Lock("SetInstanceReadyAtForTest")
+	defer b.mu.Unlock()
+
+	b.instanceReadyAt[instanceID] = at
+}
+
 // InjectExpiredFaultForTest directly inserts an expired fisFailoverFault entry
 // into the backend without starting a cleanup goroutine, allowing tests to
 // exercise the lazy-eviction path in IsClusterFailoverActive.
@@ -149,4 +158,38 @@ func ShardGroupCount(b *InMemoryBackend) int {
 	defer b.mu.RUnlock()
 
 	return b.shardGroups.Len()
+}
+
+// ClusterReadyAtCountForTest returns the number of clusters with a pending
+// reconciler transition deadline.
+func ClusterReadyAtCountForTest(b *InMemoryBackend) int {
+	b.mu.RLock("ClusterReadyAtCountForTest")
+	defer b.mu.RUnlock()
+
+	return len(b.clusterReadyAt)
+}
+
+// InstanceLogFilesCountForTest returns the number of instances with seeded log files.
+func InstanceLogFilesCountForTest(b *InMemoryBackend) int {
+	b.mu.RLock("InstanceLogFilesCountForTest")
+	defer b.mu.RUnlock()
+
+	return len(b.instanceLogFiles)
+}
+
+// InstanceLogContentCountForTest returns the number of instances with seeded log content.
+func InstanceLogContentCountForTest(b *InMemoryBackend) int {
+	b.mu.RLock("InstanceLogContentCountForTest")
+	defer b.mu.RUnlock()
+
+	return len(b.instanceLogContent)
+}
+
+// PIMetricsCountForTest returns the number of resources with stored Performance
+// Insights metrics.
+func PIMetricsCountForTest(b *InMemoryBackend) int {
+	b.mu.RLock("PIMetricsCountForTest")
+	defer b.mu.RUnlock()
+
+	return len(b.piMetrics)
 }

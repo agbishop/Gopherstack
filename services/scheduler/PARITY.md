@@ -10,8 +10,8 @@ ops:
   UpdateSchedule:      {wire: fixed, errors: ok, state: fixed, persist: ok, note: "Target.EcsParameters wire bugs fixed (see 2026-08-20 Notes); ScheduleExpressionTimezone now validated as a real IANA name (prior pass's State-omission fix re-verified still correct, see Notes); ScheduleExpression now semantically validated; cron field values now validated per-field, see 2026-08-11 gopherstack-cz9e Notes"}
   DeleteSchedule:      {wire: ok, errors: ok, state: ok, persist: ok}
   ListSchedules:       {wire: fixed, errors: ok, state: ok, persist: ok, note: "invented Target.RoleArn field deleted (real TargetSummary has only Arn)"}
-  CreateScheduleGroup: {wire: ok, errors: ok, state: fixed, persist: ok, note: "ClientToken now idempotent (see Notes)"}
-  GetScheduleGroup:    {wire: fixed, errors: ok, state: ok, persist: ok, note: "invented non-canonical Tags field deleted"}
+  CreateScheduleGroup: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "ClientToken now idempotent (see Notes); FIXED 2026-09-06 (bd gopherstack-ui6k): accepted a fabricated Description request field not present in the real CreateScheduleGroupInput -- see Notes"}
+  GetScheduleGroup:    {wire: fixed, errors: ok, state: ok, persist: ok, note: "invented non-canonical Tags field deleted; FIXED 2026-09-06 (bd gopherstack-ui6k): also echoed the same fabricated Description back -- see Notes"}
   DeleteScheduleGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "cascade-delete-all-schedules-in-group re-verified correct against the real API doc comment; async DELETING intermediate state intentionally not modeled, see Notes"}
   ListScheduleGroups:  {wire: fixed, errors: ok, state: ok, persist: ok, note: "invented non-canonical Tags field deleted"}
   TagResource:         {wire: ok, errors: ok, state: ok, persist: ok}
@@ -650,3 +650,84 @@ rewrites the request's HTTP method to PATCH post-signing (GET, the method
 branch). Hand-reverted `handler.go` to `git show HEAD`, confirmed the test
 fails with `*json.SyntaxError: "invalid character 'o' in literal null
 (expecting 'u')"`, restored the fix, `md5sum`-confirmed byte-identical.
+
+## gopherstack-ui6k (2026-09-06): CreateScheduleGroup/GetScheduleGroup accepted and echoed a fabricated Description field
+
+A prior audit pass recorded this divergence and deliberately left it alone
+as "additive, no behavioural parity gain, would touch existing tests for no
+parity gain." Re-examined against the `services/redshift/PARITY.md`
+gopherstack-emho precedent (`CreateClusterSubnetGroup` accepting a
+fabricated `VpcId` request param -- fixed, because an emulator accepting
+input real AWS rejects is itself a wire-shape divergence, independent of
+whether the field is later read).
+
+**Confirmed against `aws-sdk-go-v2/service/scheduler@v1.20.4`:**
+`CreateScheduleGroupInput` (`api_op_CreateScheduleGroup.go:31-42`) has only
+`Name` (required), `ClientToken`, `Tags` -- no `Description`.
+`awsRestjson1_serializeOpDocumentCreateScheduleGroupInput`
+(`serializers.go:254-271`) serializes only `ClientToken`/`Tags` onto the
+wire, confirming this isn't merely absent from the generated struct but
+genuinely never sent by a real client. `GetScheduleGroupOutput`
+(`api_op_GetScheduleGroup.go:39-60`) has `Arn`, `CreationDate`,
+`LastModificationDate`, `Name`, `State` -- no `Description`. There is no
+`types.ScheduleGroup` type at all (only `types.ScheduleGroupSummary`, used
+by `ListScheduleGroups`, which also has no `Description`). The likely
+origin: the neighbouring `CreateScheduleGroupInput` sibling
+`CreateScheduleInput` (for *schedules*, not schedule *groups*) does carry a
+real `Description *string` (`api_op_CreateSchedule.go:89`) -- probably
+copied across when the schedule-group handlers were written.
+
+This case is a strictly worse divergence than emho's: emho's backend only
+accepted-and-ignored the fabricated field (`VpcId` was never read).
+gopherstack's scheduler backend accepted `Description` on
+`CreateScheduleGroup`, stored it on the `ScheduleGroup` model, persisted it
+in `persistedScheduleGroup`, and returned it from `GetScheduleGroup` --
+accept-store-and-return, not accept-and-ignore. Client code reading
+`Description` back from `GetScheduleGroup` would work against gopherstack
+and fail against real AWS (the field simply wouldn't be there).
+
+Fixed end-to-end: `Description` removed from `createScheduleGroupInput`
+(handler_schedule_groups.go, request wire struct) and
+`getScheduleGroupOutput` (response wire struct); the `ScheduleGroup` model
+field (models.go), `CreateScheduleGroup`'s backend signature
+(interfaces.go, schedule_groups.go), and the `persistedScheduleGroup`
+snapshot DTO (persistence.go) all dropped it too, rather than leaving a
+now-unreachable fabricated field wired through the backend for no reason.
+
+`TestCreateScheduleGroup_WithDescription`
+(schedule_groups_test.go) previously asserted the fabricated field
+round-tripped through the wire -- exactly the "tests entrenching the
+fabricated shape" pattern this repo has hit before (redshift
+BatchDeleteClusterSnapshots, ssm AddedLabels). Renamed to
+`TestCreateScheduleGroup_DescriptionNotAccepted` and corrected to assert
+the real shape: `GetScheduleGroup`'s response must not carry a
+`Description` key at all, not merely that it round-trips. Two other
+pre-existing tests asserted the `ScheduleGroup.Description` Go field
+survived a Snapshot/Restore round trip
+(`TestPersistence_RoundTripWithGroupName`,
+`TestScheduler_SnapshotRestore_FullState`); corrected to assert a real
+field instead (`g.Name`/`groupTags.State`) since there is no real
+replacement for a fabricated field's round-trip.
+`TestCreateScheduleGroup_NameRequired` incidentally used
+`{"Description": "no-name"}` as its missing-`Name` request body; simplified
+to `{}` since `Description` is no longer a plausible field name to reach
+for.
+
+Proof: `TestCreateScheduleGroup_DescriptionNotAccepted` hand-reverted
+against `git show HEAD` for all 14 touched files (both production and the
+mechanical `CreateScheduleGroup` call-site signature updates across test
+files), confirmed it fails --
+`schedule_groups_test.go:124: Error: Should be false ... Messages:
+GetScheduleGroupOutput has no Description member on real AWS` -- then
+every file restored from a pre-revert backup.
+
+Snapshot-version guard: no version bump. `persistedScheduleGroup`'s decode
+path (`pkgs/store/table.go`) uses plain `json.Unmarshal` with no
+`DisallowUnknownFields`, so an older snapshot's now-unrecognised
+`"description"` key is silently dropped on restore -- safe, no data loss
+for any *remaining* field, matching the guard's own stated bar for when a
+bump is unwarranted. `go test ./pkgs/persistence/ -run
+TestSnapshotVersionGuard` (read-only, no `-update`, `pkgs/persistence/
+testdata/` is out of scope for this change) reports scheduler's golden
+entry as stale, as expected; refreshing it is for whoever owns
+`pkgs/persistence/testdata/`.

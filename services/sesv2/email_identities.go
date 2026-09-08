@@ -171,6 +171,8 @@ func (b *InMemoryBackend) DeleteEmailIdentity(identity string) error {
 	}
 
 	b.identities.Delete(identity)
+	delete(b.resourceTags, b.identityARN(identity))
+	delete(b.emailIdentityPolicies, identity)
 
 	return nil
 }

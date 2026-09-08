@@ -517,3 +517,52 @@ func TestCloudWatchHandler_GetInsightRuleReport_WithData(t *testing.T) {
 	rec := postForm(t, h, body)
 	require.Equal(t, http.StatusOK, rec.Code)
 }
+
+// TestHandler_DeleteInsightRules_CleansUpTags asserts that tags set via
+// TagResource on an insight rule's ARN (insight rules are one of the four
+// taggable CloudWatch resource kinds per the TagResource doc: alarms,
+// dashboards, metric streams, Contributor Insights rules) do not survive
+// DeleteInsightRules -- unlike DeleteAlarms/DeleteDashboards/
+// DeleteAnomalyDetector/DeleteMetricStream, handleDeleteInsightRules never
+// called deleteResourceTags at all.
+func TestHandler_DeleteInsightRules_CleansUpTags(t *testing.T) {
+	t.Parallel()
+
+	h := newCWHandler()
+
+	rec := postForm(t, h, url.Values{
+		"Action":         []string{"PutInsightRule"},
+		"RuleName":       []string{"rule1"},
+		"RuleDefinition": []string{validInsightRuleDefinition},
+	}.Encode())
+	require.Equal(t, 200, rec.Code, rec.Body.String())
+
+	rec = postForm(t, h, "Action=DescribeInsightRules")
+	require.Equal(t, 200, rec.Code)
+
+	var descResp struct {
+		Rules []struct {
+			Arn string `xml:"RuleArn"`
+		} `xml:"DescribeInsightRulesResult>InsightRules>member"`
+	}
+	require.NoError(t, xml.Unmarshal(rec.Body.Bytes(), &descResp))
+	require.Len(t, descResp.Rules, 1)
+	ruleARN := descResp.Rules[0].Arn
+	require.NotEmpty(t, ruleARN)
+
+	rec = postForm(t, h, "Action=TagResource&ResourceARN="+url.QueryEscape(ruleARN)+
+		"&Tags.member.1.Key=env&Tags.member.1.Value=prod")
+	require.Equal(t, 200, rec.Code, "tag rule: %s", rec.Body.String())
+
+	rec = postForm(t, h, "Action=ListTagsForResource&ResourceARN="+url.QueryEscape(ruleARN))
+	require.Equal(t, 200, rec.Code)
+	require.Contains(t, rec.Body.String(), "prod", "tag should be visible before delete")
+
+	rec = postForm(t, h, "Action=DeleteInsightRules&RuleNames.member.1=rule1")
+	assert.Equal(t, 200, rec.Code, "delete rule: %s", rec.Body.String())
+
+	rec = postForm(t, h, "Action=ListTagsForResource&ResourceARN="+url.QueryEscape(ruleARN))
+	require.Equal(t, 200, rec.Code)
+	assert.NotContains(t, rec.Body.String(), "prod",
+		"tags for the deleted insight rule's ARN must not survive delete (ghost row)")
+}

@@ -21,6 +21,14 @@ const (
 	patchDeploymentStatusExplicitApproved = "EXPLICIT_APPROVED"
 	patchDeploymentStatusExplicitRejected = "EXPLICIT_REJECTED"
 	patchDeploymentStatusPendingApproval  = "PENDING_APPROVAL"
+	patchDeploymentStatusApproved         = "APPROVED"
+)
+
+// Real PatchAction enum values (RejectedPatchesAction), aws-sdk-go-v2/service/ssm@v1.73.4's
+// types/enums.go.
+const (
+	patchRejectedActionBlock             = "BLOCK"
+	patchRejectedActionAllowAsDependency = "ALLOW_AS_DEPENDENCY"
 )
 
 // defaultPatchGroupKey is the patchGroupToBaseline key used for the
@@ -35,6 +43,98 @@ func (b *InMemoryBackend) patchBaselinesStore(region string) *store.Table[PatchB
 	return getOrCreateTable(b, b.patchBaselines, "patchBaselines", region, patchBaselineKeyFn)
 }
 
+// validateRejectedPatchesAction rejects a RejectedPatchesAction value outside
+// the real PatchAction enum (aws-sdk-go-v2/service/ssm@v1.73.4's
+// types/enums.go: BLOCK, ALLOW_AS_DEPENDENCY) instead of silently storing
+// whatever string the caller sent.
+func validateRejectedPatchesAction(action string) error {
+	if action == "" || action == patchRejectedActionBlock || action == patchRejectedActionAllowAsDependency {
+		return nil
+	}
+
+	return fmt.Errorf("%w: RejectedPatchesAction must be one of BLOCK, ALLOW_AS_DEPENDENCY", ErrValidationException)
+}
+
+// validateApprovalRules checks a PatchRuleGroup against the constraints
+// documented for PatchRule (aws-sdk-go-v2/service/ssm@v1.73.4's
+// types/types.go and the AWS API_PatchRule reference page):
+//   - PatchFilterGroup is "This member is required" on PatchRule.
+//   - PatchFilter's Key and Values are each "This member is required".
+//   - "your request must include a value for either ApproveAfterDays or
+//     ApproveUntilDate" -- at least one is required. The docs don't say what
+//     happens if both are given; this backend treats the documented "either
+//     ... or" as exclusive and rejects both being set, rather than silently
+//     picking one.
+//   - ApproveAfterDays: "Valid Range: Minimum value of 0. Maximum value of 360."
+//   - ApproveUntilDate: "Enter dates in the format YYYY-MM-DD."
+func validateApprovalRules(group *PatchRuleGroup) error {
+	if group == nil {
+		return nil
+	}
+
+	if len(group.PatchRules) == 0 {
+		return fmt.Errorf("%w: ApprovalRules.PatchRules is required", ErrValidationException)
+	}
+
+	for i, rule := range group.PatchRules {
+		if err := validateApprovalRule(i, rule); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateApprovalRule validates a single PatchRule; see validateApprovalRules.
+func validateApprovalRule(i int, rule PatchRule) error {
+	if rule.PatchFilterGroup == nil || len(rule.PatchFilterGroup.PatchFilters) == 0 {
+		return fmt.Errorf("%w: PatchRules[%d].PatchFilterGroup is required", ErrValidationException, i)
+	}
+
+	for _, f := range rule.PatchFilterGroup.PatchFilters {
+		if f.Key == "" || f.Values == nil {
+			return fmt.Errorf(
+				"%w: PatchRules[%d].PatchFilterGroup.PatchFilters requires Key and Values",
+				ErrValidationException, i,
+			)
+		}
+	}
+
+	hasAfterDays := rule.ApproveAfterDays != nil
+	hasUntilDate := rule.ApproveUntilDate != ""
+
+	// "your request must include a value for either ApproveAfterDays or
+	// ApproveUntilDate" (API_PatchRule.html) requires at least one -- neither
+	// set is rejected. Both set is NOT documented as an error anywhere in that
+	// page (no "not both"/"mutually exclusive" language) and validatePatchRule
+	// (validators.go) doesn't enforce exclusivity either, so this backend
+	// accepts it rather than fabricating a rejection; see ruleOutcomeForPatch
+	// for which one then wins.
+	if !hasAfterDays && !hasUntilDate {
+		return fmt.Errorf(
+			"%w: PatchRules[%d] requires a value for ApproveAfterDays or ApproveUntilDate",
+			ErrValidationException, i,
+		)
+	}
+
+	const maxApproveAfterDays = 360
+
+	if hasAfterDays && (*rule.ApproveAfterDays < 0 || *rule.ApproveAfterDays > maxApproveAfterDays) {
+		return fmt.Errorf("%w: PatchRules[%d].ApproveAfterDays must be between 0 and 360", ErrValidationException, i)
+	}
+
+	if hasUntilDate {
+		if _, err := time.Parse(time.DateOnly, rule.ApproveUntilDate); err != nil {
+			return fmt.Errorf(
+				"%w: PatchRules[%d].ApproveUntilDate must be formatted YYYY-MM-DD",
+				ErrValidationException, i,
+			)
+		}
+	}
+
+	return nil
+}
+
 // CreatePatchBaseline creates a new patch baseline.
 func (b *InMemoryBackend) CreatePatchBaseline(
 	ctx context.Context,
@@ -42,6 +142,14 @@ func (b *InMemoryBackend) CreatePatchBaseline(
 ) (*CreatePatchBaselineOutput, error) {
 	if input.Name == "" {
 		return nil, fmt.Errorf("%w: Name is required", ErrValidationException)
+	}
+
+	if err := validateRejectedPatchesAction(input.RejectedPatchesAction); err != nil {
+		return nil, err
+	}
+
+	if err := validateApprovalRules(input.ApprovalRules); err != nil {
+		return nil, err
 	}
 
 	const defaultPatchOS = "WINDOWS"
@@ -147,6 +255,87 @@ func patchMatchesFilters(p Patch, filters []PatchFilter) bool {
 	}
 
 	return true
+}
+
+// ruleFilterGroupMatches reports whether p satisfies every filter in group,
+// for the purpose of ApprovalRules evaluation. Unlike patchMatchesFilters
+// (used for read-only catalogue/baseline filtering, where an unsupported key
+// is silently skipped and so loosens rather than narrows the filter), any
+// unsupported key here fails the whole group closed: a PatchRule this
+// emulator can't actually evaluate must never silently rule-approve patches,
+// which has real observable consequences (InstancePatchState/
+// PatchComplianceData), unlike a merely-broader read-only filter.
+func ruleFilterGroupMatches(p Patch, group *PatchFilterGroup) bool {
+	if group == nil || len(group.PatchFilters) == 0 {
+		return false
+	}
+
+	for _, f := range group.PatchFilters {
+		switch f.Key {
+		case "PRODUCT", "NAME", "SEVERITY", "CLASSIFICATION":
+		default:
+			return false
+		}
+	}
+
+	return patchMatchesFilters(p, group.PatchFilters)
+}
+
+// ruleOutcomeForPatch evaluates a patch baseline's ApprovalRules against a
+// catalogue patch. It applies the first PatchRule (in list order) whose
+// PatchFilterGroup matches -- this emulator does not model AWS's resolution
+// order for a patch matched by more than one rule in the same group, since
+// the synthetic catalogue never needs it. matched reports whether any rule
+// matched; approved reports whether that rule's ApproveAfterDays/
+// ApproveUntilDate condition is satisfied as of now.
+//
+// ApproveAfterDays: "a value of 7 means patches are approved seven days after
+// they are released" (API_PatchRule.html) -- approved once now >= release +
+// days.
+//
+// ApproveUntilDate: "Any patches released on or before this date are
+// installed automatically" (API_PatchRule.html) -- approved once the patch's
+// release date falls on or before the cutoff date, regardless of the current
+// time (the cutoff is a property of the patch's release date, not of now).
+func ruleOutcomeForPatch(group *PatchRuleGroup, p Patch, now time.Time) (bool, bool, string, float64) {
+	if group == nil {
+		return false, false, "", 0
+	}
+
+	for _, rule := range group.PatchRules {
+		if !ruleFilterGroupMatches(p, rule.PatchFilterGroup) {
+			continue
+		}
+
+		var (
+			approved     bool
+			approvalDate float64
+		)
+
+		releaseTime := time.Unix(int64(p.ReleaseDate), 0).UTC()
+
+		// Neither the AWS docs nor validatePatchRule forbid a rule that sets
+		// both ApproveAfterDays and ApproveUntilDate (see validateApprovalRule),
+		// so this can't just reject the input. ApproveUntilDate checked first
+		// -- and so wins when both are set -- as the more specific of the two
+		// (a fixed cutoff date vs. a relative day-count).
+		switch {
+		case rule.ApproveUntilDate != "":
+			until, err := time.Parse(time.DateOnly, rule.ApproveUntilDate)
+			if err == nil {
+				approvalDate = p.ReleaseDate
+				approved = releaseTime.Before(until.AddDate(0, 0, 1))
+			}
+		case rule.ApproveAfterDays != nil:
+			cutoff := releaseTime.AddDate(0, 0, int(*rule.ApproveAfterDays))
+			approvalDate = UnixTimeFloat(cutoff)
+			approved = !now.Before(cutoff)
+		}
+
+		return true, approved, rule.ComplianceLevel, approvalDate
+	}
+
+	return false, false, "", 0
 }
 
 // DescribeAvailablePatches returns patches from the available patches catalog,
@@ -357,6 +546,16 @@ func (b *InMemoryBackend) RegisterPatchBaselineForPatchGroup(
 	}, nil
 }
 
+// validateUpdatePatchBaselineInput applies the same RejectedPatchesAction/
+// ApprovalRules checks as CreatePatchBaseline.
+func validateUpdatePatchBaselineInput(input *UpdatePatchBaselineInput) error {
+	if err := validateRejectedPatchesAction(input.RejectedPatchesAction); err != nil {
+		return err
+	}
+
+	return validateApprovalRules(input.ApprovalRules)
+}
+
 // UpdatePatchBaseline updates a patch baseline.
 func (b *InMemoryBackend) UpdatePatchBaseline(
 	ctx context.Context,
@@ -364,6 +563,10 @@ func (b *InMemoryBackend) UpdatePatchBaseline(
 ) (*UpdatePatchBaselineOutput, error) {
 	if input.BaselineID == "" {
 		return nil, fmt.Errorf("%w: BaselineId is required", ErrValidationException)
+	}
+
+	if err := validateUpdatePatchBaselineInput(input); err != nil {
+		return nil, err
 	}
 
 	region := getRegion(ctx)
@@ -580,8 +783,17 @@ func (b *InMemoryBackend) DeletePatchBaseline(
 	b.mu.Lock("DeletePatchBaseline")
 	defer b.mu.Unlock()
 
+	if groups := b.patchGroupsForBaselineLocked(region, input.BaselineID); len(groups) > 0 {
+		return nil, fmt.Errorf(
+			"%w: patch baseline %s is registered with patch group(s) %s",
+			ErrPatchBaselineInUse, input.BaselineID, strings.Join(groups, ", "),
+		)
+	}
+
 	patchBaselines := b.patchBaselinesStore(region)
 	patchBaselines.Delete(input.BaselineID)
+	delete(b.miscResourceTagsStore(region), input.BaselineID)
+	cleanupEmptyInnerMap(b.miscResourceTags, region)
 
 	return &DeletePatchBaselineOutput{BaselineID: input.BaselineID}, nil
 }
@@ -859,10 +1071,17 @@ func (b *InMemoryBackend) effectivePatchesForBaseline(
 	}
 
 	// Include catalogue patches that are not explicitly approved or rejected --
-	// these are still pending an approval-rule decision. availablePatchesFor
-	// (not a direct b.availablePatches[region] read) lazily seeds the
-	// catalogue, so this reflects the built-in catalogue regardless of whether
-	// DescribeAvailablePatches happened to run first in this region.
+	// these are decided by ApprovalRules (RejectedPatches > ApprovedPatches >
+	// ApprovalRules precedence: "A patch specified in the approved patches list
+	// will be installed irrespective of whether it is matched by an approval
+	// rule... Items in the rejected patches list... override both ApprovalRules
+	// and ApprovedPatches" -- AWS Systems Manager User Guide, "How security
+	// patches are selected"), or remain pending if no rule approves them yet.
+	// availablePatchesFor (not a direct b.availablePatches[region] read) lazily
+	// seeds the catalogue, so this reflects the built-in catalogue regardless
+	// of whether DescribeAvailablePatches happened to run first in this region.
+	now := timeNow()
+
 	for _, p := range b.availablePatchesFor(region) {
 		if _, isApproved := approved[p.Name]; isApproved {
 			continue
@@ -872,14 +1091,27 @@ func (b *InMemoryBackend) effectivePatchesForBaseline(
 			continue
 		}
 
+		status := &PatchStatus{
+			DeploymentStatus: patchDeploymentStatusPendingApproval,
+			ComplianceLevel:  level,
+		}
+
+		if matched, ruleApproved, ruleLevel, ruleApprovalDate := ruleOutcomeForPatch(
+			baseline.ApprovalRules, p, now,
+		); matched {
+			status.ApprovalDate = ruleApprovalDate
+
+			if ruleApproved {
+				status.DeploymentStatus = patchDeploymentStatusApproved
+
+				if ruleLevel != "" {
+					status.ComplianceLevel = ruleLevel
+				}
+			}
+		}
+
 		patch := p
-		effective = append(effective, EffectivePatch{
-			Patch: &patch,
-			PatchStatus: &PatchStatus{
-				DeploymentStatus: patchDeploymentStatusPendingApproval,
-				ComplianceLevel:  level,
-			},
-		})
+		effective = append(effective, EffectivePatch{Patch: &patch, PatchStatus: status})
 	}
 
 	return effective

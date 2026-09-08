@@ -35,12 +35,10 @@ type backendSnapshot struct {
 	SnapshotTiers                  map[string]string                           `json:"snapshotTiers,omitempty"`
 	VpcPeeringOptions              map[string]*PeeringConnectionOptions        `json:"vpcPeeringOptions"`
 	SubnetCIDRAssociations         map[string][]*SubnetCIDRAssociation         `json:"subnetCIDRAssociations"`
-	InstanceMonitoring             map[string]string                           `json:"instanceMonitoring"`
 	InstanceCreditSpecs            map[string]string                           `json:"instanceCreditSpecs"`
-	InstanceIMDSOptions            map[string]*IMDSOptions                     `json:"instanceIMDSOptions"`
 	InstanceMetadataDefaults       *InstanceMetadataDefaults                   `json:"instanceMetadataDefaults"`
 	InstanceEventNotifAttrs        *InstanceEventNotificationAttributes        `json:"instanceEventNotifAttrs"`
-	NiIPv6Addresses                map[string][]string                         `json:"niIPv6Addresses"`
+	NiIPv6Addresses                map[string][]string                         `json:"niIPv6Addresses,omitempty"`
 	IDFormatSettings               map[string]bool                             `json:"idFormatSettings"`
 	VpcEndpointServicePermissions  map[string][]string                         `json:"vpcEpSvcPerms"`
 	SubnetCIDRReservations         map[string][]*SubnetCIDRReservation         `json:"subnetCIDRReservations"`
@@ -124,9 +122,7 @@ func (b *InMemoryBackend) Snapshot(ctx context.Context) []byte {
 		VpcTenancy:                     b.vpcTenancy,
 		VpcPeeringOptions:              b.vpcPeeringOptions,
 		SubnetCIDRAssociations:         b.subnetCIDRAssociations,
-		InstanceMonitoring:             b.instanceMonitoring,
 		InstanceCreditSpecs:            b.instanceCreditSpecs,
-		InstanceIMDSOptions:            b.instanceIMDSOptions,
 		InstanceMetadataDefaults:       b.instanceMetadataDefaults,
 		InstanceEventNotifAttrs:        b.instanceEventNotifAttrs,
 		NiIPv6Addresses:                b.niIPv6Addresses,
@@ -248,9 +244,7 @@ func (b *InMemoryBackend) restoreMiscMapFields(snap *backendSnapshot) {
 	restoreMapField(&b.vpcTenancy, snap.VpcTenancy)
 	restoreMapField(&b.vpcPeeringOptions, snap.VpcPeeringOptions)
 	restoreMapField(&b.subnetCIDRAssociations, snap.SubnetCIDRAssociations)
-	restoreMapField(&b.instanceMonitoring, snap.InstanceMonitoring)
 	restoreMapField(&b.instanceCreditSpecs, snap.InstanceCreditSpecs)
-	restoreMapField(&b.instanceIMDSOptions, snap.InstanceIMDSOptions)
 	restoreMapField(&b.niIPv6Addresses, snap.NiIPv6Addresses)
 	restoreMapField(&b.idFormatSettings, snap.IDFormatSettings)
 	restoreMapField(&b.vpcEndpointServicePermissions, snap.VpcEndpointServicePermissions)

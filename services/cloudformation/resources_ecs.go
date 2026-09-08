@@ -180,7 +180,9 @@ func (rc *ResourceCreator) deleteECSService(arn string) error {
 	serviceName := parts[len(parts)-1]
 	clusterName := parts[len(parts)-2]
 
-	_, err := rc.backends.ECS.Backend.DeleteService(clusterName, serviceName)
+	// Force: CloudFormation tears a service down without the caller scaling it
+	// to zero first, matching real stack deletion.
+	_, err := rc.backends.ECS.Backend.DeleteService(clusterName, serviceName, true)
 
 	return err
 }
@@ -210,14 +212,19 @@ func (rc *ResourceCreator) createECRRepository(
 	return repo.RepositoryARN, nil
 }
 
-func (rc *ResourceCreator) deleteECRRepository(ctx context.Context, arn string) error {
+func (rc *ResourceCreator) deleteECRRepository(ctx context.Context, arn string, props map[string]any) error {
 	if rc.backends.ECR == nil {
 		return nil
 	}
 
 	name := resourceNameFromARN(arn)
 
-	_, err := rc.backends.ECR.Backend.DeleteRepository(ctx, name)
+	// EmptyOnDelete gates force per AWS::ECR::Repository's real property
+	// (docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-ecr-repository.html):
+	// absent/false means the repository must be empty to delete.
+	emptyOnDelete, _ := props["EmptyOnDelete"].(bool)
+
+	_, err := rc.backends.ECR.Backend.DeleteRepository(ctx, name, emptyOnDelete)
 
 	return err
 }

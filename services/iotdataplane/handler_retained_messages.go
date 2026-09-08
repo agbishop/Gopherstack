@@ -52,7 +52,7 @@ func (h *Handler) handleListRetainedMessages(c *echo.Context) error {
 
 	q := c.Request().URL.Query()
 	nextTokenIn := q.Get("nextToken")
-	pageSize := parsePageSize(q)
+	pageSize := parsePageSize(q, defaultPageSize)
 
 	// Extract topic strings for cursor lookup.
 	topics := make([]string, len(msgs))

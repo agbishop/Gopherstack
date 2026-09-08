@@ -2,7 +2,9 @@ package kms_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -452,8 +454,8 @@ func TestCreateAlias_InvalidCharacters_Rejected(t *testing.T) {
 				TargetKeyID: keyID,
 			})
 			require.Error(t, err, "alias name %q should be rejected", tc.aliasName)
-			assert.ErrorIs(t, err, kms.ErrValidation,
-				"expected ValidationException for %q", tc.aliasName)
+			assert.ErrorIs(t, err, kms.ErrInvalidAliasName,
+				"expected InvalidAliasNameException for %q", tc.aliasName)
 		})
 	}
 }
@@ -606,4 +608,30 @@ func TestHandlerResetClearsAliasCache(t *testing.T) {
 		Plaintext: []byte("post-reset"),
 	})
 	require.Error(t, err)
+}
+
+// TestCreateAlias_InvalidName_WireErrorType verifies the wire __type for a
+// malformed alias name is InvalidAliasNameException, not ValidationException.
+//
+// CreateAlias's own deserializeOpError (aws-sdk-go-v2/service/kms@v1.55.4
+// deserializers.go) recognizes AlreadyExistsException, DependencyTimeoutException,
+// InvalidAliasNameException, KMSInternalException, KMSInvalidStateException,
+// LimitExceededException and NotFoundException -- no ValidationException case,
+// and "ValidationException" names no type anywhere in this SDK version.
+func TestCreateAlias_InvalidName_WireErrorType(t *testing.T) {
+	t.Parallel()
+
+	h := ab2NewHandler(t)
+
+	rec := doKMSRequest(t, h, "CreateAlias",
+		`{"AliasName":"not-prefixed","TargetKeyId":"whatever"}`)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var body struct {
+		Type string `json:"__type"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "InvalidAliasNameException", body.Type)
+	assert.NotEqual(t, "ValidationException", body.Type)
 }

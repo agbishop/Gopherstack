@@ -5,11 +5,16 @@ import (
 	"fmt"
 )
 
-// ModifyLoadBalancerAttributes updates the tunable attributes for a load balancer.
+// ModifyLoadBalancerAttributes updates the tunable attributes for a load
+// balancer. Only the attribute groups marked present in mask are changed;
+// groups the caller omitted keep their current stored value (AWS's
+// LoadBalancerAttributes sub-structs are each optional and independently
+// settable — see types.LoadBalancerAttributes in the AWS SDK).
 func (b *InMemoryBackend) ModifyLoadBalancerAttributes(
 	ctx context.Context,
 	name string,
 	attrs LoadBalancerAttributes,
+	mask LoadBalancerAttributesMask,
 ) (*LoadBalancerAttributes, error) {
 	b.mu.Lock("ModifyLoadBalancerAttributes")
 	defer b.mu.Unlock()
@@ -19,8 +24,28 @@ func (b *InMemoryBackend) ModifyLoadBalancerAttributes(
 		return nil, fmt.Errorf("%w: %q", ErrLoadBalancerNotFound, name)
 	}
 
-	lb.Attributes = attrs
-	cp := attrs
+	if mask.CrossZoneLoadBalancing {
+		lb.Attributes.CrossZoneLoadBalancing = attrs.CrossZoneLoadBalancing
+	}
+
+	if mask.ConnectionDraining {
+		lb.Attributes.ConnectionDraining = attrs.ConnectionDraining
+		lb.Attributes.ConnectionDrainingTimeout = attrs.ConnectionDrainingTimeout
+	}
+
+	if mask.ConnectionSettings {
+		lb.Attributes.IdleTimeout = attrs.IdleTimeout
+	}
+
+	if mask.AccessLog {
+		lb.Attributes.AccessLog = attrs.AccessLog
+	}
+
+	if mask.DesyncMitigationMode {
+		lb.Attributes.DesyncMitigationMode = attrs.DesyncMitigationMode
+	}
+
+	cp := lb.Attributes
 
 	return &cp, nil
 }

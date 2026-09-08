@@ -60,7 +60,7 @@ func (h *Handler) handleInitiateMultipartUpload(c *echo.Context, vaultName strin
 func (h *Handler) handleUploadMultipartPart(
 	c *echo.Context,
 	vaultName, uploadID string,
-	_ []byte,
+	body []byte,
 ) error {
 	rangeHeader := c.Request().Header.Get("Content-Range")
 	if rangeHeader == "" {
@@ -77,12 +77,16 @@ func (h *Handler) handleUploadMultipartPart(
 	checksum := c.Request().Header.Get("X-Amz-Sha256-Tree-Hash")
 
 	if err := h.Backend.UploadMultipartPart(
-		h.AccountID, h.DefaultRegion, vaultName, uploadID, rangeHeader, checksum,
+		h.AccountID, h.DefaultRegion, vaultName, uploadID, rangeHeader, checksum, body,
 	); err != nil {
 		return h.writeBackendError(c, err)
 	}
 
-	c.Response().Header().Set("X-Amz-Sha256-Tree-Hash", checksum)
+	// AWS returns the tree hash it computed for the part, not merely what the
+	// client sent -- see UploadMultipartPartOutput.Checksum's doc comment. It is
+	// identical to what the client sent whenever a checksum was supplied and
+	// passed verification above.
+	c.Response().Header().Set("X-Amz-Sha256-Tree-Hash", computeTreeHash(body))
 
 	return c.NoContent(http.StatusNoContent)
 }
@@ -293,30 +297,7 @@ func parseInt64Header(s string) (int64, error) {
 // isValidMultipartRange reports whether rangeHeader is in the AWS multipart upload
 // Content-Range format: "bytes START-END/*" where START and END are non-negative integers.
 func isValidMultipartRange(rangeHeader string) bool {
-	const prefix = "bytes "
-	if !strings.HasPrefix(rangeHeader, prefix) {
-		return false
-	}
+	_, _, ok := parseMultipartRange(rangeHeader)
 
-	rest := rangeHeader[len(prefix):]
-
-	const suffix = "/*"
-	if !strings.HasSuffix(rest, suffix) {
-		return false
-	}
-
-	rangePart := rest[:len(rest)-len(suffix)]
-	dashIdx := strings.IndexByte(rangePart, '-')
-
-	if dashIdx <= 0 || dashIdx == len(rangePart)-1 {
-		return false
-	}
-
-	startStr := rangePart[:dashIdx]
-	endStr := rangePart[dashIdx+1:]
-
-	start, err1 := strconv.ParseInt(startStr, 10, 64)
-	end, err2 := strconv.ParseInt(endStr, 10, 64)
-
-	return err1 == nil && err2 == nil && start >= 0 && end >= start
+	return ok
 }

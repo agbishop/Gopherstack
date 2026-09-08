@@ -45,6 +45,58 @@ func TestTerminationProtection(t *testing.T) {
 	assert.Equal(t, http.StatusOK, termRec2.Code)
 }
 
+// TestSetKeepJobFlowAliveWhenNoSteps_SyncsAutoTerminate covers a real,
+// separately-filed bug (gopherstack-g3ex): SetKeepJobFlowAliveWhenNoSteps
+// updated cluster.KeepJobFlowAliveWhenNoSteps but not cluster.AutoTerminate,
+// its real inverse field (types.Cluster.AutoTerminate, emr@v1.64.4
+// types/types.go:314-315), so a client that toggled the setting after
+// creation would see AutoTerminate drift stale on the next DescribeCluster.
+// Both write directions are exercised on one cluster so a one-way-only fix
+// (e.g. only handling keep=true) cannot pass.
+func TestSetKeepJobFlowAliveWhenNoSteps_SyncsAutoTerminate(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	createRec := doEMRRequest(t, h, "RunJobFlow", map[string]any{"Name": "keep-alive-sync-cluster"})
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	var create struct {
+		JobFlowID string `json:"JobFlowId"`
+	}
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &create))
+	clusterID := create.JobFlowID
+
+	describe := func() bool {
+		rec := doEMRRequest(t, h, "DescribeCluster", map[string]any{"ClusterId": clusterID})
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var out struct {
+			Cluster struct {
+				AutoTerminate bool `json:"AutoTerminate"`
+			} `json:"Cluster"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+
+		return out.Cluster.AutoTerminate
+	}
+
+	assert.True(t, describe(), "default KeepJobFlowAliveWhenNoSteps=false must echo AutoTerminate=true")
+
+	keepRec := doEMRRequest(t, h, "SetKeepJobFlowAliveWhenNoSteps", map[string]any{
+		"JobFlowIds":                  []string{clusterID},
+		"KeepJobFlowAliveWhenNoSteps": true,
+	})
+	require.Equal(t, http.StatusOK, keepRec.Code)
+	assert.False(t, describe(), "keep=true must flip AutoTerminate to false")
+
+	unkeepRec := doEMRRequest(t, h, "SetKeepJobFlowAliveWhenNoSteps", map[string]any{
+		"JobFlowIds":                  []string{clusterID},
+		"KeepJobFlowAliveWhenNoSteps": false,
+	})
+	require.Equal(t, http.StatusOK, unkeepRec.Code)
+	assert.True(t, describe(), "keep=false must flip AutoTerminate back to true")
+}
+
 func TestModifyCluster(t *testing.T) {
 	t.Parallel()
 

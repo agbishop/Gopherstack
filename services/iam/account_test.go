@@ -537,6 +537,30 @@ func TestPasswordPolicy_ChangePassword_Symbols(t *testing.T) {
 	require.NoError(t, err, "password with symbol must succeed")
 }
 
+func TestPasswordPolicy_ChangePassword_ReusePrevention(t *testing.T) {
+	t.Parallel()
+
+	b := newBackend(t)
+	require.NoError(t, b.UpdateAccountPasswordPolicy(iam.PasswordPolicy{
+		MinimumPasswordLength:   8,
+		PasswordReusePrevention: 2,
+	}))
+
+	require.NoError(t, b.ChangePassword("OldPassword1!", "Password1!"))
+	require.NoError(t, b.ChangePassword("Password1!", "Password2!"))
+
+	err := b.ChangePassword("Password2!", "Password1!")
+	require.Error(t, err)
+	require.ErrorIs(t, err, iam.ErrInvalidPassword,
+		"reusing one of the last 2 passwords must be rejected")
+
+	require.NoError(t, b.ChangePassword("Password2!", "Password3!"),
+		"a password outside the reuse-prevention window must be accepted")
+
+	require.NoError(t, b.ChangePassword("Password3!", "Password1!"),
+		"Password1! fell out of the bounded history and must be reusable again")
+}
+
 func TestPasswordPolicy_DefaultAllowsShortPassword(t *testing.T) {
 	t.Parallel()
 

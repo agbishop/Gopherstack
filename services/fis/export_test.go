@@ -16,6 +16,10 @@ import (
 // DefaultJanitorInterval exposes the package default janitor interval for testing.
 const DefaultJanitorInterval = defaultFISJanitorInterval
 
+// LifecycleDelayForTest exposes lifecycleDelay so tests can advance a synctest
+// fake clock past a lifecycle transition without hardcoding the real duration.
+const LifecycleDelayForTest = lifecycleDelay
+
 // DefaultExperimentTTL exposes the package default experiment TTL for testing.
 const DefaultExperimentTTL = defaultFISExperimentTTL
 
@@ -58,6 +62,11 @@ func BuildFaultRulesForTest(action ExperimentTemplateAction) []chaos.FaultRule {
 	return buildFaultRules(action)
 }
 
+// ApplySelectionModeForTest exposes applySelectionMode for testing.
+func ApplySelectionModeForTest(arns []string, mode string) []string {
+	return applySelectionMode(arns, mode)
+}
+
 // CreateTestEchoForExtract creates an echo.Context for testing ExtractOperation/ExtractResource.
 func CreateTestEchoForExtract(t *testing.T, _ *Handler, method, path string) *echo.Context {
 	t.Helper()
@@ -74,6 +83,7 @@ func CreateTestEchoForExtract(t *testing.T, _ *Handler, method, path string) *ec
 type MockFISActionProvider struct {
 	ExecErr     error
 	Definitions []service.FISActionDefinition
+	Execs       []service.FISActionExecution
 	Calls       int
 }
 
@@ -81,8 +91,9 @@ func (m *MockFISActionProvider) FISActions() []service.FISActionDefinition {
 	return m.Definitions
 }
 
-func (m *MockFISActionProvider) ExecuteFISAction(_ context.Context, _ service.FISActionExecution) error {
+func (m *MockFISActionProvider) ExecuteFISAction(_ context.Context, exec service.FISActionExecution) error {
 	m.Calls++
+	m.Execs = append(m.Execs, exec)
 
 	return m.ExecErr
 }

@@ -289,6 +289,7 @@ var errorMappings = []errorMapping{
 	{ErrQueryInactive, "InactiveQueryException", http.StatusBadRequest},
 	{ErrTerminationProtected, "EventDataStoreTerminationProtectedException", http.StatusConflict},
 	{ErrInsightNotEnabled, "InsightNotEnabledException", http.StatusBadRequest},
+	{ErrS3BucketNotFound, "S3BucketDoesNotExistException", http.StatusBadRequest},
 	{ErrAlreadyExists, "TrailAlreadyExistsException", http.StatusConflict},
 	{ErrValidation, "InvalidParameterException", http.StatusBadRequest},
 	{errInvalidRequest, "InvalidParameterCombinationException", http.StatusBadRequest},

@@ -220,7 +220,7 @@ func TestUntagResource(t *testing.T) {
 	h := newTestSchedulerHandler(t)
 	b := h.Backend.(*scheduler.InMemoryBackend)
 
-	grp, err := b.CreateScheduleGroup(context.Background(), "tag-grp", "", map[string]string{"k1": "v1", "k2": "v2"})
+	grp, err := b.CreateScheduleGroup(context.Background(), "tag-grp", map[string]string{"k1": "v1", "k2": "v2"})
 	require.NoError(t, err)
 
 	untagRec := doSchedulerRequest(t, h, "UntagResource", map[string]any{

@@ -44,6 +44,18 @@ func TestCreateLanguageModel_InputDataConfig(t *testing.T) {
 		assert.NotNil(t, m.InputDataConfig)
 	})
 
+	t.Run("input_data_config_required", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.CreateLanguageModel(&transcribe.LanguageModel{
+			ModelName:     "model-no-input-data-config",
+			BaseModelName: "WideBand",
+			LanguageCode:  "en-US",
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
 	t.Run("input_data_config_s3_uri_required", func(t *testing.T) {
 		t.Parallel()
 
@@ -94,6 +106,10 @@ func TestCreateLanguageModel(t *testing.T) {
 				"ModelName":     "my-model",
 				"BaseModelName": "WideBand",
 				"LanguageCode":  "en-US",
+				"InputDataConfig": map[string]any{
+					"S3Uri":             "s3://bucket/training/",
+					"DataAccessRoleArn": "arn:aws:iam::123456789012:role/TranscribeRole",
+				},
 			},
 			wantCode: http.StatusOK,
 			wantKey:  "my-model",
@@ -103,7 +119,15 @@ func TestCreateLanguageModel(t *testing.T) {
 			setup: func(t *testing.T, b *transcribe.InMemoryBackend) {
 				t.Helper()
 				_, err := b.CreateLanguageModel(
-					&transcribe.LanguageModel{ModelName: "dup-model", BaseModelName: "WideBand", LanguageCode: "en-US"},
+					&transcribe.LanguageModel{
+						ModelName:     "dup-model",
+						BaseModelName: "WideBand",
+						LanguageCode:  "en-US",
+						InputDataConfig: &transcribe.InputDataConfig{
+							S3Uri:             "s3://bucket/training/",
+							DataAccessRoleArn: "arn:aws:iam::123456789012:role/TranscribeRole",
+						},
+					},
 				)
 				require.NoError(t, err)
 			},
@@ -111,6 +135,10 @@ func TestCreateLanguageModel(t *testing.T) {
 				"ModelName":     "dup-model",
 				"BaseModelName": "WideBand",
 				"LanguageCode":  "en-US",
+				"InputDataConfig": map[string]any{
+					"S3Uri":             "s3://bucket/training/",
+					"DataAccessRoleArn": "arn:aws:iam::123456789012:role/TranscribeRole",
+				},
 			},
 			wantCode: http.StatusConflict,
 		},
@@ -158,6 +186,10 @@ func TestDeleteLanguageModel(t *testing.T) {
 						ModelName:     "model-to-delete",
 						BaseModelName: "WideBand",
 						LanguageCode:  "en-US",
+						InputDataConfig: &transcribe.InputDataConfig{
+							S3Uri:             "s3://bucket/training/",
+							DataAccessRoleArn: "arn:aws:iam::123456789012:role/TranscribeRole",
+						},
 					},
 				)
 				require.NoError(t, err)
@@ -198,6 +230,10 @@ func TestModelStatus_Completed(t *testing.T) {
 		"ModelName":     "model-status-test",
 		"BaseModelName": "WideBand",
 		"LanguageCode":  "en-US",
+		"InputDataConfig": map[string]any{
+			"S3Uri":             "s3://bucket/training/",
+			"DataAccessRoleArn": "arn:aws:iam::123456789012:role/TranscribeRole",
+		},
 	})
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -306,6 +342,10 @@ func TestDescribeLanguageModel_TimestampFieldsAreJSONNumbers(t *testing.T) {
 		"ModelName":     "lm-epoch-describe",
 		"BaseModelName": "WideBand",
 		"LanguageCode":  "en-US",
+		"InputDataConfig": map[string]any{
+			"S3Uri":             "s3://bucket/training/",
+			"DataAccessRoleArn": "arn:aws:iam::123456789012:role/TranscribeRole",
+		},
 	})
 
 	rec := doTranscribeRequest(t, h, "DescribeLanguageModel", map[string]any{
@@ -338,6 +378,10 @@ func TestHTTP_ListLanguageModels(t *testing.T) {
 		"ModelName":     "lm-list",
 		"BaseModelName": "WideBand",
 		"LanguageCode":  "en-US",
+		"InputDataConfig": map[string]any{
+			"S3Uri":             "s3://bucket/training/",
+			"DataAccessRoleArn": "arn:aws:iam::123456789012:role/TranscribeRole",
+		},
 	})
 
 	rec := doTranscribeRequest(t, h, "ListLanguageModels", map[string]any{})
@@ -358,6 +402,10 @@ func TestListLanguageModels_NameContains(t *testing.T) {
 			"ModelName":     name,
 			"BaseModelName": "WideBand",
 			"LanguageCode":  "en-US",
+			"InputDataConfig": map[string]any{
+				"S3Uri":             "s3://bucket/training/",
+				"DataAccessRoleArn": "arn:aws:iam::123456789012:role/TranscribeRole",
+			},
 		})
 		require.Equal(t, http.StatusOK, rec.Code)
 	}

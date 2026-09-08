@@ -10,16 +10,17 @@ import (
 // that SetAlarmState needs once the lock has been released to fire alarm
 // actions and composite-alarm transitions.
 type alarmStateUpdate struct {
-	oldState             string
-	alarmArn             string
-	alarmDesc            string
-	histAlarmType        string
-	deps                 alarmActionDeps
-	alarmActions         []string
-	okActions            []string
-	insuffActions        []string
-	compositeTransitions []compositeAlarmTransition
-	actionsEnabled       bool
+	oldState               string
+	alarmArn               string
+	alarmDesc              string
+	histAlarmType          string
+	deps                   alarmActionDeps
+	alarmActions           []string
+	okActions              []string
+	insuffActions          []string
+	compositeTransitions   []compositeAlarmTransition
+	stateChangeSubscribers []func(newState string)
+	actionsEnabled         bool
 }
 
 // applyMetricAlarmStateLocked copies a metric alarm's pre-change fields into
@@ -143,6 +144,13 @@ func (b *InMemoryBackend) setAlarmStateLocked(
 	// re-evaluate composite alarms that may reference this alarm, collecting any transitions
 	update.compositeTransitions = b.reevaluateCompositeAlarms()
 
+	// Alarm-state-change subscribers (e.g. FIS stop conditions) watch the alarm's
+	// state itself, independent of ActionsEnabled/muting, which only gate the
+	// alarm's own AlarmActions/OKActions/InsufficientDataActions below.
+	if update.oldState != stateValue {
+		update.stateChangeSubscribers = b.alarmStateChangeCallbacksLocked(update.alarmArn)
+	}
+
 	update.deps = alarmActionDeps{
 		snsPub:      b.snsPublisher,
 		lambdaInv:   b.lambdaInvoker,
@@ -191,6 +199,10 @@ func (b *InMemoryBackend) SetAlarmState(
 	}
 
 	b.fireCompositeTransitions(ctx, update.compositeTransitions, update.deps)
+
+	for _, cb := range update.stateChangeSubscribers {
+		cb(stateValue)
+	}
 
 	return nil
 }

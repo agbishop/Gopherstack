@@ -394,6 +394,74 @@ func TestBackend_GetLifecyclePolicies_ResourceTypesFilter(t *testing.T) {
 	}
 }
 
+// TestBackend_GetLifecyclePolicies_DefaultPolicyTypeFilter verifies the
+// defaultPolicyType filter (VOLUME/INSTANCE/ALL) narrows results to default
+// policies only, matching GetLifecyclePoliciesInput.DefaultPolicyType
+// (aws-sdk-go-v2/service/dlm@v1.39.4/api_op_GetLifecyclePolicies.go:32-40).
+func TestBackend_GetLifecyclePolicies_DefaultPolicyTypeFilter(t *testing.T) {
+	t.Parallel()
+
+	b := dlm.NewInMemoryBackend("000000000000", "us-east-1")
+
+	_, err := b.CreateLifecyclePolicy(
+		"custom", "arn:aws:iam::000000000000:role/r", "ENABLED", nil,
+		map[string]any{"ResourceTypes": []any{"VOLUME"}},
+	)
+	require.NoError(t, err)
+
+	_, err = b.CreateLifecyclePolicy(
+		"volume-default", "arn:aws:iam::000000000000:role/r", "ENABLED", nil,
+		map[string]any{"ResourceType": "VOLUME", "PolicyLanguage": "SIMPLIFIED"},
+	)
+	require.NoError(t, err)
+
+	_, err = b.CreateLifecyclePolicy(
+		"instance-default", "arn:aws:iam::000000000000:role/r", "ENABLED", nil,
+		map[string]any{"ResourceType": "INSTANCE", "PolicyLanguage": "SIMPLIFIED"},
+	)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name              string
+		defaultPolicyType string
+		wantDescs         []string
+	}{
+		{
+			name: "no filter returns all", defaultPolicyType: "",
+			wantDescs: []string{"custom", "volume-default", "instance-default"},
+		},
+		{
+			name: "VOLUME returns only volume default", defaultPolicyType: "VOLUME",
+			wantDescs: []string{"volume-default"},
+		},
+		{
+			name: "INSTANCE returns only instance default", defaultPolicyType: "INSTANCE",
+			wantDescs: []string{"instance-default"},
+		},
+		{
+			name: "ALL returns every default policy", defaultPolicyType: "ALL",
+			wantDescs: []string{"volume-default", "instance-default"},
+		},
+		{name: "case-insensitive match", defaultPolicyType: "volume", wantDescs: []string{"volume-default"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, listErr := b.GetLifecyclePolicies(dlm.PolicyFilter{DefaultPolicyType: tc.defaultPolicyType})
+			require.NoError(t, listErr)
+			require.Len(t, result, len(tc.wantDescs))
+
+			got := make([]string, 0, len(result))
+			for _, p := range result {
+				got = append(got, p.Description)
+			}
+			assert.ElementsMatch(t, tc.wantDescs, got)
+		})
+	}
+}
+
 // TestBackend_GetLifecyclePolicies_TargetTagsFilter verifies the targetTags
 // query filter against PolicyDetails.TargetTags ({Key,Value} pairs).
 func TestBackend_GetLifecyclePolicies_TargetTagsFilter(t *testing.T) {

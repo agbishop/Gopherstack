@@ -1362,3 +1362,213 @@ this pass's edits and remain in active use per `golangci-lint run` returning 0 i
 Gates: `go build ./services/medialive/...`, `go vet ./services/medialive/...`,
 `go test ./services/medialive/... -race -count=1`, `golangci-lint run ./services/medialive/...` --
 all clean. Work left uncommitted per this session's hard constraints.
+
+## 2026-09-07 (gopherstack-b668)
+
+`PurchaseOffering` (`reservations.go`) fabricated a frozen `Start:
+"2024-01-01T00:00:00Z"`/`End: "2025-01-01T00:00:00Z"` on every purchase,
+regardless of the offering's `Duration`/`DurationUnits` or the caller's
+`PurchaseOfferingInput.Start` (`api_op_PurchaseOffering.go`: "Requested
+reservation start time ... If no value is given, the default is now").
+`OfferingDurationUnits` (`types/enums.go`) declares exactly one value,
+`MONTHS`.
+
+Fixed: `PurchaseOffering` now takes the caller's `start` (wired through from
+the `"start"` request-body key, previously dropped entirely by
+`handlePurchaseOffering`), defaults it to `b.now()` when omitted, and derives
+`End` as `Start + Duration` months via a new `addOfferingTerm` helper. Added
+`nowFunc func() time.Time` to `InMemoryBackend` (`store.go`), following the
+existing `azurequeue`/`azuretable`/`cosmosdb`/`resourcegroupstaggingapi`
+convention (`nowFunc` defaulting to `time.Now`, a `now()` method returning
+`.UTC()`) rather than calling `time.Now()` inline, so the time source stays
+overridable for tests. An invalid (non-RFC3339) explicit `start` now returns
+`BadRequestException` (`ErrInvalidParameter`), a declared
+`PurchaseOffering` error.
+
+Two pre-existing tests in `handler_reservations_test.go` were asserting the
+fabrication as if it were correct behavior and are corrected:
+- `TestReservations_PurchaseListDescribeDeleteUpdate` asserted
+  `resv["state"] == "EXPIRED"` immediately after purchase (true only because
+  the fabricated `End` was always in the past by the time any real clock ran
+  this test). Now asserts `"ACTIVE"` ("a term starting now hasn't ended
+  yet"), and the subsequent delete call now forces the term into the past
+  via `ForceReservationEnd` first (previously it worked by accident of the
+  same fabrication).
+- `TestReservations_DeleteRequiresExpired`'s `past_term_end_is_deletable`
+  subtest relied on the same fabricated past `End` to reach `EXPIRED`
+  without forcing it; now calls `ForceReservationEnd` explicitly, same as
+  its sibling `still_within_term_is_rejected` subtest already did.
+
+Tests: 2 new in `handler_reservations_test.go` --
+`TestPurchaseOffering_DerivesTermFromDuration` (no `start` given: asserts
+`Start` is within a minute of now and `End == Start.AddDate(0, duration,
+0)`) and `TestPurchaseOffering_HonorsExplicitStart` (an explicit `start`
+round-trips verbatim and `End` is exactly 12 months later). Both confirmed
+failing against the unmodified fabricated-dates code (`Start`/`End` pinned
+to 2024-01-01/2025-01-01, `ACTIVE` still read back as `EXPIRED`), then
+passing after the fix.
+
+Gates: `go test -race -count=1 ./services/medialive/...`,
+`golangci-lint run services/medialive/...` -- both clean.
+
+## 2026-09-07 (gopherstack-f6dz)
+
+The b668 fix above honored a caller-supplied `PurchaseOfferingInput.Start`
+but never bounded it. `api_op_PurchaseOffering.go`'s doc comment on `Start`
+continues past the "default is now" sentence already quoted above: "The
+specified time must be between the first day of the current month and one
+year from now." A well-formed but out-of-window `Start` was accepted, so a
+caller could pin a reservation term start years in the future or in the
+past.
+
+Fixed: `PurchaseOffering` (`reservations.go`) now rejects an explicit
+`start` outside `[firstOfMonthUTC(b.now()), b.now().AddDate(1, 0, 0)]`
+(new `firstOfMonthUTC` helper) with `BadRequestException`
+(`ErrInvalidParameter`, already declared for this op). Both bounds read as
+inclusive and are computed from `b.now()`, the same `nowFunc` seam b668
+added -- not wall-clock, not a fixed date. A `start` of `""` (the "default
+is now" path) is unaffected: `b.now()` trivially satisfies its own window.
+
+Added `SetNow` to `export_test.go` (overrides `nowFunc`, following
+`ForceReservationEnd`'s existing pattern) so the boundary can be exercised
+against a controlled clock instead of wall-clock.
+
+`TestPurchaseOffering_HonorsExplicitStart` previously asserted a hardcoded
+`start: "2030-03-01T00:00:00Z"` -- a well-formed date, but one this fix
+newly rejects as more than a year out, and would have started failing again
+on its own well before 2030 as wall-clock caught up. Corrected to derive
+`start` from `time.Now()` (+7 days) instead of a fixed year, matching
+b668's own rationale for killing frozen dates.
+
+Tests: 1 new, `TestPurchaseOffering_StartWindow`
+(`handler_reservations_test.go`), table-driven over all four boundary
+points against a `SetNow`-pinned clock -- first instant of the current
+month (accepted), the previous month's last second (rejected), exactly one
+year from now (accepted), one second past that (rejected). Rejections
+assert both `http.StatusBadRequest` and the `X-Amzn-Errortype:
+BadRequestException` response header, not just that an error occurred.
+Confirmed failing (both rejection cases) against the guard-less code, then
+passing after the fix.
+
+Gates: `go test -race -count=1 ./services/medialive/...`,
+`golangci-lint run services/medialive/...` -- both clean.
+
+## 2026-09-07 (gopherstack-ir0p)
+
+`CreateInputInput.SdiSources` and `UpdateInputInput.SdiSources`
+(`api_op_CreateInput.go`, `api_op_UpdateInput.go`) both document only "SDI
+Sources for this Input." -- no element-kind detail, no tri-state note.
+`types.Input.SdiSources` carries the identical doc comment and identical
+`[]string` element type, so an attach must be echoed back through
+`DescribeInput`. Neither handler parsed the field: `handleCreateInput` and
+`handleUpdateInput` (`handler_inputs.go`) never read `body["sdiSources"]`,
+`CreateInput`/`UpdateInput` (`inputs.go`) never accepted it, and
+`inputOutput` never emitted it -- so an SdiSource could never be attached
+to an Input through the public API.
+
+Identifier kind: an ID, not an ARN. `types.Input.SecurityGroups`'s doc
+comment ("A list of IDs for all the Input Security Groups attached to the
+input") and `UpdateInputInput.InputSecurityGroups`'s ("A list of security
+groups referenced by IDs") are the two sibling attachment-list fields in
+the same structs, both explicitly IDs; `types.SdiSource.Id`'s own comment
+("Unique in the AWS account. The ID is the resource-id portion of the
+ARN.") backs the same convention. gopherstack's own `sdiSources` table
+already keys by ID (`DescribeSdiSource(sdiSourceID string)`,
+`storedSdiSource.ID` from `newID()`), so IDs are also what the sibling
+store already speaks.
+
+Validation: none added. `deserializeOpErrorCreateInput` declares only
+`UnknownError`, `BadGatewayException`, `BadRequestException`,
+`ForbiddenException`, `GatewayTimeoutException`,
+`InternalServerErrorException`, `TooManyRequestsException` --
+`deserializeOpErrorUpdateInput` adds `ConflictException` and
+`NotFoundException` in place of `TooManyRequestsException`. Neither doc
+comment states that a nonexistent SdiSource is rejected, and this
+service's own `CreateSdiSource`/`DescribeSdiSource` give no cross-op
+validation precedent for CreateInput/UpdateInput to inherit. Implemented
+as plain passthrough: whatever ID list is given is stored verbatim, no
+existence check against the `sdiSources` table.
+
+Update semantics: `UpdateInputInput.SdiSources`'s doc comment says nothing
+about absent-vs-empty -- that stays true, and this is not a documented
+AWS tri-state. An absent key must still leave the existing list untouched:
+`UpdateInput`'s own `name` and `roleArn` parameters, immediately above in
+the same function, already treat "" (Go's zero value for an absent form
+field) as no-change, and an unconditional `SdiSources` replace would
+silently wipe attachments on a plain rename -- destroying state the caller
+never mentioned is a bug regardless of what AWS's doc omits, and matches
+how the function's other fields already behave. (An earlier version of
+this fix unconditionally replaced `SdiSources` on every update, following
+`UpdateInputSecurityGroup`'s `WhitelistRules` -- the wrong precedent,
+because that op's rules list *is* the entire payload, not one field among
+several. Caught in review before landing; see the follow-up note below.)
+Presence is decided in the handler, where the raw `map[string]any` body is
+still available (`_, ok := body["sdiSources"]`), and passed down as an
+explicit `sdiSourcesSet bool` -- not inferred from the slice's nilness or
+length in the backend, since `extractStringSlice` always returns a
+non-nil slice regardless of whether the key was present.
+
+Fix:
+- `interfaces.go`: `Input.SdiSources []string` (placed last in the struct
+  -- a slice's non-pointer tail is the only field-ordering choice
+  `fieldalignment` can win back once every other field is a string/map, so
+  it goes after the strings, not before); `CreateInput` interface
+  signature gained an `sdiSources []string` parameter, `UpdateInput`
+  gained `sdiSources []string, sdiSourcesSet bool`.
+- `models.go`: `storedInput.SdiSources []string` (persisted field, `toInput()`
+  copies it out).
+- `inputs.go`: `CreateInput` stores a defensive copy of `sdiSources` on
+  create; `UpdateInput` replaces `inp.SdiSources` with a defensive copy
+  only when `sdiSourcesSet` is true, leaving it untouched otherwise.
+- `handler_inputs.go`: `inputOutput.SdiSources`, `toInputOutput` defaults
+  it to `[]string{}` like `Tags`; `handleCreateInput` extracts
+  `sdiSources` via `extractStringSlice(body, "sdiSources")` unconditionally
+  (create has no prior list to preserve); `handleUpdateInput` extracts the
+  same way but also computes `sdiSourcesSet` from key presence and passes
+  both through.
+- `persistence_test.go`: updated the one direct-backend `CreateInput` call
+  site to the new 5-arg signature (compile-only change, no assertions
+  touched).
+
+Tests: 3 in `handler_inputs_test.go`, all driven through the HTTP handler
+(`doRequest`), not the backend directly.
+- `TestInput_SdiSources_CreateAndUpdate`: create without `sdiSources`
+  yields an empty list (no documented default to assert otherwise); create
+  with two distinct IDs (`sdi-aaa`, `sdi-bbb`) round-trips the exact list
+  through both the create response and a subsequent `DescribeInput`;
+  update *with* an explicit, wholly disjoint pair (`sdi-ccc`, `sdi-ddd`)
+  replaces it exactly, with no survivor from the original list, in both
+  the update response and a follow-up `DescribeInput`.
+- `TestInput_SdiSources_UpdateWithoutFieldPreservesList`: create with
+  (`sdi-aaa`, `sdi-bbb`), update with a body containing only `"name"` (no
+  `sdiSources` key at all), asserts both entries survive in the update
+  response and a follow-up `DescribeInput`. Pins the review-caught bug.
+- `TestInput_SdiSources_UpdateWithExplicitEmptyClearsList`: same setup,
+  update with `"sdiSources": []` (key present, empty), asserts the list is
+  actually cleared -- distinguishing "absent" from "explicit empty" rather
+  than conflating them.
+
+All three confirmed failing against unmodified (pre-`gopherstack-ir0p`)
+code: `sdiSources` assertions returned `actual: <nil>` throughout, proven
+by reverting `interfaces.go`, `models.go`, `inputs.go`,
+`handler_inputs.go`, and the `persistence_test.go` call-site edit, running
+the tests, observing the failures, then restoring all five files.
+`TestInput_SdiSources_UpdateWithoutFieldPreservesList` was separately
+confirmed failing (`actual: []` instead of `["sdi-aaa","sdi-bbb"]`)
+against the intermediate unconditional-replace version of this fix, by
+neutering just the `if sdiSourcesSet` guard in `UpdateInput` back to an
+unconditional replace, re-running, then restoring the guard -- the other
+two tests still passed at that point, confirming they don't depend on the
+guard and so weren't accidentally masking the bug.
+
+Snapshot golden: `storedInput` is persisted and gained a field, so
+`TestSnapshotVersionGuard` (`pkgs/persistence`) was run read-only (no
+`-update`) and confirms exactly that -- "medialive: backendSnapshot fields
+changed without a version bump; golden is out of date... this is
+bookkeeping, not a version-bump case: every old field is still present
+unchanged, so the diff is additive only and needs no bump." No version
+bump was made; the golden needs a `-update` refresh, left to the committer
+per instructions.
+
+Gates: `go test -race -count=1 ./services/medialive/...`,
+`golangci-lint run services/medialive/...` -- both clean.

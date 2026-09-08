@@ -3,6 +3,9 @@ package redshift
 import (
 	"encoding/xml"
 	"net/url"
+	"strconv"
+
+	svcTags "github.com/blackbirdworks/gopherstack/pkgs/tags"
 )
 
 // ---- CreateClusterSecurityGroup ----
@@ -17,7 +20,7 @@ func (h *Handler) handleCreateClusterSecurityGroup(vals url.Values) (any, error)
 	name := vals.Get("ClusterSecurityGroupName")
 	description := vals.Get("Description")
 
-	sg, err := h.Backend.CreateClusterSecurityGroup(name, description)
+	sg, err := h.Backend.CreateClusterSecurityGroup(name, description, parseRedshiftTags(vals))
 	if err != nil {
 		return nil, err
 	}
@@ -54,13 +57,24 @@ type xmlClusterSecurityGroupList struct {
 type describeClusterSecurityGroupsResponse struct {
 	XMLName        xml.Name                    `xml:"DescribeClusterSecurityGroupsResponse"`
 	Xmlns          string                      `xml:"xmlns,attr"`
+	Marker         string                      `xml:"DescribeClusterSecurityGroupsResult>Marker,omitempty"`
 	SecurityGroups xmlClusterSecurityGroupList `xml:"DescribeClusterSecurityGroupsResult>ClusterSecurityGroups"`
 }
 
 func (h *Handler) handleDescribeClusterSecurityGroups(vals url.Values) (any, error) {
 	name := vals.Get("ClusterSecurityGroupName")
+	tagKeys := parseRedshiftTagKeysAt(vals, "TagKeys.TagKey.")
+	tagValues := parseRedshiftTagKeysAt(vals, "TagValues.TagValue.")
+	marker := vals.Get("Marker")
 
-	groups, err := h.Backend.DescribeClusterSecurityGroups(name)
+	maxRecords := 0
+	if s := vals.Get("MaxRecords"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			maxRecords = n
+		}
+	}
+
+	groups, nextMarker, err := h.Backend.DescribeClusterSecurityGroups(name, marker, maxRecords, tagKeys, tagValues)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +88,7 @@ func (h *Handler) handleDescribeClusterSecurityGroups(vals url.Values) (any, err
 	return &describeClusterSecurityGroupsResponse{
 		Xmlns:          redshiftXMLNS,
 		SecurityGroups: xmlClusterSecurityGroupList{Members: members},
+		Marker:         nextMarker,
 	}, nil
 }
 
@@ -120,6 +135,7 @@ type xmlClusterSecurityGroup struct {
 	Description              string                `xml:"Description,omitempty"`
 	IPRanges                 []xmlIPRange          `xml:"IPRanges>IPRange,omitempty"`
 	EC2SecurityGroups        []xmlEC2SecurityGroup `xml:"EC2SecurityGroups>EC2SecurityGroup,omitempty"`
+	Tags                     []svcTags.KV          `xml:"Tags>Tag,omitempty"`
 }
 
 type authorizeClusterSecurityGroupIngressResponse struct {
@@ -144,6 +160,7 @@ func securityGroupToXML(sg *ClusterSecurityGroup) xmlClusterSecurityGroup {
 		Description:              sg.Description,
 		IPRanges:                 ipRanges,
 		EC2SecurityGroups:        ec2Groups,
+		Tags:                     tagMapToKVList(sg.Tags),
 	}
 }
 

@@ -224,6 +224,31 @@ func TestDeleteApplication_RejectsActiveStates(t *testing.T) {
 	}
 }
 
+// --- StopApplication job-run precondition ---
+
+// TestStopApplication_RejectsWithActiveJobRuns verifies the documented
+// precondition on aws-sdk-go-v2's api_op_StopApplication.go ("All scheduled
+// and running jobs must be completed or cancelled before stopping an
+// application").
+func TestStopApplication_RejectsWithActiveJobRuns(t *testing.T) {
+	t.Parallel()
+
+	b := emrserverless.NewInMemoryBackend("111111111111", "us-east-1")
+	app, err := b.CreateApplication("stop-precondition-app", "SPARK", "emr-6.9.0", "", nil)
+	require.NoError(t, err)
+
+	jr, err := b.StartJobRun(app.ApplicationID, "arn:aws:iam::111111111111:role/exec", "job", "", nil)
+	require.NoError(t, err)
+
+	stopErr := b.StopApplication(app.ApplicationID)
+	require.Error(t, stopErr, "StopApplication must reject while a job run is not in a terminal state")
+
+	_, err = b.CancelJobRun(app.ApplicationID, jr.JobRunID)
+	require.NoError(t, err)
+
+	require.NoError(t, b.StopApplication(app.ApplicationID))
+}
+
 // --- Non-nil tags ---
 
 func TestNonNilTags_Application(t *testing.T) {

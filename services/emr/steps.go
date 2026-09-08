@@ -81,6 +81,12 @@ func (b *InMemoryBackend) AddJobFlowSteps(
 		return nil, fmt.Errorf("%w: cluster %s not found", ErrNotFound, jobFlowID)
 	}
 
+	if !clusterAcceptsSteps(cluster.Status.State) {
+		return nil, fmt.Errorf(
+			"%w: cluster %s is in state %s", errClusterNotAcceptingSteps, jobFlowID, cluster.Status.State,
+		)
+	}
+
 	now := awstime.Epoch(time.Now())
 	ids := make([]string, 0, len(specs))
 

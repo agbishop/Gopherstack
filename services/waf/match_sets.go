@@ -10,12 +10,19 @@ package waf
 // with no lint suppression needed.
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/google/uuid"
+
+	"github.com/blackbirdworks/gopherstack/pkgs/arn"
 )
 
 // --- ByteMatchSet ---
+
+func (b *InMemoryBackend) byteMatchSetARN(id string) string {
+	return arn.Build("waf", "", b.accountID, fmt.Sprintf("bytematchset/%s", id))
+}
 
 // CreateByteMatchSet creates a new ByteMatchSet.
 func (b *InMemoryBackend) CreateByteMatchSet(name, changeToken string) (*ByteMatchSet, error) {
@@ -65,19 +72,15 @@ func (b *InMemoryBackend) UpdateByteMatchSet(id, changeToken string, updates []B
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			bms.ByteMatchTuples = append(bms.ByteMatchTuples, u.ByteMatchTuple)
-		case updateDelete:
-			filtered := bms.ByteMatchTuples[:0]
-			for _, t := range bms.ByteMatchTuples {
-				if t.TargetString != u.ByteMatchTuple.TargetString ||
-					t.FieldToMatch.Type != u.ByteMatchTuple.FieldToMatch.Type {
-					filtered = append(filtered, t)
-				}
-			}
-			bms.ByteMatchTuples = filtered
+		tuples, err := applyEntryUpdate(bms.ByteMatchTuples, u.Action, u.ByteMatchTuple,
+			func(a, b ByteMatchTuple) bool {
+				return a.TargetString == b.TargetString && a.FieldToMatch.Type == b.FieldToMatch.Type
+			})
+		if err != nil {
+			return err
 		}
+
+		bms.ByteMatchTuples = tuples
 	}
 
 	return nil
@@ -108,6 +111,7 @@ func (b *InMemoryBackend) DeleteByteMatchSet(id, changeToken string) error {
 	}
 
 	b.byteMatchSets.Delete(id)
+	delete(b.tags, b.byteMatchSetARN(id))
 
 	return nil
 }
@@ -132,6 +136,10 @@ func (b *InMemoryBackend) ListByteMatchSets() []ByteMatchSetSummary {
 }
 
 // --- SizeConstraintSet ---
+
+func (b *InMemoryBackend) sizeConstraintSetARN(id string) string {
+	return arn.Build("waf", "", b.accountID, fmt.Sprintf("sizeconstraintset/%s", id))
+}
 
 // CreateSizeConstraintSet creates a new SizeConstraintSet.
 func (b *InMemoryBackend) CreateSizeConstraintSet(name, changeToken string) (*SizeConstraintSet, error) {
@@ -184,19 +192,15 @@ func (b *InMemoryBackend) UpdateSizeConstraintSet(
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			scs.SizeConstraints = append(scs.SizeConstraints, u.SizeConstraint)
-		case updateDelete:
-			filtered := scs.SizeConstraints[:0]
-			for _, c := range scs.SizeConstraints {
-				if c.FieldToMatch.Type != u.SizeConstraint.FieldToMatch.Type ||
-					c.Size != u.SizeConstraint.Size {
-					filtered = append(filtered, c)
-				}
-			}
-			scs.SizeConstraints = filtered
+		constraints, err := applyEntryUpdate(scs.SizeConstraints, u.Action, u.SizeConstraint,
+			func(a, b SizeConstraint) bool {
+				return a.FieldToMatch.Type == b.FieldToMatch.Type && a.Size == b.Size
+			})
+		if err != nil {
+			return err
 		}
+
+		scs.SizeConstraints = constraints
 	}
 
 	return nil
@@ -227,6 +231,7 @@ func (b *InMemoryBackend) DeleteSizeConstraintSet(id, changeToken string) error 
 	}
 
 	b.sizeConstraintSets.Delete(id)
+	delete(b.tags, b.sizeConstraintSetARN(id))
 
 	return nil
 }
@@ -253,6 +258,10 @@ func (b *InMemoryBackend) ListSizeConstraintSets() []SizeConstraintSetSummary {
 }
 
 // --- SqlInjectionMatchSet ---
+
+func (b *InMemoryBackend) sqlInjectionMatchSetARN(id string) string {
+	return arn.Build("waf", "", b.accountID, fmt.Sprintf("sqlinjectionmatchset/%s", id))
+}
 
 // CreateSqlInjectionMatchSet creates a new SqlInjectionMatchSet.
 //
@@ -313,22 +322,15 @@ func (b *InMemoryBackend) UpdateSqlInjectionMatchSet(
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			sims.SqlInjectionMatchTuples = append(
-				sims.SqlInjectionMatchTuples,
-				u.SqlInjectionMatchTuple,
-			)
-		case updateDelete:
-			filtered := sims.SqlInjectionMatchTuples[:0]
-			for _, t := range sims.SqlInjectionMatchTuples {
-				if t.FieldToMatch.Type != u.SqlInjectionMatchTuple.FieldToMatch.Type ||
-					t.TextTransformation != u.SqlInjectionMatchTuple.TextTransformation {
-					filtered = append(filtered, t)
-				}
-			}
-			sims.SqlInjectionMatchTuples = filtered
+		tuples, err := applyEntryUpdate(sims.SqlInjectionMatchTuples, u.Action, u.SqlInjectionMatchTuple,
+			func(a, b SqlInjectionMatchTuple) bool {
+				return a.FieldToMatch.Type == b.FieldToMatch.Type && a.TextTransformation == b.TextTransformation
+			})
+		if err != nil {
+			return err
 		}
+
+		sims.SqlInjectionMatchTuples = tuples
 	}
 
 	return nil
@@ -362,6 +364,7 @@ func (b *InMemoryBackend) DeleteSqlInjectionMatchSet(id, changeToken string) err
 	}
 
 	b.sqlInjectionMatchSets.Delete(id)
+	delete(b.tags, b.sqlInjectionMatchSetARN(id))
 
 	return nil
 }
@@ -390,6 +393,10 @@ func (b *InMemoryBackend) ListSqlInjectionMatchSets() []SqlInjectionMatchSetSumm
 }
 
 // --- XssMatchSet ---
+
+func (b *InMemoryBackend) xssMatchSetARN(id string) string {
+	return arn.Build("waf", "", b.accountID, fmt.Sprintf("xssmatchset/%s", id))
+}
 
 // CreateXssMatchSet creates a new XssMatchSet.
 //
@@ -445,19 +452,15 @@ func (b *InMemoryBackend) UpdateXssMatchSet(id, changeToken string, updates []Xs
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			xms.XssMatchTuples = append(xms.XssMatchTuples, u.XssMatchTuple)
-		case updateDelete:
-			filtered := xms.XssMatchTuples[:0]
-			for _, t := range xms.XssMatchTuples {
-				if t.FieldToMatch.Type != u.XssMatchTuple.FieldToMatch.Type ||
-					t.TextTransformation != u.XssMatchTuple.TextTransformation {
-					filtered = append(filtered, t)
-				}
-			}
-			xms.XssMatchTuples = filtered
+		tuples, err := applyEntryUpdate(xms.XssMatchTuples, u.Action, u.XssMatchTuple,
+			func(a, b XssMatchTuple) bool {
+				return a.FieldToMatch.Type == b.FieldToMatch.Type && a.TextTransformation == b.TextTransformation
+			})
+		if err != nil {
+			return err
 		}
+
+		xms.XssMatchTuples = tuples
 	}
 
 	return nil
@@ -490,6 +493,7 @@ func (b *InMemoryBackend) DeleteXssMatchSet(id, changeToken string) error {
 	}
 
 	b.xssMatchSets.Delete(id)
+	delete(b.tags, b.xssMatchSetARN(id))
 
 	return nil
 }
@@ -516,6 +520,10 @@ func (b *InMemoryBackend) ListXssMatchSets() []XssMatchSetSummary {
 }
 
 // --- GeoMatchSet ---
+
+func (b *InMemoryBackend) geoMatchSetARN(id string) string {
+	return arn.Build("waf", "", b.accountID, fmt.Sprintf("geomatchset/%s", id))
+}
 
 // CreateGeoMatchSet creates a new GeoMatchSet.
 func (b *InMemoryBackend) CreateGeoMatchSet(name, changeToken string) (*GeoMatchSet, error) {
@@ -565,18 +573,13 @@ func (b *InMemoryBackend) UpdateGeoMatchSet(id, changeToken string, updates []Ge
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			gms.GeoMatchConstraints = append(gms.GeoMatchConstraints, u.GeoMatchConstraint)
-		case updateDelete:
-			filtered := gms.GeoMatchConstraints[:0]
-			for _, c := range gms.GeoMatchConstraints {
-				if c.Type != u.GeoMatchConstraint.Type || c.Value != u.GeoMatchConstraint.Value {
-					filtered = append(filtered, c)
-				}
-			}
-			gms.GeoMatchConstraints = filtered
+		constraints, err := applyEntryUpdate(gms.GeoMatchConstraints, u.Action, u.GeoMatchConstraint,
+			func(a, b GeoMatchConstraint) bool { return a.Type == b.Type && a.Value == b.Value })
+		if err != nil {
+			return err
 		}
+
+		gms.GeoMatchConstraints = constraints
 	}
 
 	return nil
@@ -607,6 +610,7 @@ func (b *InMemoryBackend) DeleteGeoMatchSet(id, changeToken string) error {
 	}
 
 	b.geoMatchSets.Delete(id)
+	delete(b.tags, b.geoMatchSetARN(id))
 
 	return nil
 }
@@ -631,6 +635,10 @@ func (b *InMemoryBackend) ListGeoMatchSets() []GeoMatchSetSummary {
 }
 
 // --- RegexPatternSet ---
+
+func (b *InMemoryBackend) regexPatternSetARN(id string) string {
+	return arn.Build("waf", "", b.accountID, fmt.Sprintf("regexpatternset/%s", id))
+}
 
 // CreateRegexPatternSet creates a new RegexPatternSet.
 func (b *InMemoryBackend) CreateRegexPatternSet(name, changeToken string) (*RegexPatternSet, error) {
@@ -680,18 +688,13 @@ func (b *InMemoryBackend) UpdateRegexPatternSet(id, changeToken string, updates 
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			rps.RegexPatternStrings = append(rps.RegexPatternStrings, u.RegexPatternString)
-		case updateDelete:
-			filtered := rps.RegexPatternStrings[:0]
-			for _, p := range rps.RegexPatternStrings {
-				if p != u.RegexPatternString {
-					filtered = append(filtered, p)
-				}
-			}
-			rps.RegexPatternStrings = filtered
+		patterns, err := applyEntryUpdate(rps.RegexPatternStrings, u.Action, u.RegexPatternString,
+			func(a, b string) bool { return a == b })
+		if err != nil {
+			return err
 		}
+
+		rps.RegexPatternStrings = patterns
 	}
 
 	return nil
@@ -725,6 +728,7 @@ func (b *InMemoryBackend) DeleteRegexPatternSet(id, changeToken string) error {
 	}
 
 	b.regexPatternSets.Delete(id)
+	delete(b.tags, b.regexPatternSetARN(id))
 
 	return nil
 }
@@ -748,6 +752,10 @@ func (b *InMemoryBackend) ListRegexPatternSets() []RegexPatternSetSummary {
 }
 
 // --- RegexMatchSet ---
+
+func (b *InMemoryBackend) regexMatchSetARN(id string) string {
+	return arn.Build("waf", "", b.accountID, fmt.Sprintf("regexmatchset/%s", id))
+}
 
 // CreateRegexMatchSet creates a new RegexMatchSet.
 func (b *InMemoryBackend) CreateRegexMatchSet(name, changeToken string) (*RegexMatchSet, error) {
@@ -797,19 +805,15 @@ func (b *InMemoryBackend) UpdateRegexMatchSet(id, changeToken string, updates []
 	}
 
 	for _, u := range updates {
-		switch u.Action {
-		case updateInsert:
-			rms.RegexMatchTuples = append(rms.RegexMatchTuples, u.RegexMatchTuple)
-		case updateDelete:
-			filtered := rms.RegexMatchTuples[:0]
-			for _, t := range rms.RegexMatchTuples {
-				if t.RegexPatternSetId != u.RegexMatchTuple.RegexPatternSetId ||
-					t.FieldToMatch.Type != u.RegexMatchTuple.FieldToMatch.Type {
-					filtered = append(filtered, t)
-				}
-			}
-			rms.RegexMatchTuples = filtered
+		tuples, err := applyEntryUpdate(rms.RegexMatchTuples, u.Action, u.RegexMatchTuple,
+			func(a, b RegexMatchTuple) bool {
+				return a.RegexPatternSetId == b.RegexPatternSetId && a.FieldToMatch.Type == b.FieldToMatch.Type
+			})
+		if err != nil {
+			return err
 		}
+
+		rms.RegexMatchTuples = tuples
 	}
 
 	return nil
@@ -840,6 +844,7 @@ func (b *InMemoryBackend) DeleteRegexMatchSet(id, changeToken string) error {
 	}
 
 	b.regexMatchSets.Delete(id)
+	delete(b.tags, b.regexMatchSetARN(id))
 
 	return nil
 }

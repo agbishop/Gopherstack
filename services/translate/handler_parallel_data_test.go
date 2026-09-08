@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/blackbirdworks/gopherstack/services/translate"
 )
 
 func TestCreateParallelData(t *testing.T) {
@@ -167,6 +169,10 @@ func TestUpdateParallelData(t *testing.T) {
 		"ParallelDataConfig": map[string]any{"S3Uri": "s3://b/f.tmx", "Format": "TMX"},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Advance CREATING -> ACTIVE: updating a still-CREATING resource is a
+	// ConcurrentModificationException (see TestUpdateParallelData_ConcurrentModification).
+	doRequest(t, h, "GetParallelData", map[string]any{"Name": "pd-update"})
 
 	rec = doRequest(t, h, "UpdateParallelData", map[string]any{
 		"Name":               "pd-update",
@@ -375,6 +381,66 @@ func TestUpdateParallelData_AdvancesUpdatingToActive(t *testing.T) {
 	assert.Equal(t, "ACTIVE", props["LatestUpdateAttemptStatus"])
 }
 
+// TestUpdateParallelData_ConcurrentModification verifies that updating a
+// parallel data resource that is still CREATING or UPDATING from a prior
+// call reports ConcurrentModificationException, matching
+// types/errors.go's doc ("Another modification is being made. That
+// modification must complete before you can make your change.").
+func TestUpdateParallelData_ConcurrentModification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		setup func(t *testing.T, h *translate.Handler, name string)
+		name  string
+	}{
+		{
+			name:  "still_creating",
+			setup: func(_ *testing.T, _ *translate.Handler, _ string) {},
+		},
+		{
+			name: "still_updating",
+			setup: func(t *testing.T, h *translate.Handler, name string) {
+				t.Helper()
+				// Advance CREATING -> ACTIVE, then start (but don't observe
+				// the completion of) a second update.
+				doRequest(t, h, "GetParallelData", map[string]any{"Name": name})
+				rec := doRequest(t, h, "UpdateParallelData", map[string]any{
+					"Name":               name,
+					"ParallelDataConfig": map[string]any{"S3Uri": "s3://b/mid.tmx", "Format": "TMX"},
+				})
+				require.Equal(t, http.StatusOK, rec.Code)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			name := "concurrent-mod-" + tc.name
+
+			createRec := doRequest(t, h, "CreateParallelData", map[string]any{
+				"Name":               name,
+				"ParallelDataConfig": map[string]any{"S3Uri": "s3://b/f.tmx", "Format": "TMX"},
+			})
+			require.Equal(t, http.StatusOK, createRec.Code)
+
+			tc.setup(t, h, name)
+
+			rec := doRequest(t, h, "UpdateParallelData", map[string]any{
+				"Name":               name,
+				"ParallelDataConfig": map[string]any{"S3Uri": "s3://b/f2.tmx", "Format": "TMX"},
+			})
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+			var body map[string]string
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+			assert.Equal(t, "ConcurrentModificationException", body["__type"])
+		})
+	}
+}
+
 // TestCreateParallelData_FormatValidation verifies that
 // ParallelDataConfig.Format is restricted to the modeled CSV|TMX|TSV enum.
 func TestCreateParallelData_FormatValidation(t *testing.T) {
@@ -446,6 +512,9 @@ func TestUpdateParallelData_IncludesLatestUpdateAttemptAt(t *testing.T) {
 			"Format": "TSV",
 		},
 	})
+	// Advance CREATING -> ACTIVE before updating (see
+	// TestUpdateParallelData_ConcurrentModification).
+	doRequest(t, h, "GetParallelData", map[string]any{"Name": "pd-update-test"})
 
 	rec := doRequest(t, h, "UpdateParallelData", map[string]any{
 		"Name": "pd-update-test",

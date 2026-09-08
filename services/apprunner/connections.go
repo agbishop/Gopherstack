@@ -51,6 +51,13 @@ func (b *InMemoryBackend) DeleteConnection(connArn string) (*Connection, error) 
 		return nil, fmt.Errorf("connection %s not found: %w", connArn, ErrNotFound)
 	}
 
+	// DeleteConnection doc (api_op_DeleteConnection.go): "You must first
+	// ensure that there are no running App Runner services that use this
+	// connection. If there are any, the DeleteConnection action fails."
+	if b.serviceUsesConnection(connArn) {
+		return nil, fmt.Errorf("connection %s is used by one or more services: %w", connArn, ErrInvalidParameter)
+	}
+
 	conn.Status = connStatusDeleted
 	cp := conn.toConnection()
 

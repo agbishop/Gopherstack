@@ -51,6 +51,7 @@ type assocItem struct {
 	RouteTableAssociationID string `xml:"routeTableAssociationId"`
 	RouteTableID            string `xml:"routeTableId"`
 	SubnetID                string `xml:"subnetId,omitempty"`
+	Main                    bool   `xml:"main"`
 }
 
 type assocSet struct {
@@ -130,6 +131,7 @@ func toRouteTableItem(rt *RouteTable, tags map[string]string) routeTableItem {
 			RouteTableAssociationID: a.ID,
 			RouteTableID:            a.RouteTableID,
 			SubnetID:                a.SubnetID,
+			Main:                    a.Main,
 		})
 	}
 

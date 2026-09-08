@@ -16,14 +16,14 @@ ops:
   DescribeCertificateAuthority: {wire: ok, errors: ok, state: ok, persist: ok, note: "reports RestorableUntil, LastStateChangeAt (new field, fixed this pass), KeyStorageSecurityStandard, UsageMode, RevocationConfiguration (omitted entirely when unconfigured, matching a nil *types.RevocationConfiguration). A CA past its RestorableUntil deadline now correctly returns ResourceNotFoundException (fixed this pass -- see gaps)."}
   ListCertificateAuthorities: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS: ResourceOwner now validated and enforced -- SELF/empty lists this account's CAs, OTHER_ACCOUNTS returns an empty page (no cross-account sharing modeled), anything else is InvalidArgsException (corrected gopherstack-r3pr, 2026-08-30 -- was previously the fabricated InvalidParameterException). Also now filters out CAs past their RestorableUntil deadline. gopherstack-wksw (2026-08-29, constraint-not-honoured sweep): MaxResults' documented ceiling (api_op_ListCertificateAuthorities.go: 'Although the maximum value is 1000, the action only returns a maximum of 100 items.') was not applied -- a caller-requested MaxResults above 100 (up to the accepted max of 1000) returned that many items in one page instead of AWS's hard 100-item page cap. Fixed: certificate_authorities.go's ListCertificateAuthorities now clamps to defaultMaxItems (100) whenever the requested value is <=0 or >100, matching the doc comment exactly (not just the omitted-parameter default). TestInMemoryBackend_ListCertificateAuthorities_MaxResultsCappedAt100 (list_certificate_authorities_maxresults_test.go) confirmed failing pre-fix for MaxResults=500 and MaxResults=1000 (both returned the full requested count against 105 seeded CAs)."}
   DeleteCertificateAuthority: {wire: ok, errors: ok, state: ok, persist: ok, note: "tracks RestorableUntil (default 30d) and sets LastStateChangeAt (new field, fixed this pass)."}
-  UpdateCertificateAuthority: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS: now accepts RevocationConfiguration (omitting the field leaves the CA's existing configuration unchanged, matching the real API's documented semantics -- distinguished from an explicit null via a custom UnmarshalJSON tracking which wire keys were present); sets LastStateChangeAt on status change."}
+  UpdateCertificateAuthority: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS (gopherstack-5xc, state-machine sweep): the op's own doc comment ('Your private CA must be in the ACTIVE or DISABLED state before you can update it') was never enforced -- a CA in CREATING/PENDING_CERTIFICATE/DELETED could be flipped straight to ACTIVE via UpdateCertificateAuthority, bypassing ImportCertificateAuthorityCertificate/RestoreCertificateAuthority entirely. Now rejects with InvalidStateException unless the CA's current status is ACTIVE or DISABLED. Prior pass: accepts RevocationConfiguration (omitting the field leaves the CA's existing configuration unchanged, matching the real API's documented semantics -- distinguished from an explicit null via a custom UnmarshalJSON tracking which wire keys were present); sets LastStateChangeAt on status change."}
   RestoreCertificateAuthority: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS: clears RestorableUntil and now correctly rejects a restore attempted after the RestorableUntil deadline (ResourceNotFoundException, matching real AWS permanently removing the CA once its restoration window ends) -- see caGet/casInRegion in store.go, the single choke point every CA read/write goes through."}
   GetCertificateAuthorityCsr: {wire: ok, errors: ok, state: ok, persist: ok}
   ImportCertificateAuthorityCertificate: {wire: ok, errors: ok, state: ok, persist: ok, note: "sets LastStateChangeAt (fixed this pass)."}
   GetCertificateAuthorityCertificate: {wire: ok, errors: ok, state: ok, persist: ok}
   IssueCertificate: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS (severe wire bug, found via field-diff): the certificate ARN's final path segment must be the certificate's own serial number in decimal (see IssueCertificateOutput's doc example) -- gopherstack instead appended an unrelated crypto/rand ID, meaning every issued cert ARN was wrong-shaped. Also FIXED: IdempotencyToken deduplication (5-min window); TemplateArn now gates ApiPassthrough per the real API's documented 'ignored unless an APIPassthrough/APICSRPassthrough template variant is selected' rule; ApiPassthrough now really applies Subject/KeyUsage/ExtendedKeyUsage/SubjectAlternativeNames(DNS+IP+email)/CustomExtensions overrides to the issued cert (previously silently ignored entirely). UsageMode=SHORT_LIVED_CERTIFICATE now enforces the real API's 7-day validity cap. Still not implemented: ApiPassthrough.Extensions.CertificatePolicies, the ASN1Subject RDN types beyond CommonName/Country/Organization/OrganizationalUnit/State/Locality/SerialNumber, and the GeneralName variants beyond DnsName/IpAddress/Rfc822Name -- all explicitly REJECTED (InvalidArgsException, corrected gopherstack-r3pr) rather than silently dropped when a caller sets them; TemplateArn's per-template default extension profile (e.g. SubordinateCACertificate_PathLenN's path-length constraint) is not modeled beyond the APIPassthrough-gating behavior. END_DATE validity type is still treated as epoch seconds like ABSOLUTE rather than true UTCTime/GeneralizedTime -- pre-existing intentional simplification, unchanged this pass (see Traps)."}
   GetCertificate: {wire: ok, errors: ok, state: ok, persist: ok}
-  RevokeCertificate: {wire: ok, errors: ok, state: ok, persist: ok, note: "CORRECTED THIS PASS: the prior manifest's gap note ('does not require CRL/OCSP to be enabled before revoking') was a misdiagnosis -- re-checked against the real SDK's RevokeCertificate doc comment, which describes CRL/OCSP as purely optional side-effects of revocation, not a precondition for it. No such requirement exists in the real API; this was never actually a gap and no fix was needed or made."}
+  RevokeCertificate: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS (gopherstack-5xc, state-machine sweep): RevokeCertificate's own deserializeOpError uniquely models RequestAlreadyProcessedException ('Your request has already been completed') among every op in this service -- no other op declares it -- evidence a repeat revocation must be rejected. Previously a second RevokeCertificate call on an already-REVOKED certificate silently succeeded and overwrote RevokedAt/RevocationReason; now rejected. Prior pass CORRECTED: the older manifest's gap note ('does not require CRL/OCSP to be enabled before revoking') was a misdiagnosis -- re-checked against the real SDK's RevokeCertificate doc comment, which describes CRL/OCSP as purely optional side-effects of revocation, not a precondition for it. No such requirement exists in the real API; that was never actually a gap and no fix was needed there."}
   ListPermissions: {wire: ok, errors: ok, state: ok, persist: ok}
   CreatePermission: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS: Principal now validated to be exactly 'acm.amazonaws.com', the only value the real API accepts per CreatePermissionInput.Principal's doc comment ('At this time, the only valid principal is acm.amazonaws.com')."}
   DeletePermission: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -50,6 +50,96 @@ leaks: {status: clean, note: "no goroutines/janitors in this service; all state 
 ---
 
 ## Notes
+
+### 2026-09-04 state-machine sweep (gopherstack-5xc)
+
+Targeted the CA state machine and revocation-semantics bug classes specifically
+(brief patterns #1 and #3), per-op doc comments read in full against
+`acmpca@v1.50.0`. **2 real bugs found and fixed**, both confirmed by
+neutering the fix and observing the new regression test fail with the
+predicted error before restoring.
+
+1. **`UpdateCertificateAuthority` never enforced its own documented
+   precondition.** `api_op_UpdateCertificateAuthority.go`: "Your private CA
+   must be in the ACTIVE or DISABLED state before you can update it. You can
+   disable a private CA that is in the ACTIVE state or make a CA that is in
+   the DISABLED state active again." The backend checked only that the
+   *target* status was ACTIVE/DISABLED, never the CA's *current* status --
+   so a SUBORDINATE CA still in PENDING_CERTIFICATE (no certificate ever
+   imported) could be flipped straight to ACTIVE via
+   `UpdateCertificateAuthority(status=ACTIVE)`, and a DELETED-but-restorable
+   CA could likewise be resurrected to ACTIVE directly, bypassing
+   `RestoreCertificateAuthority` and leaving `RestorableUntil` stale. Fixed
+   in `certificate_authorities.go`'s `UpdateCertificateAuthority`: now
+   rejects with `InvalidStateException` (modeled by this op's own
+   deserializer) unless the CA's current status is ACTIVE or DISABLED --
+   applies to every update (status change or RevocationConfiguration-only
+   change), matching the doc comment's unqualified "before you can update
+   it". Regression tests:
+   `TestInMemoryBackend_CertificateAuthorityValidation/updateCA_on_a_PENDING_CERTIFICATE_CA_returns_InvalidStateException`
+   and `.../updateCA_on_a_DELETED-but-restorable_CA_returns_InvalidStateException`
+   (`certificate_authorities_test.go`), both confirmed failing pre-fix.
+
+2. **`RevokeCertificate` allowed silent double-revocation.** Its own
+   `awsAwsjson11_deserializeOpErrorRevokeCertificate` uniquely models
+   `RequestAlreadyProcessedException` ("Your request has already been
+   completed") among all 23 ops in this service -- grepped every other op's
+   deserializer, none declare it -- direct evidence a repeat
+   `RevokeCertificate` call on an already-revoked certificate must be
+   rejected, per this campaign's "a modelled error is evidence of a
+   precondition" rule. The backend previously re-applied the revocation
+   unconditionally, silently overwriting `RevokedAt`/`RevocationReason` on a
+   second call. Fixed in `certificates.go`'s `RevokeCertificate`: returns
+   the new `ErrRequestAlreadyProcessed` sentinel
+   (`RequestAlreadyProcessedException`, wired into `handleOpError`) when the
+   certificate's status is already `REVOKED`, before mutating state.
+   Regression test:
+   `TestInMemoryBackend_CertificateValidation/revoking_an_already-revoked_certificate_returns_RequestAlreadyProcessedException`
+   (`certificates_test.go`), confirmed failing pre-fix and confirming
+   `RevocationReason` is not overwritten by the rejected second call.
+
+**Investigated, no fix (déjà-vu of an already-disclosed gap)**:
+`DeleteCertificateAuthority`'s doc comment ("A private CA can be deleted if
+it is in the PENDING_CERTIFICATE, CREATING, EXPIRED, DISABLED, or FAILED
+state... A private CA deleted in the CREATING or FAILED state has no
+assigned restoration period and cannot be restored") implies CREATING/FAILED
+deletions should skip setting `RestorableUntil`. `DeleteCertificateAuthority`
+does allow deleting a CREATING-status CA and always sets `RestorableUntil`
+regardless -- but this is dead code, not a live bug: `CreateCertificateAuthority`
+holds `b.mu.Lock()` for its entire duration and transitions every CA out of
+CREATING (to ACTIVE for ROOT, PENDING_CERTIFICATE for SUBORDINATE) before
+releasing it, so no caller can ever observe or act on a CA in CREATING
+status. `FAILED`/`EXPIRED` remain entirely unmodeled (already disclosed
+under `gaps`, unchanged this pass -- no CA ever reaches either). Not fixed:
+fixing dead code adds no observable behavior change and risks the "reverting
+a file that defines a sentinel another file uses" trap for no benefit; left
+as a documented trap instead (see below).
+
+**Also checked, confirmed correct, no fix needed**: `IssueCertificate`'s
+`ca.Status != caStatusActive` gate (matches "must be ACTIVE"); ghost-row
+risk on CA deletion for permissions/policies/tags (`permissions.go`,
+`ca_policy.go`) -- all correctly remain queryable through a soft-deleted
+(DELETED-but-restorable) CA via `caGet`, matching real
+`DescribeCertificateAuthority`'s documented behavior of still reporting on a
+DELETED CA within its restoration window, and correctly become unreachable
+once the CA passes `RestorableUntil` (same `caGet` choke point everything
+else goes through) -- not a new ghost-row leak, `CreatePermission`/`PutPolicy`
+on a DELETED-but-restorable CA is a lower-confidence question left **NOT
+CHECKED** (no explicit doc-comment precondition found for those two ops
+specifically, unlike `UpdateCertificateAuthority`'s unambiguous text).
+`ListCertificateAuthorities`/`ListCertificates`/`ListPermissions` sort keys
+(`ARN`, `ARN`, `Principal+SourceAccount`) re-confirmed unique
+(ARNs embed a fresh UUID/serial per resource; a CA's permission key is one
+per (CA, principal, sourceAccount) tuple by construction) -- no unstable-sort
+bug.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go build ./services/acmpca/...` clean;
+`go test -race -count=1 ./services/acmpca/...` pass (all pre-existing
+assertions unchanged, 2 new regression tests added); `golangci-lint run
+./services/acmpca/...` → `0 issues.`; dependents
+`go test -race -count=1 ./services/cloudformation/... ./services/acm/...`
+pass.
+
 
 Protocol: awsjson1.1 (single POST, `X-Amz-Target: ACMPrivateCA.<Op>`; RouteMatcher prefix
 `"ACMPrivateCA."` confirmed against the SDK's `ServiceID`/operation names — correct).
@@ -339,6 +429,14 @@ regressions, no stale claims.
   optional side-effects of revocation (the CRL gets updated, OCSP responses
   change), never as a requirement for the `RevokeCertificate` call to succeed.
   That prior gap note was a misdiagnosis; no fix was needed.
+- `DeleteCertificateAuthority`'s `caStatusCreating` branch (allowed states:
+  DISABLED, CREATING, PENDING_CERTIFICATE) is unreachable dead code, not a
+  bug: `CreateCertificateAuthority` holds `b.mu.Lock()` for its whole
+  duration and always transitions a new CA out of CREATING before releasing
+  the lock, so no caller can ever call `DeleteCertificateAuthority` while a
+  CA is actually in that status. Consequently the doc comment's "CREATING
+  deletions get no restoration period" nuance (`api_op_DeleteCertificateAuthority.go`)
+  can never manifest either -- confirmed 2026-09-04, left as-is (gopherstack-5xc).
 - `RestorableUntil`-past-deadline CAs are hidden by `caGet`/`casInRegion`
   filtering, not physically deleted from `b.cas`/`b.casByRegion` — see the
   `leaks` note above for why this is an accepted tradeoff, not a regression.
@@ -413,3 +511,56 @@ the same previously-recorded refusal (all 3 distinct sites, none fixed, per
 the earlier entry's own per-op `deserializeOpError` verification and its
 "no `ValidationException` type exists anywhere in this SDK module" finding).
 No code changed.
+
+### 2026-09-07 Error-envelope re-run, third confirmation (gopherstack-qrnq, errtargetaudit)
+
+`errtargetaudit` filed 6 fresh class-A findings for acmpca; same 3 call
+sites as the two entries above (`CreatePermission` x4 sites,
+`DeleteCertificateAuthority`, `ListCertificateAuthorities`), same
+`InvalidArgsException` code, same `sentinel reference` mechanism. Re-verified
+independently rather than trusting the prior write-up:
+
+- Re-extracted each op's declared set straight from
+  `aws-sdk-go-v2/service/acmpca@v1.50.0/deserializers.go`
+  (`awk '/deserializeOpError<Op>\(/,/^}/'` + code-string grep):
+  `CreatePermission` -> `InvalidArnException, InvalidStateException,
+  LimitExceededException, PermissionAlreadyExistsException,
+  RequestFailedException, ResourceNotFoundException`;
+  `DeleteCertificateAuthority` -> `ConcurrentModificationException,
+  InvalidArnException, InvalidStateException, ResourceNotFoundException`;
+  `ListCertificateAuthorities` -> `InvalidNextTokenException`. None include
+  `InvalidArgsException` (`errors.go`'s `ErrInvalidArgs` sentinel) --
+  confirms all 3 findings are real declared-set mismatches, not tool noise.
+- Confirmed the two false-positive classes this repeat sweep would most
+  likely hit both don't apply: no shared helper with `services/acm/`
+  (`acm/` and `acmpca/` import neither package, confirmed by grep -- acmpca's
+  parity issue gopherstack-ftkd covered a structurally unrelated SDK
+  module) and no handler-level override -- `jsonCreatePermission`,
+  `jsonDeleteCA`, `jsonListCAs` (`handler_permissions.go`,
+  `handler_certificate_authorities.go`) pass backend errors straight to
+  `handleOpError`'s `errors.Is(opErr, ErrInvalidArgs) -> "InvalidArgsException"`
+  switch (`handler.go`) with no call-site remap.
+- Protocol: awsjson1.1. `handleOpError` writes `{"__type": code, "message":
+  ...}` via `writeJSONError` at HTTP 400 (500 only for the unmapped-sentinel
+  `InternalFailure` default case) -- confirmed by reading `handler.go`
+  directly, not assumed.
+- Pre-existing tests (`certificate_authorities_test.go`,
+  `list_certificate_authorities_resource_owner_test.go`,
+  `permissions_test.go`) already assert `require.ErrorIs(t, err,
+  acmpca.ErrInvalidArgs)` for these three call sites -- correct, since
+  `ErrInvalidArgs`/`InvalidArgsException` is what the handler actually
+  emits and no better code exists; none needed correcting.
+
+**No fix applied** -- unchanged from the two prior entries. This is the
+third independent audit pass (`gopherstack-6flj`/`uox6`, then a
+reachability re-run, now `gopherstack-qrnq`) to land on the same
+conclusion: the operation's own declared error set has no member that
+fits the validation failure, so no code substitution is correct. Left as a
+landmine (see `permissions.go:26-33`, `certificate_authorities.go:384-389`,
+`certificate_authorities.go:427-433`) rather than guessed at a fourth time.
+
+Gates: `go test -race -count=1 ./services/acmpca/...` pass (unchanged
+assertion counts, no new tests needed since no behavior changed);
+`golangci-lint run services/acmpca/...` 0 issues. `errtargetaudit` re-run
+post-pass: still 6 class-A findings, identical sites -- expected, since no
+code changed.

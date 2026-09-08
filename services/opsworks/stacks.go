@@ -171,13 +171,22 @@ func (b *InMemoryBackend) deleteStackChildren(stackID string) {
 	b.deleteStackAssociations(stackID)
 }
 
-// DeleteStack deletes a stack and all its child resources.
+// DeleteStack deletes a stack. AWS requires all instances, layers, and apps
+// be deleted or deregistered first (api_op_DeleteStack.go: "You must first
+// delete all instances, layers, and apps or deregister registered
+// instances.").
 func (b *InMemoryBackend) DeleteStack(stackID string) error {
 	b.mu.Lock("DeleteStack")
 	defer b.mu.Unlock()
 
 	if !b.stacks.Has(stackID) {
 		return ErrStackNotFound
+	}
+
+	if len(b.instancesByStack.Get(stackID)) > 0 ||
+		len(b.layersByStack.Get(stackID)) > 0 ||
+		len(b.appsByStack.Get(stackID)) > 0 {
+		return ErrValidation
 	}
 
 	b.deleteStackChildren(stackID)

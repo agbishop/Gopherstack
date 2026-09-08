@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,6 +41,24 @@ func TestUpdateApplication(t *testing.T) {
 			currentVersionID: 99,
 			setup: func(b *kinesisanalytics.InMemoryBackend) {
 				_, _ = kinesisanalytics.CreateApp(b, testRegion, testAccountID, "ver-app", "", "", nil)
+			},
+			wantErr: true,
+		},
+		{
+			name:             "code update exceeding 100KB limit returns error",
+			appName:          "oversized-code-app",
+			currentVersionID: 1,
+			codeUpdate:       strings.Repeat("a", 102401),
+			setup: func(b *kinesisanalytics.InMemoryBackend) {
+				_, _ = kinesisanalytics.CreateApp(
+					b,
+					testRegion,
+					testAccountID,
+					"oversized-code-app",
+					"",
+					"SELECT 1",
+					nil,
+				)
 			},
 			wantErr: true,
 		},

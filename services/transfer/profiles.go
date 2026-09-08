@@ -58,6 +58,7 @@ func (b *InMemoryBackend) DeleteProfile(profileID string) error {
 	}
 
 	b.profiles.Delete(profileID)
+	delete(b.tagsStore, profileARN(b.accountID, b.region, profileID))
 
 	return nil
 }

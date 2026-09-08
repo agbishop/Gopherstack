@@ -68,7 +68,9 @@ func (b *InMemoryBackend) AddDataProviderInternal(name, engine string) {
 	b.dataProviders.Put(dp)
 }
 
-// DeleteDataProvider deletes a data provider by name or ARN.
+// DeleteDataProvider deletes a data provider by name or ARN. Real AWS: "All
+// migration projects associated with the data provider must be deleted or
+// modified before you can delete the data provider".
 func (b *InMemoryBackend) DeleteDataProvider(ctx context.Context, nameOrArn string) (*DataProvider, error) {
 	b.mu.Lock("DeleteDataProvider")
 	defer b.mu.Unlock()
@@ -76,6 +78,10 @@ func (b *InMemoryBackend) DeleteDataProvider(ctx context.Context, nameOrArn stri
 	region := getRegion(ctx, b.region)
 
 	if dp, ok := b.dataProviders.Get(regionKey(region, nameOrArn)); ok {
+		if b.migrationProjectUsesDataProviderLocked(region, dp.DataProviderArn) {
+			return nil, fmt.Errorf("%w: data provider %s has associated migration projects", ErrInvalidState, nameOrArn)
+		}
+
 		cp := *dp
 		dp.Tags.Close()
 		b.dataProviders.Delete(regionKey(region, nameOrArn))
@@ -84,6 +90,10 @@ func (b *InMemoryBackend) DeleteDataProvider(ctx context.Context, nameOrArn stri
 	}
 
 	if dp, ok := lookupUnique(b.dataProvidersByARN, regionKey(region, nameOrArn)); ok {
+		if b.migrationProjectUsesDataProviderLocked(region, dp.DataProviderArn) {
+			return nil, fmt.Errorf("%w: data provider %s has associated migration projects", ErrInvalidState, nameOrArn)
+		}
+
 		cp := *dp
 		dp.Tags.Close()
 		b.dataProviders.Delete(regionKey(region, dp.DataProviderName))
@@ -94,7 +104,30 @@ func (b *InMemoryBackend) DeleteDataProvider(ctx context.Context, nameOrArn stri
 	return nil, fmt.Errorf("%w: data provider %s not found", ErrNotFound, nameOrArn)
 }
 
-// ModifyDataProvider updates a data provider.
+// migrationProjectUsesDataProviderLocked reports whether any migration
+// project in region references dataProviderArn as a source or target data
+// provider. Caller must hold b.mu.
+func (b *InMemoryBackend) migrationProjectUsesDataProviderLocked(region, dataProviderArn string) bool {
+	for _, mp := range b.migrationProjectsByRegion.Get(region) {
+		for _, d := range mp.SourceDataProviderDescriptors {
+			if d.DataProviderArn == dataProviderArn {
+				return true
+			}
+		}
+
+		for _, d := range mp.TargetDataProviderDescriptors {
+			if d.DataProviderArn == dataProviderArn {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// ModifyDataProvider updates a data provider. Real AWS: "You must remove the
+// data provider from all migration projects before you can modify it"
+// (databasemigrationservice@v1.66.4 api_op_ModifyDataProvider.go:16-17).
 func (b *InMemoryBackend) ModifyDataProvider(
 	ctx context.Context,
 	nameOrArn, engine, description string,
@@ -105,6 +138,15 @@ func (b *InMemoryBackend) ModifyDataProvider(
 	dp := b.findDataProvider(ctx, nameOrArn)
 	if dp == nil {
 		return nil, fmt.Errorf("%w: data provider %s not found", ErrNotFound, nameOrArn)
+	}
+
+	region := getRegion(ctx, b.region)
+	if b.migrationProjectUsesDataProviderLocked(region, dp.DataProviderArn) {
+		return nil, fmt.Errorf(
+			"%w: data provider %s has associated migration projects",
+			ErrInvalidState,
+			nameOrArn,
+		)
 	}
 
 	if engine != "" {

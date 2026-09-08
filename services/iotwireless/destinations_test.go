@@ -80,6 +80,26 @@ func TestInMemoryBackend_Destination_DeleteNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, iotwireless.ErrDestinationNotFound)
 }
 
+func TestInMemoryBackend_DeleteDestination_InUse(t *testing.T) {
+	t.Parallel()
+
+	bk := iotwireless.NewInMemoryBackend()
+
+	_, err := bk.CreateDestination(testAccountID, testRegion, "dest-1", "", "", "", "", nil)
+	require.NoError(t, err)
+
+	_, err = bk.CreateWirelessDevice(
+		testAccountID, testRegion, "dev-1", "LoRaWAN", "dest-1", "", "", nil, nil, nil,
+	)
+	require.NoError(t, err)
+
+	err = bk.DeleteDestination(testAccountID, testRegion, "dest-1")
+	require.ErrorIs(t, err, iotwireless.ErrDestinationInUse)
+
+	_, err = bk.GetDestination(testAccountID, testRegion, "dest-1")
+	require.NoError(t, err, "destination must still exist after the refused delete")
+}
+
 func TestInMemoryBackend_ListDestinations(t *testing.T) {
 	t.Parallel()
 

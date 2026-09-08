@@ -19,8 +19,8 @@ func TestHandler_ListRegions(t *testing.T) {
 		filter    []string
 		wantCount int
 	}{
-		{name: "no_filter", wantCount: 8},
-		{name: "filter_enabled_default", filter: []string{"ENABLED_BY_DEFAULT"}, wantCount: 6},
+		{name: "no_filter", wantCount: 10},
+		{name: "filter_enabled_default", filter: []string{"ENABLED_BY_DEFAULT"}, wantCount: 8},
 		{name: "filter_enabled", filter: []string{"ENABLED"}, wantCount: 2},
 		{name: "filter_disabled", filter: []string{"DISABLED"}, wantCount: 0},
 	}
@@ -91,7 +91,7 @@ func TestHandler_ListRegions_Alphabetical(t *testing.T) {
 func TestHandler_ListRegions_Pagination(t *testing.T) {
 	t.Parallel()
 
-	const totalRegions = 8
+	const totalRegions = 10
 
 	tests := []struct {
 		name       string
@@ -99,9 +99,9 @@ func TestHandler_ListRegions_Pagination(t *testing.T) {
 		wantPages  int
 	}{
 		{"maxResults_1", 1, totalRegions},
-		{"maxResults_3", 3, 3},
-		{"maxResults_4", 4, 2},
-		{"maxResults_8_exact", 8, 1},
+		{"maxResults_3", 3, 4},
+		{"maxResults_4", 4, 3},
+		{"maxResults_10_exact", 10, 1},
 		{"maxResults_50_exceeds_total", 50, 1},
 	}
 
@@ -202,8 +202,12 @@ func TestHandler_GetRegionOptStatus(t *testing.T) {
 			wantStatus: "ENABLED_BY_DEFAULT", wantHTTPStatus: http.StatusOK,
 		},
 		{
-			name: "opt_in_enabled", regionName: "ap-southeast-1",
+			name: "opt_in_enabled", regionName: "af-south-1",
 			wantStatus: "ENABLED", wantHTTPStatus: http.StatusOK,
+		},
+		{
+			name: "non_opt_in_enabled_by_default", regionName: "ap-southeast-1",
+			wantStatus: "ENABLED_BY_DEFAULT", wantHTTPStatus: http.StatusOK,
 		},
 		{name: "unknown_region", regionName: "zz-fake-1", wantHTTPStatus: http.StatusBadRequest},
 		{name: "missing_region_name", regionName: "", wantHTTPStatus: http.StatusBadRequest},
@@ -240,8 +244,8 @@ func TestHandler_EnableDisableRegion(t *testing.T) {
 		name       string
 		regionName string
 	}{
-		{name: "ap-southeast-1", regionName: "ap-southeast-1"},
-		{name: "ap-northeast-1", regionName: "ap-northeast-1"},
+		{name: "af-south-1", regionName: "af-south-1"},
+		{name: "ap-east-1", regionName: "ap-east-1"},
 	}
 
 	for _, tc := range tests {

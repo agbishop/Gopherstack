@@ -81,10 +81,10 @@ func TestSchedulerScheduleGroupRegionIsolation(t *testing.T) {
 	ctxEast := ctxRegion("us-east-1")
 	ctxWest := ctxRegion("us-west-2")
 
-	_, err := backend.CreateScheduleGroup(ctxEast, "grp1", "", nil)
+	_, err := backend.CreateScheduleGroup(ctxEast, "grp1", nil)
 	require.NoError(t, err)
 
-	_, err = backend.CreateScheduleGroup(ctxWest, "grp1", "", nil)
+	_, err = backend.CreateScheduleGroup(ctxWest, "grp1", nil)
 	require.NoError(t, err)
 
 	// Each region sees its own "default" group plus "grp1".

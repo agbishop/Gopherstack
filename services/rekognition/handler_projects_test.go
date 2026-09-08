@@ -140,6 +140,37 @@ func TestProject_DeleteSuccess(t *testing.T) { //nolint:paralleltest // existing
 	assert.Empty(t, descriptions)
 }
 
+// DeleteProject rejects a project that still has project versions with
+// ResourceInUseException -- DeleteProjectInput's own doc comment
+// (api_op_DeleteProject.go): "To delete a project you must first delete all
+// models or adapters associated with the project.".
+func TestProject_DeleteWithVersions_Rejected(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, "CreateProject", map[string]any{"ProjectName": "has-versions"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var projResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &projResp))
+	projectARN := projResp["ProjectArn"].(string)
+
+	rec = doRequest(t, h, "CreateProjectVersion", map[string]any{
+		"ProjectArn":   projectARN,
+		"VersionName":  "v1",
+		"OutputConfig": map[string]any{"S3Bucket": "my-bucket"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "DeleteProject", map[string]any{"ProjectArn": projectARN})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "ResourceInUseException", errResp["__type"])
+}
+
 func TestProjectPolicies(t *testing.T) { //nolint:paralleltest // existing issue.
 	h := newTestHandler(t)
 
@@ -209,4 +240,39 @@ func TestProjectPolicies(t *testing.T) { //nolint:paralleltest // existing issue
 			}
 		})
 	}
+}
+
+// TestDeleteProject_CascadesProjectPolicies verifies DeleteProject removes
+// the project's ProjectPolicies too, per DeleteProjectInput's own doc
+// comment (api_op_DeleteProject.go): "Be aware that deleting a given
+// project will also delete any ProjectPolicies associated with that
+// project".
+func TestDeleteProject_CascadesProjectPolicies(t *testing.T) { //nolint:paralleltest // existing issue.
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, "CreateProject", map[string]any{"ProjectName": "policy-cascade-proj"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var projResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &projResp))
+	projectARN := projResp["ProjectArn"].(string)
+
+	rec = doRequest(t, h, "PutProjectPolicy", map[string]any{
+		"ProjectArn":     projectARN,
+		"PolicyName":     "my-policy",
+		"PolicyDocument": `{"Version":"2012-10-17"}`,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "DeleteProject", map[string]any{"ProjectArn": projectARN})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "ListProjectPolicies", map[string]any{"ProjectArn": projectARN})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var listResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &listResp))
+	policies, ok := listResp["ProjectPolicies"].([]any)
+	require.True(t, ok)
+	assert.Empty(t, policies, "ProjectPolicies must be cascade-deleted with the project")
 }

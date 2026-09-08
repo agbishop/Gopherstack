@@ -263,7 +263,12 @@ func TestVPHandler_GetPolicy_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestVPHandler_DeletePolicy_NotFound(t *testing.T) {
+// TestVPHandler_DeletePolicy_IdempotentOnMissingPolicy is the regression
+// test for gopherstack-990: DeletePolicy is documented idempotent for a
+// missing policy ("the request response returns a successful HTTP 200
+// status code"), so deleting a nonexistent policy in an existing store must
+// succeed, not 400.
+func TestVPHandler_DeletePolicy_IdempotentOnMissingPolicy(t *testing.T) {
 	t.Parallel()
 
 	h := newTestVPHandler(t)
@@ -280,6 +285,21 @@ func TestVPHandler_DeletePolicy_NotFound(t *testing.T) {
 
 	rec = doVPRequest(t, h, "DeletePolicy", map[string]any{
 		"policyStoreId": storeID,
+		"policyId":      "nonexistent-policy",
+	})
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestVPHandler_DeletePolicy_NotFound proves DeletePolicy still errors when
+// the policy STORE doesn't exist -- ResourceNotFoundException remains in
+// DeletePolicy's modelled error set, unlike DeletePolicyStore's.
+func TestVPHandler_DeletePolicy_NotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newTestVPHandler(t)
+
+	rec := doVPRequest(t, h, "DeletePolicy", map[string]any{
+		"policyStoreId": "nonexistent-store",
 		"policyId":      "nonexistent-policy",
 	})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
@@ -328,6 +348,110 @@ func TestVPHandler_CreatePolicy_TemplateLinked(t *testing.T) {
 	var policyResp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &policyResp))
 	assert.Equal(t, "TEMPLATE_LINKED", policyResp["policyType"])
+}
+
+// TestVPHandler_UpdatePolicy_TemplateLinkedRejected is the regression test
+// for gopherstack-990. Real AWS's UpdatePolicyDefinition union has only a
+// "static" member (types.UpdatePolicyDefinitionMemberStatic) -- there is no
+// templateLinked variant -- and the op doc is explicit: "You can directly
+// update only static policies. To change a template-linked policy, you must
+// update the template instead, using UpdatePolicyTemplate." Before the fix,
+// gopherstack's UpdatePolicy accepted a templateLinked definition and let a
+// caller silently rebind a template-linked policy's principal/resource.
+func TestVPHandler_UpdatePolicy_TemplateLinkedRejected(t *testing.T) {
+	t.Parallel()
+
+	h := newTestVPHandler(t)
+	storeID := createTestPolicyStore(t, h)
+
+	tmplRec := doVPRequest(t, h, "CreatePolicyTemplate", map[string]any{
+		"policyStoreId": storeID,
+		"statement":     "permit(principal == ?principal, action, resource);",
+	})
+	require.Equal(t, http.StatusOK, tmplRec.Code)
+	var tmplResp map[string]any
+	require.NoError(t, json.Unmarshal(tmplRec.Body.Bytes(), &tmplResp))
+	templateID := tmplResp["policyTemplateId"].(string)
+
+	createRec := doVPRequest(t, h, "CreatePolicy", map[string]any{
+		"policyStoreId": storeID,
+		"definition": map[string]any{
+			"templateLinked": map[string]any{
+				"policyTemplateId": templateID,
+				"principal":        map[string]any{"entityType": "User", "entityId": "alice"},
+				"resource":         map[string]any{"entityType": "Document", "entityId": "doc1"},
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, createRec.Code)
+	var createResp map[string]any
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createResp))
+	policyID := createResp["policyId"].(string)
+
+	t.Run("templateLinked definition rejected outright", func(t *testing.T) {
+		t.Parallel()
+
+		rec := doVPRequest(t, h, "UpdatePolicy", map[string]any{
+			"policyStoreId": storeID,
+			"policyId":      policyID,
+			"definition": map[string]any{
+				"templateLinked": map[string]any{
+					"policyTemplateId": templateID,
+					"principal":        map[string]any{"entityType": "User", "entityId": "bob"},
+					"resource":         map[string]any{"entityType": "Document", "entityId": "doc1"},
+				},
+			},
+		})
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	})
+
+	t.Run("static definition against a template-linked policy rejected", func(t *testing.T) {
+		t.Parallel()
+
+		rec := doVPRequest(t, h, "UpdatePolicy", map[string]any{
+			"policyStoreId": storeID,
+			"policyId":      policyID,
+			"definition": map[string]any{
+				"static": map[string]any{"statement": "permit(principal, action, resource);"},
+			},
+		})
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	})
+
+	t.Run("templateLinked definition against a static policy rejected", func(t *testing.T) {
+		t.Parallel()
+
+		staticRec := doVPRequest(t, h, "CreatePolicy", map[string]any{
+			"policyStoreId": storeID,
+			"definition": map[string]any{
+				"static": map[string]any{"statement": "permit(principal, action, resource);"},
+			},
+		})
+		require.Equal(t, http.StatusOK, staticRec.Code)
+		var staticResp map[string]any
+		require.NoError(t, json.Unmarshal(staticRec.Body.Bytes(), &staticResp))
+		staticPolicyID := staticResp["policyId"].(string)
+
+		rec := doVPRequest(t, h, "UpdatePolicy", map[string]any{
+			"policyStoreId": storeID,
+			"policyId":      staticPolicyID,
+			"definition": map[string]any{
+				"templateLinked": map[string]any{
+					"policyTemplateId": templateID,
+					"principal":        map[string]any{"entityType": "User", "entityId": "bob"},
+				},
+			},
+		})
+		assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+	})
+
+	// Prove the rebinding never actually happened.
+	getRec := doVPRequest(t, h, "GetPolicy", map[string]any{"policyStoreId": storeID, "policyId": policyID})
+	require.Equal(t, http.StatusOK, getRec.Code)
+	var getResp map[string]any
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &getResp))
+	def := getResp["definition"].(map[string]any)["templateLinked"].(map[string]any)
+	assert.Equal(t, "alice", def["principal"].(map[string]any)["entityId"])
 }
 
 func TestVPHandler_BatchGetPolicy(t *testing.T) {

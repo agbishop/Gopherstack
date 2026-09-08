@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"sort"
 	"time"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
@@ -38,6 +39,65 @@ func (r *AutomationRuleV2) clone() *AutomationRuleV2 {
 	cp.Actions = slices.Clone(r.Actions)
 
 	return &cp
+}
+
+// applyAutomationRules evaluates every ENABLED automation rule (ascending
+// RuleOrder, ties broken by RuleArn for determinism) against finding and
+// applies each match's FINDING_FIELDS_UPDATE action in place, stopping at
+// the first terminal match -- gopherstack-1qf: automation rules were pure
+// CRUD, never evaluated against imported findings. AWS documents that
+// BatchImportFindings itself cannot set Note/UserDefinedFields/
+// VerificationState/Workflow "since they're managed by Security Hub
+// customers/automation rules, not finding providers" (findings.go's
+// findingCustomerManagedFields) -- automation rules are the only mechanism
+// that manages them, so this must run for that documented architecture to
+// have any real effect.
+//
+// Criteria is matched via matchesFindingFilters against the same
+// field-name-mapped subset it already supports (AwsAccountId/GeneratorId/
+// Title/Description/RecordState/Type/ResourceType/ResourceId/Id/ProductArn/
+// SeverityLabel/WorkflowStatus/ComplianceStatus) -- AutomationRulesFindingFilters
+// (securityhub@v1.75.4 types/types.go:575) has additional NumberFilter/
+// DateFilter/MapFilter members (Confidence, CreatedAt, NoteText,
+// ResourceTags, ...) with no evaluator in this file; deliberately left
+// unevaluated per the no-fabrication rule rather than guessed at.
+//
+// Caller must already hold b.mu (Lock) -- this reads b.automationRules
+// under the same coarse lock ImportFindings already acquires.
+func (b *InMemoryBackend) applyAutomationRules(finding map[string]any) {
+	rules := b.automationRules.Snapshot()
+
+	sort.Slice(rules, func(i, j int) bool {
+		if rules[i].RuleOrder != rules[j].RuleOrder {
+			return rules[i].RuleOrder < rules[j].RuleOrder
+		}
+
+		return rules[i].RuleArn < rules[j].RuleArn
+	})
+
+	for _, rule := range rules {
+		if rule.RuleStatus != statusEnabled {
+			continue
+		}
+
+		if !matchesFindingFilters(finding, rule.Criteria) {
+			continue
+		}
+
+		for _, action := range rule.Actions {
+			if t, _ := action["Type"].(string); t != "FINDING_FIELDS_UPDATE" {
+				continue
+			}
+
+			if update, ok := action["FindingFieldsUpdate"].(map[string]any); ok {
+				maps.Copy(finding, update)
+			}
+		}
+
+		if rule.IsTerminal {
+			break
+		}
+	}
 }
 
 func (b *InMemoryBackend) CreateAutomationRule(rule map[string]any) (string, string) {

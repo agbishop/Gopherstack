@@ -10,6 +10,9 @@ import (
 // ─── VirtualService dispatch ───
 
 func (h *Handler) handleVirtualServices(c *echo.Context, segs []string, meshName string) error {
+	if err := h.checkMeshOwner(c); err != nil {
+		return h.mapErr(c, err)
+	}
 	// /meshes/{meshName}/virtualServices
 	if len(segs) == segsSubCollection {
 		switch c.Request().Method {

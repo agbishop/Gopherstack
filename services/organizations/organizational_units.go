@@ -108,14 +108,14 @@ func (b *InMemoryBackend) DeleteOrganizationalUnit(ouID string) error {
 		return ErrOUNotFound
 	}
 
-	// AWS rejects deletion of OUs that still contain accounts.
+	// AWS rejects deletion of OUs that still contain accounts or child OUs
+	// with OrganizationalUnitNotEmptyException, not InvalidInputException.
 	if len(b.accountChildrenByParent[ouID]) > 0 {
-		return ErrInvalidInput
+		return ErrOrganizationalUnitNotEmpty
 	}
 
-	// AWS rejects deletion of OUs that still contain child OUs.
 	if len(b.ousByParent[ouID]) > 0 {
-		return ErrInvalidInput
+		return ErrOrganizationalUnitNotEmpty
 	}
 
 	b.ous.Delete(ouID)

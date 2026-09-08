@@ -117,3 +117,66 @@ func TestBackend_ListRegions_Deterministic(t *testing.T) {
 		assert.Less(t, regions[i-1].RegionName, regions[i].RegionName)
 	}
 }
+
+// TestBackend_GetRegionOptStatus_Classification verifies every seeded region's
+// opt-in classification against real AWS: ap-southeast-1 (Singapore, launched
+// 2010) and ap-northeast-1 (Tokyo, launched 2011) predate the 2019 opt-in
+// region policy and are ENABLED_BY_DEFAULT like the other original regions,
+// not opt-in ENABLED (gopherstack-5py7).
+func TestBackend_GetRegionOptStatus_Classification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		want   account.RegionOptStatus
+		region string
+	}{
+		{name: "us-east-1", region: "us-east-1", want: account.RegionOptStatusEnabledDefault},
+		{name: "us-east-2", region: "us-east-2", want: account.RegionOptStatusEnabledDefault},
+		{name: "us-west-1", region: "us-west-1", want: account.RegionOptStatusEnabledDefault},
+		{name: "us-west-2", region: "us-west-2", want: account.RegionOptStatusEnabledDefault},
+		{name: "eu-west-1", region: "eu-west-1", want: account.RegionOptStatusEnabledDefault},
+		{name: "eu-central-1", region: "eu-central-1", want: account.RegionOptStatusEnabledDefault},
+		{name: "ap-southeast-1", region: "ap-southeast-1", want: account.RegionOptStatusEnabledDefault},
+		{name: "ap-northeast-1", region: "ap-northeast-1", want: account.RegionOptStatusEnabledDefault},
+		{name: "af-south-1", region: "af-south-1", want: account.RegionOptStatusEnabled},
+		{name: "ap-east-1", region: "ap-east-1", want: account.RegionOptStatusEnabled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := account.NewInMemoryBackend("000000000000", "us-east-1")
+
+			got, err := b.GetRegionOptStatus(tt.region)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestBackend_DisableRegion_RejectsNonOptInRegion verifies DisableRegion
+// refuses to disable regions that are enabled by default (not opt-in), per
+// AWS's invalidRegionOptTarget ValidationException reason. Singapore and
+// Tokyo are not opt-in regions, so real AWS rejects disabling them the same
+// way it rejects disabling us-east-1 (gopherstack-5py7).
+func TestBackend_DisableRegion_RejectsNonOptInRegion(t *testing.T) {
+	t.Parallel()
+
+	for _, region := range []string{"ap-southeast-1", "ap-northeast-1"} {
+		t.Run(region, func(t *testing.T) {
+			t.Parallel()
+
+			b := account.NewInMemoryBackend("000000000000", "us-east-1")
+
+			err := b.DisableRegion(region)
+			require.Error(t, err)
+			assert.True(t, strings.HasPrefix(err.Error(), "ValidationException"), "got: %v", err)
+
+			status, statusErr := b.GetRegionOptStatus(region)
+			require.NoError(t, statusErr)
+			assert.Equal(t, account.RegionOptStatusEnabledDefault, status)
+		})
+	}
+}

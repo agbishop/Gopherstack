@@ -153,14 +153,13 @@ const (
 	ReceiptActionTypeS3        = "S3"
 	ReceiptActionTypeSNS       = "SNS"
 	ReceiptActionTypeLambda    = "Lambda"
-	ReceiptActionTypeSQS       = "SQS"
 	ReceiptActionTypeAddHeader = "AddHeader"
 	ReceiptActionTypeBounce    = "Bounce"
 	ReceiptActionTypeStop      = "Stop"
 )
 
 // ReceiptAction is a single action within a receipt rule.
-// Type identifies which action fields apply: S3, SNS, Lambda, SQS, AddHeader, Bounce, Stop.
+// Type identifies which action fields apply: S3, SNS, Lambda, AddHeader, Bounce, Stop.
 type ReceiptAction struct {
 	Type              string `json:"type"`
 	S3BucketName      string `json:"s3BucketName,omitempty"`
@@ -169,15 +168,21 @@ type ReceiptAction struct {
 	SNSTopicARN       string `json:"snsTopicARN,omitempty"`
 	LambdaFunctionARN string `json:"lambdaFunctionARN,omitempty"`
 	LambdaTopicARN    string `json:"lambdaTopicARN,omitempty"`
-	SQSQueueARN       string `json:"sqsQueueARN,omitempty"`
-	SQSTopicARN       string `json:"sqsTopicARN,omitempty"`
-	HeaderName        string `json:"headerName,omitempty"`
-	HeaderValue       string `json:"headerValue,omitempty"`
-	SMTPReplyCode     string `json:"smtpReplyCode,omitempty"`
-	StatusCode        string `json:"statusCode,omitempty"`
-	Message           string `json:"message,omitempty"`
-	Sender            string `json:"sender,omitempty"`
-	BounceTopicARN    string `json:"bounceTopicARN,omitempty"`
+	// SQSQueueARN and SQSTopicARN are vestigial (gopherstack-brmq): SQS was
+	// never a real ReceiptAction member (ses@v1.37.4 types.ReceiptAction has
+	// no SQS variant) and no code path sets Type to "SQS" any more. Kept
+	// only so a pre-existing persisted snapshot that has one still decodes
+	// without silently dropping the ARNs -- removing these fields would
+	// change backendSnapshot's shape without a version bump.
+	SQSQueueARN    string `json:"sqsQueueARN,omitempty"`
+	SQSTopicARN    string `json:"sqsTopicARN,omitempty"`
+	HeaderName     string `json:"headerName,omitempty"`
+	HeaderValue    string `json:"headerValue,omitempty"`
+	SMTPReplyCode  string `json:"smtpReplyCode,omitempty"`
+	StatusCode     string `json:"statusCode,omitempty"`
+	Message        string `json:"message,omitempty"`
+	Sender         string `json:"sender,omitempty"`
+	BounceTopicARN string `json:"bounceTopicARN,omitempty"`
 }
 
 // ReceiptRule represents a single receipt rule within a rule set.

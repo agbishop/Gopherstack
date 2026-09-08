@@ -99,7 +99,9 @@ type InMemoryBackend struct {
 	snsIntegration  asl.SNSIntegration
 	ddbIntegration  asl.DynamoDBIntegration
 	ecsIntegration  asl.ECSIntegration
+	ecsSyncWaiter   asl.ECSSyncWaiter
 	glueIntegration asl.GlueIntegration
+	glueSyncWaiter  asl.GlueSyncWaiter
 	ebIntegration   asl.EventBridgeIntegration
 	s3Reader        asl.S3Reader
 	s3ResultWriter  asl.S3Writer
@@ -314,11 +316,25 @@ func (b *InMemoryBackend) SetECSIntegration(ecs asl.ECSIntegration) {
 	b.ecsIntegration = ecs
 }
 
+// SetECSSyncWaiter configures ".sync" pattern polling for ECS Task states.
+func (b *InMemoryBackend) SetECSSyncWaiter(w asl.ECSSyncWaiter) {
+	b.mu.Lock("SetECSSyncWaiter")
+	defer b.mu.Unlock()
+	b.ecsSyncWaiter = w
+}
+
 // SetGlueIntegration configures the Glue integration.
 func (b *InMemoryBackend) SetGlueIntegration(glue asl.GlueIntegration) {
 	b.mu.Lock("SetGlueIntegration")
 	defer b.mu.Unlock()
 	b.glueIntegration = glue
+}
+
+// SetGlueSyncWaiter configures ".sync" pattern polling for Glue Task states.
+func (b *InMemoryBackend) SetGlueSyncWaiter(w asl.GlueSyncWaiter) {
+	b.mu.Lock("SetGlueSyncWaiter")
+	defer b.mu.Unlock()
+	b.glueSyncWaiter = w
 }
 
 // SetEventBridgeIntegration configures the EventBridge integration.
@@ -342,6 +358,57 @@ func (b *InMemoryBackend) SetS3ResultWriter(w asl.S3Writer) {
 	b.mu.Lock("SetS3ResultWriter")
 	defer b.mu.Unlock()
 	b.s3ResultWriter = w
+}
+
+// integrationsSnapshot holds the Task-state service integrations configured
+// on the backend, copied out under lock so a goroutine building an
+// asl.Executor doesn't need to hold b.mu for the executor's lifetime.
+type integrationsSnapshot struct {
+	lambdaInvoker   asl.LambdaInvoker
+	sqsIntegration  asl.SQSIntegration
+	snsIntegration  asl.SNSIntegration
+	ddbIntegration  asl.DynamoDBIntegration
+	ecsIntegration  asl.ECSIntegration
+	ecsSyncWaiter   asl.ECSSyncWaiter
+	glueIntegration asl.GlueIntegration
+	glueSyncWaiter  asl.GlueSyncWaiter
+	ebIntegration   asl.EventBridgeIntegration
+	s3Reader        asl.S3Reader
+	s3ResultWriter  asl.S3Writer
+}
+
+// snapshotIntegrationsLocked copies the configured integrations. Must be
+// called with at least b.mu's read lock held.
+func (b *InMemoryBackend) snapshotIntegrationsLocked() integrationsSnapshot {
+	return integrationsSnapshot{
+		lambdaInvoker:   b.lambdaInvoker,
+		sqsIntegration:  b.sqsIntegration,
+		snsIntegration:  b.snsIntegration,
+		ddbIntegration:  b.ddbIntegration,
+		ecsIntegration:  b.ecsIntegration,
+		ecsSyncWaiter:   b.ecsSyncWaiter,
+		glueIntegration: b.glueIntegration,
+		glueSyncWaiter:  b.glueSyncWaiter,
+		ebIntegration:   b.ebIntegration,
+		s3Reader:        b.s3Reader,
+		s3ResultWriter:  b.s3ResultWriter,
+	}
+}
+
+// applyIntegrations wires a snapshot's integrations onto executor. Callers
+// still set their own ActivityInvoker, TaskTokenCallbackInvoker, and
+// MapRunNotifier, which vary per execution path.
+func applyIntegrations(executor *asl.Executor, s integrationsSnapshot) {
+	executor.SetSQSIntegration(s.sqsIntegration)
+	executor.SetSNSIntegration(s.snsIntegration)
+	executor.SetDynamoDBIntegration(s.ddbIntegration)
+	executor.SetECSIntegration(s.ecsIntegration)
+	executor.SetECSSyncWaiter(s.ecsSyncWaiter)
+	executor.SetGlueIntegration(s.glueIntegration)
+	executor.SetGlueSyncWaiter(s.glueSyncWaiter)
+	executor.SetEventBridgeIntegration(s.ebIntegration)
+	executor.SetS3Reader(s.s3Reader)
+	executor.SetS3ResultWriter(s.s3ResultWriter)
 }
 
 func (b *InMemoryBackend) smARN(region, name string) string {

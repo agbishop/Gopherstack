@@ -28,9 +28,9 @@ func (b *InMemoryBackend) CreateClassificationJob(
 	jobArn := arn.Build("macie2", b.region, b.accountID, fmt.Sprintf("classification-job/%s", id))
 	now := time.Now().UTC()
 
-	status := "RUNNING"
+	status := jobStatusRunning
 	if jobType == "SCHEDULED" {
-		status = "IDLE"
+		status = jobStatusIdle
 	}
 
 	pct := samplingPercentage
@@ -266,6 +266,18 @@ func matchesJobCriteria(job *ClassificationJob, criteria map[string]any) bool {
 // 30-day pause window.
 const jobPauseWindow = 30 * 24 * time.Hour
 
+// validJobStatusTransitions mirrors the three "valid only if the job's
+// current status is ..." preconditions on UpdateClassificationJobInput.
+// JobStatus's doc comment (api_op_UpdateClassificationJob.go:37-58): the
+// requested status maps to the set of current statuses it may be applied
+// from. A requested status outside this map (e.g. COMPLETE, IDLE, PAUSED)
+// isn't one of the doc's three settable "Valid values", so it's rejected too.
+var validJobStatusTransitions = map[string]map[string]bool{ //nolint:gochecknoglobals // read-only lookup data
+	jobStatusCancelled:  {jobStatusIdle: true, statusPaused: true, jobStatusRunning: true, jobStatusUserPaused: true},
+	jobStatusRunning:    {jobStatusUserPaused: true},
+	jobStatusUserPaused: {jobStatusIdle: true, statusPaused: true, jobStatusRunning: true},
+}
+
 // UpdateClassificationJob updates a job's status. Transitioning to
 // USER_PAUSED populates UserPausedDetails (present only in that state, per
 // the real DescribeClassificationJobOutput/JobSummary shapes); transitioning
@@ -279,9 +291,18 @@ func (b *InMemoryBackend) UpdateClassificationJob(jobID, status string) error {
 		return ErrClassificationJobNotFound
 	}
 
+	allowedFrom, recognized := validJobStatusTransitions[status]
+	if !recognized {
+		return ErrValidation
+	}
+
+	if !allowedFrom[job.JobStatus] {
+		return ErrJobStatusTransition
+	}
+
 	job.JobStatus = status
 
-	if status == "USER_PAUSED" {
+	if status == jobStatusUserPaused {
 		now := time.Now().UTC()
 		expires := now.Add(jobPauseWindow)
 		job.UserPausedDetails = &JobUserPausedDetails{JobPausedAt: &now, JobExpiresAt: &expires}

@@ -2,6 +2,7 @@ package codestarconnections_test
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 	"testing"
 
@@ -445,4 +446,53 @@ func TestListHosts_Sorted(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestListHosts_OrdersTiedNamesByArn verifies that when two hosts share a
+// Name (allowed -- CreateHost has no ResourceAlreadyExistsException for a
+// duplicate name, see errors.go), ListHosts still returns a deterministic
+// total order between them, broken by HostArn. Hosts are seeded via
+// AddHostInternal in descending-ARN order: without a secondary sort key,
+// tied-name hosts are left in insertion order, the reverse of the ascending
+// order this test asserts.
+func TestListHosts_OrdersTiedNamesByArn(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	arns := []string{
+		"arn:aws:codestar-connections:us-east-1:000000000000:host/c-third",
+		"arn:aws:codestar-connections:us-east-1:000000000000:host/b-second",
+		"arn:aws:codestar-connections:us-east-1:000000000000:host/a-first",
+	}
+
+	for _, hostArn := range arns {
+		h.Backend.AddHostInternal(&codestarconnections.Host{
+			HostArn:          hostArn,
+			Name:             "dup-name",
+			ProviderType:     "GitHubEnterpriseServer",
+			ProviderEndpoint: "https://ghe.example.com",
+			Status:           "AVAILABLE",
+		})
+	}
+
+	rec := doRequest(t, h, "ListHosts", map[string]any{})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	resp := parseResp(t, rec)
+	hosts, ok := resp["Hosts"].([]any)
+	require.True(t, ok)
+	require.Len(t, hosts, 3)
+
+	gotArns := make([]string, 0, len(hosts))
+	for _, hh := range hosts {
+		item, isMap := hh.(map[string]any)
+		require.True(t, isMap)
+		gotArns = append(gotArns, item["HostArn"].(string))
+	}
+
+	wantArns := append([]string(nil), arns...)
+	sort.Strings(wantArns)
+
+	assert.Equal(t, wantArns, gotArns)
 }

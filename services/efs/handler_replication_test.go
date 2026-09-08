@@ -624,3 +624,35 @@ func TestCreateReplicationConfiguration_AssignsDestinationFileSystemID(t *testin
 	assert.NotEmpty(t, rcOut.Destinations[0].FileSystemID,
 		"destination FileSystemId must be auto-assigned when not provided")
 }
+
+// TestCreateReplicationConfiguration_Duplicate_WireErrorType verifies that
+// creating a second replication configuration for the same source file
+// system returns ConflictException, not FileSystemAlreadyExists.
+//
+// CreateReplicationConfiguration's own deserializeOpError (aws-sdk-go-v2/
+// service/efs@v1.44.4 deserializers.go) recognizes BadRequest, ConflictException,
+// FileSystemLimitExceeded, FileSystemNotFound, IncorrectFileSystemLifeCycleState,
+// InsufficientThroughputCapacity, InternalServerError, ReplicationNotFound,
+// ThroughputLimitExceeded, UnsupportedAvailabilityZone, ValidationException --
+// no FileSystemAlreadyExists case, unlike CreateFileSystem.
+func TestCreateReplicationConfiguration_Duplicate_WireErrorType(t *testing.T) {
+	t.Parallel()
+
+	h := newTestEFSHandler()
+	fsID := createFS(t, h, "rc-dup-token")
+
+	first := doREST(t, h, http.MethodPost,
+		"/2015-02-01/file-systems/"+fsID+"/replication-configuration",
+		map[string]any{"Destinations": []map[string]any{{"Region": "us-west-2"}}})
+	require.Equal(t, http.StatusOK, first.Code)
+
+	second := doREST(t, h, http.MethodPost,
+		"/2015-02-01/file-systems/"+fsID+"/replication-configuration",
+		map[string]any{"Destinations": []map[string]any{{"Region": "us-west-2"}}})
+	require.Equal(t, http.StatusConflict, second.Code)
+	assert.Equal(t, "ConflictException", second.Header().Get("X-Amzn-Errortype"))
+
+	body := parseResp(t, second)
+	assert.Equal(t, "ConflictException", body["ErrorCode"])
+	assert.NotEqual(t, "FileSystemAlreadyExists", body["ErrorCode"])
+}

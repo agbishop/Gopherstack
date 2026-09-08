@@ -18,11 +18,11 @@ func (b *InMemoryBackend) RegisterDomain(name, description, retention string) er
 	b.mu.Lock("RegisterDomain")
 	defer b.mu.Unlock()
 
-	if d, ok := b.domains.Get(name); ok {
-		if d.Status == statusDeprecated {
-			return fmt.Errorf("%w: %s", ErrDeprecated, name)
-		}
-
+	// DomainAlreadyExistsFault's doc ("You may get this fault if you are
+	// registering a domain that is either already registered or deprecated")
+	// covers both statuses -- unlike RegisterActivityType/RegisterWorkflowType,
+	// RegisterDomain does not model DomainDeprecatedFault at all.
+	if _, ok := b.domains.Get(name); ok {
 		return fmt.Errorf("%w: %s", ErrAlreadyExists, name)
 	}
 
@@ -99,6 +99,22 @@ func (b *InMemoryBackend) DeprecateDomain(name string) error {
 		if at.Status == statusRegistered {
 			at.Status = statusDeprecated
 		}
+	}
+
+	return nil
+}
+
+// requireActiveDomainLocked returns an error unless name is a REGISTERED domain.
+// RegisterActivityType, RegisterWorkflowType and StartWorkflowExecution model
+// UnknownResourceFault but not DomainDeprecatedFault, so a deprecated domain
+// surfaces the same fault as a missing one here -- matching UnknownResourceFault's
+// doc ("the named resource ... is no longer available for this operation") and
+// DeprecateDomain's doc ("it cannot be used to create new workflow executions or
+// register new types"). Caller must hold at least the read lock.
+func (b *InMemoryBackend) requireActiveDomainLocked(name string) error {
+	d, ok := b.domains.Get(name)
+	if !ok || d.Status == statusDeprecated {
+		return fmt.Errorf("%w: domain %s not found", ErrNotFound, name)
 	}
 
 	return nil

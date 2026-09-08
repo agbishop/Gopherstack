@@ -1,6 +1,7 @@
 package identitystore
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -401,19 +402,33 @@ func validateFilters(filters []ListFilter) error {
 // IdentityStoreId validation
 // ----------------------------------------
 
+// errResponseWritten is returned by requireIdentityStoreID and
+// parseAlternateIDRequest instead of the writer's nil-on-success result, so
+// that their ~20 callers' existing `if err != nil { return err }` checks
+// actually stop instead of silently falling through to a second, corrupting
+// write -- or, on the 8 mutation paths, the mutation itself -- on an
+// already-rejected request (gopherstack-n7nk, same class as elasticache's
+// gopherstack-8haq). Handler() translates it back to nil at the top of the
+// dispatch chain.
+var errResponseWritten = errors.New("identitystore: response already written")
+
 // requireIdentityStoreID checks that id is present and matches the real
 // IdentityStoreId shape's pattern (either "d-" + 10 hex chars, or a UUID),
-// writing the appropriate ValidationException response and returning a
-// non-nil error when it does not. Centralizes what was previously an
+// writing the appropriate ValidationException response and returning
+// errResponseWritten when it does not. Centralizes what was previously an
 // empty-check-only block repeated at every one of this service's ~18
 // operation handlers.
 func (h *Handler) requireIdentityStoreID(c *echo.Context, id string) error {
 	if strings.TrimSpace(id) == "" {
-		return h.writeError(c, http.StatusBadRequest, "ValidationException", "IdentityStoreId is required")
+		_ = h.writeError(c, http.StatusBadRequest, "ValidationException", "IdentityStoreId is required")
+
+		return errResponseWritten
 	}
 
 	if err := validatePattern(patternIdentityStoreID, "IdentityStoreId", id); err != nil {
-		return h.writeError(c, http.StatusBadRequest, "ValidationException", err.Error())
+		_ = h.writeError(c, http.StatusBadRequest, "ValidationException", err.Error())
+
+		return errResponseWritten
 	}
 
 	return nil

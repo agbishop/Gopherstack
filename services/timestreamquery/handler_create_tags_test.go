@@ -105,3 +105,48 @@ func TestCreateScheduledQuery_TagsRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, wantTags, got.Tags)
 }
+
+// TestDeleteScheduledQuery_RemovesSharedTags drives CreateScheduledQuery (with
+// Tags) then DeleteScheduledQuery through the real SDK client, and asserts
+// ListTagsForResource no longer reports the deleted ARN's tags. Without
+// cleanup, tags mirrored into the shared TimestreamWrite tag store on create
+// outlive the scheduled query itself, since TimestreamWrite's TagResource
+// accepts any ARN containing "scheduled-query/" without checking whether it
+// still exists (services/timestreamwrite/store.go isKnownARNLocked).
+func TestDeleteScheduledQuery_RemovesSharedTags(t *testing.T) {
+	t.Parallel()
+
+	client := newTestHandlerAndClient(t)
+
+	out, err := client.CreateScheduledQuery(t.Context(), &tqsdk.CreateScheduledQueryInput{
+		Name:                           aws.String("ghost-tag-test"),
+		QueryString:                    aws.String("SELECT 1"),
+		ScheduledQueryExecutionRoleArn: aws.String("arn:aws:iam::000000000000:role/tsq-role"),
+		ScheduleConfiguration: &types.ScheduleConfiguration{
+			ScheduleExpression: aws.String("rate(1 hour)"),
+		},
+		NotificationConfiguration: &types.NotificationConfiguration{
+			SnsConfiguration: &types.SnsConfiguration{
+				TopicArn: aws.String("arn:aws:sns:us-east-1:000000000000:tsq-topic"),
+			},
+		},
+		ErrorReportConfiguration: &types.ErrorReportConfiguration{
+			S3Configuration: &types.S3Configuration{
+				BucketName: aws.String("tsq-error-bucket"),
+			},
+		},
+		Tags: []types.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+	})
+	require.NoError(t, err)
+
+	_, err = client.DeleteScheduledQuery(t.Context(), &tqsdk.DeleteScheduledQueryInput{
+		ScheduledQueryArn: out.Arn,
+	})
+	require.NoError(t, err)
+
+	got, err := client.ListTagsForResource(t.Context(), &tqsdk.ListTagsForResourceInput{
+		ResourceARN: out.Arn,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, got.Tags, "deleting a scheduled query must not leave its tags behind in the shared tag store")
+}

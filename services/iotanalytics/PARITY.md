@@ -1,10 +1,10 @@
 ---
 service: iotanalytics
 sdk_module: aws-sdk-go-v2/service/iotanalytics@v1.32.0
-last_audit_commit: 8d4556e79
-last_audit_date: 2026-08-23  # manifest-harvest pass: fixed Dataset.RetentionPeriod
-  # accept-and-drop gap (CreateDataset/DescribeDataset) -- see CreateDataset/
-  # DescribeDataset ops entries above.
+last_audit_commit: bb9dd1e99
+last_audit_date: 2026-09-04  # gopherstack-2wb parity sweep: fixed CreatePipeline/UpdatePipeline
+  # missing PipelineActivities 2-25/channel+datastore shape validation -- see
+  # CreatePipeline/UpdatePipeline ops entries and the 2026-09-04 Notes section below.
 overall: A            # wrapper-key/nested-shape sweep: fixed DescribeChannel/DescribeDatastore statistics sibling-key nesting, CreateDatastore/DescribeDatastore datastorePartitions wire key, 4 fabricated summary ARNs, fabricated GetDatasetContent versionId, fabricated IotSiteWise roleArn -- zero remaining wrapper-key bugs found
                        # ---- query/header-to-non-string-field sweep (2026-08-29) ----
                        # Hunted for query/header/path values fed into a non-string Go field
@@ -37,9 +37,9 @@ ops:
   UpdateDataset: {wire: ok, errors: ok, state: ok, persist: ok}
   DeleteDataset: {wire: ok, errors: ok, state: ok, persist: ok}
   ListDatasets: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-20: datasetSummary fabricated a datasetArn member DatasetSummary doesn't have (deserializers.go:7011 awsRestjson1_deserializeDocumentDatasetSummary has no arn case) -- removed. FIXED 2026-08-23: datasetSummary was also missing DatasetSummary's real actions/triggers members (types.go:652). Confirmed against the real *DatasetSummary type before adding: actions uses the narrower datasetActionSummary shape (types.go:522 DatasetActionSummary -- actionName/actionType only, ActionType derived from which of QueryAction/ContainerAction the full DatasetAction carried, not the full action body), triggers reuses DatasetTrigger unchanged (same type real AWS uses in both the summary and detail view). See TestListDatasets_SummaryCarriesActionsAndTriggers (list_summaries_missing_members_test.go)."}
-  CreatePipeline: {wire: ok, errors: ok, state: ok, persist: ok, note: "now validates tags before create (see CreateChannel)"}
+  CreatePipeline: {wire: ok, errors: ok, state: ok, persist: ok, note: "now validates tags before create (see CreateChannel). FIXED 2026-09-04 (gopherstack-2wb): CreatePipelineInput.PipelineActivities is documented as \"The list can be 2-25 PipelineActivity objects and must contain both a channel and a datastore activity. Each entry in the list must contain only one activity\" (api_op_CreatePipeline.go) -- the SDK's client-side validator (validatePipelineActivity, validators.go) only checks each activity's own required sub-fields, not this aggregate shape, so a real typed client could send (and gopherstack silently accepted) a pipeline with zero, one, >25, or channel-only/datastore-only activities. Now enforced server-side via validatePipelineActivities (store.go), returning InvalidRequestException. See TestCreatePipeline_RequiresChannelAndDatastoreActivity (wire_field_fixes_test.go)."}
   DescribePipeline: {wire: ok, errors: ok, state: ok, persist: ok}
-  UpdatePipeline: {wire: ok, errors: ok, state: ok, persist: ok}
+  UpdatePipeline: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-09-04 (gopherstack-2wb): same PipelineActivities 2-25/channel+datastore shape as CreatePipeline is documented as required on UpdatePipelineInput too (api_op_UpdatePipeline.go) -- now enforced when a non-nil activities slice is supplied. A nil/omitted activities body still leaves the pipeline unchanged (a real client always sends this required field; nil is only reachable via a raw HTTP caller omitting it)."}
   DeletePipeline: {wire: ok, errors: ok, state: ok, persist: ok}
   ListPipelines: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-20: pipelineSummary fabricated a pipelineArn member PipelineSummary doesn't have (deserializers.go:9310 awsRestjson1_deserializeDocumentPipelineSummary has no arn case) -- removed"}
   StartPipelineReprocessing: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -385,3 +385,56 @@ doc comment was corrected to say `UpdateDatastore` doesn't take partitions at al
 
 Gates: `go build`, `go vet`, `go test -race -count=1`, `golangci-lint run` — all clean
 (`./services/iotanalytics/...`).
+
+## 2026-09-04 — parity sweep (gopherstack-2wb): CreatePipeline/UpdatePipeline missing PipelineActivities shape validation
+
+`CreatePipelineInput`/`UpdatePipelineInput`'s `PipelineActivities` doc comment
+(`api_op_CreatePipeline.go`, `api_op_UpdatePipeline.go`) states: "The list can be 2-25
+PipelineActivity objects and must contain both a channel and a datastore activity. Each entry
+in the list must contain only one activity." This is a real, citable business rule distinct
+from a simple required-field check. The SDK's client-side validator
+(`validatePipelineActivity`, `validators.go`) only walks each activity's own required
+sub-fields (e.g. `ChannelActivity.ChannelName`/`Name`) — it never checks the aggregate list
+shape — so a real typed client can construct and send a `CreatePipelineInput` with zero
+activities, only a channel activity, only a datastore activity, or more than 25 entries, and
+gopherstack accepted all of these silently before this fix.
+
+Fixed by `validatePipelineActivities` (`store.go`): enforces 2-25 entries, exactly one
+`Channel` activity, exactly one `Datastore` activity, and that no single entry sets more than
+one activity union member. Wired into `CreatePipeline` (unconditional) and `UpdatePipeline`
+(only when the caller supplies a non-nil activities slice — `UpdatePipelineInput.PipelineActivities`
+is also `This member is required`, so a real client always sends it; nil/omitted is only
+reachable via a raw HTTP caller, and is kept as "leave unchanged" for backward compatibility
+with that path). Returns `InvalidRequestException` (`errCodeInvalidRequest`/`ErrValidation`),
+which is in both ops' real error sets (confirmed against
+`awsRestjson1_deserializeOpErrorCreatePipeline`/`...UpdatePipeline` in `deserializers.go`).
+
+Proven by `TestCreatePipeline_RequiresChannelAndDatastoreActivity` (three subtests:
+channel-only, datastore-only, empty) and `TestCreatePipeline_ChannelAndDatastoreActivity_Succeeds`
+(`wire_field_fixes_test.go`), driven through the real aws-sdk-go-v2 client. Hand-reverted the
+`validatePipelineActivities` call in `CreatePipeline` (`pipelines.go`), confirmed all three
+`RequiresChannelAndDatastoreActivity` subtests fail ("An error is expected but got nil"),
+restored (diff against backup identical).
+
+**Blast radius**: this is a `CreatePipeline`/`UpdatePipeline` precondition that most of this
+package's own test suite incidentally violated (seeding a pipeline with `nil` or
+channel-only activities purely to exercise unrelated behavior — tags, pagination, persistence,
+deep-copy, reprocessing). Updated: `AddPipelineInternal` (`pipelines.go`, the shared test-seed
+helper) now seeds a valid channel+datastore pair; every direct `CreatePipeline(...)` call site
+and raw-HTTP pipeline-creation body across `pipelines_test.go`, `store_test.go`,
+`persistence_test.go`, `handler_test.go`, `handler_tags_test.go`, `handler_pipelines_test.go`,
+`wire_shape_sdk_roundtrip_test.go`, and `test/integration/iotanalytics_test.go` now supplies a
+minimal valid activity pair (two shared helpers: `validPipelineActivities()` for Go-level
+`[]iotanalytics.PipelineActivity`, `validPipelineActivitiesBody()` for raw JSON bodies).
+`test/integration/iotanalytics_test.go`'s `TestIntegration_IoTAnalytics_PipelineLifecycle`/
+`_PipelineReprocessing` previously sent a channel-only `PipelineActivities` and asserted
+`CreatePipeline` succeeded — this itself encoded the bug as correct behavior (a real AWS
+endpoint would reject it); fixed by adding the missing datastore activity to both.
+
+Gates: `go build ./...`, `go vet ./services/iotanalytics/...`,
+`go test -race -count=1 ./services/iotanalytics/...`,
+`golangci-lint run ./services/iotanalytics/...` (0 issues),
+`golangci-lint run ./test/integration/...` (0 issues),
+`go test -race -count=1 ./services/cloudformation/... ./services/iot/... ./services/lambda/... .`
+— all pass (no cross-service wiring touches `CreatePipeline`'s shape, so no CFN teardown or
+Lambda/IoT wiring regression).

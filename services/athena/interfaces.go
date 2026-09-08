@@ -1,5 +1,48 @@
 package athena
 
+import (
+	"context"
+
+	sdk_s3 "github.com/aws/aws-sdk-go-v2/service/s3"
+)
+
+// S3Storer is the subset of S3 operations Athena needs to write a succeeded
+// query execution's result object to ResultConfiguration.OutputLocation,
+// wired via SetS3Backend. When unset, results are stored/echoed but no S3
+// object is written.
+type S3Storer interface {
+	PutObject(ctx context.Context, input *sdk_s3.PutObjectInput) (*sdk_s3.PutObjectOutput, error)
+}
+
+// GlueDatabase is the subset of a Glue database's fields Athena needs to
+// present a GLUE-type catalog's database, wired via SetGlueMetadataSource.
+type GlueDatabase struct {
+	Parameters  map[string]string
+	Name        string
+	Description string
+}
+
+// GlueTable is the subset of a Glue table's fields Athena needs to present a
+// GLUE-type catalog's table, wired via SetGlueMetadataSource.
+type GlueTable struct {
+	Name          string
+	Parameters    map[string]string
+	Columns       []Column
+	PartitionKeys []Column
+	CreateTime    float64
+}
+
+// GlueMetadataSource is the subset of Glue operations that Athena needs to
+// resolve a GLUE-type DataCatalog's databases and tables against real Glue
+// state, wired via SetGlueMetadataSource. When unset, GLUE-type catalogs
+// fall back to Athena's own internally simulated database/table store.
+type GlueMetadataSource interface {
+	GetDatabase(name string) (*GlueDatabase, error)
+	GetDatabases() []*GlueDatabase
+	GetTable(dbName, tableName string) (*GlueTable, error)
+	GetTables(dbName string) ([]*GlueTable, error)
+}
+
 // StorageBackend is the interface for the Athena in-memory store.
 type StorageBackend interface {
 	// WorkGroups
@@ -11,7 +54,7 @@ type StorageBackend interface {
 	GetWorkGroup(name string) (*WorkGroup, error)
 	ListWorkGroups(nextToken string, maxResults int) ([]*WorkGroupSummary, string, error)
 	UpdateWorkGroup(name, description, state string, cfg *WorkGroupConfigurationUpdates) error
-	DeleteWorkGroup(name string) error
+	DeleteWorkGroup(name string, recursiveDelete bool) error
 
 	// Named Queries
 	CreateNamedQuery(name, description, database, queryString, workGroup string) (string, error)

@@ -130,6 +130,12 @@ func TestCreateWebhook_DescriptionPresentWhenEmpty(t *testing.T) {
 	app, err := client.CreateApp(ctx, &amplifysdk.CreateAppInput{Name: aws.String("app-webhook")})
 	require.NoError(t, err)
 
+	_, err = client.CreateBranch(ctx, &amplifysdk.CreateBranchInput{
+		AppId:      app.App.AppId,
+		BranchName: aws.String("main"),
+	})
+	require.NoError(t, err)
+
 	created, err := client.CreateWebhook(ctx, &amplifysdk.CreateWebhookInput{
 		AppId:      app.App.AppId,
 		BranchName: aws.String("main"),

@@ -31,3 +31,18 @@ func (b *InMemoryBackend) SnapshotRegistry() (map[string]json.RawMessage, error)
 func (b *InMemoryBackend) RestoreRegistry(data map[string]json.RawMessage) error {
 	return b.registry.RestoreAll(data)
 }
+
+// SetAPIKeyExpiry directly overwrites an API key's Expires field, bypassing
+// Create/UpdateAPIKey's 1-365-day expiry bounds. Real AWS's
+// ApiKeyValidityOutOfBoundsException makes it impossible to create an
+// already-expired key through the public API, but tests still need one to
+// exercise ListAPIKeys/SweepExpiredAPIKeys' expiry filtering without waiting
+// for a key to age out.
+func (b *InMemoryBackend) SetAPIKeyExpiry(apiID, keyID string, expires int64) {
+	b.mu.Lock("SetAPIKeyExpiry")
+	defer b.mu.Unlock()
+
+	if k := b.apiKeys[apiID][keyID]; k != nil {
+		k.Expires = expires
+	}
+}

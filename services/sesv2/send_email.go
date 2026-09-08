@@ -34,9 +34,21 @@ func (b *InMemoryBackend) SendEmail(
 	from string,
 	to []string,
 	subject, bodyHTML, bodyText string,
+	template *bulkEmailTemplate,
 ) (string, error) {
 	if from == "" {
 		return "", fmt.Errorf("%w: FromEmailAddress is required", ErrInvalidInput)
+	}
+
+	if template != nil {
+		tmplSubject, tmplHTML, tmplText, vars, err := b.resolveBulkTemplate(template)
+		if err != nil {
+			return "", err
+		}
+
+		subject = renderTemplateVars(tmplSubject, vars)
+		bodyHTML = renderTemplateVars(tmplHTML, vars)
+		bodyText = renderTemplateVars(tmplText, vars)
 	}
 
 	msgID := "sesv2-" + uuid.New().String()
@@ -160,7 +172,8 @@ type bulkEmailEntry struct {
 
 // bulkEmailTemplate mirrors the subset of types.Template this emulator
 // supports: inline content or a reference to a stored EmailTemplate, plus
-// the default substitution data for {{var}} placeholders.
+// the default substitution data for {{var}} placeholders. Shared by
+// SendEmail's EmailContent.Template and SendBulkEmail's DefaultContent.Template.
 type bulkEmailTemplate struct {
 	TemplateContent *EmailTemplateContent `json:"TemplateContent"`
 	TemplateData    string                `json:"TemplateData"`
@@ -215,7 +228,7 @@ func (b *InMemoryBackend) SendBulkEmail(
 		html := renderTemplateVars(baseHTML, vars)
 		text := renderTemplateVars(baseText, vars)
 
-		msgID, _ := b.SendEmail(fromEmailAddress, entry.Destination.ToAddresses, subject, html, text)
+		msgID, _ := b.SendEmail(fromEmailAddress, entry.Destination.ToAddresses, subject, html, text, nil)
 		if msgID == "" {
 			msgID = "sesv2-bulk-" + uuid.New().String()
 		}

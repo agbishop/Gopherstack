@@ -104,6 +104,7 @@ func (b *InMemoryBackend) DeleteEventBus(ctx context.Context, name string) error
 
 	buses.Delete(busKey)
 	delete(b.ruleIndexStore(region), busKey)
+	delete(b.busePoliciesStore(region), busKey)
 
 	// Clean up all rules and targets for this bus.
 	rules := b.rulesStore(region)

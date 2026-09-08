@@ -107,6 +107,9 @@ func TestCreateCallAnalyticsCategory_Rules(t *testing.T) {
 		_, err := b.CreateCallAnalyticsCategory(&transcribe.CallAnalyticsCategory{
 			CategoryName: "my-cat-update",
 			InputType:    "POST_CALL",
+			Rules: []transcribe.CallAnalyticsRule{
+				{NonTalkTimeFilter: &transcribe.NonTalkTimeFilter{Threshold: 30000}},
+			},
 		})
 		require.NoError(t, err)
 
@@ -125,6 +128,74 @@ func TestCreateCallAnalyticsCategory_Rules(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "REAL_TIME", updated.InputType)
 		assert.Len(t, updated.Rules, 1)
+	})
+
+	t.Run("missing_rules_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.CreateCallAnalyticsCategory(&transcribe.CallAnalyticsCategory{
+			CategoryName: "no-rules-cat",
+			InputType:    "POST_CALL",
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
+	t.Run("empty_rules_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.CreateCallAnalyticsCategory(&transcribe.CallAnalyticsCategory{
+			CategoryName: "empty-rules-cat",
+			InputType:    "POST_CALL",
+			Rules:        []transcribe.CallAnalyticsRule{},
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
+	t.Run("too_many_rules_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		rules := make([]transcribe.CallAnalyticsRule, 21)
+		for i := range rules {
+			rules[i] = transcribe.CallAnalyticsRule{NonTalkTimeFilter: &transcribe.NonTalkTimeFilter{Threshold: 1000}}
+		}
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.CreateCallAnalyticsCategory(&transcribe.CallAnalyticsCategory{
+			CategoryName: "too-many-rules-cat",
+			InputType:    "POST_CALL",
+			Rules:        rules,
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
+	t.Run("transcript_filter_missing_targets_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.CreateCallAnalyticsCategory(&transcribe.CallAnalyticsCategory{
+			CategoryName: "tf-no-targets-cat",
+			InputType:    "POST_CALL",
+			Rules: []transcribe.CallAnalyticsRule{
+				{TranscriptFilter: &transcribe.TranscriptFilter{TranscriptFilterType: "EXACT"}},
+			},
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
+	t.Run("sentiment_filter_missing_sentiments_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.CreateCallAnalyticsCategory(&transcribe.CallAnalyticsCategory{
+			CategoryName: "sf-no-sentiments-cat",
+			InputType:    "POST_CALL",
+			Rules: []transcribe.CallAnalyticsRule{
+				{SentimentFilter: &transcribe.SentimentFilter{}},
+			},
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
 	})
 }
 
@@ -161,6 +232,9 @@ func TestCreateCallAnalyticsCategory(t *testing.T) {
 			body: map[string]any{
 				"CategoryName": "my-category",
 				"InputType":    "POST_CALL",
+				"Rules": []map[string]any{
+					{"NonTalkTimeFilter": map[string]any{"Threshold": 30000}},
+				},
 			},
 			wantCode: http.StatusOK,
 			wantKey:  "my-category",
@@ -170,12 +244,21 @@ func TestCreateCallAnalyticsCategory(t *testing.T) {
 			setup: func(t *testing.T, b *transcribe.InMemoryBackend) {
 				t.Helper()
 				_, err := b.CreateCallAnalyticsCategory(
-					&transcribe.CallAnalyticsCategory{CategoryName: "dup-cat", InputType: "POST_CALL"},
+					&transcribe.CallAnalyticsCategory{
+						CategoryName: "dup-cat",
+						InputType:    "POST_CALL",
+						Rules: []transcribe.CallAnalyticsRule{
+							{NonTalkTimeFilter: &transcribe.NonTalkTimeFilter{Threshold: 30000}},
+						},
+					},
 				)
 				require.NoError(t, err)
 			},
 			body: map[string]any{
 				"CategoryName": "dup-cat",
+				"Rules": []map[string]any{
+					{"NonTalkTimeFilter": map[string]any{"Threshold": 30000}},
+				},
 			},
 			wantCode: http.StatusConflict,
 		},
@@ -219,7 +302,13 @@ func TestDeleteCallAnalyticsCategory(t *testing.T) {
 			setup: func(t *testing.T, b *transcribe.InMemoryBackend) {
 				t.Helper()
 				_, err := b.CreateCallAnalyticsCategory(
-					&transcribe.CallAnalyticsCategory{CategoryName: "cat-to-delete", InputType: "POST_CALL"},
+					&transcribe.CallAnalyticsCategory{
+						CategoryName: "cat-to-delete",
+						InputType:    "POST_CALL",
+						Rules: []transcribe.CallAnalyticsRule{
+							{NonTalkTimeFilter: &transcribe.NonTalkTimeFilter{Threshold: 30000}},
+						},
+					},
 				)
 				require.NoError(t, err)
 			},
@@ -279,6 +368,9 @@ func TestCreateCallAnalyticsCategory_OutputShape(t *testing.T) {
 	rec := doTranscribeRequest(t, h, "CreateCallAnalyticsCategory", map[string]any{
 		"CategoryName": "shape-cat",
 		"InputType":    "POST_CALL",
+		"Rules": []map[string]any{
+			{"NonTalkTimeFilter": map[string]any{"Threshold": 30000}},
+		},
 	})
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -552,6 +644,9 @@ func TestCallAnalyticsCategory_CreateTimeAndLastUpdateTimeEchoed(t *testing.T) {
 	createRec := doTranscribeRequest(t, h, "CreateCallAnalyticsCategory", map[string]any{
 		"CategoryName": "time-fields-cat",
 		"InputType":    "POST_CALL",
+		"Rules": []map[string]any{
+			{"NonTalkTimeFilter": map[string]any{"Threshold": 30000}},
+		},
 	})
 	require.Equal(t, http.StatusOK, createRec.Code, createRec.Body.String())
 
@@ -571,6 +666,9 @@ func TestCallAnalyticsCategory_CreateTimeAndLastUpdateTimeEchoed(t *testing.T) {
 	updateRec := doTranscribeRequest(t, h, "UpdateCallAnalyticsCategory", map[string]any{
 		"CategoryName": "time-fields-cat",
 		"InputType":    "POST_CALL",
+		"Rules": []map[string]any{
+			{"NonTalkTimeFilter": map[string]any{"Threshold": 30000}},
+		},
 	})
 	require.Equal(t, http.StatusOK, updateRec.Code)
 

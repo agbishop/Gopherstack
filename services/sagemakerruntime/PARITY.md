@@ -1,19 +1,18 @@
 ---
 service: sagemakerruntime
 sdk_module: aws-sdk-go-v2/service/sagemakerruntime@v1.43.4
-last_audit_commit: 914e8b59
-last_audit_date: 2026-08-20
-overall: A            # wrapper-key/nested-shape sweep this pass: zero wire bugs found (service is pure HTTP header binding + opaque payload, no nested JSON shapes to misplace); added a real-SDK GetStream()/Events() round-trip test for the event-stream framing claim
+last_audit_commit: 73dccf417
+last_audit_date: 2026-09-04
+overall: A            # fixed the one open gap: InvokeEndpointAsync now rejects Body/InputLocation both-or-neither with ValidationError, matching the real API's "provide exactly one of them" constraint (unenforceable client-side, so it must be a server check)
 ops:
   InvokeEndpoint: {wire: ok, errors: ok, state: ok, persist: n/a, note: "sync op; EndpointName is now validated against the wired services/sagemaker endpoint registry (existence + InService); NewSessionId's Expires= attribute now matches the SDK's RFC-3339 wire format; ClosedSessionId is now emitted when an expired session is touched. body is an opaque mock, other headers round-trip correctly"}
-  InvokeEndpointAsync: {wire: ok, errors: ok, state: ok, persist: ok, note: "returns InferenceId (JSON body)/OutputLocation/FailureLocation headers correctly; EndpointName now validated like the other two ops"}
+  InvokeEndpointAsync: {wire: ok, errors: ok, state: ok, persist: ok, note: "returns InferenceId (JSON body)/OutputLocation/FailureLocation headers correctly; EndpointName now validated like the other two ops; Body and InputLocation are now enforced as mutually exclusive/exactly-one-of (handler.go's handleInvokeEndpointAsync), matching api_op_InvokeEndpointAsync.go's doc comment on InvokeEndpointAsyncInput.Body -- previously neither, or both, was silently accepted"}
   InvokeEndpointWithResponseStream: {wire: ok, errors: ok, state: ok, persist: n/a, note: "event-stream framing (prelude/header/payload/CRC) verified against smithy-go wire format; EndpointName now validated; SessionId only touches, never creates (per SDK doc: sessions can't be created via this op), and InvokeEndpointWithResponseStreamOutput has no ClosedSessionId member so expiry-driven closure is a side effect only here, never surfaced on this response"}
 families:
   sessions: {status: ok, note: "NEW_SESSION creation, FIFO eviction (maxSessions=1000), TouchSession on subsequent calls, ExpiresAt now enforced (session past its ExpiresAt is evicted and reported via ClosedSessionId on InvokeEndpoint; see SessionTouchOutcome) -- all covered."}
   invocation_history: {status: ok, note: "bounded FIFO (maxInvocationHistory=1000), persisted."}
   endpoint_validation: {status: ok, note: "EndpointLookup (endpoint_lookup.go) is a minimal interface satisfied directly by *sagemaker.InMemoryBackend's exported DescribeEndpoint method; wired at Provider.Init via wireEndpointLookup (provider.go), following the services/cloudwatchlogs/provider.go s3HandlerProvider precedent -- no change to services/sagemaker was needed, since DescribeEndpoint was already an exported, lock-safe read accessor. Unknown EndpointName and known-but-not-InService both surface real AWS's 'Endpoint <name> of account <account> not found.' ValidationError message (confirmed against real-world AWS error reports: an endpoint still Creating is reported as not-found from InvokeEndpoint's perspective too, since the runtime routing table only serves InService endpoints). When no lookup is wired (bare NewInMemoryBackend, e.g. every pre-existing test in this package), validation is a no-op, preserving standalone behaviour."}
-gaps:
-  - "NEW since v1.39.3 (found by gopherstack-u8my's pin-correction pass, not fixed): InvokeEndpointAsyncInput gained an inline Body []byte httpPayload member as an alternative to the S3-URI InputLocation header (real API: 'Body and InputLocation are mutually exclusive. Provide exactly one of them' -- InputLocation is consequently no longer a required member). gopherstack's handleInvokeEndpointAsync already reads the raw HTTP request body unconditionally and never required an InputLocation header, so it already accepts both real usages without change -- but it also does not enforce the mutual-exclusivity/exactly-one-of rule (a request with neither, or with both a body and an InputLocation header, is silently accepted rather than rejected). Not a regression from this SDK bump, just newly-visible now that the field is real. (needs bd issue)"
+gaps: []
 deferred: []
 leaks: {status: clean, note: "sessions/asyncInvocations/invocations are all FIFO-capped (maxSessions/maxAsyncInvocations/maxInvocationHistory=1000); no goroutines, no janitor (Shutdown is a documented no-op). New endpointLookup field is a plain interface reference (no goroutine, no owned resource); SetEndpointLookup/validateEndpoint both take/release the backend's own lock before calling out to the (separately-locked) sagemaker backend, so no lock is held across the cross-service call and no lock-ordering cycle is introduced."}
 ---
@@ -249,3 +248,75 @@ Gates: `go build`, `go vet`, `go fix -diff` (empty), `gofmt -l` (empty),
 `go test -race` (all green, including the new round-trip test),
 `golangci-lint run` (0 issues). `git status --short` outside this service
 directory: clean.
+
+## 2026-09-04 diff-scoped re-audit and gap fix
+
+Diffed `914e8b59..HEAD` for this directory rather than re-deriving from
+scratch: only test-only churn (an unrelated `services/sagemaker`
+`CreateEndpointFSM` signature update in `endpoint_validation_test.go`, the
+repo-wide mechanical `iam_enforcement_test.go` IAM-enforcement harness, and a
+regenerated `README.md`), plus a `PARITY.md` stamp bump that lands the
+2026-08-20 wrapper-key-sweep content -- no production wire-shape code
+changed since the last real audit. Confirmed `914e8b59` itself is not an
+ancestor of this branch's HEAD (squash-merge history rewrite, per this
+repo's own documented `Closes`-trailer-loss behaviour) but its tree content
+matches what this file already describes, so nothing was missed by treating
+it as the baseline.
+
+**Fixed the one disclosed-but-unfixed gap:** `InvokeEndpointAsyncInput.Body`'s
+doc comment (`api_op_InvokeEndpointAsync.go`) states "Body and InputLocation
+are mutually exclusive. Provide exactly one of them," and
+`validateOpInvokeEndpointAsyncInput` (`validators.go:84-97`) confirms this is
+**not** a client-side check -- only `EndpointName` is required there -- so a
+real client can construct and send a request with neither or both, meaning
+this must be a server-side validation in real AWS. `handleInvokeEndpointAsync`
+(`handler.go`) previously read the raw HTTP body unconditionally and never
+read the `X-Amzn-Sagemaker-Inputlocation` header at all (confirmed via
+`serializers.go`'s `awsRestjson1_serializeOpHttpBindingsInvokeEndpointAsyncInput`,
+which binds `InputLocation` to that exact header) -- so a request with
+neither field, or with both, was silently accepted with 202 Accepted. Fixed:
+`handleInvokeEndpointAsync` now compares `len(body) > 0` against the new
+`X-Amzn-Sagemaker-Inputlocation` header's presence and returns `ValidationError`
+(400) when they're equal (both true or both false). Added
+`headerInputLocation` header constant. Regression test
+`TestAsyncInvocation_BodyInputLocationMutualExclusion`
+(`invoke_endpoint_async_test.go`) covers all four combinations; proved
+non-vacuous by neutering the guard (`if (len(body) > 0) == hasInputLocation`
+-> `if false && ...`), confirming exactly the two reject cases fail (202
+instead of 400) while the two accept cases still pass, then restoring from a
+backup copy. Updated `TestHandler_EndpointValidation`'s async-invocations
+subtests and `TestAsyncInvocationInferenceIDPreserved` (both previously sent
+neither field, relying on the bug) to send a body instead, since their intent
+is EndpointName/InferenceId behaviour, not this constraint.
+
+**Five dimensions:**
+1. AWS behavior compliance: fixed the Body/InputLocation gap above; everything
+   else re-confirmed unchanged against the pinned SDK (no other wire-shape
+   code changed since 914e8b59).
+2. LocalStack parity: NOT CHECKED this pass (no LocalStack instance
+   available in this environment; prior passes found no LocalStack-specific
+   divergence to compare against either).
+3. Cross-service integration: re-confirmed clean -- `validateEndpoint`
+   correctly rejects an EndpointName the wired `services/sagemaker` registry
+   doesn't know about, or hasn't reached `InService`
+   (`TestHandler_EndpointValidation`, `TestProvider_WiresSageMakerEndpointLookup`).
+   The new IAM-enforcement test (`iam_enforcement_test.go`, added by an
+   unrelated repo-wide campaign since the last audit) was read in full and
+   correctly maps `POST /endpoints/{name}/invocations` -> denied without
+   `sagemaker-runtime:InvokeEndpoint` -- not specific to this service, so not
+   re-derived from the SDK independently.
+4. Performance: NOT CHECKED beyond what the 2026-08-20 pass already recorded
+   (no hot-path code changed this pass); no new `sort.Slice` or O(n)
+   under-lock scans introduced or found (`grep -n 'sort\.\(Slice\|SliceStable\)'`
+   across the package: zero hits).
+5. Resource leaks: re-confirmed clean -- `grep -n 'go func'` across the
+   package: zero hits (no goroutines in this service at all); FIFO caps on
+   sessions/asyncInvocations/invocations unchanged.
+
+Baseline (before this pass's fix): `golangci-lint run` 0 issues,
+`go test -race -count=1` all green -- i.e. the Body/InputLocation gap was a
+genuine silent-accept bug, not something already caught by an existing test.
+Gates after the fix: `go build`, `go vet`, `gofmt -l` (empty),
+`go test -race -count=1` (all green, including the new regression test),
+`golangci-lint run` (0 issues, after `--fix` reordered the new test table's
+struct fields for `fieldalignment`).

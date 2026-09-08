@@ -449,7 +449,8 @@ func (h *Handler) handleUpdateServiceAttributes(_ context.Context, body []byte) 
 }
 
 type deleteServiceAttributesRequest struct {
-	ServiceID string `json:"ServiceId"`
+	ServiceID  string   `json:"ServiceId"`
+	Attributes []string `json:"Attributes"`
 }
 
 func (h *Handler) handleDeleteServiceAttributes(_ context.Context, body []byte) error {
@@ -462,7 +463,11 @@ func (h *Handler) handleDeleteServiceAttributes(_ context.Context, body []byte) 
 		return fmt.Errorf("%w: ServiceId is required", errInvalidRequest)
 	}
 
-	return h.Backend.DeleteServiceAttributes(req.ServiceID)
+	if len(req.Attributes) == 0 {
+		return fmt.Errorf("%w: Attributes is required", errInvalidRequest)
+	}
+
+	return h.Backend.DeleteServiceAttributes(req.ServiceID, req.Attributes)
 }
 
 func applyPaginationServices(items []Service, nextToken string, maxResults int) ([]Service, string) {

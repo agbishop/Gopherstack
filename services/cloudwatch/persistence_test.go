@@ -39,7 +39,7 @@ func TestInMemoryBackend_SnapshotRestore(t *testing.T) {
 			verify: func(t *testing.T, b *cloudwatch.InMemoryBackend, id string) {
 				t.Helper()
 
-				alarms, _, _, err := b.DescribeAlarms([]string{id}, nil, "", "", "", 0)
+				alarms, _, _, err := b.DescribeAlarms([]string{id}, nil, "", "", "", 0, "", "", "")
 				require.NoError(t, err)
 				require.Len(t, alarms.Data, 1)
 				assert.Equal(t, id, alarms.Data[0].AlarmName)
@@ -52,7 +52,7 @@ func TestInMemoryBackend_SnapshotRestore(t *testing.T) {
 			verify: func(t *testing.T, b *cloudwatch.InMemoryBackend, _ string) {
 				t.Helper()
 
-				alarms, _, _, _ := b.DescribeAlarms(nil, nil, "", "", "", 0)
+				alarms, _, _, _ := b.DescribeAlarms(nil, nil, "", "", "", 0, "", "", "")
 				assert.Empty(t, alarms.Data)
 			},
 		},
@@ -108,7 +108,7 @@ func TestInMemoryBackend_SnapshotRestore_CompositeAndHistory(t *testing.T) {
 			verify: func(t *testing.T, b *cloudwatch.InMemoryBackend) {
 				t.Helper()
 
-				_, composites, _, err := b.DescribeAlarms(nil, []string{"CompositeAlarm"}, "", "", "", 0)
+				_, composites, _, err := b.DescribeAlarms(nil, []string{"CompositeAlarm"}, "", "", "", 0, "", "", "")
 				require.NoError(t, err)
 				require.Len(t, composites.Data, 1)
 				assert.Equal(t, "parent-persist", composites.Data[0].AlarmName)
@@ -128,7 +128,7 @@ func TestInMemoryBackend_SnapshotRestore_CompositeAndHistory(t *testing.T) {
 			verify: func(t *testing.T, b *cloudwatch.InMemoryBackend) {
 				t.Helper()
 
-				p, err := b.DescribeAlarmHistory("hist-persist", nil, "", "", time.Time{}, time.Time{}, 0)
+				p, err := b.DescribeAlarmHistory("hist-persist", nil, "", "", "", time.Time{}, time.Time{}, 0)
 				require.NoError(t, err)
 				assert.NotEmpty(t, p.Data)
 				assert.Equal(t, "hist-persist", p.Data[0].AlarmName)
@@ -157,7 +157,7 @@ func TestInMemoryBackend_SnapshotRestore_CompositeAndHistory(t *testing.T) {
 			verify: func(t *testing.T, b *cloudwatch.InMemoryBackend) {
 				t.Helper()
 
-				_, _, logAlarms, err := b.DescribeAlarms(nil, []string{"LogAlarm"}, "", "", "", 0)
+				_, _, logAlarms, err := b.DescribeAlarms(nil, []string{"LogAlarm"}, "", "", "", 0, "", "", "")
 				require.NoError(t, err)
 				require.Len(t, logAlarms.Data, 1)
 				assert.Equal(t, "log-persist", logAlarms.Data[0].AlarmName)
@@ -243,7 +243,7 @@ func TestHandler_SnapshotRestore(t *testing.T) {
 	h2 := cloudwatch.NewHandler(b2)
 	require.NoError(t, h2.Restore(t.Context(), snap))
 
-	alarms, _, _, err := b2.DescribeAlarms([]string{"snap-alarm"}, nil, "", "", "", 0)
+	alarms, _, _, err := b2.DescribeAlarms([]string{"snap-alarm"}, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	require.Len(t, alarms.Data, 1)
 	assert.Equal(t, "snap-alarm", alarms.Data[0].AlarmName)
@@ -541,12 +541,12 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	// back to verify both survived the snapshot/restore round trip.
 	alarms, composites, _, err := fresh.DescribeAlarms(
 		nil, []string{"MetricAlarm", "CompositeAlarm"}, "", "", "", 0,
-	)
+		"", "", "")
 	require.NoError(t, err)
 	require.Len(t, alarms.Data, 1)
 	assert.Equal(t, "full-state-alarm", alarms.Data[0].AlarmName)
 
-	hist, err := fresh.DescribeAlarmHistory("full-state-alarm", nil, "", "", time.Time{}, time.Time{}, 0)
+	hist, err := fresh.DescribeAlarmHistory("full-state-alarm", nil, "", "", "", time.Time{}, time.Time{}, 0)
 	require.NoError(t, err)
 	assert.NotEmpty(t, hist.Data)
 
@@ -609,7 +609,7 @@ func TestInMemoryBackend_Restore_VersionGuard(t *testing.T) {
 
 	require.NoError(t, target.Restore(t.Context(), corrupted))
 
-	alarms, _, _, err := target.DescribeAlarms(nil, nil, "", "", "", 0)
+	alarms, _, _, err := target.DescribeAlarms(nil, nil, "", "", "", 0, "", "", "")
 	require.NoError(t, err)
 	assert.Empty(t, alarms.Data, "version-mismatched snapshot should reset the backend to empty, not merge or error")
 }

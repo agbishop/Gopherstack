@@ -188,3 +188,184 @@ func TestGetUsage(t *testing.T) {
 		})
 	}
 }
+
+// TestDeleteUsagePlanKey_ClearsUsageOverride verifies that detaching an API
+// key from a usage plan clears any UpdateUsage override recorded for that
+// (plan, key) pair -- otherwise re-attaching the same key later would
+// silently inherit the stale override, since neither ID is deleted.
+func TestDeleteUsagePlanKey_ClearsUsageOverride(t *testing.T) {
+	t.Parallel()
+
+	b := apigateway.NewInMemoryBackend()
+
+	plan, err := b.CreateUsagePlan(apigateway.CreateUsagePlanInput{Name: "plan"})
+	require.NoError(t, err)
+	key, err := b.CreateAPIKey(apigateway.CreateAPIKeyInput{Name: "key", Enabled: true})
+	require.NoError(t, err)
+	_, err = b.CreateUsagePlanKey(apigateway.CreateUsagePlanKeyInput{
+		UsagePlanID: plan.ID, KeyID: key.ID, KeyType: "API_KEY",
+	})
+	require.NoError(t, err)
+
+	_, err = b.UpdateUsage(plan.ID, key.ID, map[string]string{"remaining": "5"})
+	require.NoError(t, err)
+
+	usage, err := b.GetUsage(apigateway.GetUsageInput{UsagePlanID: plan.ID})
+	require.NoError(t, err)
+	require.Equal(t, 5, usage.Items[key.ID][0].([]int)[1])
+
+	require.NoError(t, b.DeleteUsagePlanKey(plan.ID, key.ID))
+	_, err = b.CreateUsagePlanKey(apigateway.CreateUsagePlanKeyInput{
+		UsagePlanID: plan.ID, KeyID: key.ID, KeyType: "API_KEY",
+	})
+	require.NoError(t, err)
+
+	usage, err = b.GetUsage(apigateway.GetUsageInput{UsagePlanID: plan.ID})
+	require.NoError(t, err)
+	assert.NotEqual(t, 5, usage.Items[key.ID][0].([]int)[1],
+		"re-attaching the same key must not inherit the detached association's stale usage override")
+}
+
+// TestDeleteUsagePlan_ClearsUsageOverrides verifies DeleteUsagePlan removes
+// the plan's usageOverrides entry rather than leaking it in the persisted
+// snapshot forever.
+func TestDeleteUsagePlan_ClearsUsageOverrides(t *testing.T) {
+	t.Parallel()
+
+	b := apigateway.NewInMemoryBackend()
+
+	plan, err := b.CreateUsagePlan(apigateway.CreateUsagePlanInput{Name: "plan"})
+	require.NoError(t, err)
+	key, err := b.CreateAPIKey(apigateway.CreateAPIKeyInput{Name: "key", Enabled: true})
+	require.NoError(t, err)
+	_, err = b.CreateUsagePlanKey(apigateway.CreateUsagePlanKeyInput{
+		UsagePlanID: plan.ID, KeyID: key.ID, KeyType: "API_KEY",
+	})
+	require.NoError(t, err)
+	_, err = b.UpdateUsage(plan.ID, key.ID, map[string]string{"remaining": "5"})
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeleteUsagePlan(plan.ID))
+
+	var decoded struct {
+		UsageOverrides map[string]map[string]int64 `json:"usageOverrides"`
+	}
+	require.NoError(t, json.Unmarshal(b.Snapshot(t.Context()), &decoded))
+	assert.NotContains(t, decoded.UsageOverrides, plan.ID,
+		"a deleted usage plan's override entry must not survive in the persisted snapshot")
+}
+
+// TestDeleteAPIKey_ClearsUsageOverrides verifies DeleteAPIKey removes any
+// usageOverrides entries recorded for that key across all usage plans.
+func TestDeleteAPIKey_ClearsUsageOverrides(t *testing.T) {
+	t.Parallel()
+
+	b := apigateway.NewInMemoryBackend()
+
+	plan, err := b.CreateUsagePlan(apigateway.CreateUsagePlanInput{Name: "plan"})
+	require.NoError(t, err)
+	key, err := b.CreateAPIKey(apigateway.CreateAPIKeyInput{Name: "key", Enabled: true})
+	require.NoError(t, err)
+	_, err = b.CreateUsagePlanKey(apigateway.CreateUsagePlanKeyInput{
+		UsagePlanID: plan.ID, KeyID: key.ID, KeyType: "API_KEY",
+	})
+	require.NoError(t, err)
+	_, err = b.UpdateUsage(plan.ID, key.ID, map[string]string{"remaining": "5"})
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeleteAPIKey(key.ID))
+
+	var decoded struct {
+		UsageOverrides map[string]map[string]int64 `json:"usageOverrides"`
+	}
+	require.NoError(t, json.Unmarshal(b.Snapshot(t.Context()), &decoded))
+	assert.NotContains(t, decoded.UsageOverrides[plan.ID], key.ID,
+		"a deleted API key's usage override must not survive in the persisted snapshot")
+}
+
+// TestDeleteAPIKey_ClearsUsagePlanKeys verifies DeleteAPIKey cascades to the
+// key's usagePlanKeys associations, so a deleted key no longer shows up in
+// GetUsagePlanKeys or GetUsage (gopherstack-m7mb). A second, undeleted key on
+// the same plan must be unaffected.
+func TestDeleteAPIKey_ClearsUsagePlanKeys(t *testing.T) {
+	t.Parallel()
+
+	b := apigateway.NewInMemoryBackend()
+
+	plan, err := b.CreateUsagePlan(apigateway.CreateUsagePlanInput{Name: "plan"})
+	require.NoError(t, err)
+	deletedKey, err := b.CreateAPIKey(apigateway.CreateAPIKeyInput{Name: "deleted", Enabled: true})
+	require.NoError(t, err)
+	survivingKey, err := b.CreateAPIKey(apigateway.CreateAPIKeyInput{Name: "surviving", Enabled: true})
+	require.NoError(t, err)
+	_, err = b.CreateUsagePlanKey(apigateway.CreateUsagePlanKeyInput{
+		UsagePlanID: plan.ID, KeyID: deletedKey.ID, KeyType: "API_KEY",
+	})
+	require.NoError(t, err)
+	_, err = b.CreateUsagePlanKey(apigateway.CreateUsagePlanKeyInput{
+		UsagePlanID: plan.ID, KeyID: survivingKey.ID, KeyType: "API_KEY",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeleteAPIKey(deletedKey.ID))
+
+	keys, err := b.GetUsagePlanKeys(plan.ID)
+	require.NoError(t, err)
+	ids := make([]string, 0, len(keys))
+	for _, k := range keys {
+		ids = append(ids, k.ID)
+	}
+	assert.NotContains(t, ids, deletedKey.ID,
+		"a deleted API key must not survive as a ghost row in GetUsagePlanKeys")
+	assert.Contains(t, ids, survivingKey.ID,
+		"deleting one key must not disturb another key's usage-plan association")
+
+	usage, err := b.GetUsage(apigateway.GetUsageInput{UsagePlanID: plan.ID})
+	require.NoError(t, err)
+	assert.NotContains(t, usage.Items, deletedKey.ID,
+		"a deleted API key must not survive as a ghost row in GetUsage")
+	assert.Contains(t, usage.Items, survivingKey.ID,
+		"deleting one key must not disturb another key's usage entry")
+
+	_, err = b.GetUsagePlanKey(plan.ID, deletedKey.ID)
+	require.Error(t, err, "the deleted key's usage-plan association must be gone")
+}
+
+// TestDeleteStage_ClearsMethodThrottleBuckets verifies DeleteStage evicts the stage's
+// MethodSettings token buckets (gopherstack-91f2), so a stage name reused after deletion
+// starts with a fresh bucket instead of inheriting an already-exhausted one -- the same
+// ghost-row class as an orphaned usage-plan association, but for the new per-stage
+// throttle state introduced by this fix.
+func TestDeleteStage_ClearsMethodThrottleBuckets(t *testing.T) {
+	t.Parallel()
+
+	b := apigateway.NewInMemoryBackend()
+	api, err := b.CreateRestAPI(apigateway.CreateRestAPIInput{Name: "a"})
+	require.NoError(t, err)
+	_, err = b.CreateDeployment(api.ID, "prod", "v1")
+	require.NoError(t, err)
+	_, err = b.UpdateStage(api.ID, "prod", apigateway.UpdateStageInput{
+		MethodSettings: map[string]apigateway.MethodSetting{
+			"*/*": {ThrottlingRateLimit: 1, ThrottlingBurstLimit: 1},
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, b.EnforceMethodThrottle(api.ID, "prod", "/items", "GET"))
+	require.ErrorIs(t, b.EnforceMethodThrottle(api.ID, "prod", "/items", "GET"), apigateway.ErrThrottled,
+		"the burst-1 bucket must be exhausted after one request")
+
+	require.NoError(t, b.DeleteStage(api.ID, "prod"))
+
+	_, err = b.CreateDeployment(api.ID, "prod", "v2")
+	require.NoError(t, err)
+	_, err = b.UpdateStage(api.ID, "prod", apigateway.UpdateStageInput{
+		MethodSettings: map[string]apigateway.MethodSetting{
+			"*/*": {ThrottlingRateLimit: 1, ThrottlingBurstLimit: 1},
+		},
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, b.EnforceMethodThrottle(api.ID, "prod", "/items", "GET"),
+		"a recreated stage must not inherit a deleted stage's exhausted throttle bucket")
+}

@@ -215,6 +215,18 @@ func (b *InMemoryBackend) findQueueByARN(queueARN string) (*Queue, bool) {
 	return nil, false
 }
 
+// QueueExists reports whether a queue with the given ARN exists. Used by
+// cross-service callers (e.g. SNS's RedrivePolicy.deadLetterTargetArn check)
+// to verify a referenced queue is real.
+func (b *InMemoryBackend) QueueExists(queueARN string) bool {
+	b.mu.RLock("QueueExists")
+	defer b.mu.RUnlock()
+
+	_, ok := b.findQueueByARN(queueARN)
+
+	return ok
+}
+
 // totalMessages returns the total in-memory message count across all queues
 // (visible + in-flight + DLQ retained).
 func (b *InMemoryBackend) totalMessages() int {

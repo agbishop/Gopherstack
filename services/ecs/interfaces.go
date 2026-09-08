@@ -1,5 +1,14 @@
 package ecs
 
+// CWLogsBackend is the subset of CloudWatch Logs operations that ECS needs to make an
+// awslogs-driver container's log group/stream discoverable, wired via SetCWLogsBackend.
+// Identical in shape to lambda.CWLogsBackend and firehose.CWLogsBackend (see
+// services/lambda/store.go), this repo's convention for a cross-service log sink.
+type CWLogsBackend interface {
+	EnsureLogGroupAndStream(groupName, streamName string) error
+	PutLogLines(groupName, streamName string, messages []string) error
+}
+
 // Backend defines the interface for ECS control-plane operations.
 // InMemoryBackend implements this interface; alternative backends (e.g. test
 // doubles or future persistence-aware backends) can implement it too.
@@ -25,7 +34,7 @@ type Backend interface {
 	CreateService(input CreateServiceInput) (*Service, error)
 	DescribeServices(cluster string, serviceNames []string) ([]Service, []Failure, error)
 	UpdateService(input UpdateServiceInput) (*Service, error)
-	DeleteService(cluster, serviceName string) (*Service, error)
+	DeleteService(cluster, serviceName string, force ...bool) (*Service, error)
 	ListServices(cluster, launchType, schedulingStrategy string) ([]string, error)
 
 	// Tasks

@@ -98,6 +98,41 @@ func TestBackend_StartPrimaryEmailUpdate_ConflictsOnCurrentEmail(t *testing.T) {
 	assert.Empty(t, status)
 }
 
+// TestBackend_AcceptPrimaryEmailUpdate_SingleUse verifies a successful Accept
+// clears the pending request so a replay of the same OTP/email fails --
+// gopherstack-4dc7.
+func TestBackend_AcceptPrimaryEmailUpdate_SingleUse(t *testing.T) {
+	t.Parallel()
+
+	b := account.NewInMemoryBackend("000000000000", "us-east-1")
+
+	otp, err := b.StartPrimaryEmailUpdate("new@example.com")
+	require.NoError(t, err)
+	require.NoError(t, b.AcceptPrimaryEmailUpdate(otp, "new@example.com"))
+
+	err = b.AcceptPrimaryEmailUpdate(otp, "new@example.com")
+	require.EqualError(t, err, "ResourceNotFoundException: no primary email update in progress")
+}
+
+// TestBackend_StartPrimaryEmailUpdate_InvalidatesPriorPending verifies a
+// second Start overwrites the pending email so an Accept targeting the
+// first (now-superseded) email fails, even though the OTP is the same fixed
+// value -- gopherstack-4dc7.
+func TestBackend_StartPrimaryEmailUpdate_InvalidatesPriorPending(t *testing.T) {
+	t.Parallel()
+
+	b := account.NewInMemoryBackend("000000000000", "us-east-1")
+
+	otp, err := b.StartPrimaryEmailUpdate("a@example.com")
+	require.NoError(t, err)
+
+	_, err = b.StartPrimaryEmailUpdate("b@example.com")
+	require.NoError(t, err)
+
+	err = b.AcceptPrimaryEmailUpdate(otp, "a@example.com")
+	require.EqualError(t, err, "ValidationException: invalid OTP")
+}
+
 // TestBackend_GetGovCloudAccountInformation_NeverLinked verifies this
 // standalone (non-organization-member) backend never has a linked GovCloud
 // account -- there is no operation anywhere in this service that could link

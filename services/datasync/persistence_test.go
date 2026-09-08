@@ -57,7 +57,7 @@ func newPersistenceTestBackend(t *testing.T) (*datasync.InMemoryBackend, persist
 	task, err := b.CreateTask(source.LocationArn, destination.LocationArn, "task1", "", settings, nil)
 	require.NoError(t, err)
 
-	execution, err := b.StartTaskExecution(task.TaskArn)
+	execution, err := b.StartTaskExecution(task.TaskArn, datasync.TaskExecutionOverrides{}, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, b.TagResource(task.TaskArn, map[string]string{"owner": "alice"}))

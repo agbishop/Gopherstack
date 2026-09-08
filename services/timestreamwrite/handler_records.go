@@ -67,6 +67,10 @@ func (h *Handler) handleWriteRecords(
 	records := make([]Record, 0, len(in.Records))
 
 	for i, r := range in.Records {
+		if err := checkCommonAttributesDimensionOverlap(r, in.CommonAttributes, i); err != nil {
+			return nil, err
+		}
+
 		merged := mergeRecordWithCommon(r, in.CommonAttributes)
 		if err := validateRecord(merged, i); err != nil {
 			return nil, err
@@ -86,6 +90,33 @@ func (h *Handler) handleWriteRecords(
 	out.RecordsIngested.MagneticStore = result.MagneticStore
 
 	return out, nil
+}
+
+// checkCommonAttributesDimensionOverlap rejects a record whose Dimensions share a
+// name with CommonAttributes.Dimensions. Per WriteRecordsInput.CommonAttributes'
+// doc comment (api_op_WriteRecords.go, timestreamwrite@v1.38.4): "Dimensions may
+// not overlap, or a ValidationException will be thrown. In other words, a record
+// must contain dimensions with unique names".
+func checkCommonAttributesDimensionOverlap(r recordInput, common *recordInput, idx int) error {
+	if common == nil || len(common.Dimensions) == 0 || len(r.Dimensions) == 0 {
+		return nil
+	}
+
+	commonNames := make(map[string]struct{}, len(common.Dimensions))
+	for _, d := range common.Dimensions {
+		commonNames[d.Name] = struct{}{}
+	}
+
+	for _, d := range r.Dimensions {
+		if _, ok := commonNames[d.Name]; ok {
+			return fmt.Errorf(
+				"%w: record[%d] dimension %q overlaps with a CommonAttributes dimension of the same name",
+				errInvalidRequest, idx, d.Name,
+			)
+		}
+	}
+
+	return nil
 }
 
 // mergeRecordWithCommon merges CommonAttributes into a record per AWS semantics:

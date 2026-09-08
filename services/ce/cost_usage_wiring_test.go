@@ -113,6 +113,83 @@ func TestGetCostAndUsage_FilterNarrowsResults_RealClient(t *testing.T) {
 	assert.Less(t, filteredTotal, unfilteredTotal, "a single-service filter must narrow the total")
 }
 
+// TestGetCostAndUsage_FilterDimensionsAndComposition_RealClient proves
+// GetCostAndUsageInput.Filter is evaluated beyond the SERVICE dimension: before this
+// pass, GetCostAndUsage routed Filter through serviceDimensionFilter, which discards
+// any Dimensions clause whose Key isn't SERVICE and any And/Or/Not composition --
+// even though the ledger's per-entry UsageType field (extractGroupKeys already reads
+// it for GroupBy) makes USAGE_TYPE a real, non-fabricated dimension. A USAGE_TYPE-only
+// filter, and an And() composition of SERVICE+USAGE_TYPE clauses, must both narrow the
+// total.
+func TestGetCostAndUsage_FilterDimensionsAndComposition_RealClient(t *testing.T) {
+	t.Parallel()
+
+	h := ce.NewHandler(ce.NewInMemoryBackend("000000000000", "us-east-1"))
+	client := newTestCEClient(t, h)
+
+	end := time.Now().UTC().Truncate(24 * time.Hour)
+	start := end.AddDate(0, 0, -7)
+	period := &cetypes.DateInterval{
+		Start: aws.String(start.Format("2006-01-02")),
+		End:   aws.String(end.Format("2006-01-02")),
+	}
+
+	unfiltered, err := client.GetCostAndUsage(t.Context(), &costexplorersdk.GetCostAndUsageInput{
+		TimePeriod:  period,
+		Granularity: cetypes.GranularityDaily,
+		Metrics:     []string{"BlendedCost"},
+	})
+	require.NoError(t, err)
+
+	unfilteredTotal := sumBlendedCost(t, unfiltered.ResultsByTime)
+
+	tests := []struct {
+		filter *cetypes.Expression
+		name   string
+	}{
+		{
+			name: "usage_type_dimension",
+			filter: &cetypes.Expression{
+				Dimensions: &cetypes.DimensionValues{
+					Key:    cetypes.DimensionUsageType,
+					Values: []string{"Lambda-GB-Second"},
+				},
+			},
+		},
+		{
+			name: "and_composition",
+			filter: &cetypes.Expression{
+				And: []cetypes.Expression{
+					{Dimensions: &cetypes.DimensionValues{
+						Key: cetypes.DimensionService, Values: []string{"AWS Lambda"},
+					}},
+					{Dimensions: &cetypes.DimensionValues{
+						Key: cetypes.DimensionUsageType, Values: []string{"Lambda-GB-Second"},
+					}},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			out, callErr := client.GetCostAndUsage(t.Context(), &costexplorersdk.GetCostAndUsageInput{
+				TimePeriod:  period,
+				Granularity: cetypes.GranularityDaily,
+				Metrics:     []string{"BlendedCost"},
+				Filter:      tt.filter,
+			})
+			require.NoError(t, callErr)
+
+			total := sumBlendedCost(t, out.ResultsByTime)
+			assert.Positive(t, total, "the filtered usage type must still have real cost")
+			assert.Less(t, total, unfilteredTotal, "the filter must narrow the total")
+		})
+	}
+}
+
 // TestGetDimensionValues_Pagination_RealClient proves NextPageToken/
 // MaxResults pagination over the 12 seeded SERVICE dimension values drops
 // nothing and duplicates nothing across page boundaries -- a regression

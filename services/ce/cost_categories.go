@@ -156,10 +156,15 @@ func (b *InMemoryBackend) ListCostCategoryDefinitions(
 }
 
 // UpdateCostCategoryDefinition updates an existing cost category.
+// requestedEffectiveStart, when non-empty, overrides the default "first day of the
+// current month" -- same optional-field default as CreateCostCategoryDefinition
+// (api_op_UpdateCostCategoryDefinition.go's EffectiveStart doc is identical to
+// Create's: "If the date isn't provided, it's the first day of the current month").
 func (b *InMemoryBackend) UpdateCostCategoryDefinition(
 	catARN, ruleVersion, defaultValue string,
 	rules []CostCategoryRule,
 	splitChargeRules []SplitChargeRule,
+	requestedEffectiveStart string,
 ) (*CostCategory, error) {
 	b.mu.Lock("UpdateCostCategoryDefinition")
 	defer b.mu.Unlock()
@@ -177,7 +182,13 @@ func (b *InMemoryBackend) UpdateCostCategoryDefinition(
 	cat.Rules = rulesCopy
 
 	cat.SplitChargeRules = copySplitChargeRules(splitChargeRules)
-	cat.EffectiveStart = effectiveStart()
+
+	start := requestedEffectiveStart
+	if start == "" {
+		start = effectiveStart()
+	}
+
+	cat.EffectiveStart = start
 
 	out := *cat
 	out.Rules = make([]CostCategoryRule, len(cat.Rules))

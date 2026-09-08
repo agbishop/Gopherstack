@@ -101,11 +101,17 @@ func TestCreateScheduleGroup_NameRequired(t *testing.T) {
 	t.Parallel()
 
 	h := newTestSchedulerHandler(t)
-	rec := doSchedulerRequest(t, h, "CreateScheduleGroup", map[string]any{"Description": "no-name"})
+	rec := doSchedulerRequest(t, h, "CreateScheduleGroup", map[string]any{})
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestCreateScheduleGroup_WithDescription(t *testing.T) {
+// TestCreateScheduleGroup_DescriptionNotAccepted is the regression test for
+// gopherstack-ui6k: real AWS's CreateScheduleGroupInput and GetScheduleGroupOutput
+// carry no Description member (CreateScheduleGroupInput serializes only
+// ClientToken/Tags; GetScheduleGroupOutput has Arn/CreationDate/
+// LastModificationDate/Name/State). A Description sent on create must be silently
+// ignored, not stored or echoed back.
+func TestCreateScheduleGroup_DescriptionNotAccepted(t *testing.T) {
 	t.Parallel()
 
 	h := newTestSchedulerHandler(t)
@@ -120,7 +126,8 @@ func TestCreateScheduleGroup_WithDescription(t *testing.T) {
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &resp))
-	assert.Equal(t, "my group description", resp["Description"])
+	_, hasDescription := resp["Description"]
+	assert.False(t, hasDescription, "GetScheduleGroupOutput has no Description member on real AWS")
 }
 
 func TestSchedulerHandler_GetScheduleGroup(t *testing.T) {
@@ -307,7 +314,7 @@ func TestDeleteScheduleGroup_Cascade(t *testing.T) {
 	h := scheduler.NewHandler(b)
 
 	// Create a group and schedules within it.
-	_, err := b.CreateScheduleGroup(context.Background(), "grp-cascade", "", nil)
+	_, err := b.CreateScheduleGroup(context.Background(), "grp-cascade", nil)
 	require.NoError(t, err)
 
 	createScheduleViaHandler(t, h, "s1", "grp-cascade", "rate(1 minute)")
@@ -379,9 +386,9 @@ func TestListScheduleGroups_FilterByNamePrefix(t *testing.T) {
 	h := newTestSchedulerHandler(t)
 	b := h.Backend.(*scheduler.InMemoryBackend)
 
-	_, err := b.CreateScheduleGroup(context.Background(), "prod-group", "", nil)
+	_, err := b.CreateScheduleGroup(context.Background(), "prod-group", nil)
 	require.NoError(t, err)
-	_, err = b.CreateScheduleGroup(context.Background(), "dev-group", "", nil)
+	_, err = b.CreateScheduleGroup(context.Background(), "dev-group", nil)
 	require.NoError(t, err)
 
 	rec := doSchedulerRequest(t, h, "ListScheduleGroups", map[string]any{"NamePrefix": "prod-"})
@@ -401,9 +408,9 @@ func TestListScheduleGroups_Sorted(t *testing.T) {
 	h := newTestSchedulerHandler(t)
 	b := h.Backend.(*scheduler.InMemoryBackend)
 
-	_, err := b.CreateScheduleGroup(context.Background(), "zoo", "", nil)
+	_, err := b.CreateScheduleGroup(context.Background(), "zoo", nil)
 	require.NoError(t, err)
-	_, err = b.CreateScheduleGroup(context.Background(), "aardvark", "", nil)
+	_, err = b.CreateScheduleGroup(context.Background(), "aardvark", nil)
 	require.NoError(t, err)
 
 	rec := doSchedulerRequest(t, h, "ListScheduleGroups", map[string]any{})
@@ -669,7 +676,7 @@ func TestSchedulerBackend_SnapshotRestore_ScheduleGroups(t *testing.T) {
 
 	b := scheduler.NewInMemoryBackend("000000000000", "us-east-1")
 
-	_, err := b.CreateScheduleGroup(context.Background(), "production", "", map[string]string{"env": "prod"})
+	_, err := b.CreateScheduleGroup(context.Background(), "production", map[string]string{"env": "prod"})
 	require.NoError(t, err)
 
 	snap := b.Snapshot(t.Context())

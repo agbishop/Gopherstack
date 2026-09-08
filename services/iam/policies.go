@@ -518,60 +518,54 @@ func (b *InMemoryBackend) SimulateCustomPolicy(
 
 	for _, action := range actionNames {
 		for _, resource := range resourceArns {
-			evalResult := EvaluatePolicies(policyInputList, action, resource, ctx)
-
-			// Per-policy detail: label each input policy by its index.
-			detail := make(map[string]string, len(policyInputList))
-
-			for i, doc := range policyInputList {
-				r := EvaluatePolicies([]string{doc}, action, resource, ctx)
-				key := fmt.Sprintf("InputPolicy%d", i+1)
-				detail[key] = evalDecisionStr(r)
-			}
-
-			// Boundary enforcement.
-			var allowedByBoundary *bool
-
-			if len(permissionsBoundaryPolicyInputList) > 0 {
-				evalResult, allowedByBoundary = enforcePermissionsBoundary(
-					permissionsBoundaryPolicyInputList, action, resource, ctx, evalResult,
-				)
-			}
-
-			// Add PermissionsBoundary decision to details.
-			if allowedByBoundary != nil {
-				if *allowedByBoundary {
-					detail["PermissionsBoundaryPolicy"] = "allowed"
-				} else {
-					detail["PermissionsBoundaryPolicy"] = "explicitDeny"
-				}
-			}
-
-			results = append(results, SimulationResult{
-				ActionName:          action,
-				ResourceName:        resource,
-				Decision:            evalDecisionStr(evalResult),
-				EvalDecisionDetails: detail,
-			})
+			results = append(results, simulateCustomPolicyOne(
+				policyInputList, permissionsBoundaryPolicyInputList, action, resource, ctx,
+			))
 		}
 	}
 
 	return results, nil
 }
 
-func enforcePermissionsBoundary(
-	boundaryPolicies []string, action, resource string, ctx ConditionContext, evalResult EvaluationResult,
-) (EvaluationResult, *bool) {
-	boundaryResult := EvaluatePolicies(boundaryPolicies, action, resource, ctx)
-	allowed := boundaryResult == EvalAllow
+func simulateCustomPolicyOne(
+	policyInputList, permissionsBoundaryPolicyInputList []string,
+	action, resource string,
+	ctx ConditionContext,
+) SimulationResult {
+	evalResult := EvaluatePolicies(policyInputList, action, resource, ctx)
 
-	if evalResult == EvalAllow && !allowed {
-		evalResult = EvalImplicitDeny
-	} else if evalResult == EvalImplicitDeny && boundaryResult == EvalExplicitDeny {
-		evalResult = EvalExplicitDeny
+	// Per-policy detail: label each input policy by its index.
+	detail := make(map[string]string, len(policyInputList))
+
+	for i, doc := range policyInputList {
+		r := EvaluatePolicies([]string{doc}, action, resource, ctx)
+		key := fmt.Sprintf("InputPolicy%d", i+1)
+		detail[key] = evalDecisionStr(r)
 	}
 
-	return evalResult, &allowed
+	if len(permissionsBoundaryPolicyInputList) > 0 {
+		var explicitDeny, allowed bool
+
+		evalResult, explicitDeny, allowed = applyPermissionsBoundary(
+			permissionsBoundaryPolicyInputList, action, resource, ctx, evalResult,
+		)
+		if explicitDeny {
+			evalResult = EvalExplicitDeny
+		}
+
+		if allowed {
+			detail["PermissionsBoundaryPolicy"] = "allowed"
+		} else {
+			detail["PermissionsBoundaryPolicy"] = "explicitDeny"
+		}
+	}
+
+	return SimulationResult{
+		ActionName:          action,
+		ResourceName:        resource,
+		Decision:            evalDecisionStr(evalResult),
+		EvalDecisionDetails: detail,
+	}
 }
 
 // TagPolicy merges the given key-value pairs into the policy's Tags field.
@@ -621,6 +615,28 @@ func (b *InMemoryBackend) UntagPolicy(policyArn string, keys []string) error {
 	b.policies.Put(p)
 
 	return nil
+}
+
+// PermissionsBoundaryDocForUser returns the policy document for the user's
+// permissions boundary, or "" if none is set. It implements the
+// enforcement middleware's optional permissionsBoundaryLookup capability
+// (services/iam/middleware.go).
+func (b *InMemoryBackend) PermissionsBoundaryDocForUser(userName string) string {
+	b.mu.RLock("PermissionsBoundaryDocForUser")
+	defer b.mu.RUnlock()
+
+	return b.boundaryDocForUser(userName)
+}
+
+// PermissionsBoundaryDocForRole returns the policy document for the role's
+// permissions boundary, or "" if none is set. It implements the
+// enforcement middleware's optional permissionsBoundaryLookup capability
+// (services/iam/middleware.go).
+func (b *InMemoryBackend) PermissionsBoundaryDocForRole(roleName string) string {
+	b.mu.RLock("PermissionsBoundaryDocForRole")
+	defer b.mu.RUnlock()
+
+	return b.boundaryDocForRole(roleName)
 }
 
 // boundaryDocForUser returns the policy document for the user's permissions boundary, or "".

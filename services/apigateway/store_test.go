@@ -20,6 +20,34 @@ func TestAPIGW_BackendReset(t *testing.T) {
 	b.Reset()
 }
 
+// TestAPIGW_BackendReset_Account covers Reset restoring the account settings
+// mutated by UpdateAccount back to their construction-time defaults.
+func TestAPIGW_BackendReset_Account(t *testing.T) {
+	t.Parallel()
+
+	b := apigateway.NewInMemoryBackend()
+
+	before, err := b.GetAccount()
+	require.NoError(t, err)
+
+	_, err = b.UpdateAccount(apigateway.UpdateAccountInput{
+		ThrottleSettings:  &apigateway.ThrottleSettings{BurstLimit: 1, RateLimit: 1},
+		CloudwatchRoleARN: "arn:aws:iam::000000000000:role/mutated",
+		Features:          []string{"UsagePlans", "ExtraFeature"},
+	})
+	require.NoError(t, err)
+
+	b.Reset()
+
+	after, err := b.GetAccount()
+	require.NoError(t, err)
+
+	assert.Equal(t, before.ThrottleSettings, after.ThrottleSettings, "throttle settings")
+	assert.Equal(t, before.CloudwatchRoleARN, after.CloudwatchRoleARN, "cloudwatch role arn")
+	assert.Equal(t, before.Features, after.Features, "features")
+	assert.Empty(t, after.CloudwatchRoleARN, "cloudwatch role arn should reset to empty")
+}
+
 // TestPaginatedListing tests GetAPIKeysPage, GetDomainNamesPage, GetUsagePlansPage (via handler).
 func TestPaginatedListing(t *testing.T) {
 	t.Parallel()

@@ -117,6 +117,32 @@ func TestReconciler_LazyAdvanceJobRun(t *testing.T) {
 	assert.Positive(t, run.CompletedOn)
 }
 
+// TestReconciler_DeleteJob_PrunesOrphanedTimers verifies that deleting a job
+// eventually prunes its job-run timer entries (jobRunReadyAt/DoneAt/TimeoutAt/
+// StopAt), not just the job-run records themselves. DeleteJob clears
+// b.jobRuns[name] but not these timer maps directly; pruneOrphanJobRunTimersLocked
+// (called at the end of every reconcileLocked) is what actually drops the
+// now-orphaned entries, keyed off b.jobRuns no longer containing the run. This
+// asserts the observable effect through the existing PendingDueForTest/
+// AdvanceStatesForTest test seams rather than adding a new exported accessor
+// for the timer maps themselves.
+func TestReconciler_DeleteJob_PrunesOrphanedTimers(t *testing.T) {
+	t.Parallel()
+
+	b := glue.NewInMemoryBackend("000000000000", "us-east-1")
+	startTestJobRun(t, b)
+
+	farFuture := time.Now().Add(time.Hour)
+	require.True(t, glue.PendingDueForTest(b, farFuture), "the started run's STARTING->RUNNING timer should be due")
+
+	require.NoError(t, b.DeleteJob(testJobName))
+
+	glue.AdvanceStatesForTest(b, farFuture)
+
+	assert.False(t, glue.PendingDueForTest(b, farFuture),
+		"deleting the job should prune its orphaned job-run timers, not just its job-run records")
+}
+
 // TestReconciler_LazyAdvanceCrawler verifies crawler RUNNING→READY is observed on
 // read via lazy advancement.
 func TestReconciler_LazyAdvanceCrawler(t *testing.T) {

@@ -88,6 +88,9 @@ func (h *Handler) handleCreateMesh(c *echo.Context) error {
 }
 
 func (h *Handler) handleDescribeMesh(c *echo.Context, meshName string) error {
+	if err := h.checkMeshOwner(c); err != nil {
+		return h.mapErr(c, err)
+	}
 	m, err := h.Backend.DescribeMesh(meshName)
 	if err != nil {
 		return h.mapErr(c, err)

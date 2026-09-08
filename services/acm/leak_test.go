@@ -4,6 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	acmsdk "github.com/aws/aws-sdk-go-v2/service/acm"
+	acmtypes "github.com/aws/aws-sdk-go-v2/service/acm/types"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/blackbirdworks/gopherstack/services/acm"
@@ -168,4 +172,100 @@ func TestDeleteCertificate_StopsResendValidationEmailTimer(t *testing.T) {
 	require.NoError(t, b.DeleteCertificate(t.Context(), cert.ARN))
 	require.Equal(t, 0, b.TimerCountForTest(),
 		"rescheduled timer must be stopped and removed after DeleteCertificate")
+}
+
+// createLeakTestAcmeFamily creates one ACME endpoint with one EAB and one
+// domain validation under it, every Create* call carrying an
+// IdempotencyToken, and returns the endpoint ARN.
+func createLeakTestAcmeFamily(t *testing.T, client *acmsdk.Client) string {
+	t.Helper()
+
+	ep, err := client.CreateAcmeEndpoint(t.Context(), &acmsdk.CreateAcmeEndpointInput{
+		AuthorizationBehavior: acmtypes.AcmeAuthorizationBehaviorPreApproved,
+		CertificateAuthority: &acmtypes.CertificateAuthorityMemberPublicCertificateAuthority{
+			Value: acmtypes.PublicCertificateAuthority{},
+		},
+		IdempotencyToken: aws.String("endpoint-token"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.CreateAcmeExternalAccountBinding(t.Context(), &acmsdk.CreateAcmeExternalAccountBindingInput{
+		AcmeEndpointArn:  ep.AcmeEndpointArn,
+		RoleArn:          aws.String("arn:aws:iam::000000000000:role/acme"),
+		IdempotencyToken: aws.String("eab-token"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.CreateAcmeDomainValidation(t.Context(), &acmsdk.CreateAcmeDomainValidationInput{
+		AcmeEndpointArn: ep.AcmeEndpointArn,
+		DomainName:      aws.String("leak.example.com"),
+		PrevalidationOptions: &acmtypes.PrevalidationOptionsMemberDnsPrevalidation{
+			Value: acmtypes.DnsPrevalidationOptions{},
+		},
+		IdempotencyToken: aws.String("dv-token"),
+	})
+	require.NoError(t, err)
+
+	return aws.ToString(ep.AcmeEndpointArn)
+}
+
+// TestDeleteAcmeEndpoint_CleansCascadedIdempotencyTokens verifies that
+// DeleteAcmeEndpoint's cascade delete also removes the idempotency-token
+// entries of every EAB/domain-validation it cascade-deletes, instead of
+// leaving them orphaned (pointing at ARNs that no longer exist) until the
+// janitor's next TTL sweep.
+func TestDeleteAcmeEndpoint_CleansCascadedIdempotencyTokens(t *testing.T) {
+	t.Parallel()
+
+	backend := acm.NewInMemoryBackend("000000000000", "us-east-1")
+	h := acm.NewHandler(backend)
+	client := newTestACMClient(t, h)
+
+	epARN := createLeakTestAcmeFamily(t, client)
+
+	endpoints, eabs, domainValidations := backend.AcmeIdempotencyCountsForTest()
+	require.Equal(t, 1, endpoints, "baseline: one endpoint idempotency entry")
+	require.Equal(t, 1, eabs, "baseline: one EAB idempotency entry")
+	require.Equal(t, 1, domainValidations, "baseline: one domain-validation idempotency entry")
+
+	_, err := client.DeleteAcmeEndpoint(t.Context(), &acmsdk.DeleteAcmeEndpointInput{
+		AcmeEndpointArn: aws.String(epARN),
+	})
+	require.NoError(t, err)
+
+	endpoints, eabs, domainValidations = backend.AcmeIdempotencyCountsForTest()
+	assert.Equal(t, 0, endpoints, "endpoint idempotency entry must be removed on delete")
+	assert.Equal(t, 0, eabs, "cascade-deleted EAB's idempotency entry must not be orphaned")
+	assert.Equal(t, 0, domainValidations,
+		"cascade-deleted domain-validation's idempotency entry must not be orphaned")
+}
+
+// TestAcmJanitor_SweepsAcmeIdempotencyTokens verifies that the janitor's TTL
+// sweep covers the ACME endpoint/EAB/domain-validation idempotency-token
+// maps, not just RequestCertificate/PutAccountConfiguration's — those three
+// maps previously had no sweep at all and grew unbounded.
+func TestAcmJanitor_SweepsAcmeIdempotencyTokens(t *testing.T) {
+	t.Parallel()
+
+	backend := acm.NewInMemoryBackend("000000000000", "us-east-1")
+	h := acm.NewHandler(backend)
+	client := newTestACMClient(t, h)
+
+	createLeakTestAcmeFamily(t, client)
+
+	endpoints, eabs, domainValidations := backend.AcmeIdempotencyCountsForTest()
+	require.Equal(t, 1, endpoints, "baseline: one endpoint idempotency entry")
+	require.Equal(t, 1, eabs, "baseline: one EAB idempotency entry")
+	require.Equal(t, 1, domainValidations, "baseline: one domain-validation idempotency entry")
+
+	// A retention window shorter than the time already elapsed since the
+	// Create* calls above makes every entry immediately eligible for sweep,
+	// without sleeping in the test.
+	backend.SetIdempotencyRetentionForTest(time.Microsecond)
+	backend.SweepJanitorOnceForTest()
+
+	endpoints, eabs, domainValidations = backend.AcmeIdempotencyCountsForTest()
+	assert.Equal(t, 0, endpoints, "endpoint idempotency entry must be swept once expired")
+	assert.Equal(t, 0, eabs, "EAB idempotency entry must be swept once expired")
+	assert.Equal(t, 0, domainValidations, "domain-validation idempotency entry must be swept once expired")
 }

@@ -1046,6 +1046,66 @@ func TestDeleteOrganizationalUnit_WithChildren_Fails(t *testing.T) {
 	}
 }
 
+// TestDeleteOrganizationalUnit_NotEmpty_ReturnsOwnErrorCode verifies AWS
+// behaviour: DeleteOrganizationalUnit's own per-op error switch
+// (deserializers.go) models OrganizationalUnitNotEmptyException, not
+// InvalidInputException, for a non-empty OU.
+func TestDeleteOrganizationalUnit_NotEmpty_ReturnsOwnErrorCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		setup func(t *testing.T, b *organizations.InMemoryBackend, rootID string) string
+		name  string
+	}{
+		{
+			name: "ou_has_account",
+			setup: func(t *testing.T, b *organizations.InMemoryBackend, rootID string) string {
+				t.Helper()
+
+				ou, err := b.CreateOrganizationalUnit(rootID, "with-account", nil)
+				require.NoError(t, err)
+
+				org, err := b.DescribeOrganization()
+				require.NoError(t, err)
+				require.NoError(t, b.MoveAccount(org.MasterAccountID, rootID, ou.ID))
+
+				return ou.ID
+			},
+		},
+		{
+			name: "ou_has_child_ou",
+			setup: func(t *testing.T, b *organizations.InMemoryBackend, rootID string) string {
+				t.Helper()
+
+				parent, err := b.CreateOrganizationalUnit(rootID, "with-child", nil)
+				require.NoError(t, err)
+				_, err = b.CreateOrganizationalUnit(parent.ID, "child", nil)
+				require.NoError(t, err)
+
+				return parent.ID
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestBackend()
+			createOrgOn(t, b)
+
+			roots, err := b.ListRoots()
+			require.NoError(t, err)
+
+			ouID := tt.setup(t, b, roots[0].ID)
+
+			err = b.DeleteOrganizationalUnit(ouID)
+			require.ErrorIs(t, err, organizations.ErrOrganizationalUnitNotEmpty)
+			require.NotErrorIs(t, err, organizations.ErrInvalidInput)
+		})
+	}
+}
+
 // TestBackend_AddOUInternal verifies OU seed helper.
 func TestBackend_AddOUInternal(t *testing.T) {
 	t.Parallel()

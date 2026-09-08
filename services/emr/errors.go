@@ -34,3 +34,12 @@ var errSessionsNotEnabled = awserr.New(
 	"ValidationException: cluster does not have sessions enabled",
 	awserr.ErrInvalidParameter,
 )
+
+// errClusterNotAcceptingSteps is returned by AddJobFlowSteps when the target
+// cluster is not in a state that accepts new steps (real AddJobFlowSteps'
+// doc: "You can only add steps to a cluster that is in one of the following
+// states: STARTING, BOOTSTRAPPING, RUNNING, or WAITING").
+var errClusterNotAcceptingSteps = awserr.New(
+	"ValidationException: cluster is not in a state that accepts new steps",
+	awserr.ErrInvalidParameter,
+)

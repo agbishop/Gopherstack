@@ -457,3 +457,66 @@ func TestRegisterDeregisterLifecycle(t *testing.T) {
 	require.NoError(t, json.Unmarshal(afterRec.Body.Bytes(), &afterOut))
 	assert.Empty(t, afterOut["ScalableTargets"])
 }
+
+// TestHandler_RegisterScalableTarget_UpdateOmittedCapacityPreserved verifies
+// that updating an existing scalable target without resending
+// MinCapacity/MaxCapacity leaves the stored capacity unchanged, rather than
+// resetting it to zero. Real AWS's RegisterScalableTargetInput models both as
+// optional (*int32, "required when registering a new scalable target" --
+// api_op_RegisterScalableTarget.go), and the operation doc states: "To update
+// a scalable target, specify the parameters that you want to change ... Any
+// parameters that you don't specify are not changed by this update request".
+func TestHandler_RegisterScalableTarget_UpdateOmittedCapacityPreserved(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doRequest(t, h, "RegisterScalableTarget", map[string]any{
+		"ServiceNamespace":  "ecs",
+		"ResourceId":        "service/default/my-svc",
+		"ScalableDimension": "ecs:service:DesiredCount",
+		"MinCapacity":       int32(2),
+		"MaxCapacity":       int32(10),
+	})
+
+	// Update RoleARN only; MinCapacity/MaxCapacity are omitted entirely.
+	roleARN := "arn:aws:iam::123456789012:role/ApplicationAutoScalingRole"
+	rec := doRequest(t, h, "RegisterScalableTarget", map[string]any{
+		"ServiceNamespace":  "ecs",
+		"ResourceId":        "service/default/my-svc",
+		"ScalableDimension": "ecs:service:DesiredCount",
+		"RoleARN":           roleARN,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	descRec := doRequest(t, h, "DescribeScalableTargets", map[string]any{"ServiceNamespace": "ecs"})
+	require.Equal(t, http.StatusOK, descRec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &resp))
+	targets, _ := resp["ScalableTargets"].([]any)
+	require.Len(t, targets, 1)
+	target := targets[0].(map[string]any)
+
+	assert.InDelta(t, float64(2), target["MinCapacity"], 0, "MinCapacity must be preserved when omitted on update")
+	assert.InDelta(t, float64(10), target["MaxCapacity"], 0, "MaxCapacity must be preserved when omitted on update")
+	assert.Equal(t, roleARN, target["RoleARN"])
+}
+
+// TestHandler_RegisterScalableTarget_MissingCapacityOnCreate verifies
+// MinCapacity/MaxCapacity are still required when registering a brand-new
+// scalable target (api_op_RegisterScalableTarget.go: "This property is
+// required when registering a new scalable target").
+func TestHandler_RegisterScalableTarget_MissingCapacityOnCreate(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, "RegisterScalableTarget", map[string]any{
+		"ServiceNamespace":  "ecs",
+		"ResourceId":        "service/default/new-svc",
+		"ScalableDimension": "ecs:service:DesiredCount",
+		"MaxCapacity":       int32(10),
+	})
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "expected 400 when MinCapacity is missing on create")
+}

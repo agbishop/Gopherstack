@@ -132,8 +132,17 @@ func (b *InMemoryBackend) GetAgentVersion(
 
 // DeleteAgentVersion deletes an agent version. See the not-found precedence
 // note on GetAgentVersion.
+//
+// Real AWS (api_op_DeleteAgentVersion.go): "By default, this value is false
+// and deletion is stopped if the resource is in use. If you set it to true,
+// the resource will be deleted even if the resource is in use." An agent
+// version is "in use" when an alias's routingConfiguration still points at
+// it (types.AgentAliasRoutingConfigurationListItem.AgentVersion) -- that
+// reference is the only wire-visible relationship a version participates
+// in, so it is the only one this check can honor without inventing AWS
+// behavior the SDK doesn't state.
 func (b *InMemoryBackend) DeleteAgentVersion(
-	_ context.Context, agentID, agentVersion string,
+	_ context.Context, agentID, agentVersion string, skipResourceInUseCheck bool,
 ) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -145,6 +154,19 @@ func (b *InMemoryBackend) DeleteAgentVersion(
 	key := agentVersionKey(agentID, agentVersion)
 	if !b.agentVersions.Has(key) {
 		return fmt.Errorf("%w: agent version %q not found", ErrNotFound, agentVersion)
+	}
+
+	if !skipResourceInUseCheck {
+		for _, al := range b.agentAliasesByAgent.Get(agentID) {
+			for _, r := range al.RoutingConfiguration {
+				if r.AgentVersion == agentVersion {
+					return fmt.Errorf(
+						"%w: agent version %q is referenced by alias %q",
+						ErrResourceInUse, agentVersion, al.AgentAliasID,
+					)
+				}
+			}
+		}
 	}
 
 	b.agentVersions.Delete(key)

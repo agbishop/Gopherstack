@@ -193,6 +193,7 @@ func (b *InMemoryBackend) Reset() {
 	b.groupResources = make(map[string]map[string][]string)
 	b.groupingStatuses = make(map[string]map[string][]GroupingStatusItem)
 	b.accountSettings = AccountSettings{}
+	b.taskIDCounter = 0
 }
 
 // resolveGroupName extracts the group name from a name-or-ARN value.

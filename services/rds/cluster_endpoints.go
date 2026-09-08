@@ -43,17 +43,18 @@ func (b *InMemoryBackend) CreateDBClusterEndpoint(
 }
 
 // DescribeDBClusterEndpoints returns cluster endpoints, filtered by cluster or endpoint ID.
+// DBClusterEndpointIdentifier is a filter like DBClusterIdentifier's matching below, not
+// an existence check: real AWS declares no not-found error for it. DBClusterIdentifier is
+// the opposite (gopherstack-l20u): it's the op's one declared error, DBClusterNotFoundFault,
+// so a supplied-but-unknown cluster must fault rather than silently filter to empty; an
+// omitted DBClusterIdentifier still lists all endpoints.
 func (b *InMemoryBackend) DescribeDBClusterEndpoints(clusterID, endpointID string) ([]DBClusterEndpoint, error) {
 	b.mu.RLock("DescribeDBClusterEndpoints")
 	defer b.mu.RUnlock()
-	if endpointID != "" {
-		ep, exists := b.clusterEndpoints.Get(endpointID)
-		if !exists {
-			return nil, fmt.Errorf("%w: cluster endpoint %s not found", ErrClusterEndpointNotFound, endpointID)
+	if clusterID != "" {
+		if _, exists := b.clusters.Get(normalizeID(clusterID)); !exists {
+			return nil, fmt.Errorf("%w: cluster %s not found", ErrClusterNotFound, clusterID)
 		}
-		cp := *ep
-
-		return []DBClusterEndpoint{cp}, nil
 	}
 	result := make([]DBClusterEndpoint, 0, b.clusterEndpoints.Len())
 	for _, ep := range b.clusterEndpoints.All() {
@@ -61,6 +62,9 @@ func (b *InMemoryBackend) DescribeDBClusterEndpoints(clusterID, endpointID strin
 		// normalizeID) even though DBClusterEndpointIdentifier -- this
 		// table's own primary key -- is out of this fix's scope.
 		if clusterID != "" && !idEqual(ep.DBClusterIdentifier, clusterID) {
+			continue
+		}
+		if endpointID != "" && ep.DBClusterEndpointIdentifier != endpointID {
 			continue
 		}
 		result = append(result, *ep)

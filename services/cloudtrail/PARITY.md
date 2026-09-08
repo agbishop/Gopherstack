@@ -7,14 +7,14 @@
 service: cloudtrail
 sdk_module: aws-sdk-go-v2/service/cloudtrail@v1.58.4   # version audited against
 last_audit_commit:                                # unknown: pass ran without git access at write time, never backfilled -- gopherstack-33in
-last_audit_date: 2026-08-15   # gopherstack-6flj wrapper-key sweep of all 24 List/Describe/Get ops
+last_audit_date: 2026-09-06   # gopherstack-g9b4: CreateTrail/UpdateTrail S3 bucket validation + log file delivery
 overall: A            # A = ~1k genuine fixes found; B = already-accurate, proven op-by-op
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
 ops:
-  CreateTrail: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed prior pass: response KmsKeyId key case (was KMSKeyId)"}
+  CreateTrail: {wire: ok, errors: fixed, state: fixed, persist: ok, note: "fixed prior pass: response KmsKeyId key case (was KMSKeyId). gopherstack-g9b4 (2026-09-06): now validates S3BucketName exists via the wired S3 backend (SetS3Backend), returning S3BucketDoesNotExistException when missing -- see Notes below. Unwired (no SetS3Backend call): unchanged, permissive. gopherstack-f94x (2026-09-06): S3KeyPrefix's documented 200-character bound (types/types.go:912-914) was never enforced; now rejected with InvalidS3PrefixException, per the exception CreateTrail itself declares (types/errors.go:1565)."}
   GetTrail: {wire: ok, errors: ok, state: ok, persist: ok}
-  UpdateTrail: {wire: ok, errors: ok, state: ok, persist: ok}
+  UpdateTrail: {wire: ok, errors: fixed, state: fixed, persist: ok, note: "gopherstack-g9b4 (2026-09-06): same S3BucketName existence check as CreateTrail when a new bucket is supplied; a rejected update leaves the trail's existing bucket unchanged. gopherstack-f94x (2026-09-06): same S3KeyPrefix 200-character bound as CreateTrail now enforced."}
   DeleteTrail: {wire: ok, errors: ok, state: ok, persist: ok}
   DescribeTrails: {wire: ok, errors: ok, state: ok, persist: ok}
   ListTrails: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: NextToken pagination via pkgs/page (was always one page)"}
@@ -84,8 +84,10 @@ gaps:                     # known divergences NOT fixed — link bd issue ids
   - "gopherstack-2wvq (2026-08-21): StartQuery's QueryAlias is now threaded through and stored (see StartQuery/DescribeQuery), but two sibling input fields are still decoded off the wire and then dropped the same way: QueryParameters (Query already has a matching struct field, never populated) and EventDataStoreOwnerAccountId (only echoed back in StartQuery's own response, never stored on the created Query, so a later DescribeQuery/GetQueryResults on that query reports no owner even though one was supplied at creation time). Both found while checking StartQuery's other members for the same accept-and-drop class; left unfixed as separate from this issue's QueryAlias scope."
   - "gopherstack-2wvq (2026-08-21): DescribeQuery's real input also accepts RefreshId (disambiguates a QueryAlias lookup to one dashboard refresh's query run) -- not modeled, since gopherstack's StartDashboardRefresh does not create linked Query records to disambiguate by (dashboards.go). DescribeQueryByAlias always resolves to the most recently started query for the alias regardless of RefreshId, matching the documented default ('last query run for the alias') but not the RefreshId-scoped refinement."
   - "gopherstack-6flj: StartImport's real input has optional StartEventTime/EndEventTime (a time-range filter on which events to import) and GetImport's real output has matching StartEventTime/EndEventTime/ImportStatistics — none of it modeled, consistent with the pre-existing 'import execution not real' limitation (import file replay was already a documented gap before this pass)."
+  - "gopherstack-h6a (2026-09-04): FIXED by gopherstack-g9b4 (2026-09-06) -- see ops rows above and the numbered entry below. Both halves of the originally-recorded gap (bucket validation, log file delivery) are now real when S3 is wired via SetS3Backend; unwired stays permissive as before."
+  - "gopherstack-g9b4 (2026-09-06): log file delivery writes one gzipped file per recorded management event, rather than AWS's real ~5-minute batched delivery. A disclosed simplification, not a fabricated batching model -- see the numbered entry below."
 deferred: []              # both prior deferred items (Lake SQL execution, Dashboard Widgets) were implemented this pass — see ops/gaps above
-leaks: {status: clean, note: "no goroutines/janitors in this service; Reset() closes every tags.Tags (trails/channels/dashboards/eventDataStores) before clearing tables. Fixed this pass: Event had a hand-written MarshalJSON (epoch-seconds EventTime) but no matching UnmarshalJSON, so any Snapshot containing a recorded event failed Restore entirely (100% data loss of the events log on every restart with in-flight events) -- this was a previously-documented-but-unfixed bug (TestInMemoryBackend_SnapshotRestore_EventsPreexistingBug), now fixed with a real UnmarshalJSON and the test repurposed to assert the round trip succeeds (TestInMemoryBackend_SnapshotRestore_EventsRoundTrip). GetQueryResults/DescribeQuery now mutate on read (materializeQueryLocked lazily executes a QUEUED query) -- both switched from RLock to Lock accordingly, no lock-upgrade race since the mutation happens entirely under the single write lock, not via RLock->Lock promotion."}
+leaks: {status: fixed, note: "no goroutines/janitors in this service; Reset() closes every tags.Tags (trails/channels/dashboards/eventDataStores) before clearing tables. Fixed this pass: Event had a hand-written MarshalJSON (epoch-seconds EventTime) but no matching UnmarshalJSON, so any Snapshot containing a recorded event failed Restore entirely (100% data loss of the events log on every restart with in-flight events) -- this was a previously-documented-but-unfixed bug (TestInMemoryBackend_SnapshotRestore_EventsPreexistingBug), now fixed with a real UnmarshalJSON and the test repurposed to assert the round trip succeeds (TestInMemoryBackend_SnapshotRestore_EventsRoundTrip). GetQueryResults/DescribeQuery now mutate on read (materializeQueryLocked lazily executes a QUEUED query) -- both switched from RLock to Lock accordingly, no lock-upgrade race since the mutation happens entirely under the single write lock, not via RLock->Lock promotion. gopherstack-h6a (2026-09-04): DeleteTrail never purged b.eventConfigs/b.resourcePolicies (both keyed by the deleted resource's ARN, separate from the store.Table-managed trails/channels/eventDataStores tables and their auto-maintained indexes). A trail's ARN is deterministic from its user-chosen name (arn.Build('trail/'+name)), so DeleteTrail followed by CreateTrail with the same name silently resurrected the previous trail's GetEventConfiguration/GetResourcePolicy state -- the exact reused-identity ghost-row class this campaign flags as severe. Regression tests (both proven to fail against unmodified code first): TestCloudTrailEventConfiguration/recreated_trail_does_not_inherit_deleted_trails_config (handler_event_selectors_test.go) and TestCloudTrailResourcePolicy/recreated_trail_does_not_inherit_deleted_trails_resource_policy (handler_resource_policies_test.go). Fixed by purging both maps in DeleteTrail; DeleteEventDataStore and DeleteChannel got the same two-line cleanup for the matching (lower-severity, since eds-/channel- IDs are counter-generated and never reused) unbounded-growth leak."}
 ---
 
 ## Notes
@@ -282,8 +284,69 @@ store could ever be excluded or included differently by this flag. A real fix
 requires modeling shadow-trail replication, which is a structural feature, not a
 value-semantics bug in this parameter's handling.
 
+**2026-09-06 (gopherstack-g9b4): CreateTrail/UpdateTrail bucket validation +
+log file delivery, both previously recorded as a structural gap
+(gopherstack-h6a) and now fixed.**
+
+- **Bucket validation (SDK-verified).** Real `CreateTrail`'s error switch
+  declares `S3BucketDoesNotExistException`
+  (`awsAwsjson11_deserializeOpErrorCreateTrail`, cloudtrail@v1.58.4
+  `deserializers.go`) and so does `UpdateTrail`'s
+  (`awsAwsjson11_deserializeOpErrorUpdateTrail`, same file). The type's own
+  doc comment (`types/errors.go:2247`): "This exception is thrown when the
+  specified S3 bucket does not exist." CreateTrail/UpdateTrail now call a new
+  `S3Backend.HeadBucket` hook (wired via `SetS3Backend`, `cli.go`'s
+  `wireCloudTrailS3`) and return `ErrS3BucketNotFound` when it errors. HTTP
+  status (400) is an inference by analogy to the sibling `InvalidS3BucketNameException`
+  on the same op (also 400) — the pinned SDK's client-side deserializer code
+  does not itself carry a status code (that's server behavior, not part of
+  the client model), so this is a reasoned choice, not a wire-verified fact.
+  Unwired (no `SetS3Backend` call): both ops stay exactly as permissive as
+  before -- see `TestCreateTrail_UnwiredS3StaysPermissive`/
+  `TestUpdateTrail_UnwiredS3StaysPermissive`.
+
+- **Log file delivery (documentation-sourced, not SDK-verified).** CloudTrail
+  log files are an AWS Developer Guide artifact with no representation in the
+  pinned SDK at all (no client ever parses one). A logging trail
+  (`StartLogging`) with S3 wired now receives one gzipped JSON file per
+  recorded management event (`RecordEvent` -> `deliverLogFileLocked`,
+  `delivery.go`), body `{"Records": [<event detail>]}` (the same
+  per-event detail JSON already built for `CloudTrailEvent` /
+  `management_event.go`), key
+  `AWSLogs/{account}/CloudTrail/{region}/{yyyy}/{mm}/{dd}/{account}_CloudTrail_{region}_{yyyyMMddTHHmmZ}_{unique}.json.gz`
+  (`S3KeyPrefix`-prefixed when set). Two disclosed simplifications versus
+  real AWS: (1) one file per event, not AWS's real ~5-minute batched
+  delivery; (2) only events carrying a `CloudTrailEvent` detail (i.e. routed
+  through `RecordManagementEvent`, the real activity path -- see
+  `pkgs/service/cloudtrail_capture.go`) are delivered; a directly seeded
+  `RecordEvent` call with no detail delivers nothing, since there is no
+  genuine record content to write. Unwired (no `SetS3Backend` call), or a
+  trail that never called `StartLogging`: no delivery, matching this
+  backend's pre-existing behavior exactly -- see
+  `TestRecordManagementEvent_UnwiredS3StaysPermissive`/
+  `TestRecordManagementEvent_TrailNotLogging_NoDelivery`.
+
+- **Assessment of the two original claims, evaluated separately per this
+  campaign's discipline:** (a) "no log file is ever delivered" had a real
+  prerequisite question -- was there anything to deliver? Yes:
+  `RecordManagementEvent` (wired globally via `pkgs/service/cloudtrail_capture.go`,
+  landed in an earlier pass) means `b.events` is populated by real
+  cross-service mutating API activity, not just test seeding. So this was a
+  genuine, fixable gap, not structural. (b) "the bucket is never validated"
+  was independently fixable and cheaper, per above.
+
 Gates: `go build ./services/cloudtrail/...`, `go vet ./...` (repo-wide, clean),
 `go test -race -count=1 ./services/cloudtrail/...` (all pass), `golangci-lint run
 ./services/cloudtrail/...` (0 issues, after a `fieldalignment -fix` pass on the new
 `eventSelectorWire` struct, re-verified with a plain `golangci-lint run`
 afterward). No other service's files touched.
+
+**2026-09-06 (gopherstack-g9b4) gates:** `go build ./...` (repo-wide, clean),
+`go test -race -count=1 ./services/cloudtrail/...` (all pass, including the
+new `s3_delivery_test.go`), `go test -race -count=1 .` (root package, clean),
+`golangci-lint run ./ services/cloudtrail/...` (0 issues, after a `golines`
+pass on the new test file and a `govet` shadow fix in `delivery.go`). Files
+touched: `services/cloudtrail/{interfaces.go (new), delivery.go (new),
+s3_delivery_test.go (new), store.go, trails.go, events.go, errors.go,
+handler.go, PARITY.md}` and `cli.go` (root). No other service's files
+touched.

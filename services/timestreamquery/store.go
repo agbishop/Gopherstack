@@ -57,6 +57,7 @@ type InMemoryBackend struct {
 // CreateScheduledQuery's Tags never reach the store those reads consult.
 type TagWriteBackend interface {
 	TagResource(arn string, tags map[string]string) error
+	UntagResource(arn string, tagKeys []string) error
 }
 
 // SetTagWriteBackend wires the Timestream Write backend that owns the shared

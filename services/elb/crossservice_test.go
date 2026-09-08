@@ -17,10 +17,12 @@ import (
 type fakeEC2Resolver struct {
 	securityGroups map[string]bool
 	subnets        map[string]bool
+	instances      map[string]bool
 }
 
 func (f *fakeEC2Resolver) SecurityGroupExists(id string) bool { return f.securityGroups[id] }
 func (f *fakeEC2Resolver) SubnetExists(id string) bool        { return f.subnets[id] }
+func (f *fakeEC2Resolver) InstanceExists(id string) bool      { return f.instances[id] }
 
 // fakeCertResolver is a test double for elb.CertificateResolver backed by a
 // static set, standing in for the real services/acm and services/iam
@@ -123,6 +125,56 @@ func TestAttachLoadBalancerToSubnets_EC2Resolver(t *testing.T) {
 				"Version":          {"2012-06-01"},
 				"LoadBalancerName": {"subnet-resolver-lb"},
 				"Subnets.member.1": {"subnet-real"},
+			})
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}
+
+func TestRegisterInstancesWithLoadBalancer_EC2Resolver(t *testing.T) {
+	t.Parallel()
+
+	const knownInstance = "i-0123456789abcdef0"
+
+	tests := []struct {
+		resolver   elb.EC2Resolver
+		name       string
+		wantStatus int
+	}{
+		{
+			name:       "no_resolver_wired_accepts_any_id",
+			resolver:   nil,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "known_instance_accepted",
+			resolver:   &fakeEC2Resolver{instances: map[string]bool{knownInstance: true}},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "unknown_instance_rejected",
+			resolver:   &fakeEC2Resolver{instances: map[string]bool{}},
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backend := newBackend()
+			if tt.resolver != nil {
+				backend.SetEC2Resolver(tt.resolver)
+			}
+
+			h := elb.NewHandler(backend)
+			mustCreateLB(t, h, "instance-resolver-lb")
+
+			rec := doELB(t, h, url.Values{
+				"Action":                        {"RegisterInstancesWithLoadBalancer"},
+				"Version":                       {"2012-06-01"},
+				"LoadBalancerName":              {"instance-resolver-lb"},
+				"Instances.member.1.InstanceId": {knownInstance},
 			})
 			assert.Equal(t, tt.wantStatus, rec.Code)
 		})

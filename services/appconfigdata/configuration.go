@@ -169,13 +169,17 @@ func (b *InMemoryBackend) GetLatestConfiguration(
 	}
 
 	// Change detection: return empty content when the profile hash matches the previous poll.
+	// VersionLabel is likewise blanked when unchanged -- per api_op_GetLatestConfiguration.go's
+	// doc comment on the VersionLabel field: "If the client already has the latest version of
+	// the configuration data, this value is empty."
 	var content []byte
+	var versionLabel string
 	contentType := "application/octet-stream"
 	hash := profile.ContentHash
-	versionLabel := profile.VersionLabel
 
 	if hash != sess.PreviousContentHash {
 		content = []byte(profile.Content)
+		versionLabel = profile.VersionLabel
 		if profile.ContentType != "" {
 			contentType = profile.ContentType
 		}

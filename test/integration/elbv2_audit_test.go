@@ -21,11 +21,13 @@ func TestIntegration_ELBv2Audit_CapacityReservation(t *testing.T) {
 	client := createELBv2Client(t)
 	ctx := t.Context()
 
+	subnetIDs, _ := mustCreateELBv2NetworkPrereqs(t, "10.93", 2)
+
 	createOut, err := client.CreateLoadBalancer(ctx, &elbv2sdk.CreateLoadBalancerInput{
 		Name:    aws.String("it-audit-cap-lb"),
 		Scheme:  elbv2types.LoadBalancerSchemeEnumInternetFacing,
 		Type:    elbv2types.LoadBalancerTypeEnumApplication,
-		Subnets: []string{"subnet-aaaaaaaa", "subnet-bbbbbbbb"},
+		Subnets: subnetIDs,
 	})
 	require.NoError(t, err)
 	require.Len(t, createOut.LoadBalancers, 1)
@@ -76,11 +78,13 @@ func TestIntegration_ELBv2Audit_IpPools(t *testing.T) {
 	client := createELBv2Client(t)
 	ctx := t.Context()
 
+	subnetIDs, _ := mustCreateELBv2NetworkPrereqs(t, "10.94", 2)
+
 	createOut, err := client.CreateLoadBalancer(ctx, &elbv2sdk.CreateLoadBalancerInput{
 		Name:    aws.String("it-audit-ippool-lb"),
 		Scheme:  elbv2types.LoadBalancerSchemeEnumInternetFacing,
 		Type:    elbv2types.LoadBalancerTypeEnumApplication,
-		Subnets: []string{"subnet-aaaaaaaa", "subnet-bbbbbbbb"},
+		Subnets: subnetIDs,
 	})
 	require.NoError(t, err)
 	require.Len(t, createOut.LoadBalancers, 1)

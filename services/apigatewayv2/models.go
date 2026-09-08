@@ -190,7 +190,14 @@ type Deployment struct {
 	APIID            string  `json:"-"`
 	Description      string  `json:"description,omitempty"`
 	DeploymentStatus string  `json:"deploymentStatus"`
-	AutoDeployed     bool    `json:"autoDeployed"`
+	// Routes and Integrations are the routing snapshot captured at deployment
+	// time: the exact set the data plane matches against for a stage pinned
+	// to this deployment (gopherstack-cfr1), never the API's live current
+	// state. Not part of the real GetDeploymentOutput wire shape -- internal
+	// only, hence json:"-".
+	Routes       []Route       `json:"-"`
+	Integrations []Integration `json:"-"`
+	AutoDeployed bool          `json:"autoDeployed"`
 }
 
 // Authorizer represents an authorizer for an HTTP API.

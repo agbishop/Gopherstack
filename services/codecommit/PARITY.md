@@ -43,9 +43,9 @@ ops:
   GetBranch: {wire: ok, errors: ok, state: ok, persist: ok}
   ListBranches: {wire: ok, errors: ok, state: ok, persist: ok}
   DeleteBranch: {wire: ok, errors: ok, state: ok, persist: ok}
-  CreateCommit: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "filesAdded[].blobId was hardcoded empty (fixed prior pass); this pass: filesDeleted[].blobId was omitted entirely (now the real removed blob id, matching filesAdded), and ParentCommitIdOutdatedException/ParentCommitIdRequiredException were unreachable (missing from errCodeLookup — see Notes). ALSO this pass: putFiles entries with content identical to what's already at that path now return SameFileContentException instead of silently creating a no-op commit (the sentinel existed but no backend path ever returned it — see gaps' prior note, now partially closed)"}
-  GetCommit: {wire: ok, errors: ok, state: ok, persist: ok}
-  BatchGetCommits: {wire: ok, errors: ok, state: ok, persist: ok}
+  CreateCommit: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "filesAdded[].blobId was hardcoded empty (fixed prior pass); this pass: filesDeleted[].blobId was omitted entirely (now the real removed blob id, matching filesAdded), and ParentCommitIdOutdatedException/ParentCommitIdRequiredException were unreachable (missing from errCodeLookup — see Notes). ALSO this pass: putFiles entries with content identical to what's already at that path now return SameFileContentException instead of silently creating a no-op commit (the sentinel existed but no backend path ever returned it — see gaps' prior note, now partially closed). FIXED 2026-09-07 (gopherstack-8pe4): that SameFileContentException was itself the wrong code — CreateCommit's own declared error set (codecommit@v1.36.4) has no SameFileContentException at all (that's PutFile-only); the identical-content check now returns NoChangeException, CreateCommit's real declared equivalent. See Notes."}
+  GetCommit: {wire: ok, errors: fixed, state: ok, persist: ok, note: "FIXED 2026-09-07 (gopherstack-8pe4): not-found returned CommitDoesNotExistException, a real but different exception (used correctly elsewhere by CreateBranch/the merge family for a commit-specifier-resolution failure); GetCommit's own declared error set has CommitIdDoesNotExistException specifically for an unresolvable commitId (verified against the real API docs' Errors section). See Notes."}
+  BatchGetCommits: {wire: ok, errors: fixed, state: ok, persist: ok, note: "CHECKED 2026-09-07 (gopherstack-8pe4): errtargetaudit flagged the per-entry BatchCommitError.ErrorCode literal (\"CommitDoesNotExistException\") as a class A finding. FALSE POSITIVE (unchanged) — this is document data in a 200 response (BatchGetCommitsOutput.errors[].errorCode), not a thrown/declared HTTP exception, so it isn't in BatchGetCommits' deserializeOpError set at all. FIXED 2026-09-07 (gopherstack-pfyr): the VALUE was wrong. codecommit's api-2.json types both GetCommitInput.commitId and BatchGetCommitsError.commitId as the ObjectId shape (a raw full-SHA lookup) — the same shape, with GetCommit's own declared not-found error being CommitIdDoesNotExistException. Every CommitDoesNotExistException-throwing op (CreateBranch and 17 others) instead uses the CommitId shape, reserved for specifier-resolution fields (branch tips, before/after commit, merge base). BatchGetCommits' own live API doc even describes the two errors[] failure modes — \"shortened SHA ID\" / \"not found\" — matching GetCommit's InvalidCommitIdException/CommitIdDoesNotExistException pair exactly, not CreateBranch's specifier-resolution CommitDoesNotExistException. Now CommitIdDoesNotExistException. See Notes."}
   PutFile: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "blobId was hardcoded empty (fixed prior pass); this pass: File.CommitSpecifier stored branchName instead of the real commit id, so GetFile's commitId field after a PutFile returned the branch name — now the real commit id. Also never recorded fileHistory, so files written via PutFile (not CreateCommit) were invisible to ListFileCommitHistory — now recorded. ALSO this pass: writing content identical to what's already at that path now returns SameFileContentException instead of silently creating a no-op commit"}
   GetFile: {wire: ok, errors: fixed, state: ok, persist: ok, note: "not-found now FileDoesNotExistException, was RepositoryDoesNotExistException"}
   GetFolder: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -71,14 +71,14 @@ ops:
   UpdatePullRequestTitle: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdatePullRequestDescription: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdatePullRequestStatus: {wire: ok, errors: ok, state: ok, persist: ok}
-  DescribePullRequestEvents: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-21 (gopherstack-us9u kind-mismatch sweep) -- PullRequestEvent.EventDate was a string built via time.Now().UTC().Format(time.RFC3339); the real EventDate deserializes via ParseEpochSeconds(json.Number) (deserializers.go, case \"eventDate\"), so every real SDK client's DescribePullRequestEvents call failed outright once any pull request event existed (always true after OverridePullRequestApprovalRules). Fixed by changing the domain field to time.Time and projecting to epoch seconds at the handler's wire-build step. Proven via a real aws-sdk-go-v2/service/codecommit client round trip (wire_pull_request_event_test.go), hand-reverted/confirmed-failing (expected EventDate to be a JSON Number, got string instead)/restored, md5sum-verified byte-identical."}
+  DescribePullRequestEvents: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "FIXED 2026-08-21 (gopherstack-us9u kind-mismatch sweep) -- PullRequestEvent.EventDate was a string built via time.Now().UTC().Format(time.RFC3339); the real EventDate deserializes via ParseEpochSeconds(json.Number) (deserializers.go, case \"eventDate\"), so every real SDK client's DescribePullRequestEvents call failed outright once any pull request event existed (always true after OverridePullRequestApprovalRules). Fixed by changing the domain field to time.Time and projecting to epoch seconds at the handler's wire-build step. Proven via a real aws-sdk-go-v2/service/codecommit client round trip (wire_pull_request_event_test.go), hand-reverted/confirmed-failing (expected EventDate to be a JSON Number, got string instead)/restored, md5sum-verified byte-identical. FIXED 2026-09-08 (gopherstack-a7tx): ActorArn was dropped from the decode struct entirely (silently ignored) and unvalidated; also OverridePullRequestApprovalRules -- the only op that ever records a PullRequestEvent -- hardcoded its event's actor to \"\" instead of the resolved caller identity already available via awsmeta.CallerArn(ctx) (set onto the request context repo-wide by cli.go's principalMiddleware before dispatch runs; codecommit's own dispatch was discarding ctx). Now: PullRequestEvent carries ActorARN, OverridePullRequestApprovalRules records the real caller, actorArn is parsed+validated as an ARN (InvalidActorArnException on a malformed value, matching the declared error set) and used to filter DescribePullRequestEvents. NOT fixed (structural, out of scope): ActorDoesNotExistException (would require cross-service coupling to IAM's user/role store to check the ARN actually names an account principal); also, 8 of the 9 real PullRequestEventType values (PULL_REQUEST_CREATED, _STATUS_CHANGED, _SOURCE_REFERENCE_UPDATED, _MERGE_STATE_CHANGED, _APPROVAL_RULE_CREATED/_UPDATED/_DELETED, _APPROVAL_STATE_CHANGED) are never recorded by any backend op -- only PULL_REQUEST_APPROVAL_RULE_OVERRIDDEN is, so actorArn filtering is only observable against that one event type today; a pre-existing gap, not introduced or widened by this pass."}
   CreatePullRequestApprovalRule: {wire: ok, errors: ok, state: ok, persist: ok}
   DeletePullRequestApprovalRule: {wire: ok, errors: fixed, state: ok, persist: ok, note: "rule-not-found now ApprovalRuleDoesNotExistException, was RepositoryDoesNotExistException"}
   UpdatePullRequestApprovalRuleContent: {wire: ok, errors: fixed, state: ok, persist: ok, note: "rule-not-found now ApprovalRuleDoesNotExistException, was RepositoryDoesNotExistException"}
   UpdatePullRequestApprovalState: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): revisionId is a required UpdatePullRequestApprovalStateInput member (codecommit@v1.36.4 api_op_UpdatePullRequestApprovalState.go) that was decoded and never validated. Added a required-field check. NOT fixed (gap): no staleness/mismatch check against the PR's real, tracked RevisionID (models.go/pull_requests.go) -- real AWS can also return InvalidRevisionIdException/RevisionNotCurrentException for a wrong or stale value; only the RevisionIdRequiredException case is covered, to avoid inventing which of those two codes an unmodeled mismatch should map to."}
   GetPullRequestApprovalStates: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState above (GetPullRequestApprovalStatesInput.RevisionId is also required)."}
   EvaluatePullRequestApprovalRules: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED (gopherstack-lx5h) — response emitted evaluationResults, an array of {approvalRuleName,satisfied} objects; the real required key (deserializers.go EvaluatePullRequestApprovalRulesOutput) is a single evaluation object (types.Evaluation: approved/overridden/approvalRulesSatisfied/approvalRulesNotSatisfied). Prior wire: ok was false. Handler now splits the backend's per-rule []RuleEvaluation into satisfied/not-satisfied name lists and folds in the existing prOverrides/prOverriders override state (approved := overridden || no unsatisfied rules). Backend still marks every rule Satisfied: true unconditionally (never checks a rule's real approval-pool/numberOfApprovalsNeeded content against actual approvals) — that evaluation-logic gap is pre-existing and out of this pass's scope (a wrong-key bug, not a wrong-logic one), tracked separately. FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState above (see its note)."}
-  OverridePullRequestApprovalRules: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState (see its note)."}
+  OverridePullRequestApprovalRules: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState (see its note). FIXED 2026-09-08 (gopherstack-a7tx): the recorded PullRequestEvent's actor was hardcoded to the empty string instead of the resolved caller (see DescribePullRequestEvents' note above for the full fix and its scope)."}
   GetPullRequestOverrideState: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState (see its note)."}
   MergePullRequestByFastForward: {wire: ok, errors: ok, state: ok, persist: ok}
   MergePullRequestBySquash: {wire: ok, errors: ok, state: ok, persist: ok, note: "status transition is real; content-level squash semantics are not modeled (see gaps)"}
@@ -731,3 +731,215 @@ correct) and untouched.
 Gates: `go build`, `go vet` (repo-wide, clean), `go test -race -count=1`,
 `golangci-lint run` (0 issues) — all clean (`./services/codecommit/...`).
 Work left uncommitted per this pass's instructions.
+
+## 2026-09-07 errtargetaudit sweep (gopherstack-8pe4)
+
+No prior error-envelope/errtargetaudit entry existed for this service (screened before
+starting). `cmd/errtargetaudit` (declared-vs-emitted error-code cross-check against
+codecommit@v1.36.4's `deserializeOpError<Op>` tables) reported: operations with SDK ground
+truth 79, resolved 79, emission found for 76, no coverage warning; 3 class A findings.
+
+### 1. CreateCommit / SameFileContentException — CONFIRMED, fixed
+
+`awk "/deserializeOpErrorCreateCommit\(/,/^}/" deserializers.go | grep -oE '"[A-Za-z0-9]+"'`
+lists CreateCommit's entire declared error set (35 codes) — `SameFileContentException` is
+not among them; `NoChangeException` is ("The commit cannot be created because no changes
+will be made to the repository as a result of this commit", per the real API docs' Errors
+section). `SameFileContentException`'s own doc ("The file was not added or updated because
+the content of the file is exactly the same...") is PutFile's exception specifically, and
+PutFile's declared set does contain it (confirmed the same way) — PutFile's own identical-
+content check (`files.go:48`) was untouched, it already used the right code. CreateCommit's
+`putFiles`-identical-content check (`commits.go`, added by the 2026-08-07 gopherstack-3bsb
+pass) reused PutFile's `ErrSameFileContent` sentinel for a different op with a different
+declared error set — a global-sentinel-map-shaped bug (gopherstack-hdvu's class), fixed per
+call site: new `ErrNoChange` sentinel (`errors.go`) wired to `NoChangeException` in
+`errCodeLookup`, used only by CreateCommit's check; `ErrSameFileContent`/PutFile untouched.
+
+### 2. GetCommit / CommitDoesNotExistException — CONFIRMED, fixed
+
+Same extraction for GetCommit's declared set: `CommitIdDoesNotExistException`,
+`CommitIdRequiredException`, plus repo/encryption/invalid-id codes — no
+`CommitDoesNotExistException`. The real API docs' GetCommit Errors section lists
+`CommitIdDoesNotExistException` — "The specified commit ID does not exist" — a distinct
+type from `CommitDoesNotExistException` ("The specified commit does not exist or no commit
+was specified, and the specified repository has no default branch", confirmed via
+`types/errors.go`'s doc comments on both). The shared `ErrCommitNotFound` sentinel
+(`errors.go`) is correctly `CommitDoesNotExistException` for every other caller
+(`branches.go`'s `CreateBranch`, `merges.go`'s `resolveCommitSpecifier` users —
+`BatchDescribeMergeConflicts`/`CreateUnreferencedMergeCommit`/`DescribeMergeConflicts`/
+`GetCommentsForComparedCommit`/the merge family — all confirmed against their own declared
+sets, all correct, untouched); only GetCommit's own by-ID lookup (`commits.go`) needed the
+other exception. Fixed per call site, not per sentinel: new `ErrCommitIDNotFound` sentinel
+wired to `CommitIdDoesNotExistException`, used only by GetCommit's not-found return.
+
+### 3. BatchGetCommits / CommitDoesNotExistException — FALSE POSITIVE (class 1: batch data)
+
+The flagged line (`commits.go`) is a composite-literal `BatchCommitError.ErrorCode` field
+inside the per-`commitId` `errors` list of a 200 response — document data, not a thrown
+exception, so it has no entry in `deserializeOpErrorBatchGetCommits` at all (confirmed: that
+op's declared set has only `CommitIdsLimitExceededException`/`CommitIdsListRequiredException`
+plus the usual repo/encryption codes — no commit-not-found code of either name). Not changed:
+the real docs for `BatchGetCommitsError.errorCode` don't enumerate valid string values (unlike
+the typed exceptions above), so there's no positive evidence the current string is wrong —
+only that GetCommit's sibling by-ID lookup uses the `...Id...` variant, which is suggestive
+but not proof for a free-string field with no declared enum. Left as a documented open
+question (see `ops:` above) rather than a synthesized remedy.
+
+### Verification
+
+Per-line neuter: reverted `commits.go`'s `ErrNoChange` (CreateCommit) back to
+`ErrSameFileContent` — compiled, `TestHandler_CreateCommit_NoChange` failed on the asserted
+`__type` (`"NoChangeException"` vs `"SameFileContentException"`), restored. Reverted
+`ErrCommitIDNotFound` (GetCommit) back to `ErrCommitNotFound` — compiled,
+`TestHandler_GetCommit_CommitIDNotFound` failed the same way (`"CommitIdDoesNotExistException"`
+vs `"CommitDoesNotExistException"`), restored.
+
+Pre-existing test correction: `TestHandler_CreateCommit_SameFileContent` (`handler_commits_
+test.go`) asserted `SameFileContentException` for CreateCommit's identical-content rejection
+— the exact bug fixed above, with no note that it pinned wrong behavior. Renamed
+`TestHandler_CreateCommit_NoChange`, assertion corrected to `NoChangeException`, comment added
+citing this issue. 1 test corrected, 0 dropped. New regression test:
+`TestHandler_GetCommit_CommitIDNotFound` (no pre-existing test asserted GetCommit's not-found
+`__type` at all).
+
+Re-ran `cmd/errtargetaudit` after the fix: codecommit's class A findings dropped from 3 to 1
+(the BatchGetCommits false positive above; unchanged, not a regression).
+
+Gates: `go build`, `go test -race -count=1 ./services/codecommit/...` (ok),
+`golangci-lint run services/codecommit/...` (0 issues).
+
+## 2026-09-07 BatchGetCommits errorCode value resolved (gopherstack-pfyr)
+
+Follow-up to section 3 above, which correctly left the *value* question open
+(the finding itself was, and remains, a confirmed class-1 false positive —
+not re-litigated here).
+
+Evidence: `codecommit@v1.36.4`'s `api-2.json` types `GetCommitInput.commitId`
+and `BatchGetCommitsError.commitId` both as the `ObjectId` shape (a raw,
+required, full-SHA lookup with no specifier resolution). `CreateBranchInput.
+commitId` and every other operation whose declared error set includes
+`CommitDoesNotExistException` (`CreateBranch`, `BatchDescribeMergeConflicts`,
+`CreateUnreferencedMergeCommit`, `DescribeMergeConflicts`,
+`GetCommentsForComparedCommit`, `GetCommentsForPullRequest`, `GetDifferences`,
+`GetFile`, `GetFolder`, `GetMergeCommit`, `GetMergeConflicts`,
+`GetMergeOptions`, `ListFileCommitHistory`, the three `MergeBranchesBy*` ops,
+`PostCommentForComparedCommit`, `PostCommentForPullRequest`) instead use the
+distinct `CommitId` shape, reserved for specifier-resolution fields (branch
+tips, before/after commit, merge base) per `docs-2.json`'s `refs`. `GetCommit`
+is the only operation in the service whose declared error set has
+`CommitIdDoesNotExistException` — confirmed against `deserializeOpErrorGetCommit`
+and `api-2.json`'s per-op `errors` list.
+
+The live API reference for `BatchGetCommits` corroborates independently: its
+`errors[]` doc text — "if one of the commit IDs was a shortened SHA ID or that
+commit was not found in the specified repository" — names exactly the two
+failure modes GetCommit's own declared set distinguishes as
+`InvalidCommitIdException` and `CommitIdDoesNotExistException`, not the
+specifier-resolution condition `CommitDoesNotExistException` describes ("no
+commit was specified, and the specified repository has no default branch").
+
+`BatchGetCommitsError.errorCode` itself still has no enumerated values in
+either `docs-2.json` or the live API reference — confirmed again this pass,
+no new information there. The type-shape identity to `GetCommit` is what
+settles it, not the errorCode field's own doc.
+
+Fixed: `commits.go`'s `BatchGetCommits` not-found entry now uses
+`CommitIdDoesNotExistException`. New regression test
+`TestHandler_BatchGetCommits_ErrorCodeIsCommitIdDoesNotExist`
+(`handler_commits_test.go`) — failed pre-fix with `expected:
+"CommitIdDoesNotExistException" / actual: "CommitDoesNotExistException"`, now
+passes. No pre-existing test asserted this field's value, so nothing else
+changed.
+
+Gates: `golangci-lint run ./services/codecommit/...` (0 issues), `go test -race
+./services/codecommit/...` (ok).
+
+## 2026-09-08 actorArn caller-identity audit (gopherstack-a7tx)
+
+Filed as "codecommit: no caller-identity plumbing, so actorArn filters cannot
+work" (P3, title-only, empty description). The premise was imprecise:
+`pkgs/awsmeta` + `services/iam`/`services/sts` do resolve caller identity, and
+that resolution is wired repo-wide, not per-service -- cli.go's
+`awsMetaMiddleware` (`e.Pre`, applies to every request) and `principalMiddleware`
+(`registry.Use`, applies to every registered service including codecommit)
+populate `awsmeta.CallerArn(ctx)` before any service's dispatch ever runs. The
+real defect was narrower and local to this package: codecommit's own
+`dispatch` discarded that ctx (`func (h *Handler) dispatch(_ context.Context,
+...)`), and `OverridePullRequestApprovalRules` -- the one op that records a
+`PullRequestEvent` -- hardcoded its actor to `""` even though its backend
+signature already had an `overriderARN` parameter to receive it
+(`handler_pull_requests.go`, pre-fix: `h.Backend.OverridePullRequestApprovalRules(req.PullRequestID,
+req.OverrideStatus, "")`). Confirmed via `OverridePullRequestApprovalRulesInput`
+(codecommit@v1.36.4 api_op_OverridePullRequestApprovalRules.go / botocore
+service-2.json): it has no actor/overrider ARN field at all -- real AWS derives
+"who overrode" purely from caller identity, exactly what `awsmeta.CallerArn`
+already resolves.
+
+`DescribePullRequestEventsInput.ActorArn` ("The Amazon Resource Name (ARN) of
+the user whose actions resulted in the event. Examples include updating the
+pull request with more commits or changing the status of a pull request.",
+api_op_DescribePullRequestEvents.go:36-39, confirmed against botocore's
+longer `service-2.json` doc string) was silently dropped: the decode struct
+in `handleDescribePullRequestEvents` had no `ActorArn` field, so a
+client-supplied filter was ignored outright (not merely unvalidated -- never
+read). `actorArn`'s wire shape is `Arn` (an unconstrained string in the
+model), but the operation's declared error set includes
+`InvalidActorArnException` ("Make sure that you have provided the full ARN
+...") and `ActorDoesNotExistException` ("does not exist in the Amazon Web
+Services account").
+
+Fixed (in scope -- uses existing plumbing, no new identity mechanism, no
+cross-service wiring):
+- `PullRequestEvent` gained an `ActorARN` field (`models.go`).
+- `OverridePullRequestApprovalRules` now stores its (already-passed)
+  `overriderARN` onto the event it creates (`pull_requests.go`).
+- `dispatch` now special-cases `OverridePullRequestApprovalRules` to call it
+  with `ctx` (rather than growing the `ops` table's function type to
+  `func(context.Context, []byte)` across all 79 other ops, out of proportion
+  to a one-op fix) and `handleOverridePullRequestApprovalRules` extracts
+  `awsmeta.CallerArn(ctx)` in place of the old `""` literal.
+- `handleDescribePullRequestEvents` parses `actorArn`, validates it as an ARN
+  shape (new `ErrInvalidActorArn` / `InvalidActorArnException`, `errors.go`'s
+  `actorArnRe`), and both `DescribePullRequestEvents` (backend) and the wire
+  response now filter/echo by it.
+
+NOT fixed, and explicitly out of scope for this pass:
+- `ActorDoesNotExistException` -- checking that an ARN names a real account
+  principal would require coupling codecommit to IAM's user/role store
+  cross-service, which the audit brief excluded.
+- 8 of the 9 real `PullRequestEventType` values are never recorded by any
+  backend operation -- only `PULL_REQUEST_APPROVAL_RULE_OVERRIDDEN` is (the
+  sole `b.prEvents[prID] = append(...)` call site in the package, before this
+  pass). actorArn filtering is consequently only observable against that one
+  event type today; this is a pre-existing structural gap in event recording,
+  independent of caller identity, and was not widened or narrowed by this fix.
+
+Verdict: (i) -- the plumbing exists and codecommit simply wasn't using it, so
+this was a fixable defect, not a structural blocker. Not a pure case of
+"just call `awsmeta.CallerArn(ctx)` at filter time", though: `actorArn`
+attributes each *past* event to whoever performed *that* action, which meant
+capturing identity at event-creation time (already ctx-available at
+`dispatch`), not at query time.
+
+New regression test `TestOverridePullRequestApprovalRules_RecordsCallerAsActorArn`
+(`actor_arn_test.go`), 4 subtests, all failing pre-fix:
+- `matches_caller`: expected the recorded event's `actorArn` to equal the
+  caller's ARN, got `<nil>` (field absent).
+- `no_filter_returns_all`: same `<nil>` failure (event existed but carried no
+  actor).
+- `different_actor_returns_none`: expected 0 events filtering by a different
+  actor, got 1 (filter param didn't exist, so nothing was ever excluded).
+- `malformed_arn_rejected`: expected HTTP 400 / `InvalidActorArnException`,
+  got HTTP 200 with the (unfiltered) event list.
+All 4 pass post-fix. One pre-existing call site updated for the new backend
+signature (`persistence_test.go`'s `fresh.DescribePullRequestEvents(pr.PullRequestID,
+"", "")`, third arg added) -- no assertion changed, purely mechanical.
+
+Stability: new test run 10x under `-race -count=1` (all pass), full package
+run 5x under `-race -count=1` (all pass). No global/shared state involved
+(fresh backend/handler per test, no package-level mutable state touched).
+
+Gates: `go build ./services/codecommit/...` (clean), `go vet
+./services/codecommit/...` (clean), `golangci-lint run
+./services/codecommit/...` (0 issues), `go test -race
+./services/codecommit/...` (ok).

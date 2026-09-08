@@ -69,6 +69,17 @@ const (
 	actionsModeSkipAll = "skip-all"
 )
 
+// stopConditionSourceAlarm is the CreateExperimentTemplateStopConditionInput
+// Source value naming a CloudWatch alarm (aws-sdk-go-v2/service/fis/types:
+// "Specify aws:cloudwatch:alarm if the stop condition is defined by a
+// CloudWatch alarm"). alarmStateValueAlarm mirrors CloudWatch's own "ALARM"
+// state string; FIS does not import cloudwatch, so this is a local literal
+// copy of stable AWS wire vocabulary rather than a shared constant.
+const (
+	stopConditionSourceAlarm = "aws:cloudwatch:alarm"
+	alarmStateValueAlarm     = "ALARM"
+)
+
 // ----------------------------------------
 // ID / ARN helpers
 // ----------------------------------------
@@ -134,21 +145,25 @@ func toUnixPtr(t *time.Time) *float64 {
 
 // InMemoryBackend is the in-memory implementation of StorageBackend.
 type InMemoryBackend struct {
-	registry                       *store.Registry
-	templates                      *store.Table[ExperimentTemplate]
-	templatesByArn                 *store.Index[ExperimentTemplate]
-	experiments                    *store.Table[Experiment]
+	svcCtx context.Context
+	// alarmSubscriber drives "aws:cloudwatch:alarm" stop conditions
+	// (gopherstack-x842, gopherstack-9939). Nil (the default) leaves stop
+	// conditions validated and stored but otherwise inert.
+	alarmSubscriber                AlarmStateSubscriber
 	experimentsByArn               *store.Index[Experiment]
+	faultStore                     *chaos.FaultStore
+	registry                       *store.Registry
 	targetAccountConfigs           *store.Table[TargetAccountConfiguration]
 	targetAccountConfigsByTemplate *store.Index[TargetAccountConfiguration]
 	tplClientTokens                map[string]string // clientToken → templateID
 	expClientTokens                map[string]string // clientToken → experimentID
-	faultStore                     *chaos.FaultStore
+	experiments                    *store.Table[Experiment]
 	safetyLever                    *SafetyLever
 	mu                             *lockmetrics.RWMutex
-	svcCtx                         context.Context
-	accountID                      string
+	templatesByArn                 *store.Index[ExperimentTemplate]
+	templates                      *store.Table[ExperimentTemplate]
 	region                         string
+	accountID                      string
 	actionProviders                []service.FISActionProvider
 }
 
@@ -219,6 +234,16 @@ func (b *InMemoryBackend) SetFaultStore(store *chaos.FaultStore) {
 	defer b.mu.Unlock()
 
 	b.faultStore = store
+}
+
+// SetAlarmStateSubscriber registers the CloudWatch alarm-state-change hook that
+// drives "aws:cloudwatch:alarm" stop conditions (gopherstack-x842,
+// gopherstack-9939).
+func (b *InMemoryBackend) SetAlarmStateSubscriber(sub AlarmStateSubscriber) {
+	b.mu.Lock("SetAlarmStateSubscriber")
+	defer b.mu.Unlock()
+
+	b.alarmSubscriber = sub
 }
 
 // SetActionProviders registers external FIS action providers discovered from the registry.

@@ -28,7 +28,7 @@ func TestSESv2Backend_SendEmailCap(t *testing.T) {
 	total := sesv2.EmailCompactionHighWater + 5
 	for i := range total {
 		_, sendErr := b.SendEmail("a@example.com", []string{"b@example.com"},
-			"s", "h", "t")
+			"s", "h", "t", nil)
 		require.NoError(t, sendErr, "iteration %d", i)
 	}
 
@@ -163,6 +163,85 @@ func TestSendBulkEmail(t *testing.T) {
 	assert.Equal(t, "<html>Hi default</html>", emails[0].BodyHTML)
 	assert.Equal(t, "Hello to2", emails[1].Subject,
 		"per-entry ReplacementTemplateData must override the default vars")
+}
+
+// TestSendEmail_ContentTemplate verifies that SendEmail's Content.Template
+// (api_op_SendEmail.go:24-26: "Templated -- A message that contains
+// personalization tags. When you send this type of email, Amazon SES API v2
+// automatically replaces the tags with values that you specify") actually
+// renders the referenced/inline template. The emulator's emailContent decode
+// struct previously had no Template field at all, so a templated SendEmail
+// silently recorded an email with an empty subject and body.
+func TestSendEmail_ContentTemplate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		body        map[string]any
+		name        string
+		wantSubject string
+		wantHTML    string
+	}{
+		{
+			name: "inline_template_content",
+			body: map[string]any{
+				"FromEmailAddress": "tmpl@example.com",
+				"Destination":      map[string]any{"ToAddresses": []string{"to@example.com"}},
+				"Content": map[string]any{
+					"Template": map[string]any{
+						"TemplateContent": map[string]any{
+							"Subject": "Hello {{name}}",
+							"Html":    "<html>Hi {{name}}</html>",
+						},
+						"TemplateData": `{"name":"inline"}`,
+					},
+				},
+			},
+			wantSubject: "Hello inline",
+			wantHTML:    "<html>Hi inline</html>",
+		},
+		{
+			name: "stored_template_by_name",
+			body: map[string]any{
+				"FromEmailAddress": "tmpl@example.com",
+				"Destination":      map[string]any{"ToAddresses": []string{"to@example.com"}},
+				"Content": map[string]any{
+					"Template": map[string]any{
+						"TemplateName": "StoredTemplate",
+						"TemplateData": `{"name":"stored"}`,
+					},
+				},
+			},
+			wantSubject: "Hello stored",
+			wantHTML:    "<html>Hi stored</html>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h, b := newSESv2TestHandler(t)
+			_, err := b.CreateEmailIdentity("tmpl@example.com", "", nil)
+			require.NoError(t, err)
+
+			doReq(t, h, http.MethodPost, "/v2/email/templates", map[string]any{
+				"TemplateName": "StoredTemplate",
+				"TemplateContent": map[string]any{
+					"Subject": "Hello {{name}}",
+					"Html":    "<html>Hi {{name}}</html>",
+				},
+			})
+
+			rec := doReq(t, h, http.MethodPost, "/v2/email/outbound-emails", tt.body)
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+			emails := b.ListEmails()
+			require.Len(t, emails, 1)
+			assert.Equal(t, tt.wantSubject, emails[0].Subject,
+				"Content.Template must actually populate the sent email")
+			assert.Equal(t, tt.wantHTML, emails[0].BodyHTML)
+		})
+	}
 }
 
 // TestSendBulkEmailRequiresDefaultContent verifies that SendBulkEmail rejects

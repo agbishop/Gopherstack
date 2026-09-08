@@ -56,6 +56,7 @@ func (b *InMemoryBackend) Reset() {
 		b.runtimeManagementConfigs = make(map[string]*RuntimeManagementConfig)
 		b.functionRecursionConfigs = make(map[string]*FunctionRecursionConfig)
 		b.functionScalingConfigs = make(map[string]*FunctionScalingConfig)
+		b.cscIDCounter = 0
 		b.durableExecs.reset()
 
 		// Replace semaphore channels so that goroutines launched after Reset() use fresh

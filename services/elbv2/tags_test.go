@@ -544,6 +544,49 @@ func TestGetResourcePolicy(t *testing.T) {
 	assert.Contains(t, rec2.Body.String(), "2012-10-17")
 }
 
+// TestDeleteLoadBalancer_ClearsResourcePolicy verifies DeleteLoadBalancer
+// clears resourcePolicies for the deleted LB's ARN. GetResourcePolicy keys
+// on ARN with no existence check against the load balancer itself, so a
+// leaked entry is directly observable: querying the policy for a deleted
+// LB's own ARN would otherwise still return it, and resourcePolicies is
+// persisted verbatim in Snapshot(), so the leak also grows the snapshot
+// without bound.
+func TestDeleteLoadBalancer_ClearsResourcePolicy(t *testing.T) {
+	t.Parallel()
+
+	h := newBatch1Handler()
+	lbArn := b1CreateLB(t, h, "policy-lb")
+	otherArn := b1CreateLB(t, h, "policy-lb-sibling")
+
+	be, ok := h.Backend.(*elbv2.InMemoryBackend)
+	require.True(t, ok)
+	require.NoError(t, be.PutResourcePolicy(lbArn, `{"Version":"2012-10-17"}`))
+	require.NoError(t, be.PutResourcePolicy(otherArn, `{"Version":"2012-10-17"}`))
+
+	rec := doELBv2(t, h, url.Values{
+		"Action":          {"DeleteLoadBalancer"},
+		"Version":         {"2015-12-01"},
+		"LoadBalancerArn": {lbArn},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec2 := doELBv2(t, h, url.Values{
+		"Action":      {"GetResourcePolicy"},
+		"Version":     {"2015-12-01"},
+		"ResourceArn": {lbArn},
+	})
+	assert.Equal(t, http.StatusBadRequest, rec2.Code)
+
+	// Deleting one load balancer must not disturb another's resource policy.
+	rec3 := doELBv2(t, h, url.Values{
+		"Action":      {"GetResourcePolicy"},
+		"Version":     {"2015-12-01"},
+		"ResourceArn": {otherArn},
+	})
+	require.Equal(t, http.StatusOK, rec3.Code)
+	assert.Contains(t, rec3.Body.String(), "2012-10-17")
+}
+
 func TestGetResourcePolicy_MissingArn(t *testing.T) {
 	t.Parallel()
 

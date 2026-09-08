@@ -345,6 +345,65 @@ func TestCreateClusterReplicationFactorBounds(t *testing.T) {
 	}
 }
 
+// TestCreateClusterAvailabilityZonesLengthMustMatchReplicationFactor covers
+// api_op_CreateCluster.go's ReplicationFactor doc: "If the AvailabilityZones
+// parameter is provided, its length must equal the ReplicationFactor.".
+func TestCreateClusterAvailabilityZonesLengthMustMatchReplicationFactor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		availabilityZones []string
+		replicationFactor int
+		wantErr           bool
+	}{
+		{
+			name:              "omitted is valid",
+			replicationFactor: 3,
+			wantErr:           false,
+		},
+		{
+			name:              "matching length is valid",
+			availabilityZones: []string{"us-east-1a", "us-east-1b", "us-east-1c"},
+			replicationFactor: 3,
+			wantErr:           false,
+		},
+		{
+			name:              "fewer AZs than ReplicationFactor is rejected",
+			availabilityZones: []string{"us-east-1a", "us-east-1b"},
+			replicationFactor: 3,
+			wantErr:           true,
+		},
+		{
+			name:              "more AZs than ReplicationFactor is rejected",
+			availabilityZones: []string{"us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d"},
+			replicationFactor: 3,
+			wantErr:           true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b := newTestBackend()
+			_, err := b.CreateCluster(dax.CreateClusterInput{
+				ClusterName:       "valid-name",
+				NodeType:          "dax.r5.large",
+				IamRoleArn:        "arn:aws:iam::123456789012:role/DAXRole",
+				ReplicationFactor: tt.replicationFactor,
+				AvailabilityZones: tt.availabilityZones,
+			})
+
+			if tt.wantErr {
+				require.Error(t, err)
+				require.ErrorIs(t, err, dax.ErrInvalidParameterCombination)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // ---- DescribeClusters ----
 
 func TestDescribeClusters(t *testing.T) {

@@ -58,6 +58,13 @@ const (
 	// step, contradicting api_op_StopCompilationJob.go's own doc.
 	compilationJobInProgressToCompleted = 300 * time.Millisecond
 	compilationJobStoppingToStopped     = 150 * time.Millisecond
+	// hpTuningJobInProgressToCompleted drives HyperParameterTuningJob's own
+	// InProgress -> Completed transition. Nothing previously advanced a
+	// running job off InProgress at all -- only Stop's Stopping -> Stopped
+	// leg had an FSM (hpTuningJobStoppingToStopped above) -- so
+	// DescribeHyperParameterTuningJob showed InProgress for the entire
+	// remaining lifetime of every job that was never explicitly stopped.
+	hpTuningJobInProgressToCompleted = 300 * time.Millisecond
 )
 
 // ---------------------------------------------------------------------------

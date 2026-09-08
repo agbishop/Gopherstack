@@ -50,6 +50,18 @@ func (b *InMemoryBackend) StartJobRun(
 		}
 	}
 
+	if app.State != ApplicationStateStarted {
+		if !applicationAutoStartEnabled(app) {
+			return nil, fmt.Errorf(
+				"%w: application %s is not started and autoStartConfiguration disables implicit start",
+				ErrConflict, applicationID,
+			)
+		}
+
+		app.State = ApplicationStateStarted
+		app.UpdatedAt = time.Now().UTC()
+	}
+
 	if mode == "" {
 		mode = "BATCH"
 	}

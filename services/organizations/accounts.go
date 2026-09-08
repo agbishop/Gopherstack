@@ -166,12 +166,18 @@ func (b *InMemoryBackend) RemoveAccountFromOrganization(accountID string) error 
 	}
 
 	if accountID == b.org.MasterAccountID {
-		return ErrInvalidInput
+		return ErrMasterCannotLeaveOrganization
 	}
 
 	acct, ok := b.accounts.Get(accountID)
 	if !ok {
 		return ErrAccountNotFound
+	}
+
+	// AWS rejects removal while the account is still a delegated
+	// administrator for any service; the caller must deregister it first.
+	if len(b.delegatedAdminsByAccount.Get(accountID)) > 0 {
+		return ErrCannotRemoveDelegatedAdministratorFromOrg
 	}
 
 	// Clean policyTargets reverse mapping: remove accountID from each policy's target list.
@@ -185,12 +191,8 @@ func (b *InMemoryBackend) RemoveAccountFromOrganization(accountID string) error 
 	delete(b.tags, accountID)
 	delete(b.targetPolicies, accountID)
 
-	// Cascade-delete every delegated-admin registration for this account,
-	// across all service principals. Clone the index slice first: Table.Delete
-	// mutates the byAccount index in place, which would otherwise invalidate
-	// the slice being ranged over.
-	for _, da := range slices.Clone(b.delegatedAdminsByAccount.Get(accountID)) {
-		b.delegatedAdmins.Delete(delegatedAdminKey(da.ServicePrincipal, da.AccountID))
+	if acct != nil {
+		delete(b.emailToAccountID, acct.Email)
 	}
 
 	// For INVITED accounts, generate a terminal LEAVE_ORGANIZATION handshake record.
@@ -228,13 +230,15 @@ func (b *InMemoryBackend) MoveAccount(accountID, sourceParentID, destParentID st
 		return ErrAccountNotFound
 	}
 
+	// AWS models SourceParentId/DestinationParentId validation failures as
+	// their own error codes, not InvalidInputException.
 	current := b.accountParent[accountID]
 	if current != sourceParentID {
-		return ErrInvalidInput
+		return ErrSourceParentNotFound
 	}
 
 	if !b.parentExists(destParentID) {
-		return ErrInvalidInput
+		return ErrDestinationParentNotFound
 	}
 
 	b.removeAccountChild(accountID)

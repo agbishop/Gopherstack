@@ -116,6 +116,31 @@ func (h *Handler) applyInstanceLaunchAttributes(
 	return nil
 }
 
+// iamInstanceProfileArg reads the real RunInstances/AssociateIamInstanceProfile
+// IamInstanceProfile.Arn/IamInstanceProfile.Name wire keys (serializers.go:91938,
+// awsEc2query_serializeDocumentIamInstanceProfileSpecification), preferring Arn.
+func iamInstanceProfileArg(vals url.Values) string {
+	if arn := vals.Get("IamInstanceProfile.Arn"); arn != "" {
+		return arn
+	}
+
+	return vals.Get("IamInstanceProfile.Name")
+}
+
+// activeIamInstanceProfile returns the wire-shaped IAM instance profile for
+// instanceID's current "associated" association, or nil if it has none --
+// mirrors real DescribeInstances/RunInstances rendering types.Instance.
+// IamInstanceProfile (deserializers.go:110585).
+func (h *Handler) activeIamInstanceProfile(instanceID string) *iamProfileSpec {
+	for _, assoc := range h.Backend.DescribeIamInstanceProfileAssociations(nil, instanceID) {
+		if assoc.State == stateAssociated {
+			return &iamProfileSpec{ARN: assoc.IamInstanceProfile, ID: iamProfileName(assoc.IamInstanceProfile)}
+		}
+	}
+
+	return nil
+}
+
 func (h *Handler) handleRunInstances(vals url.Values, reqID string) (any, error) {
 	imageID := vals.Get("ImageId")
 	instanceType := vals.Get("InstanceType")
@@ -157,6 +182,14 @@ func (h *Handler) handleRunInstances(vals url.Values, reqID string) (any, error)
 		return nil, err
 	}
 
+	if profileARN := iamInstanceProfileArg(vals); profileARN != "" {
+		for _, inst := range instances {
+			if _, err = h.Backend.AssociateIamInstanceProfile(inst.ID, profileARN); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if cb, c := h.computeBackend(); c != nil {
 		h.launchOnCompute(h.svcCtx, cb, c, instances, keyName, userData)
 	}
@@ -174,7 +207,10 @@ func (h *Handler) handleRunInstances(vals url.Values, reqID string) (any, error)
 
 	items := make([]instanceItem, 0, len(instances))
 	for _, inst := range instances {
-		items = append(items, toInstanceItem(inst, h.Backend.TagsForResource(inst.ID)))
+		items = append(
+			items,
+			toInstanceItem(inst, h.Backend.TagsForResource(inst.ID), h.activeIamInstanceProfile(inst.ID)),
+		)
 	}
 
 	return &runInstancesResponse{
@@ -247,7 +283,10 @@ func (h *Handler) handleDescribeInstances(vals url.Values, reqID string) (any, e
 
 	items := make([]instanceItem, 0, len(instances))
 	for _, inst := range instances {
-		items = append(items, toInstanceItem(inst, h.Backend.TagsForResource(inst.ID)))
+		items = append(
+			items,
+			toInstanceItem(inst, h.Backend.TagsForResource(inst.ID), h.activeIamInstanceProfile(inst.ID)),
+		)
 	}
 
 	reservation := reservationItem{
@@ -492,7 +531,7 @@ func (h *Handler) instanceAttributeValue(inst *Instance, instanceID, attr string
 	}
 }
 
-func toInstanceItem(inst *Instance, instanceTags map[string]string) instanceItem {
+func toInstanceItem(inst *Instance, instanceTags map[string]string, iamProfile *iamProfileSpec) instanceItem {
 	tagItems := make([]instanceTagItem, 0, len(instanceTags))
 	for k, v := range instanceTags {
 		tagItems = append(tagItems, instanceTagItem{Key: k, Value: v})
@@ -524,6 +563,7 @@ func toInstanceItem(inst *Instance, instanceTags map[string]string) instanceItem
 		EnaSupport:            inst.EnaSupport,
 		GroupSet:              instanceGroupSet{Items: groupItems},
 		TagSet:                instanceTagItemSet{Items: tagItems},
+		IamInstanceProfile:    iamProfile,
 		Placement: instancePlacementItem{
 			Tenancy:          inst.Placement.Tenancy,
 			AvailabilityZone: inst.Placement.AvailabilityZone,
@@ -605,6 +645,7 @@ type instanceItem struct {
 	MaintenanceOptions        *instanceMaintenanceOptionsItem        `xml:"maintenanceOptions,omitempty"`
 	CPUOptions                *instanceCPUOptionsItem                `xml:"cpuOptions,omitempty"`
 	StateReasonItem           *stateReasonItem                       `xml:"stateReason,omitempty"`
+	IamInstanceProfile        *iamProfileSpec                        `xml:"iamInstanceProfile,omitempty"`
 	Placement                 instancePlacementItem                  `xml:"placement"`
 	// OutpostArn is a top-level field, sibling to Placement -- see
 	// store.go's Instance.OutpostArn doc comment for the SDK confirmation.

@@ -71,18 +71,42 @@ func (b *InMemoryBackend) DescribeConnectionAliases(
 	return pg.Data, pg.Next, nil
 }
 
-// DeleteConnectionAlias removes a connection alias.
+// DeleteConnectionAlias removes a connection alias. Returns errConnAliasInUse
+// when the alias is still shared with an account or associated with a
+// directory: "You can delete a connection alias only after it is no longer
+// shared with any accounts or associated with any directories"
+// (api_op_DeleteConnectionAlias.go doc comment).
 func (b *InMemoryBackend) DeleteConnectionAlias(aliasID string) error {
 	b.mu.Lock("DeleteConnectionAlias")
 	defer b.mu.Unlock()
 
-	if !b.connAliases.Has(aliasID) {
+	a, ok := b.connAliases.Get(aliasID)
+	if !ok {
 		return errConnAliasNotFound
+	}
+
+	if a.AssociatedResource != "" || isSharedWithAnyAccount(a.SharedAccounts) {
+		return errConnAliasInUse
 	}
 
 	b.connAliases.Delete(aliasID)
 
 	return nil
+}
+
+// isSharedWithAnyAccount reports whether any account still has
+// AllowAssociation granted. UpdateConnectionAliasPermission's doc comment:
+// "If the association permission is revoked, the connection alias is
+// unshared with the account" -- an entry with AllowAssociation=false is not
+// a share, even though it remains in the permission list.
+func isSharedWithAnyAccount(accounts []connAliasPermission) bool {
+	for _, p := range accounts {
+		if p.AllowAssociation {
+			return true
+		}
+	}
+
+	return false
 }
 
 // AssociateConnectionAlias associates an alias with a resource.

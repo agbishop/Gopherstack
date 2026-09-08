@@ -94,6 +94,7 @@ func (b *InMemoryBackend) DeleteContactList(name string) error {
 	}
 
 	b.contactLists.Delete(name)
+	delete(b.resourceTags, b.contactListARN(name))
 
 	// Cascade-delete every contact of this contact list. slices.Clone the
 	// index results first: deleting from b.contacts mutates

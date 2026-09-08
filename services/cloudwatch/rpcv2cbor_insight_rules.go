@@ -58,9 +58,15 @@ func (h *Handler) cborDeleteInsightRules(input cbor.Map, c *echo.Context) error 
 		)
 	}
 
+	arns := h.insightRuleARNs(ruleNames)
+
 	failures, err := h.Backend.DeleteInsightRules(ruleNames)
 	if err != nil {
 		return h.cborError(c, http.StatusInternalServerError, "InternalFailure", err.Error())
+	}
+
+	for _, a := range arns {
+		h.deleteResourceTags(a)
 	}
 
 	return writeCBOR(c, buildInsightRuleFailureCBOR(failures))

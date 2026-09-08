@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -331,8 +332,12 @@ type listModelCustomizationJobsOutput struct {
 // input from the real ListModelCustomizationJobs query-string bindings
 // (aws-sdk-go-v2 serializers.go:6989-7027): statusEquals, nameContains,
 // creationTimeAfter/Before, sortBy, sortOrder, nextToken.
+//
+//nolint:dupl // mirrors sibling List*Query parsers over a distinct filter set.
 func parseListModelCustomizationJobsQuery(c *echo.Context) *ListModelCustomizationJobsInput {
 	q := c.Request().URL.Query()
+
+	maxResults, _ := strconv.ParseInt(q.Get("maxResults"), 10, 32)
 
 	in := &ListModelCustomizationJobsInput{
 		StatusEquals: q.Get("statusEquals"),
@@ -340,6 +345,7 @@ func parseListModelCustomizationJobsQuery(c *echo.Context) *ListModelCustomizati
 		SortBy:       q.Get("sortBy"),
 		SortOrder:    q.Get("sortOrder"),
 		NextToken:    q.Get("nextToken"),
+		MaxResults:   int32(maxResults),
 	}
 
 	if v := q.Get("creationTimeAfter"); v != "" {

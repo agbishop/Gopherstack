@@ -1,6 +1,6 @@
 ---
 service: s3
-sdk_module: aws-sdk-go-v2/service/s3@v1.106.5   # version audited against (go.mod pin)
+sdk_module: aws-sdk-go-v2/service/s3@v1.111.0   # version audited against (go.mod pin)
 last_audit_commit:                                # unknown: gopherstack-6flj wrapper-key sweep pass ran without git access at write time, never backfilled -- gopherstack-33in; see 2026-08-15 section below
 last_audit_date: 2026-08-15
 overall: A   # gopherstack-3dqa: found+fixed 4 real bugs incl. a race-detector-confirmed data race and a real (not disguised) over-replication bug. gopherstack-zi7k (2026-08-14): implemented the 5-op Object Annotations family that gopherstack-3dqa found entirely missing. gopherstack-3dqa follow-up (2026-08-14b): mechanical struct-field diff (the method that closed the dynamodb sibling pass) found 2 real absent-but-tracked wire bugs; a benchmark-verified ListObjectsV2 allocation fix closed the one axis (optimization) the prior four rounds left as "inspected, not profiled". gopherstack-6flj (2026-08-15): full List/Describe/Get wrapper-key sweep (45 ops), 2 more real bugs fixed (ListObjects/V2 Owner, GetBucketVersioning MFADelete), 1 severe wrong-response-shape finding flagged not fixed (GetBucketMetadataConfiguration/GetBucketMetadataTableConfiguration) -- see families/ops/gaps below.
@@ -1017,3 +1017,73 @@ flagged at HEAD like `PutBucketAcl.ACL`). No bug, no code changed. The
 `omitempty`-swallowed defaults, etc.) are outside this pass's scope --
 `cmd/reqfielddiff`'s own coverage guard already marks that count
 unverified for this package independent of the resolution defect.
+
+## 2026-09-08: lock-metrics naming audit (gopherstack-lf8p) -- not a defect, but found a real drift bug nearby
+
+Filed title-only: "every object lock is named s3.object, so lock metrics
+have no per-object resolution." Traced the four `lockmetrics.New("s3.object")`
+call sites (`objects.go:43` `newStoredObject`, `objects.go:1028`
+`saveObjectVersion`, `multipart.go:483` `commitMultipartObject`,
+`persistence.go:153` `reinitSingleBucket`) plus every `obj.mu.Lock`/`RLock`
+call site (~30, across acl_policy_store.go, annotations.go, objects.go,
+objects_delete.go, listing.go, janitor_lifecycle.go, multipart.go).
+
+**Verdict: (b), working as designed -- the title describes intended
+behavior, not a bug.** `pkgs/lockmetrics/lockmetrics.go`'s `Collect` doc
+comment names this exact case explicitly: "Many [RWMutex] instances can
+share the same name by design (e.g. every S3 object lock is named
+`s3.object`), so instances are aggregated per label tuple before emitting."
+The `name` passed to `lockmetrics.New` identifies a *lock/resource class*
+for Prometheus aggregation, not a per-instance identity -- per-operation
+attribution already exists via the separate `operation` label every
+`Lock`/`RLock` call carries (`"PutObjectACL"`, `"RestoreObject"`,
+`"deleteSpecificVersion"`, `"ListObjects"`, etc. -- see the ~30 call sites
+above). Giving every object its own lock name (e.g.
+`"s3.object." + key`) would mean one Prometheus series per S3 object key --
+unbounded cardinality on a resource that can run to millions of keys per
+bucket, which Prometheus documents as a cardinality anti-pattern and which
+this package's own aggregation logic exists specifically to avoid.
+Contrast with buckets, which *do* get per-instance names
+(`"s3.bucket." + bucketName`, `buckets.go:58`) -- bucket counts are orders
+of magnitude smaller than object counts, so per-bucket resolution is cheap
+and buckets get it; per-object resolution would not be, and objects don't
+get it. This is a deliberate, cardinality-aware design choice, not an
+oversight -- per-object lock names would misrepresent granularity the
+locking (and the metrics pipeline) does not, and should not, have.
+
+**Real bug found nearby and fixed**: `reinitSingleBucket`
+(`persistence.go:127-153`, run from `Restore` on every snapshot reload)
+named the mutexes it re-creates after deserialization `"s3-bucket"` and
+`"s3-object"` (hyphens) -- diverging from every live-creation call site
+(`buckets.go:58`, `objects.go:43,1028`, `multipart.go:483`), which use
+`"s3.bucket." + bucketName` and `"s3.object"` (dots). `git log -S` traces
+the drift to `9d7e36e00` ("Go refactoring 2"), which introduced the
+dotted/per-bucket naming at the live-creation sites but never touched
+`persistence.go`'s reinit path. Effect: a bucket or object rehydrated from
+a snapshot (i.e. after any process restart with persistence enabled)
+reports lock-contention metrics under a *different* Prometheus series than
+one created fresh in the same process -- fragmenting the exact
+same-name aggregation the `Collect` doc comment above relies on -- and for
+buckets specifically, silently discards the per-bucket name resolution
+`buckets.go` deliberately provides (every restored bucket collapsed onto
+one shared `"s3-bucket"` label instead of its own `"s3.bucket.<name>"`).
+Fixed by changing both `lockmetrics.New` calls in `reinitSingleBucket` to
+match the live-creation strings exactly. No locking behavior changed --
+same coarse per-bucket/shared-per-object structure as before, only the
+label strings now agree.
+
+Regression test: `TestInMemoryBackend_RestoredLockNamesMatchFreshlyCreated`
+(`persistence_lockname_test.go`) creates a bucket+object, snapshots,
+restores into a fresh backend, touches the restored bucket/object through
+the existing `PeekStoredBytes`/`BackdateObjectForTest` test helpers (whose
+lock calls carry known operation labels), and asserts via
+`prometheus.DefaultGatherer.Gather()` that the resulting
+`gopherstack_lock_hold_seconds`/`gopherstack_lock_wait_seconds` samples
+land under the dotted names, not the hyphenated ones. Confirmed failing
+against unmodified code (both deltas 0 instead of 1); passes after the fix.
+
+Gates: `golangci-lint run ./services/s3/...` (0 issues), `go test -race
+-count=1 ./services/s3/...` (pass, repeated 8x clean plus one `-shuffle=on`
+run to rule out flake), `go test ./services/...` (full suite, pass --
+`persistence.go` is shared infrastructure so blast radius was checked
+repo-wide even though the change is s3-local).

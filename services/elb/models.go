@@ -30,6 +30,21 @@ type AccessLog struct {
 	Enabled        bool   `json:"enabled"`
 }
 
+// LoadBalancerAttributesMask marks which independent attribute groups of a
+// ModifyLoadBalancerAttributes request were actually present in the caller's
+// input. AWS's LoadBalancerAttributes groups (AccessLog, ConnectionDraining,
+// ConnectionSettings, CrossZoneLoadBalancing) are each optional and
+// independently settable; a group absent from the request must leave the
+// load balancer's current value for that group untouched, not reset it to
+// the service default.
+type LoadBalancerAttributesMask struct {
+	CrossZoneLoadBalancing bool
+	ConnectionDraining     bool
+	ConnectionSettings     bool
+	AccessLog              bool
+	DesyncMitigationMode   bool
+}
+
 // LoadBalancerAttributes holds tunable attributes for a Classic ELB.
 type LoadBalancerAttributes struct {
 	DesyncMitigationMode      string    `json:"desyncMitigationMode"`

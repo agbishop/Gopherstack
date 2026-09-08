@@ -41,6 +41,27 @@ func TestSubnetGroup_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, rds.ErrSubnetGroupNotFound)
 }
 
+func TestSubnetGroup_DeleteInUse(t *testing.T) {
+	t.Parallel()
+
+	b := newBatch2Backend()
+	_, err := b.CreateDBSubnetGroup("sg-inuse", "desc", "vpc-1", []string{"subnet-a"})
+	require.NoError(t, err)
+
+	_, err = b.CreateDBInstance("inst-sg", "postgres", "db.t3.micro", "", "admin", "", 20,
+		rds.DBInstanceOptions{DBSubnetGroupName: "sg-inuse"})
+	require.NoError(t, err)
+
+	err = b.DeleteDBSubnetGroup("sg-inuse")
+	require.ErrorIs(t, err, rds.ErrSubnetGroupInUse)
+
+	_, err = b.DeleteDBInstance("inst-sg")
+	require.NoError(t, err)
+
+	err = b.DeleteDBSubnetGroup("sg-inuse")
+	require.NoError(t, err)
+}
+
 func TestSubnetGroup_Duplicate(t *testing.T) {
 	t.Parallel()
 

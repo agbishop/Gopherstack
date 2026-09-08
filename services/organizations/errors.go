@@ -202,6 +202,60 @@ var (
 		"ResponsibilityTransferAlreadyInStatusException: transfer has already ended",
 		awserr.ErrConflict,
 	)
+	// ErrOrganizationalUnitNotEmpty is returned by DeleteOrganizationalUnit
+	// when the OU still contains accounts or child OUs (own error code, not
+	// InvalidInputException -- see DeleteOrganizationalUnit's per-op error
+	// switch in deserializers.go).
+	ErrOrganizationalUnitNotEmpty = awserr.New(
+		"OrganizationalUnitNotEmptyException: organizational unit is not empty",
+		awserr.ErrConflict,
+	)
+	// ErrMasterCannotLeaveOrganization is returned by LeaveOrganization and
+	// RemoveAccountFromOrganization when called against the management
+	// account (own error code, not InvalidInputException -- see those ops'
+	// per-op error switches in deserializers.go).
+	ErrMasterCannotLeaveOrganization = awserr.New(
+		"MasterCannotLeaveOrganizationException: "+
+			"the management account cannot leave or be removed from the organization",
+		awserr.ErrConflict,
+	)
+	// ErrSourceParentNotFound is returned by MoveAccount when SourceParentId
+	// does not identify a root or OU that currently holds the account (own
+	// error code, not InvalidInputException -- see MoveAccount's per-op
+	// error switch in deserializers.go).
+	ErrSourceParentNotFound = awserr.New(
+		"SourceParentNotFoundException: source parent not found",
+		awserr.ErrNotFound,
+	)
+	// ErrDestinationParentNotFound is returned by MoveAccount when
+	// DestinationParentId does not identify an existing root or OU (own
+	// error code, not InvalidInputException -- see MoveAccount's per-op
+	// error switch in deserializers.go).
+	ErrDestinationParentNotFound = awserr.New(
+		"DestinationParentNotFoundException: destination parent not found",
+		awserr.ErrNotFound,
+	)
+	// ErrCannotRemoveDelegatedAdministratorFromOrg is returned by
+	// RemoveAccountFromOrganization when the target account is still a
+	// registered delegated administrator for some service (types/enums.go:
+	// ConstraintViolationExceptionReasonCannotRemoveDelegatedAdministratorFromOrg;
+	// RemoveAccountFromOrganization's doc comment: "must not be a delegated
+	// administrator account ... you must first change the delegated
+	// administrator account").
+	ErrCannotRemoveDelegatedAdministratorFromOrg = awserr.New(
+		"ConstraintViolationException: CANNOT_REMOVE_DELEGATED_ADMINISTRATOR_FROM_ORG",
+		awserr.ErrConflict,
+	)
+	// ErrAccessDeniedManagedPolicy is returned by DeletePolicy and UpdatePolicy
+	// for an AWS-managed policy (e.g. p-FullAWSAccess). Neither op's declared
+	// error set (deserializers.go) includes ConstraintViolationException, so
+	// AccessDeniedException -- declared on both -- is the only fit; see
+	// types.PolicySummary.AwsManaged's doc comment ("you can attach the
+	// policy ... but you cannot edit it").
+	ErrAccessDeniedManagedPolicy = awserr.New(
+		"AccessDeniedException: you don't have permissions to modify or delete an AWS managed policy",
+		awserr.ErrConflict,
+	)
 )
 
 // Ensure errors are used somewhere to satisfy linter.

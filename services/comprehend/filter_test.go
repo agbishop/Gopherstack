@@ -109,8 +109,8 @@ func TestListDatasetsFilterByType(t *testing.T) {
 	t.Parallel()
 
 	h := newHandler()
-	request(t, h, "CreateDataset", map[string]any{"DatasetName": "train-set", "DatasetType": "TRAIN"})
-	request(t, h, "CreateDataset", map[string]any{"DatasetName": "test-set", "DatasetType": "TEST"})
+	request(t, h, "CreateDataset", mergedBody(datasetBody("train-set"), map[string]any{"DatasetType": "TRAIN"}))
+	request(t, h, "CreateDataset", mergedBody(datasetBody("test-set"), map[string]any{"DatasetType": "TEST"}))
 
 	out := request(t, h, "ListDatasets", map[string]any{
 		"Filter": map[string]any{"DatasetType": "TEST"},

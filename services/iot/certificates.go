@@ -398,6 +398,7 @@ func (b *InMemoryBackend) DeleteCertificateProvider(name string) error {
 	}
 
 	b.certificateProviders.Delete(name)
+	delete(b.resourceTags, arn.Build("iot", b.region, b.accountID, fmt.Sprintf("certificateprovider/%s", name)))
 
 	return nil
 }
@@ -535,6 +536,11 @@ func (b *InMemoryBackend) DeleteCACertificate(id string) error {
 		return fmt.Errorf("CA certificate %q not found: %w", id, ErrResourceNotFound)
 	}
 	b.caCertificates.Delete(id)
+	// resourceTags[ca.CertificateARN] is intentionally left: id is
+	// uuid.NewString()[:12] (RegisterCACertificate), fresh every call
+	// regardless of PEM content, so no re-register can ever land on this
+	// ARN again -- unlike the name-keyed resources, there's no observable
+	// leak to clean up here.
 
 	return nil
 }

@@ -146,7 +146,27 @@ func (b *InMemoryBackend) CreateHyperParameterTuningJob(
 	b.hpTuningJobsStore(region).Put(j)
 	b.hpTuningJobARNIndexStore(region)[jobARN] = opts.Name
 
+	b.scheduleHPTuningJobCompletion(b.lifecycleCtx, region, opts.Name)
+
 	return cloneHPTuningJob(j), nil
+}
+
+// scheduleHPTuningJobCompletion drives InProgress -> Completed after delay,
+// mirroring scheduleTrainingCompletion. ctx must be b.lifecycleCtx captured
+// by the caller while holding b.mu.
+func (b *InMemoryBackend) scheduleHPTuningJobCompletion(ctx context.Context, region, name string) {
+	b.runDelayed(ctx, hpTuningJobInProgressToCompleted, func() {
+		b.mu.Lock("scheduleHPTuningJobCompletion.goroutine")
+		defer b.mu.Unlock()
+
+		j, ok := b.hpTuningJobsStore(region).Get(name)
+		if !ok || j.HyperParameterTuningJobStatus != trainingJobStatusInProgress {
+			return
+		}
+
+		j.HyperParameterTuningJobStatus = algorithmStatusCompleted
+		j.LastModifiedTime = time.Now()
+	})
 }
 
 // DescribeHyperParameterTuningJob returns an HP tuning job by name.

@@ -333,18 +333,12 @@ func assessmentResultToJSON(run *AssessmentRun, tasks []*ReplicationTask) assess
 func (h *Handler) handleStartReplicationTaskAssessment(
 	ctx context.Context, in *startReplicationTaskAssessmentInput,
 ) (*startReplicationTaskAssessmentOutput, error) {
-	taskArn := ptrconv.String(in.ReplicationTaskArn)
-
-	tasks, err := h.Backend.DescribeReplicationTasks(ctx, taskArn)
+	rt, err := h.Backend.StartReplicationTaskAssessment(ctx, ptrconv.String(in.ReplicationTaskArn))
 	if err != nil {
 		return nil, err
 	}
 
-	if len(tasks) == 0 {
-		return nil, fmt.Errorf("%w: replication task %s not found", ErrNotFound, taskArn)
-	}
-
-	return &startReplicationTaskAssessmentOutput{ReplicationTask: rtToJSON(tasks[0])}, nil
+	return &startReplicationTaskAssessmentOutput{ReplicationTask: rtToJSON(rt)}, nil
 }
 
 type startReplicationTaskAssessmentRunInput struct {

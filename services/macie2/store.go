@@ -28,6 +28,11 @@ const (
 	keyJobStatus           = "jobStatus"
 	defaultPageSize        = 50
 
+	jobStatusRunning    = "RUNNING"
+	jobStatusIdle       = "IDLE"
+	jobStatusCancelled  = "CANCELLED"
+	jobStatusUserPaused = "USER_PAUSED"
+
 	errResourceNotFound  = "ResourceNotFoundException"
 	errConflictException = "ConflictException"
 	errValidation        = "ValidationException"

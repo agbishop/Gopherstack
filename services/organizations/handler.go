@@ -320,6 +320,27 @@ func getErrorTable() map[error]awserr.APIError {
 			Code:       "ResponsibilityTransferAlreadyInStatusException",
 			HTTPStatus: http.StatusBadRequest,
 		},
+		ErrOrganizationalUnitNotEmpty: {
+			Code:       "OrganizationalUnitNotEmptyException",
+			HTTPStatus: http.StatusBadRequest,
+		},
+		ErrMasterCannotLeaveOrganization: {
+			Code:       "MasterCannotLeaveOrganizationException",
+			HTTPStatus: http.StatusBadRequest,
+		},
+		ErrSourceParentNotFound: {
+			Code:       "SourceParentNotFoundException",
+			HTTPStatus: http.StatusBadRequest,
+		},
+		ErrDestinationParentNotFound: {
+			Code:       "DestinationParentNotFoundException",
+			HTTPStatus: http.StatusBadRequest,
+		},
+		ErrCannotRemoveDelegatedAdministratorFromOrg: {
+			Code:       errConstraintViolation,
+			HTTPStatus: http.StatusBadRequest,
+		},
+		ErrAccessDeniedManagedPolicy: {Code: "AccessDeniedException", HTTPStatus: http.StatusBadRequest},
 	}
 }
 

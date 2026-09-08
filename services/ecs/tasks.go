@@ -162,6 +162,8 @@ func (b *InMemoryBackend) startTasksOutsideLock(work []taskWork) {
 	for _, w := range work {
 		clusterName := clusterKey(clusterFromTaskARN(w.task.TaskArn))
 
+		b.ensureAwslogsStreams(w.task, w.td)
+
 		if b.runner == nil {
 			if b.maybeRegisterStartLifecycle(w.task, clusterName) {
 				continue
@@ -503,11 +505,15 @@ func (b *InMemoryBackend) StopTask(cluster, taskArn, reason string) (*Task, erro
 			return
 		}
 
-		// Fast path: transition straight to STOPPED.
+		// Fast path: transition straight to STOPPED. Clear any lifecycle entry
+		// left over from a start (or a prior, still in-flight stop) pipeline --
+		// otherwise the lifecycle stepper later advances the stale entry and
+		// resurrects this task past STOPPED (e.g. back to PENDING/RUNNING).
 		task.LastStatus = statusStopped
 		task.StoppedAt = &now
 		syncContainerStatuses(task, nil)
 		b.deregisterTaskFromELBv2Locked(task, clusterName)
+		delete(b.lifecycle, taskArn)
 
 		instanceArn = task.ContainerInstanceArn
 		fastCp = b.taskWithLiveTagsLocked(task)
@@ -550,6 +556,73 @@ func isStoppableStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+// markTaskStoppedByContainerExit finalizes taskArn to STOPPED when a
+// container the Docker runner started exits on its own, without an explicit
+// StopTask call -- wired as realDockerRunner's completion handler (see
+// SetTaskCompletionHandler in docker_runner.go and its wiring in
+// provider.go). "Essential container in task exited" is real ECS's own stop
+// reason for this case. A concurrent StopTask always wins the race to
+// finalize first: this is a no-op once the task has left an active state.
+func (b *InMemoryBackend) markTaskStoppedByContainerExit(taskArn, containerName string, exitCode int) {
+	var (
+		clusterName string
+		instanceArn string
+		stopped     bool
+	)
+
+	func() {
+		b.mu.Lock("markTaskStoppedByContainerExit")
+		defer b.mu.Unlock()
+
+		task, ok := b.tasks.Get(taskArn)
+		if !ok || !isStoppableStatus(task.LastStatus) {
+			return
+		}
+
+		prevStatus := task.LastStatus
+		clusterName = clusterKey(task.ClusterArn)
+		now := time.Now()
+
+		task.LastStatus = statusStopped
+		task.DesiredStatus = statusStopped
+		task.StoppedAt = &now
+
+		if task.StoppedReason == "" {
+			task.StoppedReason = "Essential container in task exited"
+		}
+
+		syncContainerStatuses(task, nil)
+		setContainerExitCode(task, containerName, exitCode)
+
+		if c, _ := b.clusters.Get(clusterName); c != nil {
+			switch prevStatus {
+			case statusRunning:
+				c.RunningTasksCount--
+			case statusPending, statusProvisioning:
+				c.PendingTasksCount--
+			}
+		}
+
+		b.deregisterTaskFromELBv2Locked(task, clusterName)
+		delete(b.lifecycle, taskArn)
+
+		instanceArn = task.ContainerInstanceArn
+		stopped = true
+	}()
+
+	if !stopped {
+		return
+	}
+
+	func() {
+		b.mu.Lock("markTaskStoppedByContainerExit-cleanup")
+		defer b.mu.Unlock()
+
+		b.taskProtections.Delete(taskArn)
+		b.unindexTaskFromInstance(clusterName, instanceArn, taskArn)
+	}()
 }
 
 // ListTasksInput holds optional filters for ListTasks.
@@ -632,6 +705,7 @@ func (b *InMemoryBackend) StartTask(input StartTaskInput) ([]Task, []Failure, er
 		ferr     error
 		tasks    []Task
 		failures []Failure
+		td       *TaskDefinition
 	)
 
 	func() {
@@ -640,7 +714,9 @@ func (b *InMemoryBackend) StartTask(input StartTaskInput) ([]Task, []Failure, er
 
 		b.ensureClusterLocked(clusterName)
 
-		td, err := b.findTaskDefinitionLocked(input.TaskDefinition)
+		var err error
+
+		td, err = b.findTaskDefinitionLocked(input.TaskDefinition)
 		if err != nil {
 			ferr = err
 
@@ -692,6 +768,10 @@ func (b *InMemoryBackend) StartTask(input StartTaskInput) ([]Task, []Failure, er
 
 	if ferr != nil {
 		return nil, nil, ferr
+	}
+
+	for i := range tasks {
+		b.ensureAwslogsStreams(&tasks[i], td)
 	}
 
 	return tasks, failures, nil

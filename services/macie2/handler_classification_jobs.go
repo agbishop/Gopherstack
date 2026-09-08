@@ -165,7 +165,7 @@ func (h *Handler) handleCreateClassificationJob(body []byte) (any, int, error) {
 		return nil, http.StatusInternalServerError, err
 	}
 
-	return map[string]string{"jobArn": jobArn, "jobId": id, keyJobStatus: "RUNNING"}, http.StatusOK, nil
+	return map[string]string{"jobArn": jobArn, "jobId": id, keyJobStatus: jobStatusRunning}, http.StatusOK, nil
 }
 
 func (h *Handler) handleDescribeClassificationJob(jobID string) (any, int, error) {
@@ -230,6 +230,14 @@ func (h *Handler) handleUpdateClassificationJob(jobID string, body []byte) (int,
 	if err := h.Backend.UpdateClassificationJob(jobID, req.JobStatus); err != nil {
 		if errors.Is(err, awserr.ErrNotFound) {
 			return http.StatusNotFound, err
+		}
+
+		if errors.Is(err, awserr.ErrConflict) {
+			return http.StatusConflict, err
+		}
+
+		if errors.Is(err, awserr.ErrInvalidParameter) {
+			return http.StatusBadRequest, err
 		}
 
 		return http.StatusInternalServerError, err

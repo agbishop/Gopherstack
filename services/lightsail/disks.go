@@ -212,6 +212,28 @@ func (b *InMemoryBackend) GetDisk(name string) (*Disk, error) {
 	return d.clone(), nil
 }
 
+// DisksAttachedTo returns every disk currently attached to instanceName,
+// sorted by name -- backs Instance.Hardware.Disks (types.InstanceHardware:
+// "The disks attached to the instance"), which AttachDisk/DetachDisk update
+// on the disk side only; this reads that same disk state from the instance
+// side instead of duplicating it.
+func (b *InMemoryBackend) DisksAttachedTo(instanceName string) []*Disk {
+	b.mu.RLock("DisksAttachedTo")
+	defer b.mu.RUnlock()
+
+	var out []*Disk
+
+	for _, d := range b.disks.All() {
+		if d.AttachedTo == instanceName {
+			out = append(out, d.clone())
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+
+	return out
+}
+
 // GetDisks returns every disk, paginated.
 func (b *InMemoryBackend) GetDisks(token string) (page.Page[*Disk], error) {
 	b.mu.RLock("GetDisks")

@@ -35,6 +35,10 @@ func (b *InMemoryBackend) RegisterActivityType(
 	b.mu.Lock("RegisterActivityType")
 	defer b.mu.Unlock()
 
+	if err := b.requireActiveDomainLocked(domain); err != nil {
+		return err
+	}
+
 	key := domain + ":" + name + ":" + version
 	if b.activities.Has(key) {
 		return fmt.Errorf("%w: activity type %s/%s", ErrTypeAlreadyExists, name, version)

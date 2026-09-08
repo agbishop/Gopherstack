@@ -8,6 +8,7 @@ const (
 	errInvalidParameter = "WAFInvalidParameterException"
 	errReferencedItem   = "WAFReferencedItemException"
 	errNonEmptyEntity   = "WAFNonEmptyEntityException"
+	errInvalidOperation = "WAFInvalidOperationException"
 )
 
 var (
@@ -23,4 +24,9 @@ var (
 	// entities (e.g. a WebACL that still has Rules, a Rule that still has
 	// Predicates, a ByteMatchSet that still has ByteMatchTuples).
 	ErrNonEmptyEntity = awserr.New(errNonEmptyEntity, awserr.ErrConflict)
+	// ErrInvalidOperation is returned when an Update request has nothing to
+	// do: inserting an item that is already present, or deleting one that
+	// isn't (types/errors.go WAFInvalidOperationException in aws-sdk-go-v2
+	// service/waf@v1.33.4).
+	ErrInvalidOperation = awserr.New(errInvalidOperation, awserr.ErrInvalidParameter)
 )

@@ -354,15 +354,19 @@ func (t *storedTask) toTask() Task {
 // storedTaskExecution holds a task execution with all fields.
 // StartTime is first so its non-pointer prefix (wall, ext) reduces GC pointer bytes.
 type storedTaskExecution struct {
-	StartTime                time.Time      `json:"startTime"`
-	Options                  map[string]any `json:"options,omitempty"`
-	TaskExecutionArn         string         `json:"taskExecutionArn"`
-	Status                   string         `json:"status"`
-	TaskMode                 string         `json:"taskMode,omitempty"`
-	EstimatedFilesToTransfer int64          `json:"estimatedFilesToTransfer"`
-	EstimatedBytesToTransfer int64          `json:"estimatedBytesToTransfer"`
-	FilesTransferred         int64          `json:"filesTransferred"`
-	BytesTransferred         int64          `json:"bytesTransferred"`
+	StartTime                time.Time          `json:"startTime"`
+	Options                  map[string]any     `json:"options,omitempty"`
+	ManifestConfig           map[string]any     `json:"manifestConfig,omitempty"`
+	TaskReportConfig         map[string]any     `json:"taskReportConfig,omitempty"`
+	TaskExecutionArn         string             `json:"taskExecutionArn"`
+	Status                   string             `json:"status"`
+	TaskMode                 string             `json:"taskMode,omitempty"`
+	Excludes                 []storedFilterRule `json:"excludes,omitempty"`
+	Includes                 []storedFilterRule `json:"includes,omitempty"`
+	EstimatedFilesToTransfer int64              `json:"estimatedFilesToTransfer"`
+	EstimatedBytesToTransfer int64              `json:"estimatedBytesToTransfer"`
+	FilesTransferred         int64              `json:"filesTransferred"`
+	BytesTransferred         int64              `json:"bytesTransferred"`
 }
 
 func (e *storedTaskExecution) toTaskExecution() TaskExecution {
@@ -372,6 +376,10 @@ func (e *storedTaskExecution) toTaskExecution() TaskExecution {
 		TaskMode:                 e.TaskMode,
 		StartTime:                e.StartTime,
 		Options:                  maps.Clone(e.Options),
+		ManifestConfig:           maps.Clone(e.ManifestConfig),
+		TaskReportConfig:         maps.Clone(e.TaskReportConfig),
+		Excludes:                 fromStoredFilterRules(e.Excludes),
+		Includes:                 fromStoredFilterRules(e.Includes),
 		EstimatedFilesToTransfer: e.EstimatedFilesToTransfer,
 		EstimatedBytesToTransfer: e.EstimatedBytesToTransfer,
 		FilesTransferred:         e.FilesTransferred,

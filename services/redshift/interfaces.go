@@ -6,16 +6,14 @@ import "context"
 // All mutating methods must be safe for concurrent use.
 type StorageBackend interface {
 	// Cluster operations
-	CreateCluster(id, nodeType, dbName, masterUser string) (*Cluster, error)
+	CreateCluster(
+		id, nodeType, dbName, masterUser string,
+		clusterSecurityGroups []string,
+		clusterParameterGroupName string,
+	) (*Cluster, error)
 	DeleteCluster(id string) (*Cluster, error)
 	DescribeClusters(id, marker string, maxRecords int, tagKeys, tagValues []string) ([]Cluster, string, error)
-	ModifyCluster(
-		id, nodeType string,
-		numberOfNodes int,
-		masterUserPassword string,
-		encrypted, enhancedVpcRouting *bool,
-		applyImmediately bool,
-	) (*Cluster, error)
+	ModifyCluster(id string, opts ModifyClusterOptions) (*Cluster, error)
 	RebootCluster(id string) (*Cluster, error)
 	PauseCluster(id string) (*Cluster, error)
 	ResumeCluster(id string) (*Cluster, error)
@@ -56,9 +54,11 @@ type StorageBackend interface {
 	AuthorizeClusterSecurityGroupIngress(
 		groupName, cidrIP, ec2GroupName, ec2GroupOwnerID string,
 	) (*ClusterSecurityGroup, error)
-	CreateClusterSecurityGroup(name, description string) (*ClusterSecurityGroup, error)
+	CreateClusterSecurityGroup(name, description string, tags map[string]string) (*ClusterSecurityGroup, error)
 	DeleteClusterSecurityGroup(name string) error
-	DescribeClusterSecurityGroups(name string) ([]ClusterSecurityGroup, error)
+	DescribeClusterSecurityGroups(
+		name, marker string, maxRecords int, tagKeys, tagValues []string,
+	) ([]ClusterSecurityGroup, string, error)
 	RevokeClusterSecurityGroupIngress(
 		groupName, cidrIP, ec2GroupName, ec2GroupOwnerID string,
 	) (*ClusterSecurityGroup, error)
@@ -66,7 +66,7 @@ type StorageBackend interface {
 	// Snapshot operations
 	CreateClusterSnapshot(snapshotID, clusterID string) (*Snapshot, error)
 	DeleteClusterSnapshot(snapshotID string) (*Snapshot, error)
-	DescribeClusterSnapshots(snapshotID, clusterID, snapshotType string) ([]Snapshot, error)
+	DescribeClusterSnapshots(snapshotID, clusterID, snapshotType string, clusterExists *bool) ([]Snapshot, error)
 	CopyClusterSnapshot(sourceSnapshotID, destinationSnapshotID string) (*Snapshot, error)
 	RestoreFromClusterSnapshot(clusterID, snapshotID string) (*Cluster, error)
 	AuthorizeSnapshotAccess(snapshotID, accountWithRestoreAccess string) (*Snapshot, error)
@@ -74,9 +74,13 @@ type StorageBackend interface {
 	BatchModifyClusterSnapshots(identifiers []string, retentionPeriod *int, force bool) ([]SnapshotBatchError, []string)
 
 	// Subnet group operations
-	CreateClusterSubnetGroup(name, description, vpcID string, subnetIDs []string) (*ClusterSubnetGroup, error)
+	CreateClusterSubnetGroup(
+		name, description, vpcID string, subnetIDs []string, tags map[string]string,
+	) (*ClusterSubnetGroup, error)
 	DeleteClusterSubnetGroup(name string) error
-	DescribeClusterSubnetGroups(name string) ([]ClusterSubnetGroup, error)
+	DescribeClusterSubnetGroups(
+		name, marker string, maxRecords int, tagKeys, tagValues []string,
+	) ([]ClusterSubnetGroup, string, error)
 	ModifyClusterSubnetGroup(name, description string, subnetIDs []string) (*ClusterSubnetGroup, error)
 
 	// Endpoint operations

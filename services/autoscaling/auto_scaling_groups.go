@@ -594,6 +594,7 @@ func (b *InMemoryBackend) DeleteAutoScalingGroup(name string, forceDelete bool) 
 	}
 
 	b.cleanupHookTimers(name, "")
+	b.cleanupRefreshTimers(name)
 
 	for _, inst := range g.Instances {
 		delete(b.instanceIndex, inst.InstanceID)
@@ -714,6 +715,7 @@ func (b *InMemoryBackend) applyScaleIn(g *AutoScalingGroup, targetCount int) {
 
 	b.terminateInEC2(removedIDs)
 	b.deregisterELBTargets(removedIDs, g.TargetGroupARNs)
+	b.deregisterELBInstances(removedIDs, g.LoadBalancerNames)
 }
 
 // SetDesiredCapacity adjusts the DesiredCapacity of an Auto Scaling group immediately.

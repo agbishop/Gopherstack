@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/blackbirdworks/gopherstack/services/cloudformation"
 )
 
 // ---- Handler: DetectStackDrift ---------------------------------------------
@@ -392,6 +394,12 @@ func TestHandler_CancelUpdateStack(t *testing.T) {
 	}{
 		{name: "success"},
 		{
+			// Real AWS: "You can cancel only stacks that are in the
+			// UPDATE_IN_PROGRESS state."
+			name:     "rejected_when_not_update_in_progress",
+			wantCode: 400,
+		},
+		{
 			name:     "missing_stack_name",
 			body:     "Action=CancelUpdateStack",
 			wantCode: 400,
@@ -402,9 +410,10 @@ func TestHandler_CancelUpdateStack(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := newHandler()
+			b := newBackend()
+			h := cloudformation.NewHandler(b)
 
-			if tt.wantCode != 0 {
+			if tt.name == "missing_stack_name" {
 				rec := postForm(t, h, tt.body)
 				assert.Equal(t, tt.wantCode, rec.Code)
 
@@ -412,7 +421,19 @@ func TestHandler_CancelUpdateStack(t *testing.T) {
 			}
 
 			postForm(t, h, "Action=CreateStack&StackName=my-stack&TemplateBody="+simpleTemplate)
+
+			if tt.name == "success" {
+				b.ForceStackStatus("my-stack", "UPDATE_IN_PROGRESS")
+			}
+
 			rec := postForm(t, h, "Action=CancelUpdateStack&StackName=my-stack")
+
+			if tt.wantCode != 0 {
+				assert.Equal(t, tt.wantCode, rec.Code)
+
+				return
+			}
+
 			assert.Equal(t, 200, rec.Code)
 		})
 	}

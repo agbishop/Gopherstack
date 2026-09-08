@@ -131,6 +131,7 @@ func (b *InMemoryBackend) DeleteEventSubscription(
 	cp.SourceIDs = make([]string, len(sub.SourceIDs))
 	copy(cp.SourceIDs, sub.SourceIDs)
 	b.eventSubscriptionDelete(region, name)
+	delete(b.tagsStore(region), b.eventSubscriptionARN(region, name))
 
 	return &cp, nil
 }

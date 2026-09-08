@@ -61,7 +61,7 @@ func (b *InMemoryBackend) seedDefaultGroup(region string) {
 // CreateScheduleGroup creates a new schedule group with the given name and optional tags.
 func (b *InMemoryBackend) CreateScheduleGroup(
 	ctx context.Context,
-	name, description string,
+	name string,
 	initialTags map[string]string,
 ) (*ScheduleGroup, error) {
 	if err := validateGroupName(name); err != nil {
@@ -84,7 +84,6 @@ func (b *InMemoryBackend) CreateScheduleGroup(
 	g := &ScheduleGroup{
 		Name:                 name,
 		ARN:                  groupARN,
-		Description:          description,
 		State:                scheduleGroupStateActive,
 		CreationDate:         now,
 		LastModificationDate: now,

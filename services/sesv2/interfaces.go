@@ -64,7 +64,12 @@ type StorageBackend interface {
 	) error
 
 	// Email sending ops
-	SendEmail(from string, to []string, subject, bodyHTML, bodyText string) (string, error)
+	SendEmail(
+		from string,
+		to []string,
+		subject, bodyHTML, bodyText string,
+		template *bulkEmailTemplate,
+	) (string, error)
 	SendBulkEmail(
 		fromEmailAddress string,
 		defaultContent *bulkEmailContent,

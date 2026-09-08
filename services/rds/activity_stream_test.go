@@ -111,29 +111,53 @@ func TestActivityStream_Lifecycle(t *testing.T) {
 }
 
 // TestActivityStream_ClusterNotFound verifies Start/Stop/ModifyActivityStream
-// return DBClusterNotFound (not InvalidParameterValue) for a nonexistent
-// cluster ARN, matching real RDS's documented errors for these operations.
+// return the correct not-found code (not InvalidParameterValue) for a
+// nonexistent cluster ARN, matching real RDS's documented errors for these
+// operations.
+//
+// ModifyActivityStream's expected code differs from Start/Stop: its declared
+// error set (rds@v1.124.1 deserializers.go
+// awsAwsquery_deserializeOpErrorModifyActivityStream) has no
+// DBClusterNotFoundFault case at all, only DBInstanceNotFound/
+// InvalidDBInstanceState/ResourceNotFoundFault -- consistent with its doc
+// comment restricting the op to RDS for Oracle/SQL Server DB instances,
+// unlike Start/StopActivityStream which are Aurora-cluster-scoped and do
+// declare DBClusterNotFoundFault. This case previously asserted
+// DBClusterNotFound for all three, which was wrong for ModifyActivityStream
+// (gopherstack-fm1e) -- corrected here rather than weakened.
 func TestActivityStream_ClusterNotFound(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		query string
+		name        string
+		query       string
+		wantCode    string
+		wantAbsent  string
+		wantAbsent2 string
 	}{
 		{
 			name: "StartActivityStream",
 			query: "Action=StartActivityStream&Version=2014-10-31" +
 				"&ResourceArn=arn:aws:rds:us-east-1:000000000000:cluster:missing&KmsKeyId=k&Mode=sync",
+			wantCode:    "DBClusterNotFound",
+			wantAbsent:  "InvalidParameterValue",
+			wantAbsent2: "DBInstanceNotFound",
 		},
 		{
 			name: "StopActivityStream",
 			query: "Action=StopActivityStream&Version=2014-10-31" +
 				"&ResourceArn=arn:aws:rds:us-east-1:000000000000:cluster:missing",
+			wantCode:    "DBClusterNotFound",
+			wantAbsent:  "InvalidParameterValue",
+			wantAbsent2: "DBInstanceNotFound",
 		},
 		{
 			name: "ModifyActivityStream",
 			query: "Action=ModifyActivityStream&Version=2014-10-31" +
 				"&ResourceArn=arn:aws:rds:us-east-1:000000000000:cluster:missing&AuditPolicyState=locked",
+			wantCode:    "DBInstanceNotFound",
+			wantAbsent:  "InvalidParameterValue",
+			wantAbsent2: "DBClusterNotFound",
 		},
 	}
 
@@ -144,14 +168,100 @@ func TestActivityStream_ClusterNotFound(t *testing.T) {
 			h := newRDSHandler()
 			rec := postRDSForm(t, h, tt.query)
 			assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
-			assert.Contains(t, rec.Body.String(), "DBClusterNotFound")
-			assert.NotContains(t, rec.Body.String(), "InvalidParameterValue")
+			assert.Contains(t, rec.Body.String(), tt.wantCode)
+			assert.NotContains(t, rec.Body.String(), tt.wantAbsent)
+			assert.NotContains(t, rec.Body.String(), tt.wantAbsent2)
+		})
+	}
+}
+
+// TestActivityStream_StateConflict verifies the wire code for the
+// already-started/not-started conflict path, per operation, mirroring
+// TestActivityStream_ClusterNotFound above.
+//
+// gopherstack-74yw: ModifyActivityStream's declared error set (rds@v1.124.1
+// deserializers.go awsAwsquery_deserializeOpErrorModifyActivityStream) has no
+// InvalidDBClusterStateFault case at all -- only DBInstanceNotFound/
+// InvalidDBInstanceState/ResourceNotFoundFault -- unlike Start/StopActivityStream
+// (awsAwsquery_deserializeOpError{Start,Stop}ActivityStream), which both declare
+// InvalidDBClusterStateFault. Before the fix, all three raised
+// ErrActivityStreamNotStarted/ErrActivityStreamAlreadyStarted, both hardcoded
+// to InvalidDBClusterStateFault in the dispatch table, so Modify emitted a code
+// no real client can receive from that operation.
+func TestActivityStream_StateConflict(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		clusterID  string
+		setup      string // extra request to run before the conflicting one, "" for none
+		query      string
+		wantCode   string
+		wantAbsent string
+	}{
+		{
+			name:      "StartActivityStream_AlreadyStarted",
+			clusterID: "as-conflict-start",
+			setup: "Action=StartActivityStream&Version=2014-10-31" +
+				"&ResourceArn=%[1]s&KmsKeyId=k&Mode=sync",
+			query: "Action=StartActivityStream&Version=2014-10-31" +
+				"&ResourceArn=%[1]s&KmsKeyId=k&Mode=sync",
+			wantCode:   "InvalidDBClusterStateFault",
+			wantAbsent: "InvalidDBInstanceState",
+		},
+		{
+			name:       "StopActivityStream_NotStarted",
+			clusterID:  "as-conflict-stop",
+			query:      "Action=StopActivityStream&Version=2014-10-31&ResourceArn=%[1]s",
+			wantCode:   "InvalidDBClusterStateFault",
+			wantAbsent: "InvalidDBInstanceState",
+		},
+		{
+			name:      "ModifyActivityStream_NotStarted",
+			clusterID: "as-conflict-modify",
+			query: "Action=ModifyActivityStream&Version=2014-10-31" +
+				"&ResourceArn=%[1]s&AuditPolicyState=locked",
+			wantCode:   "InvalidDBInstanceState",
+			wantAbsent: "InvalidDBClusterStateFault",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newRDSHandler()
+			postRDSForm(t, h, fmt.Sprintf(
+				"Action=CreateDBCluster&Version=2014-10-31&DBClusterIdentifier=%s"+
+					"&Engine=aurora-postgresql&MasterUsername=admin&MasterUserPassword=password123",
+				tt.clusterID))
+			clusterARN := "arn:aws:rds:us-east-1:000000000000:cluster:" + tt.clusterID
+
+			if tt.setup != "" {
+				setupRec := postRDSForm(t, h, fmt.Sprintf(tt.setup, clusterARN))
+				require.Equal(t, http.StatusOK, setupRec.Code, "setup body: %s", setupRec.Body.String())
+			}
+
+			rec := postRDSForm(t, h, fmt.Sprintf(tt.query, clusterARN))
+			assert.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+			assert.Contains(t, rec.Body.String(), tt.wantCode)
+			assert.NotContains(t, rec.Body.String(), tt.wantAbsent)
 		})
 	}
 }
 
 // TestActivityStream_BackendErrors exercises the backend methods directly
 // for the not-yet-started error paths.
+//
+// The ModifyActivityStream assertion was strengthened by gopherstack-74yw: it
+// previously also asserted ErrActivityStreamNotStarted, the same sentinel as
+// StopActivityStream's. That sentinel maps unconditionally to
+// InvalidDBClusterStateFault in the dispatch table, which ModifyActivityStream
+// does not declare (see TestActivityStream_StateConflict) -- so the old
+// assertion only proved sentinel identity, not the wire code a real client
+// would see, and passed even with the bug present. ModifyActivityStream now
+// raises ErrInvalidDBInstanceState for this conflict instead, which the
+// dispatch table already maps to the code its declared error set requires.
 func TestActivityStream_BackendErrors(t *testing.T) {
 	t.Parallel()
 
@@ -165,7 +275,8 @@ func TestActivityStream_BackendErrors(t *testing.T) {
 	require.ErrorIs(t, err, rds.ErrActivityStreamNotStarted)
 
 	_, err = b.ModifyActivityStream("as-backend-cluster", "locked")
-	require.ErrorIs(t, err, rds.ErrActivityStreamNotStarted)
+	require.ErrorIs(t, err, rds.ErrInvalidDBInstanceState)
+	require.NotErrorIs(t, err, rds.ErrActivityStreamNotStarted)
 
 	_, err = b.StartActivityStream("as-backend-cluster", "key-1", "")
 	require.NoError(t, err)

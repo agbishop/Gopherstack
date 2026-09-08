@@ -174,15 +174,17 @@ func TestStopDBInstanceAutomatedBackupsReplication(t *testing.T) {
 		assert.Equal(t, "stopped", stopped.Status)
 	})
 
-	t.Run("not running returns graceful", func(t *testing.T) {
+	t.Run("not running returns DBInstanceNotFound", func(t *testing.T) {
 		t.Parallel()
 		b := newTestBackend(t)
-		// Stop without start - should not error per AWS behavior
-		stopped, err := b.StopDBInstanceAutomatedBackupsReplication(
+		// Stop without start: the op only models DBInstanceNotFoundFault and
+		// InvalidDBInstanceStateFault, so an absent replication entry errors
+		// rather than fabricating a "stopped" record.
+		_, err := b.StopDBInstanceAutomatedBackupsReplication(
 			"arn:aws:rds:us-east-1:123:db:notfound",
 		)
-		require.NoError(t, err)
-		assert.Equal(t, "stopped", stopped.Status)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, rds.ErrInstanceNotFound)
 	})
 }
 

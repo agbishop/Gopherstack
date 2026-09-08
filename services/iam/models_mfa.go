@@ -76,6 +76,7 @@ type mfaDeviceXML struct {
 
 // listMFADevicesResult contains the list of MFA devices.
 type listMFADevicesResult struct {
+	Marker      string         `xml:"Marker,omitempty"`
 	MFADevices  []mfaDeviceXML `xml:"MFADevices>member"`
 	IsTruncated bool           `xml:"IsTruncated"`
 }

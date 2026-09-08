@@ -360,6 +360,42 @@ func TestDeleteStackSet_Idempotent(t *testing.T) {
 	assert.NotContains(t, rec.Body.String(), "StackSetNotFoundException")
 }
 
+// TestDeleteStackSet_ClearsOperationHistory verifies that DeleteStackSet
+// clears b.stackSetOperations and b.stackSetOpResults for the deleted
+// StackSetName, not just b.stackSets and b.stackInstances. Otherwise a new
+// StackSet created with the same (user-chosen, reusable) name inherits the
+// dead StackSet's operation history.
+func TestDeleteStackSet_ClearsOperationHistory(t *testing.T) {
+	t.Parallel()
+
+	b := newBackend()
+	const name = "reused-stack-set"
+
+	_, err := b.CreateStackSet(name, "", simpleTemplate, cloudformation.StackSetOptions{
+		PermissionModel: "SELF_MANAGED",
+	})
+	require.NoError(t, err)
+
+	b.AddStackSetOperationInternal(name, &cloudformation.StackSetOperation{
+		OperationID:  "ghost-op",
+		StackSetName: name,
+		Action:       "UPDATE",
+		Status:       "SUCCEEDED",
+	})
+
+	require.NoError(t, b.DeleteStackSet(name))
+
+	_, err = b.CreateStackSet(name, "", simpleTemplate, cloudformation.StackSetOptions{
+		PermissionModel: "SELF_MANAGED",
+	})
+	require.NoError(t, err)
+
+	ops, err := b.ListStackSetOperations(name, "")
+	require.NoError(t, err)
+	assert.Empty(t, ops.Data,
+		"recreated StackSet must not inherit the deleted StackSet's operation history")
+}
+
 // TestDescribeStackSetOperation_Action verifies that
 // DescribeStackSetOperation returns the Action field in its response, matching
 // AWS CloudFormation behaviour. Previously only OperationId and Status were

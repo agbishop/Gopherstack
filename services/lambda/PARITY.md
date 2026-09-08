@@ -1,8 +1,8 @@
 ---
 service: lambda
-sdk_module: aws-sdk-go-v2/service/lambda@v1.101.2
+sdk_module: aws-sdk-go-v2/service/lambda@v1.107.0
 last_audit_commit: a007ec3e
-last_audit_date: 2026-07-25
+last_audit_date: 2026-09-03
 overall: A   # durable_execution wire-shape rewrite closed the last open gap; all gates green
 protocol: REST-JSON
 families:
@@ -17,7 +17,7 @@ families:
   route_reachability: {status: ok, note: "gopherstack-l5ir (2026-08-13). All 85 real lambda ops extracted from serializers.go (request.Method + httpbinding.SplitURI in each op's awsRestjson1_serializeOp<Op>.HandleSerialize) and diffed against the route table. Found and fixed 12 ops that were unreachable or misrouted at their true path/method, beyond the two routing bugs durable_execution's rewrite already caught (see that family's note): GetLayerVersionByArn was wired to a fictional literal path /2018-10-31/layers-by-arn -- the real op shares ListLayers' bare /2018-10-31/layers path, disambiguated only by a ?find=LayerVersion query flag (the query-parameter-discriminator class this sweep was told to watch for specifically); ListFunctionEventInvokeConfigs checked a fictional plural suffix /event-invoke-configs instead of the real /event-invoke-config/list; GetFunctionRecursionConfig/PutFunctionRecursionConfig used date 2024-08-28 instead of the real 2024-08-31; GetFunctionScalingConfig/PutFunctionScalingConfig used date 2023-10-26 AND path segment scaling-config instead of the real 2025-11-30 and function-scaling-config (both wrong, independently); ListTags/TagResource/UntagResource used date 2015-03-31 instead of the real 2017-03-31 -- all three tagging operations were unreachable; InvokeAsync's suffix predicate required a trailing slash (/invoke-async/) the real client never sends (real path has none); ListLayerVersions/PublishLayerVersion resolved via a separate parallel implementation (extractLayerOperation, used by ExtractOperation and IAMAction, NOT by the real HTTP dispatch table which was already correct) that left its discriminating segment empty for exactly this path shape, so both ops always fell through to empty/Unknown -- a real IAM-action and CloudTrail-naming gap even though the request itself was correctly handled. Also corrected, not a bug: ExtractOperation previously returned the lambdaOpRoutes table's first-matching entry for POST .../invocations, which was the literal string \"InvokeFunction\" -- that is the correct IAM *action* name for this op (a documented AWS naming quirk where the IAM action differs from the API operation name) but the wrong *operation* name; ExtractOperation now special-cases this path to return the real op name \"Invoke\" while IAMAction is untouched and still correctly returns lambda:InvokeFunction. ExtractOperation, previously covering only ~30 of 85 ops (CRUD, layers, durable exec), was extended to mirror dispatchSpecialRoutes/lambdaOpRoutes/layerOpTable op-for-op so TestExtractOperation_SDKRouteTable (handler_paths_sdk_diff_test.go, one subtest per op) exercises the real dispatch tree directly -- 85/85 pass. Existing tests that encoded the old wrong paths/dates/expected-op-names (tags_test.go, handler_tags_iam_test.go, function_settings_test.go, event_invoke_config_test.go, layers_http_test.go, invocation_test.go, handler_routing_test.go) were corrected to the real shapes rather than preserved."}
 gaps: []
 deferred: []
-leaks: {status: clean, note: "event-source pollers + janitor + container lifecycle all leak-conscious; go test -race passes. New PublishVersionWithRevision path adds no new goroutines/locks (reuses the existing PublishVersion lock); layerPolicyRevisionID/policyRevisionID are pure functions with no new backend state (derived from already-persisted b.permissions / b.layerPolicies, so no new persistence surface either). durable_execution rewrite: durableExecutionStore starts no goroutines and holds no live resources (pure in-memory map + mutex), so Shutdown has nothing to drain; every Lock/RLock is immediately followed by a deferred Unlock/RUnlock with no intervening early return; b.durableExecs.reset() (lifecycle.go) clears both the executions map and the callbackOwner index together, so no ghost callbackOwner entries survive a Reset."}
+leaks: {status: ok, note: "gopherstack-9zx (2026-09-03): 2 real leak-class bugs found + fixed, see dated section below -- cleanupTimedOutRuntime silently dropped container/port/tempdir cleanup when b.cleanupSem was saturated (its two sibling call sites already fell back to inline cleanup; this one just returned), and a genuine async-invocation timeout skipped both retry and DLQ/on-failure destination delivery entirely (AWS treats a runtime timeout as a function error for async purposes). Everything else re-verified clean this pass: event-source pollers + janitor + container lifecycle otherwise leak-conscious; go test -race passes (3/3 clean runs). New PublishVersionWithRevision path adds no new goroutines/locks (reuses the existing PublishVersion lock); layerPolicyRevisionID/policyRevisionID are pure functions with no new backend state (derived from already-persisted b.permissions / b.layerPolicies, so no new persistence surface either). durable_execution rewrite: durableExecutionStore starts no goroutines and holds no live resources (pure in-memory map + mutex), so Shutdown has nothing to drain; every Lock/RLock is immediately followed by a deferred Unlock/RUnlock with no intervening early return; b.durableExecs.reset() (lifecycle.go) clears both the executions map and the callbackOwner index together, so no ghost callbackOwner entries survive a Reset."}
 ---
 
 ## Notes
@@ -501,3 +501,206 @@ file, plus a hand restoration of 3 `nolint:lll` directives `--fix` incorrectly d
 above). `nolint` directives in files touched this pass: `event_source_mapping.go` has 3
 (`//nolint:lll` x3, all pre-existing and now confirmed still necessary). No `nolint`
 directives in `models.go`, `versions_aliases.go`, or `wire_field_fixes_test.go`.
+
+## 2026-09-03: resource-leak-focused sweep (gopherstack-9zx), 2 bugs
+
+Five-dimension audit (wire compliance, LocalStack parity, cross-service integration,
+performance, resource leaks) with explicit focus on dimension 5 given this package's
+long-lived event-source pollers and per-function container lifecycle. Read
+`store.go`/`containers.go`/`runtime_api.go`/`invocation.go`/`event_source_poller.go`/
+`janitor.go` end to end tracing every goroutine's start/stop and every semaphore's
+acquire/release. Both bugs found are in the resource-leak dimension; wire/protocol
+compliance was largely spot-checked against this file's existing extensive coverage
+rather than re-derived from scratch (see caveat in the final report).
+
+1. **`cleanupTimedOutRuntime` (`containers.go`) dropped cleanup entirely when
+   `b.cleanupSem` (cap 64) was saturated.** The two sibling call sites with the
+   identical "evict a runtime under `b.mu`, clean it up outside the lock via a bounded
+   semaphore" shape -- `lookupOrRegisterRuntime`'s LRU eviction and `UpdateFunction`'s
+   runtime eviction -- both fall back to running `cleanupRuntime` inline when the
+   semaphore is full, so the container/port/temp-dirs are always released.
+   `cleanupTimedOutRuntime` instead had a bare `default: return` on the saturated
+   branch: since the timed-out `rt` had *already* been deleted from `b.runtimes` in the
+   same function, nothing else in the codebase would ever revisit it, so the container
+   was never stopped, the port never released, and `zipDir`/`layerDirs` never removed
+   -- a genuine leak of all three, exactly the "concurrency-limit semaphore never
+   released on error paths" class this audit was scoped to look for. Fixed to match
+   the other two call sites' inline fallback.
+
+2. **A genuine async-invocation timeout never reached the function's DLQ/on-failure
+   destination, and was never retried.** `runAsyncInvocationRetryLoop` (`invocation.go`)
+   treated `waitForAsyncResult`'s `ok=false` return (container never responded within
+   `timeout+containerResponseGracePeriod`) as an unconditional `return` -- skipping
+   both the retry loop (ignoring `MaximumRetryAttempts` entirely, even on attempt 0)
+   and the terminal `dispatchAsyncOutcome` call that delivers to
+   `DeadLetterConfig`/`DestinationConfig.OnFailure`. Verified against AWS's own docs
+   (docs.aws.amazon.com/lambda/latest/dg/invocation-async-error-handling.html):
+   "Function errors include errors returned by the function's code and errors returned
+   by the function's runtime, such as timeouts" -- and "To capture records of failed
+   invocations (such as timeouts or runtime errors), create an on-failure destination."
+   A real client publishing an async function whose container hangs would see the
+   event silently vanish with no DLQ/destination record and no retry, instead of the
+   documented retry-then-deliver behavior. Fixed by folding the timeout case into the
+   same `isError` path already used for a runtime-reported `/error` result, so a
+   timeout is now retried (subject to `MaximumRetryAttempts`) and, once retries are
+   exhausted, reaches the destination/DLQ with `functionError: "Unhandled"`.
+
+   Known related limitation, not fixed (deeper architecture question, out of this
+   fix's scope): a retry scheduled after a timeout re-enqueues onto the *same*
+   `runtimeServer` whose runtime `cleanupTimedOutRuntime` just evicted, rather than
+   re-resolving a fresh container via `getOrCreateRuntime` -- so each retry attempt is
+   guaranteed to also time out (burning a full `timeout+grace` per attempt) rather than
+   potentially succeeding on a fresh execution environment the way real AWS's retry
+   would. The end state (eventual destination/DLQ delivery) is now correct; only the
+   retry attempts' chance of succeeding is not. This pre-existing "retry reuses the
+   same runtimeServer" design applies equally to plain function-error retries and was
+   not introduced or changed by this fix.
+
+Both regression tests drive the real bug via existing repo helpers
+(`trackingDockerAPI`/`fakeAsyncDelivery`) rather than new mocks:
+`TestCleanupTimedOutRuntime_SemSaturated_StillCleansUp` (`container_cleanup_test.go`)
+saturates `b.cleanupSem` via a new `FillCleanupSem` export helper and a new
+`CleanupTimedOutRuntimeForTest` export wrapper, then asserts the container is still
+stopped; `TestEnqueueAsync_TimeoutDeliversToFailureDestination` (`async_invoke_test.go`)
+starts a runtime server that never answers `/next` and asserts the configured
+`OnFailure` destination is eventually invoked. Both confirmed failing against the
+pre-fix code (hand-reverted via `git show HEAD:<path>`, not `git stash`, to avoid
+disturbing a concurrent agent's uncommitted work elsewhere in the worktree) and passing
+after; restored.
+
+No other bugs found this pass. Also reviewed, no bug found: `enqueueAsyncInvocation`'s
+fast/slow-path split and `asyncEnqueueWaiters` bound; `dispatchInvocationLog`'s
+`logSem`; `EventSourcePoller`'s single-goroutine-for-the-whole-service design
+(`sweepStaleIterators` correctly bounds `shardIterators`/`sqsBatchBuffers` growth on
+delete); `Close()`'s poller-cancel + URL-server + runtime + `asyncWG.Wait()` shutdown
+sequencing; `handleInvoke`'s status codes (202 Event, 204 DryRun,
+X-Amz-Function-Error/X-Amz-Executed-Version/X-Amz-Log-Result headers) against
+`awsRestjson1_deserializeOpHttpBindingsInvokeOutput`/`...DocumentInvokeOutput`
+(lambda@v1.101.2 deserializers.go:8744-8793) -- `StatusCode` is read verbatim from the
+HTTP response and all four headers are read exactly as this package sets them, no
+mismatch.
+
+Observed, not fixed (pre-existing, confirmed unrelated to this pass via hand-revert):
+`go test -race -count=1 ./services/lambda/...` intermittently reports a `goleak`
+failure (leftover `net/http.(*persistConn)` read/write-loop goroutines from
+`http.DefaultClient`, used directly by several `_test.go` files e.g.
+`handler_runtime_test.go`/`iam_enforcement_test.go`/`store_test.go`) -- reproduced on
+unmodified `HEAD` (2 of 3 runs failed, 1 passed) as well as with this pass's fix
+applied (1 of 3 runs failed), confirming it is a pre-existing test-infrastructure
+timing flake (idle keep-alive connections not yet closed when `TestMain`'s
+`goleak.VerifyTestMain` samples goroutines), not a production-code leak and not caused
+by this pass. Not investigated further or fixed -- root-causing which specific test(s)
+leave an idle connection open, and whether to add a `testleak` ignore or have those
+tests call `CloseIdleConnections`, is a separate, broader change than this pass's two
+targeted fixes.
+
+Gates: `go build ./...`, `go vet ./services/lambda/...`, `gofmt -l services/lambda/`
+(no output), `go test -race -count=1 ./services/lambda/...` (3/3 clean runs after the
+fix). `golangci-lint run ./services/lambda/...` panics repo-wide on this toolchain
+(`honnef.co/go/tools@v0.7.0` / goanalysis `buildir`/`nilness`/`typedness`/`fact_purity`
+interface-conversion panics) -- confirmed pre-existing and environment-wide, not
+scoped to this package or this pass's changes.
+
+## 2026-09-06: Code.ImageUri never resolved against ECR (gopherstack-vrpy)
+
+Confirmed real AWS validates an Image package-type function's `Code.ImageUri` at
+`CreateFunction`/`UpdateFunctionCode` time, not only at pull time: a nonexistent
+repository or tag is rejected immediately with `InvalidParameterValueException`
+("Source image \<uri\> does not exist. Provide a valid source image."), reproduced
+in multiple public bug reports (e.g. aws/aws-cdk#24648, aws/aws-sdk-go#3736). The
+issue's own "possibly structural" caveat does not hold.
+
+Added an optional cross-service seam, following `services/networkmanager`'s
+`EC2Resolver` pattern exactly: `ECRResolver` (`crossservice.go`, one method,
+`ResolveImage(imageURI string) bool`), a `SetECRResolver` setter and `ecrResolver`
+field on `InMemoryBackend` (`store.go`), and an `ImageURIResolver` optional
+extension of `StorageBackend` (alongside the existing `QualifierResolver` etc.)
+that `Handler.validateImageURIResolves` type-asserts `h.Backend` against before
+accepting a Image-type `CreateFunction`/`UpdateFunctionCode` call
+(`handler_functions.go`). A nil resolver -- the default, and every existing test's
+backend -- accepts every `ImageUri` unvalidated, matching this repo's convention
+for unwired cross-service checks and preserving every pre-existing test that
+creates an Image function with an arbitrary `ImageUri` like `"x"`.
+
+**Not wired up**: cli.go is out of scope for this pass (owned by a concurrent
+agent). Wiring needs a `wireLambdaECR(lambdaReg, ecrReg service.Registerable)`
+function mirroring `wireLambdaS3`/`wireLambdaCWLogs`, plus an adapter type (e.g.
+`lambdaECRResolverAdapter`) whose `ResolveImage(imageURI string) bool` parses the
+account/region/repository/tag-or-digest out of the ECR-style URI and calls
+`services/ecr`'s already-exported `InMemoryBackend.DescribeImages(ctx, repositoryName,
+[]ImageIdentifier{...})`, returning `true` only on a nil error. No changes needed in
+services/ecr itself -- `DescribeImages` already returns `ErrRepositoryNotFound`/
+`ErrImageNotFound` for exactly this check. Call site: alongside the other
+`wireLambda*` calls in cli.go's service-wiring sequence.
+
+Regression tests (`ecr_resolver_test.go`): a fake `ECRResolver` proves both
+directions (unknown image rejected with `InvalidParameterValueException` and not
+persisted; known image accepted) for both `CreateFunction` and
+`UpdateFunctionCode`, plus a no-resolver-wired test documenting the accept-all
+default is unchanged. Each guard was neutered individually and confirmed to make
+exactly its own regression test fail (and no others).
+
+## 2026-09-08: Invoke reached the backend on a rejected header (gopherstack-3t96, P2) -- found and fixed
+
+Part of the sweep following elasticache (gopherstack-8haq, P1), pinpoint (gopherstack-246v),
+and apigatewayv2 (gopherstack-wsvb, P1). `validateInvocationHeaders` (handler_invocation.go:18)
+rejected an invalid `X-Amz-Invocation-Type` or `X-Amz-Log-Type` header by writing the 400 via
+`h.writeError` and returning that call's result, which is nil after a successful write.
+`handleInvoke` stored that nil in `valErr` and tested `if valErr != nil`, which never fired, so
+the function was invoked anyway and a second response (the invocation result) was written on top
+of the already-committed 400.
+
+**Tests first.** Added `invokeCount` to `mockBackend` (handler_test.go) -- incremented on every
+`InvokeFunction` call -- and two new `TestInvoke` cases, `invalid_invocation_type_not_invoked` and
+`invalid_log_type_not_invoked`, asserting `bk.invokeCount == 0`, not just the response status: no
+pre-existing test covered either rejection branch at all (only valid `Event`/`DryRun` values were
+exercised). Confirmed both FAIL against unmodified code (verbatim, `go test ./services/lambda/...
+-run TestInvoke`):
+
+```
+{"level":"ERROR","msg":"echo: response already written to client"}
+    handler_test.go:785:
+        Error:      Not equal:
+                    expected: 0
+                    actual  : 1
+        Test:       TestInvoke/invalid_invocation_type_not_invoked
+        Messages:   a rejected invocation header must not reach the backend
+    handler_test.go:789:
+        Error:      Received unexpected error:
+                    invalid character '{' after top-level value
+        Test:       TestInvoke/invalid_invocation_type_not_invoked
+--- FAIL: TestInvoke/invalid_invocation_type_not_invoked (0.00s)
+--- FAIL: TestInvoke/invalid_log_type_not_invoked (0.00s)
+```
+The second failure is the double write corrupting the wire body: the mock's `{"answer":42}`-shaped
+result (for `request_response`-style success) got concatenated onto the already-written 400 JSON,
+so the response body was no longer valid JSON on its own -- worse than a clean second response,
+since a real client's JSON decoder chokes on it outright rather than seeing a plausible-but-wrong
+payload.
+
+Fixed with the pinpoint raw-unwritten-error pattern: `validateInvocationHeaders` no longer writes;
+it returns one of two new unexported static errors (`errInvalidInvocationType`, `errInvalidLogType`,
+handler_invocation.go), and `handleInvoke` maps any non-nil error to `InvalidParameterValueException`/
+400 via `h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException", valErr.Error())`
+and writes exactly once. `errname`/`err113` (this repo's golangci-lint config) require these as
+static package-level sentinels, not inline `errors.New` at each call site.
+
+Neuter-verified by reverting `handleInvoke`'s call site back to bare `return valErr` (in effect a
+"forgot the write" regression, distinct from the original bug but on the same guard) and separately
+back to the exact original write-then-return-nil shape: both still compile, and the latter
+reproduces the `expected 0 actual 1` failures above verbatim.
+
+Swept the rest of the package for the same shape (a `*echo.Context`-taking helper whose result is
+stored and re-checked by a caller, rather than the handler's own final `return h.writeError(...)`):
+the seven `validate*` helpers in handler_functions.go (`validateQualifier`,
+`validateCreateFunctionInput`, `validateSnapStartInput`, `validateEphemeralStorageInput`,
+`validateMemoryAndTimeout`, `validateImageURIResolves`, `validateCreateFunctionCode`) already use a
+different, safe convention: they return `bool` and explicitly discard `h.writeError`'s result
+(`_ = h.writeError(...)`; return `false`), so their callers' `if !h.validateXxx(...) { return nil }`
+checks are not fooled by a nil error value. `dispatchSpecialRoutes` (handler_dispatch.go:552)
+returns `(bool, error)` but is a pure pass-through dispatcher whose result is Echo's own terminal
+handler return, never stored and re-checked. No other instance found.
+
+`go test -race ./services/lambda/...` and `golangci-lint run ./services/lambda/...` both clean
+after the fix. Full `go test ./services/...` also green (see gopherstack-3t96's cross-service
+report for the combined blast-radius run covering lambda, securityhub, and organizations).

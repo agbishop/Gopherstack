@@ -279,9 +279,10 @@ func TestHandler_DescribePullRequestEvents_TableDriven(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		doOverride bool
+		eventType  string
 		wantEvents int
 		wantCode   int
+		doOverride bool
 	}{
 		{
 			name:       "no_events",
@@ -293,6 +294,25 @@ func TestHandler_DescribePullRequestEvents_TableDriven(t *testing.T) {
 			doOverride: true,
 			wantEvents: 1,
 			wantCode:   http.StatusOK,
+		},
+		{
+			name:       "matching_filter",
+			doOverride: true,
+			eventType:  "PULL_REQUEST_APPROVAL_RULE_OVERRIDDEN",
+			wantEvents: 1,
+			wantCode:   http.StatusOK,
+		},
+		{
+			name:       "non_matching_filter",
+			doOverride: true,
+			eventType:  "PULL_REQUEST_CREATED",
+			wantEvents: 0,
+			wantCode:   http.StatusOK,
+		},
+		{
+			name:      "invalid_filter",
+			eventType: "NOT_A_REAL_EVENT_TYPE",
+			wantCode:  http.StatusBadRequest,
 		},
 	}
 
@@ -311,10 +331,16 @@ func TestHandler_DescribePullRequestEvents_TableDriven(t *testing.T) {
 				})
 			}
 
-			rec := doRequest(t, h, "DescribePullRequestEvents", map[string]any{
-				"pullRequestId": prID,
-			})
+			req := map[string]any{"pullRequestId": prID}
+			if tt.eventType != "" {
+				req["pullRequestEventType"] = tt.eventType
+			}
+
+			rec := doRequest(t, h, "DescribePullRequestEvents", req)
 			assert.Equal(t, tt.wantCode, rec.Code)
+			if tt.wantCode != http.StatusOK {
+				return
+			}
 
 			var resp map[string]any
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))

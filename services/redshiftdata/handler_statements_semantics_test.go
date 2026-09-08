@@ -54,7 +54,7 @@ func TestResultFormatControlsResultAPI(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
-			body := map[string]any{"Sql": "SELECT 1", "Database": "dev"}
+			body := map[string]any{"Sql": "SELECT 1", "Database": "dev", "ClusterIdentifier": "my-cluster"}
 			if tt.resultFormat != "" {
 				body["ResultFormat"] = tt.resultFormat
 			}
@@ -98,9 +98,10 @@ func TestResultFormatMetadataAndValidation(t *testing.T) {
 
 			h := newTestHandler(t)
 			rec := doRequest(t, h, "ExecuteStatement", map[string]any{
-				"Sql":          "SELECT 1",
-				"Database":     "dev",
-				"ResultFormat": tt.format,
+				"Sql":               "SELECT 1",
+				"Database":          "dev",
+				"ResultFormat":      tt.format,
+				"ClusterIdentifier": "my-cluster",
 			})
 			assert.Equal(t, tt.wantStatus, rec.Code)
 			if tt.wantStatus != http.StatusOK {
@@ -131,10 +132,10 @@ func TestListStatementsFilters(t *testing.T) {
 	b := redshiftdata.NewInMemoryBackend(testAccountID, testRegion)
 	h := redshiftdata.NewHandler(b)
 	doRequest(t, h, "ExecuteStatement", map[string]any{
-		"Sql": "SELECT 1", "Database": "alpha", "StatementName": "daily-one",
+		"Sql": "SELECT 1", "Database": "alpha", "StatementName": "daily-one", "ClusterIdentifier": "my-cluster",
 	})
 	doRequest(t, h, "ExecuteStatement", map[string]any{
-		"Sql": "SELECT 2", "Database": "beta", "StatementName": "weekly-one",
+		"Sql": "SELECT 2", "Database": "beta", "StatementName": "weekly-one", "ClusterIdentifier": "my-cluster",
 	})
 	redshiftdata.AddStatementInternal(b, testRegion, "started-alpha", "SELECT 3", "alpha", "STARTED", true)
 
@@ -172,7 +173,7 @@ func TestListStatementsNextToken(t *testing.T) {
 	h := newTestHandler(t)
 	for i := range 3 {
 		doRequest(t, h, "ExecuteStatement", map[string]any{
-			"Sql": "SELECT " + string(rune('1'+i)), "Database": "dev",
+			"Sql": "SELECT " + string(rune('1'+i)), "Database": "dev", "ClusterIdentifier": "my-cluster",
 		})
 	}
 
@@ -244,8 +245,9 @@ func TestHasResultSet_BySQL(t *testing.T) {
 
 			h := newTestHandler(t)
 			execRec := doRequest(t, h, "ExecuteStatement", map[string]any{
-				"Sql":      tt.sql,
-				"Database": "testdb",
+				"Sql":               tt.sql,
+				"Database":          "testdb",
+				"ClusterIdentifier": "my-cluster",
 			})
 			require.Equal(t, http.StatusOK, execRec.Code)
 
@@ -289,8 +291,9 @@ func TestGetStatementResult_RequiresResultSet(t *testing.T) {
 
 			h := newTestHandler(t)
 			execRec := doRequest(t, h, "ExecuteStatement", map[string]any{
-				"Sql":      tt.sql,
-				"Database": "testdb",
+				"Sql":               tt.sql,
+				"Database":          "testdb",
+				"ClusterIdentifier": "my-cluster",
 			})
 			require.Equal(t, http.StatusOK, execRec.Code)
 
@@ -354,8 +357,9 @@ func TestParameters_AcceptedAndStored(t *testing.T) {
 
 			h := newTestHandler(t)
 			body := map[string]any{
-				"Sql":      tt.sql,
-				"Database": "testdb",
+				"Sql":               tt.sql,
+				"Database":          "testdb",
+				"ClusterIdentifier": "my-cluster",
 			}
 			if tt.params != nil {
 				body["Parameters"] = tt.params
@@ -416,8 +420,9 @@ func TestBatchExecuteStatement_ParametersAcceptedAndStored(t *testing.T) {
 	h := newTestHandler(t)
 
 	rec := doRequest(t, h, "BatchExecuteStatement", map[string]any{
-		"Sqls":     []string{"SELECT * FROM orders WHERE user_id = :user_id", "SELECT 2"},
-		"Database": "testdb",
+		"Sqls":              []string{"SELECT * FROM orders WHERE user_id = :user_id", "SELECT 2"},
+		"Database":          "testdb",
+		"ClusterIdentifier": "my-cluster",
 		"Parameters": []map[string]any{
 			{"name": "user_id", "value": "123"},
 		},
@@ -457,9 +462,10 @@ func TestSessionID_EchoedByExecuteStatement(t *testing.T) {
 		h := newTestHandler(t)
 
 		rec := doRequest(t, h, "ExecuteStatement", map[string]any{
-			"Sql":       "SELECT 1",
-			"Database":  "testdb",
-			"SessionId": "sess-abc123",
+			"Sql":               "SELECT 1",
+			"Database":          "testdb",
+			"SessionId":         "sess-abc123",
+			"ClusterIdentifier": "my-cluster",
 		})
 		require.Equal(t, http.StatusOK, rec.Code)
 
@@ -492,8 +498,9 @@ func TestSessionID_EchoedByExecuteStatement(t *testing.T) {
 		h := newTestHandler(t)
 
 		rec := doRequest(t, h, "ExecuteStatement", map[string]any{
-			"Sql":      "SELECT 1",
-			"Database": "testdb",
+			"Sql":               "SELECT 1",
+			"Database":          "testdb",
+			"ClusterIdentifier": "my-cluster",
 		})
 		require.Equal(t, http.StatusOK, rec.Code)
 
@@ -518,9 +525,10 @@ func TestSessionID_EchoedByBatchExecuteStatement(t *testing.T) {
 	h := newTestHandler(t)
 
 	rec := doRequest(t, h, "BatchExecuteStatement", map[string]any{
-		"Sqls":      []string{"SELECT 1", "SELECT 2"},
-		"Database":  "testdb",
-		"SessionId": "sess-batch-1",
+		"Sqls":              []string{"SELECT 1", "SELECT 2"},
+		"Database":          "testdb",
+		"SessionId":         "sess-batch-1",
+		"ClusterIdentifier": "my-cluster",
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -559,8 +567,9 @@ func TestExecuteStatement_CaseInsensitiveSQL(t *testing.T) {
 
 			h := newTestHandler(t)
 			execRec := doRequest(t, h, "ExecuteStatement", map[string]any{
-				"Sql":      tt.sql,
-				"Database": "testdb",
+				"Sql":               tt.sql,
+				"Database":          "testdb",
+				"ClusterIdentifier": "my-cluster",
 			})
 			require.Equal(t, http.StatusOK, execRec.Code)
 

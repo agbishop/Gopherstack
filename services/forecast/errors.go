@@ -18,4 +18,8 @@ var (
 	// (e.g. "You can delete only predictor that have a status of ACTIVE or
 	// CREATE_FAILED", per the DeletePredictor API doc).
 	ErrResourceInUse = awserr.New("ResourceInUseException", awserr.ErrConflict)
+	// ErrTagLimitExceeded is returned when TagResource would leave a resource
+	// with more tags than the documented per-resource maximum (see
+	// maxTagsPerResource in tags.go). Documentation-sourced, not SDK-verified.
+	ErrTagLimitExceeded = awserr.New("LimitExceededException", awserr.ErrInvalidParameter)
 )

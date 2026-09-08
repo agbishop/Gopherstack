@@ -18,38 +18,40 @@ func TestInMemoryBackend_SnapshotRestore(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		setup  func(b *sts.InMemoryBackend) string
-		verify func(t *testing.T, b *sts.InMemoryBackend, accessKeyID string)
+		setup  func(b *sts.InMemoryBackend) (accessKeyID, sessionToken string)
+		verify func(t *testing.T, b *sts.InMemoryBackend, accessKeyID, sessionToken string)
 		name   string
 	}{
 		{
 			name:  "round_trip_no_state",
-			setup: func(_ *sts.InMemoryBackend) string { return "" },
-			verify: func(t *testing.T, b *sts.InMemoryBackend, _ string) {
+			setup: func(_ *sts.InMemoryBackend) (string, string) { return "", "" },
+			verify: func(t *testing.T, b *sts.InMemoryBackend, _, _ string) {
 				t.Helper()
 				assert.Equal(t, 0, b.SessionCount())
 			},
 		},
 		{
 			name: "round_trip_with_active_session",
-			setup: func(b *sts.InMemoryBackend) string {
+			setup: func(b *sts.InMemoryBackend) (string, string) {
 				resp, err := b.AssumeRole(&sts.AssumeRoleInput{
 					RoleArn:         "arn:aws:iam::123456789012:role/TestRole",
 					RoleSessionName: "restore-session",
 					DurationSeconds: 900,
 				})
 				if err != nil {
-					return ""
+					return "", ""
 				}
 
-				return resp.AssumeRoleResult.Credentials.AccessKeyID
+				creds := resp.AssumeRoleResult.Credentials
+
+				return creds.AccessKeyID, creds.SessionToken
 			},
-			verify: func(t *testing.T, b *sts.InMemoryBackend, accessKeyID string) {
+			verify: func(t *testing.T, b *sts.InMemoryBackend, accessKeyID, sessionToken string) {
 				t.Helper()
 				require.Equal(t, 1, b.SessionCount())
 
 				// Session should still resolve correctly.
-				ciResp, err := b.GetCallerIdentity(accessKeyID, "")
+				ciResp, err := b.GetCallerIdentity(accessKeyID, sessionToken)
 				require.NoError(t, err)
 				assert.Contains(t, ciResp.GetCallerIdentityResult.Arn, "assumed-role")
 				assert.Contains(t, ciResp.GetCallerIdentityResult.Arn, "TestRole")
@@ -57,23 +59,23 @@ func TestInMemoryBackend_SnapshotRestore(t *testing.T) {
 		},
 		{
 			name: "round_trip_expired_session_discarded",
-			setup: func(b *sts.InMemoryBackend) string {
+			setup: func(b *sts.InMemoryBackend) (string, string) {
 				resp, err := b.AssumeRole(&sts.AssumeRoleInput{
 					RoleArn:         "arn:aws:iam::123456789012:role/TestRole",
 					RoleSessionName: "expired-session",
 					DurationSeconds: 900,
 				})
 				if err != nil {
-					return ""
+					return "", ""
 				}
 
-				accessKeyID := resp.AssumeRoleResult.Credentials.AccessKeyID
+				creds := resp.AssumeRoleResult.Credentials
 				// Force the session to be expired before snapshotting.
-				b.SetSessionExpiration(accessKeyID, time.Now().Add(-time.Second))
+				b.SetSessionExpiration(creds.AccessKeyID, time.Now().Add(-time.Second))
 
-				return accessKeyID
+				return creds.AccessKeyID, creds.SessionToken
 			},
-			verify: func(t *testing.T, b *sts.InMemoryBackend, _ string) {
+			verify: func(t *testing.T, b *sts.InMemoryBackend, _, _ string) {
 				t.Helper()
 				// Expired session must not be restored.
 				assert.Equal(t, 0, b.SessionCount())
@@ -86,14 +88,14 @@ func TestInMemoryBackend_SnapshotRestore(t *testing.T) {
 			t.Parallel()
 
 			original := sts.NewInMemoryBackendWithConfig("000000000000")
-			accessKeyID := tt.setup(original)
+			accessKeyID, sessionToken := tt.setup(original)
 
 			snap := original.Snapshot(t.Context())
 
 			fresh := sts.NewInMemoryBackendWithConfig("000000000000")
 			require.NoError(t, fresh.Restore(t.Context(), snap))
 
-			tt.verify(t, fresh, accessKeyID)
+			tt.verify(t, fresh, accessKeyID, sessionToken)
 		})
 	}
 }

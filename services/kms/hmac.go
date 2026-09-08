@@ -19,7 +19,7 @@ func (b *InMemoryBackend) GenerateMac(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKey(ctx, input.KeyID)
+	key, err := b.lookupKey(ctx, input.KeyID, ErrKeyNotFound)
 	if err != nil {
 		return nil, err
 	}
@@ -39,11 +39,11 @@ func (b *InMemoryBackend) GenerateMac(
 		return nil, algErr
 	}
 
-	if err = b.validateGrantTokenPresence(input.GrantTokens); err != nil {
+	if err = b.validateGrantTokenPresence(input.GrantTokens, "GenerateMac"); err != nil {
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func (b *InMemoryBackend) VerifyMac(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKey(ctx, input.KeyID)
+	key, err := b.lookupKey(ctx, input.KeyID, ErrKeyNotFound)
 	if err != nil {
 		return nil, err
 	}
@@ -97,11 +97,11 @@ func (b *InMemoryBackend) VerifyMac(
 		return nil, algErr
 	}
 
-	if err = b.validateGrantTokenPresence(input.GrantTokens); err != nil {
+	if err = b.validateGrantTokenPresence(input.GrantTokens, "VerifyMac"); err != nil {
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func (b *InMemoryBackend) VerifyMac(
 	}
 
 	if !hmacEqual(expected, input.Mac) {
-		return nil, fmt.Errorf("%w: MAC verification failed", ErrInvalidSignature)
+		return nil, fmt.Errorf("%w: MAC verification failed", ErrInvalidMac)
 	}
 
 	b.recordLastUsage(region, key.KeyID, "VerifyMac")

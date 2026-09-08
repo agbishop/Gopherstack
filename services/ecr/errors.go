@@ -32,6 +32,15 @@ var (
 	)
 	// ErrLifecyclePolicyNotFound is returned when a lifecycle policy does not exist.
 	ErrLifecyclePolicyNotFound = awserr.New("LifecyclePolicyNotFoundException", awserr.ErrNotFound)
+	// ErrLifecyclePolicyPreviewNotFound is returned by GetLifecyclePolicyPreview when
+	// no preview (dry run) has been started for the repository. Distinct from
+	// ErrLifecyclePolicyNotFound: GetLifecyclePolicyPreview's own deserializeOpError
+	// (ecr@v1.60.4 deserializers.go) recognizes LifecyclePolicyPreviewNotFoundException
+	// ("There is no dry run for this repository."), not LifecyclePolicyNotFoundException.
+	ErrLifecyclePolicyPreviewNotFound = awserr.New(
+		"LifecyclePolicyPreviewNotFoundException",
+		awserr.ErrNotFound,
+	)
 	// ErrRepositoryCreationTemplateNotFound is returned when a creation template does not exist.
 	ErrRepositoryCreationTemplateNotFound = awserr.New(
 		"TemplateNotFoundException",

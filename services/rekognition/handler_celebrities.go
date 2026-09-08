@@ -34,8 +34,12 @@ type recognizeCelebritiesResp struct {
 }
 
 func (h *Handler) handleRecognizeCelebrities(
-	_ context.Context, _ *recognizeCelebritiesReq,
+	ctx context.Context, req *recognizeCelebritiesReq,
 ) (*recognizeCelebritiesResp, error) {
+	if err := h.checkImageRef(ctx, req.Image); err != nil {
+		return nil, err
+	}
+
 	return &recognizeCelebritiesResp{
 		CelebrityFaces:        []celebrityEntry{},
 		UnrecognizedFaces:     []struct{}{},
@@ -81,8 +85,12 @@ type startCelebrityRecognitionReq struct {
 }
 
 func (h *Handler) handleStartCelebrityRecognition(
-	_ context.Context, req *startCelebrityRecognitionReq,
+	ctx context.Context, req *startCelebrityRecognitionReq,
 ) (*startJobResp, error) {
+	if err := h.checkVideoRef(ctx, req.Video); err != nil {
+		return nil, err
+	}
+
 	bucket, name, version := videoRefS3(req.Video)
 
 	jobID, err := h.Backend.StartAsyncJob(StartAsyncJobParams{

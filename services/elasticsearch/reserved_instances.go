@@ -53,6 +53,24 @@ func (b *InMemoryBackend) PurchaseReservedElasticsearchInstanceOffering(
 		count = 1
 	}
 
+	var (
+		matched ReservedInstanceOffering
+		found   bool
+	)
+
+	for _, offering := range b.DescribeReservedElasticsearchInstanceOfferings() {
+		if offering.OfferingID == offeringID {
+			matched = offering
+			found = true
+
+			break
+		}
+	}
+
+	if !found {
+		return nil, fmt.Errorf("%w: offering %s not found", ErrOfferingNotFound, offeringID)
+	}
+
 	id := fmt.Sprintf("ri-%010d", b.nextIDLocked())
 	instance := &ReservedInstance{
 		ReservationID:   id,
@@ -60,17 +78,11 @@ func (b *InMemoryBackend) PurchaseReservedElasticsearchInstanceOffering(
 		OfferingID:      offeringID,
 		Count:           count,
 		State:           statusActive,
+		InstanceType:    matched.InstanceType,
+		FixedPrice:      matched.FixedPrice,
+		UsagePrice:      matched.UsagePrice,
+		Duration:        matched.Duration,
 		region:          region,
-	}
-	for _, offering := range b.DescribeReservedElasticsearchInstanceOfferings() {
-		if offering.OfferingID == offeringID {
-			instance.InstanceType = offering.InstanceType
-			instance.FixedPrice = offering.FixedPrice
-			instance.UsagePrice = offering.UsagePrice
-			instance.Duration = offering.Duration
-
-			break
-		}
 	}
 
 	b.reservedInstancePut(instance)

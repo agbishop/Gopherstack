@@ -238,24 +238,63 @@ func TestDescribeDBSecurityGroups(t *testing.T) {
 	}
 }
 
+// TestDeleteDBSecurityGroup_RejectsDefault locks real AWS's
+// DeleteDBSecurityGroupInput.DBSecurityGroupName doc comment: "You can't
+// delete the default DB security group" ("Must not be \"Default\"").
+func TestDeleteDBSecurityGroup_RejectsDefault(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+	b.AddSecurityGroupInternal("Default", "default security group")
+
+	err := b.DeleteDBSecurityGroup("Default")
+	require.ErrorIs(t, err, rds.ErrDBSecurityGroupInvalidState)
+
+	groups, descErr := b.DescribeDBSecurityGroups("Default")
+	require.NoError(t, descErr)
+	require.Len(t, groups, 1, "default security group must survive the rejected delete")
+}
+
 func TestDeleteDBSecurityGroup(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
+		setup     func(t *testing.T, b *rds.InMemoryBackend)
 		wantErrIs error
 		name      string
 		sgName    string
 		wantErr   bool
 	}{
-		{name: "success", sgName: "sg-1"},
+		{
+			name:   "success",
+			sgName: "sg-1",
+			setup: func(_ *testing.T, b *rds.InMemoryBackend) {
+				b.AddSecurityGroupInternal("sg-1", "desc")
+			},
+		},
 		{name: "not found", sgName: "missing", wantErr: true, wantErrIs: rds.ErrDBSecurityGroupNotFound},
 		{name: "empty name", sgName: "", wantErr: true, wantErrIs: rds.ErrInvalidParameter},
+		{
+			// Real AWS: "The specified DB security group must not be
+			// associated with any DB instances" (api_op_DeleteDBSecurityGroup.go).
+			name:      "associated with instance",
+			sgName:    "assoc-sg",
+			wantErr:   true,
+			wantErrIs: rds.ErrDBSecurityGroupInvalidState,
+			setup: func(t *testing.T, b *rds.InMemoryBackend) {
+				t.Helper()
+				b.AddSecurityGroupInternal("assoc-sg", "desc")
+				_, err := b.CreateDBInstance("assoc-inst", "postgres", "db.t3.micro", "", "admin", "", 20,
+					rds.DBInstanceOptions{DBSecurityGroupNames: []string{"assoc-sg"}})
+				require.NoError(t, err)
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			b := newTestBackend(t)
-			if tt.name == "success" {
-				b.AddSecurityGroupInternal(tt.sgName, "desc")
+			if tt.setup != nil {
+				tt.setup(t, b)
 			}
 			err := b.DeleteDBSecurityGroup(tt.sgName)
 			if tt.wantErr {
@@ -267,6 +306,32 @@ func TestDeleteDBSecurityGroup(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+// TestDeleteDBSecurityGroup_ClearsTags guards against the ghost-row class:
+// a security group deleted and recreated under the same name must not
+// inherit the deleted group's tags, since DBSecurityGroupArn is a
+// deterministic function of the name.
+func TestDeleteDBSecurityGroup_ClearsTags(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+
+	sg, err := b.CreateDBSecurityGroup("ghost-sg", "original")
+	require.NoError(t, err)
+	require.NotEmpty(t, sg.DBSecurityGroupArn)
+
+	b.AddTagsToResource(sg.DBSecurityGroupArn, []rds.Tag{{Key: "env", Value: "prod"}})
+	require.Len(t, b.ListTagsForResource(sg.DBSecurityGroupArn), 1)
+
+	require.NoError(t, b.DeleteDBSecurityGroup("ghost-sg"))
+
+	recreated, err := b.CreateDBSecurityGroup("ghost-sg", "recreated")
+	require.NoError(t, err)
+	require.Equal(t, sg.DBSecurityGroupArn, recreated.DBSecurityGroupArn, "ARN is deterministic by name")
+
+	assert.Empty(t, b.ListTagsForResource(recreated.DBSecurityGroupArn),
+		"recreated security group must not inherit tags from the deleted one")
 }
 
 func TestRevokeDBSecurityGroupIngress(t *testing.T) {

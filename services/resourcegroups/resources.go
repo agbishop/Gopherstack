@@ -237,6 +237,12 @@ func (b *InMemoryBackend) ListGroupResources(
 // filtered by filters (Name: "status" or "resource-arn", per
 // types.ListGroupingStatusesFilterName) and paginated. Returns statuses, a
 // continuation token (empty when no more results), and any error.
+//
+// A nonexistent group is not an error: ListGroupingStatusesInput's declared
+// error set (deserializers.go) has no NotFoundException, unlike sibling
+// ListGroupResources, which declares it for the same required Group
+// identifier -- so an unknown group just yields an empty result
+// (gopherstack-m4k0).
 func (b *InMemoryBackend) ListGroupingStatuses(
 	ctx context.Context,
 	nameOrARN string,
@@ -249,10 +255,6 @@ func (b *InMemoryBackend) ListGroupingStatuses(
 
 	region := getRegion(ctx, b.region)
 	name := resolveGroupName(nameOrARN)
-
-	if !b.groups.Has(regionKey(region, name)) {
-		return nil, "", fmt.Errorf("%w: group %s not found", ErrNotFound, name)
-	}
 
 	var statuses []GroupingStatusItem
 	if b.groupingStatuses[region] != nil {

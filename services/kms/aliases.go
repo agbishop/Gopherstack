@@ -28,20 +28,20 @@ func isValidAliasName(name string) bool {
 // CreateAlias creates an alias pointing to a key.
 func (b *InMemoryBackend) CreateAlias(ctx context.Context, input *CreateAliasInput) error {
 	if !strings.HasPrefix(input.AliasName, "alias/") {
-		return fmt.Errorf("%w: alias name must start with alias/", ErrValidation)
+		return fmt.Errorf("%w: alias name must start with alias/", ErrInvalidAliasName)
 	}
 
 	if strings.HasPrefix(input.AliasName, "alias/aws/") {
 		return fmt.Errorf(
 			"%w: alias names that begin with alias/aws/ are reserved for AWS managed keys",
-			ErrValidation,
+			ErrInvalidAliasName,
 		)
 	}
 
 	if len(input.AliasName) > maxAliasNameLength {
 		return fmt.Errorf(
 			"%w: alias name exceeds maximum length of %d characters",
-			ErrValidation, maxAliasNameLength,
+			ErrInvalidAliasName, maxAliasNameLength,
 		)
 	}
 
@@ -49,7 +49,7 @@ func (b *InMemoryBackend) CreateAlias(ctx context.Context, input *CreateAliasInp
 		return fmt.Errorf(
 			"%w: alias name %q contains invalid characters; "+
 				"allowed: letters, numbers, colons, forward slashes, underscores, and hyphens",
-			ErrValidation, input.AliasName,
+			ErrInvalidAliasName, input.AliasName,
 		)
 	}
 
@@ -62,7 +62,9 @@ func (b *InMemoryBackend) CreateAlias(ctx context.Context, input *CreateAliasInp
 		return ErrAliasAlreadyExists
 	}
 
-	targetID, _, err := b.resolveKeyID(ctx, input.TargetKeyID)
+	// CreateAlias's deserializeOpError does not recognize InvalidArnException
+	// (gopherstack-qxaj) -- a malformed TargetKeyID ARN falls back to NotFoundException.
+	targetID, _, err := b.resolveKeyID(ctx, input.TargetKeyID, ErrKeyNotFound)
 	if err != nil {
 		return err
 	}
@@ -97,7 +99,9 @@ func (b *InMemoryBackend) UpdateAlias(ctx context.Context, input *UpdateAliasInp
 		return ErrAliasNotFound
 	}
 
-	targetID, _, err := b.resolveKeyID(ctx, input.TargetKeyID)
+	// UpdateAlias's deserializeOpError does not recognize InvalidArnException
+	// (gopherstack-qxaj) -- a malformed TargetKeyID ARN falls back to NotFoundException.
+	targetID, _, err := b.resolveKeyID(ctx, input.TargetKeyID, ErrKeyNotFound)
 	if err != nil {
 		return err
 	}
@@ -118,6 +122,7 @@ func (b *InMemoryBackend) UpdateAlias(ctx context.Context, input *UpdateAliasInp
 	alias.TargetKeyID = targetID
 	alias.LastUpdatedDate = UnixTimeFloat(time.Now())
 	b.keyIDResolutionCache.Delete(input.AliasName)
+	b.keyIDResolutionCache.Delete(alias.AliasArn)
 
 	return nil
 }
@@ -149,6 +154,7 @@ func (b *InMemoryBackend) DeleteAlias(ctx context.Context, input *DeleteAliasInp
 
 	b.aliasesStore(region).Delete(input.AliasName)
 	b.keyIDResolutionCache.Delete(input.AliasName)
+	b.keyIDResolutionCache.Delete(alias.AliasArn)
 
 	return nil
 }
@@ -168,7 +174,8 @@ func (b *InMemoryBackend) ListAliases(
 	if input.KeyID != "" {
 		var err error
 
-		resolvedKeyID, _, err = b.resolveKeyID(ctx, input.KeyID)
+		// ListAliases's deserializeOpError recognizes InvalidArnException (gopherstack-qxaj).
+		resolvedKeyID, _, err = b.resolveKeyID(ctx, input.KeyID, ErrInvalidArn)
 		if err != nil {
 			return nil, err
 		}

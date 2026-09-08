@@ -46,6 +46,64 @@ func TestAWSConfigBackend_PutConfigurationRecorder(t *testing.T) {
 	}
 }
 
+func TestAWSConfigBackend_PutConfigurationRecorder_MaxOneCustomerManaged(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		setup   func(t *testing.T, b *awsconfig.InMemoryBackend)
+		wantErr error
+		name    string
+		recName string
+	}{
+		{
+			name:    "second_customer_managed_recorder_rejected",
+			recName: "second",
+			setup: func(t *testing.T, b *awsconfig.InMemoryBackend) {
+				t.Helper()
+				require.NoError(t, b.PutConfigurationRecorder("default", "arn:aws:iam::000000000000:role/config", nil))
+			},
+			wantErr: awsconfig.ErrAlreadyExists,
+		},
+		{
+			name:    "same_name_update_allowed",
+			recName: "default",
+			setup: func(t *testing.T, b *awsconfig.InMemoryBackend) {
+				t.Helper()
+				require.NoError(t, b.PutConfigurationRecorder("default", "arn:aws:iam::000000000000:role/config", nil))
+			},
+			wantErr: nil,
+		},
+		{
+			name:    "service_linked_recorder_does_not_block",
+			recName: "customer-managed",
+			setup: func(t *testing.T, b *awsconfig.InMemoryBackend) {
+				t.Helper()
+				_, _, err := b.PutServiceLinkedConfigurationRecorder("guardduty.amazonaws.com", nil)
+				require.NoError(t, err)
+			},
+			wantErr: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := awsconfig.NewInMemoryBackend()
+			tt.setup(t, b)
+
+			err := b.PutConfigurationRecorder(tt.recName, "arn:aws:iam::000000000000:role/config", nil)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestAWSConfigBackend_StartConfigurationRecorder(t *testing.T) {
 	t.Parallel()
 
@@ -387,9 +445,11 @@ func TestAWSConfigBackend_DescribeConfigurationRecorders_NameFilter(t *testing.T
 			t.Parallel()
 
 			b := awsconfig.NewInMemoryBackend()
-			require.NoError(t, b.PutConfigurationRecorder("rec-c", "arn:aws:iam::123:role/r", nil))
 			require.NoError(t, b.PutConfigurationRecorder("rec-a", "arn:aws:iam::123:role/r", nil))
-			require.NoError(t, b.PutConfigurationRecorder("rec-b", "arn:aws:iam::123:role/r", nil))
+			_, _, err := b.PutServiceLinkedConfigurationRecorder("guardduty.amazonaws.com", nil)
+			require.NoError(t, err)
+			_, _, err = b.PutServiceLinkedConfigurationRecorder("backup.amazonaws.com", nil)
+			require.NoError(t, err)
 
 			recs := b.DescribeConfigurationRecorders(tt.filter)
 			assert.Len(t, recs, tt.wantCount)

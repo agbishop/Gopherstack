@@ -30,13 +30,13 @@ ops:
   CreateElasticsearchDomain: {wire: ok, errors: ok, state: ok, persist: ok, note: "2026-08-10 pass added AdvancedSecurityOptions.SAMLOptions, AutoTuneOptions.MaintenanceSchedules, and DeploymentStrategyOptions -- previously accepted-but-dropped or entirely unmodeled; see Notes"}
   DescribeElasticsearchDomain: {wire: ok, errors: ok, state: ok, persist: ok}
   DescribeElasticsearchDomains: {wire: ok, errors: ok, state: ok, persist: ok}
-  DeleteElasticsearchDomain: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteElasticsearchDomain: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED (2026-09-04 pass) -- did not remove the deleted domain from packageAssociationsStore, leaving a ghost row visible via ListDomainsForPackage/ListPackagesForDomain. See Notes and ListPackagesForDomain row."}
   ListDomainNames: {wire: ok, errors: ok, state: ok, persist: ok, note: "route bug fixed this pass -- was served at the wrong path; see Notes"}
   UpdateElasticsearchDomainConfig: {wire: ok, errors: ok, state: ok, persist: ok, note: "2026-08-10 pass added AdvancedSecurityOptions.SAMLOptions, AutoTuneOptions.MaintenanceSchedules, and DeploymentStrategyOptions; see Notes"}
   DescribeElasticsearchDomainConfig: {wire: ok, errors: ok, state: ok, persist: ok, note: "2026-08-10 pass fixed AutoTuneOptions.Options/Status to use their real distinct shapes (types.AutoTuneOptions/types.AutoTuneStatus, not the DomainStatus response's AutoTuneOptionsOutput/generic OptionStatus) and added MaintenanceSchedules + DeploymentStrategyOptions; see Notes"}
   CancelDomainConfigChange: {wire: fixed, errors: ok, state: ok, persist: n/a, note: "FIXED (gopherstack-p2mx) -- was echoing DescribeElasticsearchDomainConfig's DomainConfig-wrapped body (a borrowed shape, wrong operation entirely) instead of CancelDomainConfigChangeOutput's own {CancelledChangeIds,CancelledChangeProperties,DryRun}; DryRun was also never read from the request. Now returns the real shape: empty CancelledChangeIds/CancelledChangeProperties (this backend has no pending-change queue -- every config change already applied synchronously, so there is truly nothing to report as cancelled) and DryRun echoed from the request. Prior wire: ok was false; the old unit test asserted the wrong (bug-matching) shape and was corrected alongside the fix"}
-  AddTags: {wire: ok, errors: ok, state: ok, persist: ok}
-  RemoveTags: {wire: ok, errors: ok, state: ok, persist: ok}
+  AddTags: {wire: ok, errors: fixed, state: ok, persist: ok, note: "FIXED (2026-09-04 pass) -- handler discarded the backend's ErrDomainNotFound and always wrote 200 OK for an unknown ARN; a non-empty TagList also risked a nil-map panic (maps.Copy into the nil map ListTags returns for an unknown ARN). Now returns ValidationException (400) -- AddTags's deserializer has no ResourceNotFoundException case, matching services/opensearch's identical fix. See Notes."}
+  RemoveTags: {wire: ok, errors: fixed, state: ok, persist: ok, note: "FIXED (2026-09-04 pass) -- same discarded-error/always-200 bug as AddTags above; same ValidationException fix. See Notes."}
   ListTags: {wire: ok, errors: ok, state: ok, persist: ok}
   StartElasticsearchServiceSoftwareUpdate: {wire: ok, errors: ok, state: ok, persist: ok, note: "route bug fixed this pass -- see Notes"}
   CancelElasticsearchServiceSoftwareUpdate: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -58,7 +58,7 @@ ops:
   DissociatePackage: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (cmd/enumcheck sweep, 1d6e40d1a): DomainPackageStatus was the non-member string \"DISSOCIATED\" -- types.DomainPackageStatus only has ASSOCIATING/ASSOCIATION_FAILED/ACTIVE/DISSOCIATING/DISSOCIATION_FAILED (types/enums.go:189-198), no terminal DISSOCIATED. Now emits DISSOCIATING (the transitional state a real client sees on a successful call; this backend completes the removal synchronously, but that is an implementation detail, not a wire value). See TestDissociatePackage_DomainPackageStatus_RealSDKClient (wire_field_fixes_test.go)."}
   GetPackageVersionHistory: {wire: ok, errors: ok, state: ok, persist: n/a}
   ListDomainsForPackage: {wire: ok, errors: ok, state: ok, persist: n/a}
-  ListPackagesForDomain: {wire: ok, errors: ok, state: ok, persist: n/a}
+  ListPackagesForDomain: {wire: ok, errors: fixed, state: fixed, persist: n/a, note: "FIXED (2026-09-04 pass) -- never validated the domain existed (ResourceNotFoundException is modelled but never returned); also DeleteElasticsearchDomain never removed the domain from packageAssociationsStore, so a deleted domain remained a ghost row forever in both ListDomainsForPackage and this op. Now 404s for an unknown/deleted domain, and DeleteElasticsearchDomain cleans the association map on delete. See Notes."}
   CreateVpcEndpoint: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED (gopherstack-p2mx) -- request/response VpcOptions was map[string]string; real wire shape is types.VPCOptions/{SecurityGroupIds,SubnetIds} (request) and types.VPCDerivedInfo (response, same two fields plus unmodeled AvailabilityZones/VPCId -- matches the identical domain-level VPCOptions simplification). A real SDK client always serializes VpcOptions as {SecurityGroupIds:[...],SubnetIds:[...]}, so json.Unmarshal into map[string]string failed on every real call with a security group or subnet -- CreateVpcEndpoint 400'd unconditionally for any non-toy client. Reused the already-correct vpcOptionsRequestJSON/vpcDerivedInfoJSON/toVPCDerivedInfoJSON machinery built for domain-level VPCOptions (handler_domains.go) -- CreateVpcEndpointInput.VpcOptions is the literal same SDK type. Prior wire: ok was false; existing unit tests asserted the broken shape (flat VpcId/SubnetId keys) and were corrected. Proven via a real aws-sdk-go-v2 client round-trip (handler_sdk_roundtrip_test.go), verified to fail against the unfixed code by hand-revert"}
   DescribeVpcEndpoints: {wire: ok, errors: ok, state: ok, persist: n/a}
   ListVpcEndpoints: {wire: fixed, errors: ok, state: ok, persist: n/a, note: "FIXED (gopherstack-lx5h) — dropped required NextToken (ListVpcEndpointsOutput, deserializers.go). Single-page emulator (never truncated) so no data is lost, but a required pointer left nil could panic a client that dereferences it unconditionally; now always emitted as an empty string. Prior wire: ok was false. gopherstack-4gzs: CORRECTED (this pass) — see the 'Not a bug' note below (now removed), which argued returning the full vpcEndpointJSON shape (Endpoint/VpcOptions included) was harmless. Now emits vpcEndpointSummaryJSON via toVpcEndpointSummariesJSON (handler_vpc_endpoints.go)."}
@@ -77,7 +77,7 @@ ops:
   DescribeInboundCrossClusterSearchConnections: {wire: ok, errors: ok, state: ok, persist: n/a}
   DescribeReservedElasticsearchInstanceOfferings: {wire: ok, errors: ok, state: ok, persist: n/a}
   DescribeReservedElasticsearchInstances: {wire: ok, errors: ok, state: ok, persist: ok}
-  PurchaseReservedElasticsearchInstanceOffering: {wire: ok, errors: ok, state: ok, persist: ok}
+  PurchaseReservedElasticsearchInstanceOffering: {wire: ok, errors: fixed, state: fixed, persist: ok, note: "FIXED (2026-09-04 pass) -- never validated ReservedElasticsearchInstanceOfferingId against the known offering; an unknown offering ID silently created a reservation with zero-value InstanceType/FixedPrice/UsagePrice/Duration and 200 OK instead of the modelled ResourceNotFoundException. See Notes."}
 gaps:                     # known divergences NOT fixed — link bd issue ids
   - "GetUpgradeStatus.UpgradeName (gopherstack-6flj, 2026-08-15): real, optional *string member \
      never emitted -- no upgrade-name/upgrade-history state is tracked anywhere in this backend \
@@ -595,7 +595,10 @@ error-mapper ever runs.
   let alone mapped to a wire code. This is a real, separate bug (tagging a
   nonexistent domain silently "succeeds") but it is outside this sweep's
   class (wrong-code-for-declared-operation) since no code is ever emitted
-  at all -- left unfixed, flagged here for a future pass.
+  at all -- left unfixed, flagged here for a future pass. FIXED by the
+  2026-09-04 pass below (`gopherstack-to9j`); see also the 2026-09-07 entry
+  (`gopherstack-8h57`), filed against this same deferral note without
+  noticing the fix already shipped.
 - `ListDomainNames` (`handler_domains.go` `handleListDomainNames`): calls
   `Backend.DescribeDomain` per name and does `if err != nil { continue }` --
   the error is consumed inside the loop and never reaches any response
@@ -617,3 +620,161 @@ No code changed. Measured false-positive rate for this service: 4/4
 Gates: `go build ./services/elasticsearch/...`, `go vet ./...`
 (repo-wide, clean), `go test -race -count=1 ./services/elasticsearch/...`
 (pass, unchanged). No files changed in this pass.
+
+## 2026-09-04 pass: dropped-error and never-honoured-parameter sweep, 3 real bugs fixed
+
+Sentinel-reachability sweep (`git grep` every `errors.go` sentinel outside
+`errors.go`/handlers): all 9 sentinels are returned by backend logic and
+wired into a handler's error mapping -- no orphaned sentinel found.
+
+Three real bugs found and fixed, all previously-undiscovered except the
+first (flagged but explicitly left unfixed by the 2026-08-31 pass above):
+
+- **AddTags/RemoveTags** (`handler_tags.go`): both handlers discarded the
+  backend's `ErrDomainNotFound` (`_ = h.Backend.AddTags(...)`) and always
+  wrote `200 OK` for an ARN that does not resolve to any domain. Neither
+  op's deserializer (elasticsearchservice@v1.45.4 deserializers.go,
+  `awsRestjson1_deserializeOpErrorAddTags` /
+  `awsRestjson1_deserializeOpErrorRemoveTags`) declares
+  `ResourceNotFoundException` -- only `BaseException`/`InternalException`/
+  `ValidationException` (+`LimitExceededException` on AddTags) -- so the fix
+  maps the unknown-ARN case to `ValidationException` (400), matching
+  `services/opensearch/handler_tags.go`'s identical fix for the same
+  sibling API (its comment cites the same deserializer fact). A second,
+  related bug in `handleAddTags`: `existing, _ := h.Backend.ListTags(...)`
+  returns a nil map for an unknown ARN, and the old code did
+  `maps.Copy(existing, tagMap)` -- copying a non-empty `tagMap` into a nil
+  destination map panics. Fixed by copying into a freshly allocated
+  `merged` map instead of mutating `existing` in place, which incidentally
+  also closes the panic. Test:
+  `TestElasticsearchHandler_AddRemoveTags_UnknownARN`
+  (handler_tags_test.go). Fail-before (neutered each handler's guard
+  independently, one at a time): both show `Not equal: expected: 400,
+  actual: 200`.
+- **ListPackagesForDomain** (`packages.go`) never validated that the domain
+  existed at all -- `ListPackagesForDomainOutput`'s deserializer
+  (elasticsearchservice@v1.45.4 deserializers.go,
+  `awsRestjson1_deserializeOpErrorListPackagesForDomain`) declares
+  `ResourceNotFoundException` among its modelled errors, but the backend
+  had no domain lookup and always returned whatever (possibly empty)
+  association list it found, with `200 OK`. Compounding this: deleting a
+  domain (`DeleteDomain`, `domains.go`) never removed it from
+  `packageAssociationsStore` -- an association-map ghost row -- so a
+  deleted domain's packages would keep listing it via
+  `ListDomainsForPackage` forever, and `ListPackagesForDomain` against the
+  now-gone name would keep returning its stale package list instead of
+  404ing. Fixed both: `ListPackagesForDomain` now checks domain existence
+  first and returns `ErrDomainNotFound` (-> 404); `DeleteDomain` now prunes
+  the deleted domain's name out of every package's association slice.
+  Tests: `TestElasticsearchHandler_ListPackagesForDomain_UnknownDomain`,
+  `TestElasticsearchHandler_DeleteDomain_ClearsPackageAssociations`
+  (handler_packages_test.go). Fail-before (neutered each guard
+  independently): the domain-existence check shows `expected: 404, actual:
+  200`; the association-cleanup loop shows `Should be empty, but was
+  [map[DomainName:ghost-assoc-dom ...]]`.
+- **PurchaseReservedElasticsearchInstanceOffering** (`reserved_instances.go`)
+  never validated `ReservedElasticsearchInstanceOfferingId` against the one
+  real offering (`offer-t3-small-1y`) this backend models.
+  `PurchaseReservedElasticsearchInstanceOfferingOutput`'s deserializer
+  declares `ResourceNotFoundException`, but an unrecognized offering ID
+  silently created a reservation with zero-value
+  `InstanceType`/`FixedPrice`/`UsagePrice`/`Duration` and `200 OK` instead.
+  Fixed: returns the new `ErrOfferingNotFound` sentinel (-> 404) when no
+  offering matches. Test:
+  `TestElasticsearchHandler_PurchaseReservedInstanceOffering_UnknownOffering`
+  (handler_reserved_instances_test.go). Fail-before: `expected: 404,
+  actual: 200`.
+
+Not fixed this pass (lower confidence / out of the two cheap-check
+mandate): `PurchaseReservedElasticsearchInstanceOfferingInput.ReservationName`
+is also `This member is required` per its doc comment, but the real SDK
+client only validates it is non-nil (`validators.go`), not non-empty, and a
+well-behaved client always supplies a non-nil string -- weaker evidence
+than the offering-ID case, not filed as a bug.
+
+Delete/Update precondition pass: read every Delete*/Update*/Cancel* op doc
+comment in the pinned SDK for "you must first"/"cannot be"/"must not be"
+wording -- none of `DeleteElasticsearchDomain`, `DeletePackage`,
+`DeleteInboundCrossClusterSearchConnection`,
+`DeleteOutboundCrossClusterSearchConnection`, `DeleteVpcEndpoint`, or
+`DissociatePackage` document any such precondition beyond the one already
+enforced (`DeleteElasticsearchServiceRole` / `ErrServiceRoleInUse`, see
+top of Notes). No new precondition guards added -- absence of doc wording
+is evidence against inventing one.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go build ./services/elasticsearch/...`,
+`GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/elasticsearch/...`,
+`GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/elasticsearch/...` --
+all clean. `ListPackagesForDomain`'s signature gained an `error` return;
+confirmed via `git grep` it has no callers outside this package, so no
+cross-service gate was needed.
+
+Not checked this pass (package too large to read in full -- see the
+audit's scope-discipline instruction): performance (O(n) scans under
+write lock, per-call allocations), resource leaks/goroutines beyond a
+grep-level check of `domain_lifecycle.go` (no goroutines/timers found
+there), and a full re-read of `UpdateElasticsearchDomainConfig`'s
+merge-vs-replace semantics (prior passes already audited this in depth;
+no local drift found via `git diff <last_audit_commit>..HEAD -- \
+services/elasticsearch/domain_config.go`).
+
+## 2026-09-07 pass: gopherstack-8h57 re-verified as already fixed
+
+`gopherstack-8h57` re-filed the AddTags/RemoveTags discarded-error bug from
+the 2026-08-31 sweep's deferral note above, without noticing the note's own
+next section (2026-09-04 pass, `gopherstack-to9j`) had already fixed it.
+`handler_tags.go` at HEAD does not discard either error:
+
+```go
+if addErr := h.Backend.AddTags(ctx, req.ARN, tagMap); addErr != nil {
+	h.writeError(r, w, http.StatusBadRequest, "ValidationException", addErr.Error())
+	return
+}
+```
+
+and the equivalent `removeErr` check in `handleRemoveTags`. `git log` on the
+file confirms this: commit `cff501069` (2026-09-04) is already an ancestor
+of the current branch tip.
+
+Re-ran the declared-error-set extraction (`awsRestjson1_deserializeOpError<Op>`
+EqualFold cascade, per this service's older SDK shape; the pattern returns a
+list here, not an empty match, confirming it still applies):
+
+```
+AddTags:    "UnknownError" "BaseException" "InternalException" "LimitExceededException" "ValidationException"
+RemoveTags: "UnknownError" "BaseException" "InternalException" "ValidationException"
+```
+
+Neither declares `ResourceNotFoundException` -- confirms `ValidationException`
+(400) remains the right mapping, unchanged from the 2026-09-04 fix.
+
+Re-verified by neutering each guard independently (reverting to
+`_ = h.Backend.AddTags(...)` / `_ = h.Backend.RemoveTags(...)`, one at a
+time): both compile and both make
+`TestElasticsearchHandler_AddRemoveTags_UnknownARN`'s corresponding subtest
+fail with `expected: 400, actual: 200`, then restored to HEAD (`diff` against
+`git show HEAD:services/elasticsearch/handler_tags.go` confirmed a clean
+restore). Existing coverage already meets the full standard: unknown-ARN
+gets 400/ValidationException for both ops
+(`TestElasticsearchHandler_AddRemoveTags_UnknownARN`), and an existing
+domain's AddTags/RemoveTags still succeeds with the tags readable back via a
+subsequent ListTags (`TestElasticsearchHandler_Tags`,
+`add_and_list_tags`/`remove_tag` subtests). No pre-existing test asserted
+200 for the unknown-domain case -- nothing was pinning the old bug.
+
+`handleListDomainNames`'s `if err != nil { continue }` (per-name
+`DescribeDomain` inside `ListDomainNames`) is unchanged and is a distinct
+case, decided separately: a name can only reach that loop by first coming
+back from `Backend.ListDomainNames`, so the only way `DescribeDomain`
+subsequently 404s is a delete racing between the two calls in the same
+request -- not a caller naming a domain that never existed. Skipping it
+(omitting the vanished entry) is defensible AWS-shaped behavior for a
+list-then-describe race, not the same bug as AddTags/RemoveTags discarding
+an error for an ARN that never resolved. No change made.
+
+No code changed this pass -- `gopherstack-8h57` is a duplicate of the
+already-shipped `gopherstack-to9j` fix.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/elasticsearch/...`,
+`GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/elasticsearch/...` --
+both clean (see command output in the issue's closing report).

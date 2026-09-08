@@ -129,32 +129,46 @@ func TestListTextTranslationJobs(t *testing.T) {
 	assert.Len(t, jobs, 3)
 }
 
-// TestStopTextTranslationJob_StateGuard verifies that StopTextTranslationJob
-// rejects jobs that are not in a stoppable state. AWS returns InvalidRequestException
-// for stop attempts on STOP_REQUESTED jobs.
-func TestStopTextTranslationJob_StateGuard(t *testing.T) {
+// TestStopTextTranslationJob_Idempotent replaces the former
+// TestStopTextTranslationJob_StateGuard, which asserted that stopping an
+// already STOP_REQUESTED job returns InvalidRequestException. That was
+// wrong: StopTextTranslationJob's modeled error set is
+// ResourceNotFoundException, TooManyRequestsException, and
+// InternalServerException only -- no InvalidRequestException or
+// InvalidParameterValueException at all
+// (aws-sdk-go-v2/service/translate@v1.36.4's
+// awsAwsjson11_deserializeOpErrorStopTextTranslationJob) -- so a job that
+// isn't stoppable is not a client error the real operation can raise. Stop
+// is idempotent: calling it on a job that is not IN_PROGRESS or SUBMITTED
+// just reports the job's current status back, unchanged.
+func TestStopTextTranslationJob_Idempotent(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		setup    func(t *testing.T, h *translate.Handler, jobID string)
-		name     string
-		wantType string
-		wantCode int
+		setup      func(t *testing.T, h *translate.Handler, jobID string)
+		name       string
+		wantStatus string
 	}{
 		{
-			name:     "stop IN_PROGRESS job succeeds",
-			setup:    func(_ *testing.T, _ *translate.Handler, _ string) {},
-			wantCode: http.StatusOK,
-		},
-		{
-			name: "stop STOP_REQUESTED job returns InvalidRequestException",
+			name:       "already_stop_requested",
+			wantStatus: "STOP_REQUESTED",
 			setup: func(t *testing.T, h *translate.Handler, jobID string) {
 				t.Helper()
 				rec := doRequest(t, h, "StopTextTranslationJob", map[string]any{"JobId": jobID})
 				require.Equal(t, http.StatusOK, rec.Code)
 			},
-			wantCode: http.StatusBadRequest,
-			wantType: "InvalidRequestException",
+		},
+		{
+			name:       "already_completed",
+			wantStatus: "COMPLETED",
+			setup: func(t *testing.T, h *translate.Handler, jobID string) {
+				t.Helper()
+				// SUBMITTED -> IN_PROGRESS -> COMPLETED (advanceJob moves one
+				// step per DescribeTextTranslationJob poll).
+				doRequest(t, h, "DescribeTextTranslationJob", map[string]any{"JobId": jobID})
+				rec := doRequest(t, h, "DescribeTextTranslationJob", map[string]any{"JobId": jobID})
+				require.Equal(t, http.StatusOK, rec.Code)
+			},
 		},
 	}
 
@@ -167,12 +181,10 @@ func TestStopTextTranslationJob_StateGuard(t *testing.T) {
 			tc.setup(t, h, jobID)
 
 			rec := doRequest(t, h, "StopTextTranslationJob", map[string]any{"JobId": jobID})
-			assert.Equal(t, tc.wantCode, rec.Code)
-			if tc.wantType != "" {
-				var body map[string]string
-				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
-				assert.Equal(t, tc.wantType, body["__type"])
-			}
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			m := unmarshalJSON(t, rec.Body.Bytes())
+			assert.Equal(t, tc.wantStatus, m["JobStatus"])
 		})
 	}
 }

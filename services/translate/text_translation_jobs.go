@@ -69,13 +69,17 @@ func (b *InMemoryBackend) StopTextTranslationJob(jobID string) (*TranslationJob,
 		return nil, fmt.Errorf("%w: job %q not found", ErrNotFound, jobID)
 	}
 
-	if job.JobStatus != jobStatusInProgress && job.JobStatus != jobStatusSubmitted {
-		return nil, fmt.Errorf("%w: job %q is not stoppable (status: %s)", ErrValidation, jobID, job.JobStatus)
+	// StopTextTranslationJob models no InvalidRequestException or
+	// InvalidParameterValueException at all -- only ResourceNotFoundException,
+	// TooManyRequestsException, and InternalServerException
+	// (deserializers.go's awsAwsjson11_deserializeOpErrorStopTextTranslationJob)
+	// -- so a job that isn't stoppable is not a client error: Stop is
+	// idempotent and just reports the job's current state back unchanged.
+	if job.JobStatus == jobStatusInProgress || job.JobStatus == jobStatusSubmitted {
+		job.stopRequested = true
+		job.JobStatus = jobStatusStopRequested
+		job.EndAt = time.Now().UTC()
 	}
-
-	job.stopRequested = true
-	job.JobStatus = jobStatusStopRequested
-	job.EndAt = time.Now().UTC()
 
 	return job, nil
 }

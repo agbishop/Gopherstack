@@ -32,6 +32,13 @@ var (
 	// ErrAccessRequestNotFound is returned when GetAccessToken is called with
 	// an AccessRequestId that was never created by StartAccessRequest.
 	ErrAccessRequestNotFound = errors.New("ResourceNotFoundException")
+	// ErrPatchBaselineInUse is returned by DeletePatchBaseline when the
+	// baseline is still registered to one or more patch groups.
+	// ResourceInUseException is DeletePatchBaseline's own declared exception
+	// for exactly this case (ssm@v1.73.4 deserializers.go), matching the API
+	// reference doc comment: error returned if an attempt is made to delete
+	// a patch baseline that is registered for a patch group.
+	ErrPatchBaselineInUse = errors.New("ResourceInUseException")
 )
 var (
 	ErrResourceDataSyncNotFound    = errors.New("ResourceDataSyncNotFoundException")
@@ -67,4 +74,19 @@ var (
 	// InvalidResourceId for this, not the per-resource NotFound sentinel
 	// (e.g. ErrParameterNotFound) that GetParameter/PutParameter use.
 	ErrInvalidResourceID = errors.New("InvalidResourceId")
+	// ErrParameterNamePattern is returned by PutParameter when Name fails its
+	// length/character/reserved-prefix/hierarchy checks. ParameterPatternMismatchException
+	// is PutParameter's own declared exception for this
+	// (ssm@v1.73.4 deserializers.go:13901), not the generic ValidationException.
+	ErrParameterNamePattern = errors.New("ParameterPatternMismatchException")
+	// ErrUnsupportedParameterType is returned by PutParameter when Type isn't
+	// String, StringList, or SecureString. UnsupportedParameterType is
+	// PutParameter's own declared exception for this
+	// (ssm@v1.73.4 deserializers.go:13910).
+	ErrUnsupportedParameterType = errors.New("UnsupportedParameterType")
+	// ErrInvalidAllowedPattern is returned by PutParameter when AllowedPattern
+	// is malformed or Value doesn't match it. InvalidAllowedPatternException is
+	// PutParameter's own declared exception for this
+	// (ssm@v1.73.4 deserializers.go:13880).
+	ErrInvalidAllowedPattern = errors.New("InvalidAllowedPatternException")
 )

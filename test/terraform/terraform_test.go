@@ -2449,7 +2449,7 @@ func TestTerraform_ResourceGroups(t *testing.T) {
 				t.Helper()
 				client := createResourceGroupsClient(t)
 				out, err := client.GetGroup(ctx, &resourcegroupssvc.GetGroupInput{
-					GroupName: aws.String(vars["GroupName"].(string)),
+					Group: aws.String(vars["GroupName"].(string)),
 				})
 				require.NoError(t, err, "GetGroup should succeed after terraform apply")
 				require.NotNil(t, out.Group)

@@ -303,6 +303,9 @@ func (b *InMemoryBackend) PublishRecipe(ctx context.Context, name, description s
 // UpdateRecipe modifies the definition of the LATEST_WORKING version only,
 // matching aws-sdk-go-v2/service/databrew's UpdateRecipe doc comment;
 // published version snapshots are immutable once created by PublishRecipe.
+// Steps is only overwritten when non-empty: UpdateRecipeInput's Steps member
+// has no "This member is required" marker (only Name does), so a caller
+// updating just Description must not have their existing Steps clobbered.
 func (b *InMemoryBackend) UpdateRecipe(
 	ctx context.Context,
 	name, description string,
@@ -318,7 +321,9 @@ func (b *InMemoryBackend) UpdateRecipe(
 	if description != "" {
 		r.Description = description
 	}
-	r.Steps = steps
+	if len(steps) > 0 {
+		r.Steps = steps
+	}
 	r.LastModifiedDate = float64(time.Now().Unix())
 
 	return nil
@@ -365,6 +370,12 @@ func (b *InMemoryBackend) DeleteRecipeVersion(ctx context.Context, name, version
 				ErrValidation, len(versions[name]),
 			)
 		}
+		if p := b.recipeProjectName(region, name); p != "" {
+			return fmt.Errorf("%w: LATEST_WORKING of recipe %q is used by project %q", ErrConflict, name, p)
+		}
+		if j, used := b.recipeVersionUsedByJob(region, name, version); used {
+			return fmt.Errorf("%w: recipe %q version %q is used by job %q", ErrConflict, name, version, j)
+		}
 		b.recipesTable(region).Delete(name)
 		delete(versions, name)
 
@@ -375,9 +386,30 @@ func (b *InMemoryBackend) DeleteRecipeVersion(ctx context.Context, name, version
 	if idx == -1 {
 		return ErrNotFound
 	}
+	if j, used := b.recipeVersionUsedByJob(region, name, version); used {
+		return fmt.Errorf("%w: recipe %q version %q is used by job %q", ErrConflict, name, version, j)
+	}
 	versions[name] = append(versions[name][:idx], versions[name][idx+1:]...)
 
 	return nil
+}
+
+// recipeVersionUsedByJob reports whether a job currently references name at
+// exactly version via its RecipeReference, and if so, that job's name.
+// aws-sdk-go-v2/service/databrew's BatchDeleteRecipeVersion doc comment lists
+// "A version is being used by a job" as a documented delete-blocking
+// condition. Callers must hold at least b.mu.RLock.
+func (b *InMemoryBackend) recipeVersionUsedByJob(region, name, version string) (string, bool) {
+	t := b.jobsTable(region)
+	for _, k := range snapshotKeys(t, jobKeyFn) {
+		j, ok := t.Get(k)
+		if ok && j.RecipeReference != nil && j.RecipeReference.Name == name &&
+			j.RecipeReference.RecipeVersion == version {
+			return j.Name, true
+		}
+	}
+
+	return "", false
 }
 
 // recipeVersionIndex returns the index of version within versions, or -1.
@@ -466,6 +498,18 @@ func (b *InMemoryBackend) batchDeleteOneRecipeVersion(
 				ErrorMessage: "LATEST_WORKING cannot be deleted while other versions exist",
 			}, true
 		}
+		if p := b.recipeProjectName(region, name); p != "" {
+			return RecipeVersionErrorDetail{
+				RecipeVersion: version, ErrorCode: errCodeConflict,
+				ErrorMessage: fmt.Sprintf("LATEST_WORKING is being used by project %q", p),
+			}, true
+		}
+		if j, used := b.recipeVersionUsedByJob(region, name, version); used {
+			return RecipeVersionErrorDetail{
+				RecipeVersion: version, ErrorCode: errCodeConflict,
+				ErrorMessage: fmt.Sprintf("version is being used by job %q", j),
+			}, true
+		}
 		b.recipesTable(region).Delete(name)
 		delete(versions, name)
 
@@ -477,6 +521,12 @@ func (b *InMemoryBackend) batchDeleteOneRecipeVersion(
 		return RecipeVersionErrorDetail{
 			RecipeVersion: version, ErrorCode: errCodeResourceNotFound,
 			ErrorMessage: fmt.Sprintf("Recipe version %s not found", version),
+		}, true
+	}
+	if j, used := b.recipeVersionUsedByJob(region, name, version); used {
+		return RecipeVersionErrorDetail{
+			RecipeVersion: version, ErrorCode: errCodeConflict,
+			ErrorMessage: fmt.Sprintf("version is being used by job %q", j),
 		}, true
 	}
 	versions[name] = append(versions[name][:idx], versions[name][idx+1:]...)

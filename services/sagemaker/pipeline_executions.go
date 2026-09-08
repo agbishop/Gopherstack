@@ -26,6 +26,7 @@ type PipelineExecutionStep struct {
 }
 
 const (
+	startTransitionDelay = 200 * time.Millisecond // delay for started execution to succeed
 	retryTransitionDelay = 200 * time.Millisecond // delay for retry execution to succeed
 	stopTransitionDelay  = 100 * time.Millisecond // delay for execution to stop
 )
@@ -106,7 +107,8 @@ func (b *InMemoryBackend) RetryPipelineExecution(
 		b.mu.Lock("RetryPipelineExecution.goroutine")
 		defer b.mu.Unlock()
 
-		if exec, exists := b.pipelineExecutionsStore(region).Get(newArn); exists {
+		if exec, exists := b.pipelineExecutionsStore(region).Get(newArn); exists &&
+			exec.PipelineExecutionStatus == pipelineStatusExecuting {
 			exec.PipelineExecutionStatus = pipelineStatusSucceeded
 		}
 	})

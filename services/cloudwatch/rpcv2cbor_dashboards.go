@@ -40,8 +40,7 @@ func (h *Handler) cborPutDashboard(input cbor.Map, c *echo.Context) error {
 
 	messages, err := h.Backend.PutDashboard(name, body)
 	if err != nil {
-		var valErr *DashboardValidationError
-		if errors.As(err, &valErr) {
+		if valErr, ok := errors.AsType[*DashboardValidationError](err); ok {
 			return h.cborDashboardValidationError(c, valErr.Messages)
 		}
 

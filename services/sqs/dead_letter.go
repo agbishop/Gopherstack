@@ -201,17 +201,24 @@ func (b *InMemoryBackend) ListDeadLetterSourceQueues(
 
 // tryRouteToDLQ moves msg to the DLQ if it exceeds MaxReceiveCount.
 // Returns true if the message was moved. Caller must hold q.mu.
+//
+// TryLock, not Lock: AWS accepts a RedrivePolicy naming q itself, or an
+// AB-BA cycle, and q.dlq == q would self-deadlock the non-reentrant q.mu.
+// On contention the move is skipped; the message stays visible and is
+// retried on the next receive or janitor sweep.
 func tryRouteToDLQ(q *Queue, msg *Message, now time.Time) bool {
 	if q.MaxReceiveCount > 0 && q.dlq != nil && msg.ApproximateReceiveCount >= q.MaxReceiveCount {
+		if !q.dlq.mu.TryLock() {
+			return false
+		}
+		defer q.dlq.mu.Unlock()
+
 		msg.ReceiptHandle = ""
 
 		if msg.Attributes == nil {
 			msg.Attributes = make(map[string]string, 1)
 		}
 		msg.Attributes[attrDeadLetterQueueSourceArn] = q.Attributes[attrQueueArn]
-
-		q.dlq.mu.Lock()
-		defer q.dlq.mu.Unlock()
 
 		q.dlq.messages = append(q.dlq.messages, msg)
 		if now.Before(msg.VisibleAt) {

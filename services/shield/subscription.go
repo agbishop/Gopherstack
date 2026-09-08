@@ -87,6 +87,9 @@ func (b *InMemoryBackend) DeleteSubscription() error {
 }
 
 // UpdateSubscription updates the auto-renew setting of the active subscription.
+// An empty autoRenew leaves the existing value unchanged, per api_op_UpdateSubscription.go's
+// doc comment: if the request does not include a value for AutoRenew, the existing value
+// remains unchanged.
 func (b *InMemoryBackend) UpdateSubscription(autoRenew string) error {
 	b.mu.Lock("UpdateSubscription")
 	defer b.mu.Unlock()
@@ -95,7 +98,9 @@ func (b *InMemoryBackend) UpdateSubscription(autoRenew string) error {
 		return fmt.Errorf("%w: no active subscription found", ErrSubscriptionNotFound)
 	}
 
-	b.subscription.AutoRenew = autoRenew
+	if autoRenew != "" {
+		b.subscription.AutoRenew = autoRenew
+	}
 
 	return nil
 }

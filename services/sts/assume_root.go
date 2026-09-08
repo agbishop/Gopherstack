@@ -120,6 +120,7 @@ func (b *InMemoryBackend) AssumeRoot(input *AssumeRootInput) (*AssumeRootRespons
 		SessionToken:    creds.SessionToken,
 		AssumedRoleID:   account + ":" + rootSessionName,
 		SourceIdentity:  sourceIdentity,
+		IsAssumedRole:   true,
 	}
 
 	b.storeSession(session)

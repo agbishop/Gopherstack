@@ -162,6 +162,13 @@ func (h *Handler) handleListBuildsForProject(
 		return nil, err
 	}
 
+	if in.SortOrder != "" && len(ids) > defaultListPageSize {
+		return nil, fmt.Errorf(
+			"%w: sortOrder cannot be set when the project has more than %d builds",
+			ErrValidation, defaultListPageSize,
+		)
+	}
+
 	pg, err := paginateIDs(ids, in.NextToken, in.SortOrder, 0)
 	if err != nil {
 		return nil, err

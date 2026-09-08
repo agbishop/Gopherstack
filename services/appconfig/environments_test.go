@@ -44,6 +44,6 @@ func TestBackend_DeleteEnvironment_NotFound(t *testing.T) {
 	t.Parallel()
 
 	b := appconfig.NewInMemoryBackend("123456789012", "us-east-1")
-	err := b.DeleteEnvironment("app-1", "env-1")
+	err := b.DeleteEnvironment("app-1", "env-1", "")
 	require.Error(t, err)
 }

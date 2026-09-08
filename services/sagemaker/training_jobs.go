@@ -164,6 +164,13 @@ func (b *InMemoryBackend) DeleteTrainingJob(ctx context.Context, name string) er
 		return fmt.Errorf("%w: training job %q not found", ErrTrainingJobNotFound, name)
 	}
 
+	if tj.TrainingJobStatus == trainingJobStatusInProgress || tj.TrainingJobStatus == notebookStatusStopping {
+		return fmt.Errorf(
+			"%w: training job %q cannot be deleted while status is %q",
+			ErrValidation, name, tj.TrainingJobStatus,
+		)
+	}
+
 	arnIdx := b.trainingJobARNIndexStore(region)
 	delete(arnIdx, tj.TrainingJobArn)
 	store := b.trainingJobsStore(region)

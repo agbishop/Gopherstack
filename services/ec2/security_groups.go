@@ -2,6 +2,7 @@ package ec2
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 )
 
@@ -626,6 +627,50 @@ func (b *InMemoryBackend) CreateSecurityGroup(
 	return sg, nil
 }
 
+// securityGroupDependencyViolationLocked returns a DependencyViolation error
+// if sg is still attached to an instance or referenced by another security
+// group's rules in the same VPC. Must be called with b.mu held.
+func (b *InMemoryBackend) securityGroupDependencyViolationLocked(sg *SecurityGroup) error {
+	for _, inst := range b.instances.All() {
+		if inst.State == StateTerminated {
+			continue
+		}
+
+		if slices.Contains(inst.SecurityGroups, sg.ID) {
+			return fmt.Errorf(
+				"%w: the security group %s has dependencies (instance %s) and cannot be deleted",
+				ErrDependencyViolation, sg.ID, inst.ID,
+			)
+		}
+	}
+
+	for _, other := range b.securityGroups.All() {
+		if other.ID == sg.ID || other.VPCID != sg.VPCID {
+			continue
+		}
+
+		if securityGroupRulesReference(other.IngressRules, sg.ID) ||
+			securityGroupRulesReference(other.EgressRules, sg.ID) {
+			return fmt.Errorf(
+				"%w: the security group %s has dependencies (security group %s) and cannot be deleted",
+				ErrDependencyViolation, sg.ID, other.ID,
+			)
+		}
+	}
+
+	return nil
+}
+
+func securityGroupRulesReference(rules []SecurityGroupRule, sgID string) bool {
+	for _, rule := range rules {
+		if rule.SourceGroupID == sgID {
+			return true
+		}
+	}
+
+	return false
+}
+
 // DeleteSecurityGroup removes a security group by ID.
 func (b *InMemoryBackend) DeleteSecurityGroup(id string) error {
 	b.mu.Lock("DeleteSecurityGroup")
@@ -636,9 +681,14 @@ func (b *InMemoryBackend) DeleteSecurityGroup(id string) error {
 		return fmt.Errorf("%w: %s", ErrSecurityGroupNotFound, id)
 	}
 
+	if err := b.securityGroupDependencyViolationLocked(sg); err != nil {
+		return err
+	}
+
 	b.deindexSGLocked(id, sg.VPCID)
 	b.securityGroups.Delete(id)
 	delete(b.tags, id)
+	delete(b.sgVpcAssociations, id)
 
 	return nil
 }

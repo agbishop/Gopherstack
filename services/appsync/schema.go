@@ -68,15 +68,48 @@ func (b *InMemoryBackend) GetSchemaCreationStatus(apiID string) (*Schema, error)
 	return &cp, nil
 }
 
-// GetIntrospectionSchema returns the schema SDL for an API.
-func (b *InMemoryBackend) GetIntrospectionSchema(apiID, _ string) ([]byte, error) {
+// GetIntrospectionSchema returns the schema for an API in the requested
+// format. format must be SDL or JSON (types.OutputType, aws-sdk-go-v2
+// appsync@v1.56.4 types/enums.go:535-541); an empty format defaults to SDL,
+// matching the handler's own default for an omitted query parameter. Any
+// other value is rejected the same way CreateType already rejects an
+// unrecognized TypeDefinitionFormat (isValidTypeFormat).
+//
+// includeDirectives controls only the JSON output's top-level "directives"
+// list. SDL is always returned as the raw stored text verbatim -- honoring
+// includeDirectives there would mean re-serializing the schema instead of
+// returning what was stored, and is not attempted.
+func (b *InMemoryBackend) GetIntrospectionSchema(apiID, format string, includeDirectives bool) ([]byte, error) {
 	b.mu.RLock("GetIntrospectionSchema")
 	defer b.mu.RUnlock()
+
+	if format == "" {
+		format = string(TypeFormatSDL)
+	}
+
+	if !isValidTypeFormat(TypeDefinitionFormat(format)) {
+		// Landmine (gopherstack-w4kf): none of this op's declared errors
+		// (GraphQLSchemaException/InternalFailureException/NotFoundException/
+		// UnauthorizedException) fits a malformed format value -- BadRequestException
+		// stays wrong on the wire here; no safe swap found.
+		return nil, fmt.Errorf("%w: invalid format %q, must be SDL or JSON", ErrValidation, format)
+	}
 
 	schema, ok := b.schemas.Get(apiID)
 	if !ok {
 		return nil, fmt.Errorf("%w: schema not found for api %s", ErrNotFound, apiID)
 	}
 
-	return []byte(schema.SDL), nil
+	if format == string(TypeFormatSDL) {
+		return []byte(schema.SDL), nil
+	}
+
+	if schema.parsedSchema == nil {
+		return nil, fmt.Errorf(
+			"%w: schema for api %s has no valid parsed schema for JSON introspection",
+			ErrGraphQLSchemaInvalid, apiID,
+		)
+	}
+
+	return marshalIntrospectionSchema(schema.parsedSchema, includeDirectives)
 }

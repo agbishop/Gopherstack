@@ -74,6 +74,11 @@ const (
 	ipAddressTypeDualStack = "DUAL_STACK"
 )
 
+const (
+	resourceIDTypeLong  = "LONG_ID"
+	resourceIDTypeShort = "SHORT_ID"
+)
+
 // InMemoryBackend is the in-memory store for EFS resources.
 //
 // The four resource collections below (fileSystems, mountTargets,
@@ -129,8 +134,12 @@ type InMemoryBackend struct {
 
 	accountPreferences AccountPreferences
 	mu                 *lockmetrics.RWMutex
-	accountID          string
-	region             string
+	// ec2Resolver validates CreateMountTarget subnets against the real
+	// services/ec2 backend -- see EC2Resolver's doc comment (crossservice.go).
+	// nil by default (unwired), which leaves subnet placement unvalidated.
+	ec2Resolver EC2Resolver
+	accountID   string
+	region      string
 	// fsActivationDelay controls how long CreateFileSystem waits before transitioning
 	// a file system from "creating" to "available". Zero (default) means the transition
 	// is synchronous and immediate, matching legacy behaviour. A non-zero value enables
@@ -141,7 +150,7 @@ type InMemoryBackend struct {
 // NewInMemoryBackend creates a new in-memory EFS backend.
 func NewInMemoryBackend(accountID, region string) *InMemoryBackend {
 	b := &InMemoryBackend{
-		accountPreferences: AccountPreferences{ResourceIDType: "LONG_ID"},
+		accountPreferences: AccountPreferences{ResourceIDType: resourceIDTypeLong},
 		accountID:          accountID,
 		region:             region,
 		mu:                 lockmetrics.New("efs"),
@@ -284,10 +293,21 @@ func (b *InMemoryBackend) Reset() {
 	b.accessPointsByClientToken.Reset()
 
 	b.initRegionMaps()
+	b.accountPreferences = AccountPreferences{ResourceIDType: resourceIDTypeLong}
 }
 
 // Region returns the AWS region this backend is configured for.
 func (b *InMemoryBackend) Region() string { return b.region }
+
+// SetEC2Resolver wires the backend to validate CreateMountTarget subnets
+// against the real services/ec2 backend -- see EC2Resolver's doc comment.
+// Called from cli.go's wireComputeAndObservabilityIntegrations.
+func (b *InMemoryBackend) SetEC2Resolver(r EC2Resolver) {
+	b.mu.Lock("SetEC2Resolver")
+	defer b.mu.Unlock()
+
+	b.ec2Resolver = r
+}
 
 // requireFileSystem returns ErrNotFound if fileSystemID doesn't exist in region.
 // Callers use it to guard the FileSystemId-filter path of a Describe* op: real

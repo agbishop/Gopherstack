@@ -25,6 +25,8 @@ const (
 	instanceStatusStopped   = "stopped"
 	instanceStatusRebooting = "rebooting"
 
+	clusterStatusFailingOver = "failing-over"
+
 	subscriptionStatusActive           = "active"
 	backtrackStatusApplying            = "applying"
 	blueGreenDeploymentStatusAvailable = "available"
@@ -59,6 +61,13 @@ const (
 type VpcSecurityGroupMembership struct {
 	VpcSecurityGroupID string `json:"vpcSecurityGroupId"`
 	Status             string `json:"status"`
+}
+
+// DBSecurityGroupMembership represents a classic (EC2-Classic) DB security
+// group association on a DB instance.
+type DBSecurityGroupMembership struct {
+	DBSecurityGroupName string `json:"dbSecurityGroupName"`
+	Status              string `json:"status"`
 }
 
 // DBClusterMember represents a member instance in a DB cluster.
@@ -129,6 +138,7 @@ type DBInstance struct {
 	EngineLifecycleSupport            string                       `json:"engineLifecycleSupport,omitempty"`
 	EnabledCloudwatchLogsExports      []string                     `json:"enabledCloudwatchLogsExports,omitempty"`
 	VpcSecurityGroups                 []VpcSecurityGroupMembership `json:"vpcSecurityGroups,omitempty"`
+	DBSecurityGroups                  []DBSecurityGroupMembership  `json:"dbSecurityGroups,omitempty"`
 	PendingModifiedValues             *PendingModifiedValues       `json:"pendingModifiedValues,omitempty"`
 	ReadReplicaIdentifiers            []string                     `json:"readReplicaIdentifiers,omitempty"`
 	Port                              int                          `json:"port"`
@@ -267,10 +277,12 @@ type DBCluster struct {
 	NetworkType                     string                            `json:"networkType,omitempty"`
 	ReaderEndpoint                  string                            `json:"readerEndpoint,omitempty"`
 	Endpoint                        string                            `json:"endpoint"`
+	ReplicationSourceIdentifier     string                            `json:"replicationSourceIdentifier,omitempty"`
 	EnabledCloudwatchLogsExports    []string                          `json:"enabledCloudwatchLogsExports,omitempty"`
 	ReaderAvailabilityZones         []string                          `json:"readerAvailabilityZones,omitempty"`
 	AvailabilityZones               []string                          `json:"availabilityZones,omitempty"`
 	DBClusterMembers                []DBClusterMember                 `json:"dbClusterMembers,omitempty"`
+	ReadReplicaIdentifiers          []string                          `json:"readReplicaIdentifiers,omitempty"`
 	BacktrackWindow                 int64                             `json:"backtrackWindow,omitempty"`
 	Port                            int                               `json:"port"`
 	BackupRetentionPeriod           int                               `json:"backupRetentionPeriod"`
@@ -634,7 +646,9 @@ type DBInstanceOptions struct {
 	KmsKeyID                         string
 	DBClusterIdentifier              string
 	EngineLifecycleSupport           string
+	DBSubnetGroupName                string
 	VpcSecurityGroupIDs              []string
+	DBSecurityGroupNames             []string
 	EnabledCloudwatchLogsExports     []string
 	BackupRetentionPeriod            int
 	Iops                             int
@@ -673,6 +687,7 @@ type DBClusterOptions struct {
 	StorageType                  string
 	NetworkType                  string
 	EngineLifecycleSupport       string
+	ReplicationSourceIdentifier  string
 	EnabledCloudwatchLogsExports []string
 	AvailabilityZones            []string
 	BacktrackWindow              int64

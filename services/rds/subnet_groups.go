@@ -1,6 +1,10 @@
 package rds
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/blackbirdworks/gopherstack/pkgs/strs"
+)
 
 // CreateDBSubnetGroup creates a DB subnet group.
 func (b *InMemoryBackend) CreateDBSubnetGroup(
@@ -75,6 +79,13 @@ func (b *InMemoryBackend) DeleteDBSubnetGroup(name string) error {
 
 	if _, exists := b.subnetGroups.Get(name); !exists {
 		return fmt.Errorf("%w: subnet group %s not found", ErrSubnetGroupNotFound, name)
+	}
+
+	for _, inst := range b.instances.All() {
+		if strs.Equal(inst.DBSubnetGroupName, name) {
+			return fmt.Errorf("%w: subnet group %s is in use by DB instance %s",
+				ErrSubnetGroupInUse, name, inst.DBInstanceIdentifier)
+		}
 	}
 
 	b.subnetGroups.Delete(name)

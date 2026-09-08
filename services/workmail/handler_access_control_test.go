@@ -89,6 +89,30 @@ func TestWorkMail_AccessControlRules(t *testing.T) {
 	}
 }
 
+// TestDeleteAccessControlRule_NonExistent locks the real WorkMail wire
+// behavior (aws-sdk-go-v2 api_op_DeleteAccessControlRule.go doc: "Deleting
+// already deleted and non-existing rules does not produce an error. In those
+// cases, the service sends back an HTTP 200 response with an empty HTTP
+// body."). DeleteAccessControlRule's own error model
+// (awsAwsjson11_deserializeOpErrorDeleteAccessControlRule) also declares no
+// EntityNotFoundException at all, so a not-found error here can never be a
+// real wire response either way.
+func TestDeleteAccessControlRule_NonExistent(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	orgID := createTestOrg(t, h, "acr-missing-org")
+
+	rec := doOp(t, h, "DeleteAccessControlRule", fmt.Sprintf(
+		`{"OrganizationId":%q,"Name":"never-existed"}`, orgID,
+	))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	m := decodeJSON(t, rec)
+	_, hasType := m["__type"]
+	assert.False(t, hasType, "expected empty success body, got error type %v", m["__type"])
+}
+
 func TestGetAccessControlEffect_RuleEvaluation(t *testing.T) {
 	t.Parallel()
 

@@ -83,7 +83,7 @@ ops:
   GetModelImportJob: {wire: ok, errors: ok, state: ok, persist: ok}
   ListModelImportJobs: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-uult: reused modelImportJobToOutput (the Get-shape converter) unscoped, leaking roleArn/modelDataSource/tags -- none of which types.ModelImportJobSummary declares (creationTime/jobArn/jobName/status/endTime/importedModelArn/importedModelName/lastModifiedTime only). Fixed with a dedicated modelImportJobToSummary. this pass: also fixed -- ListModelImportJobs() took no arguments at all, so statusEquals/nameContains/creationTimeAfter/creationTimeBefore/sortOrder/maxResults were all silently ignored. Now filters/sorts/paginates per ListModelImportJobsInput."}
   GetImportedModel: {wire: ok, errors: ok, state: ok, persist: n/a, note: "fixed — response invented a \"status\" field with no basis in the real GetImportedModelOutput shape (ImportedModel has no lifecycle status of its own), and used \"createdAt\" instead of the real \"creationTime\" key, while omitting the required modelArn/modelName/jobArn/jobName fields entirely. Now matches the real shape (modelArn, modelName, jobArn, jobName, creationTime, modelDataSource); the invented status field is deleted."}
-  ListImportedModels: {wire: ok, errors: ok, state: ok, persist: n/a, note: "same field-shape fix as GetImportedModel (per-item). Also fixed: previously took zero params and returned every imported model unfiltered/unpaginated; now supports nameContains + creationTimeAfter/Before + nextToken."}
+  ListImportedModels: {wire: ok, errors: ok, state: ok, persist: n/a, note: "same field-shape fix as GetImportedModel (per-item). Also fixed: previously took zero params and returned every imported model unfiltered/unpaginated; now supports nameContains + creationTimeAfter/Before + nextToken. FIXED 2026-09-06 (gopherstack-kkfs): maxResults (api_op_ListImportedModels.go:42-46, *int32, no client-side range validator anywhere in bedrock@v1.66.4's validators.go) was accepted nowhere -- the handler never parsed it and the backend always paginated at the fixed bedrockDefaultPageSize (100) via paginateBedrockSlice, same gap ListModelImportJobs had before its own fix above. Now backed by a new ListImportedModelsInput (mirroring ListModelImportJobsInput's shape minus StatusEquals/SortBy/SortOrder, which this op never modeled either before or after this fix) and paginate(), matching the sibling exactly. SortBy/SortOrder (real fields on ListImportedModelsInput, types.SortModelsBy/types.SortOrder) remain unmodeled -- out of scope, this op has always sorted CreationTime-ascending only; not a regression."}
   DeleteImportedModel: {wire: ok, errors: ok, state: ok, persist: n/a, note: "status code fixed 204 -> 200 for consistency with DeleteImportedModelOutput's empty (non-204-specified) real shape, matching this service's other verified-ok Delete ops."}
   CreateModelInvocationJob: {wire: fixed, errors: ok, state: ok, persist: ok, note: "was routed under the PLURAL \"/model-invocation-jobs\" path; real SDK uses the SINGULAR \"/model-invocation-job\" for Create/Get/Stop (List alone is plural). Completely unreachable by real clients before that fix. gopherstack-7ux2: the handler also silently dropped modelId/roleArn/inputDataConfig/outputDataConfig/clientRequestToken from the request body even though the backend already accepted them via CreateModelInvocationJobInput opts -- so Get/List could never honestly source them either. Now parses and stores all five."}
   GetModelInvocationJob: {wire: fixed, errors: ok, state: ok, persist: ok, note: "same singular-path fix as Create. gopherstack-7ux2: response omitted modelId/inputDataConfig/outputDataConfig/roleArn/submitTime, all five \"This member is required\" on the real GetModelInvocationJobOutput (bedrock@v1.66.4 api_op_GetModelInvocationJob.go), and emitted a \"creationTime\" key the real shape doesn't have at all (harmless to a real client, which discards unknown keys, but still wrong). Fixed via a shared modelInvocationJobToSummary converter: submitTime reuses the existing CreationTime domain field (no separate creationTime key on the wire), the other four are now sourced from the Create fix above."}
@@ -284,7 +284,13 @@ leaks: {status: clean, note: "no new goroutines, tickers, or unregistered maps i
   ticker was added. AgentsHandler.Reset() additionally resets
   resourcePolicyRevisionCounter now (the table itself was already covered by
   registry.ResetAll, but the standalone revision counter needed an explicit
-  reset alongside this method's other manually-listed counters)."}
+  reset alongside this method's other manually-listed counters).
+
+  FIXED (gopherstack-cq0z, 2026-09-06): DeleteAgent never cleared
+  agentTags[AgentArn] -- TagAgentResource/ListAgentResourceTags have no
+  existence check against the agent, so ListAgentResourceTags on a deleted
+  agent's own ARN still returned its tags, and agentTags is persisted
+  verbatim in Snapshot(). See TestAgentsHandler_DeleteAgent_ClearsTags."}
 
 ## 2026-08-21 (gopherstack-hjdd): snapshot-version guard, unbumped retype
 
@@ -562,3 +568,443 @@ Gates: `go build`, `go vet` (repo-wide, clean), `go test -race -count=1`,
 `golangci-lint run` (0 issues after one `golines -m 120` pass on the new
 test file) -- all clean on `./services/bedrock/...`. No new
 cyclop/gocyclo/gocognit/funlen nolints (0 in this package, unchanged).
+
+## 2026-09-06 ListImportedModels maxResults fix (gopherstack-kkfs)
+
+Verified against `bedrock@v1.66.4/api_op_ListImportedModels.go` before
+touching anything, per the issue's own instruction: `ListImportedModelsInput`
+does declare `MaxResults *int32` (line 46), alongside `NextToken`,
+`NameContains`, `CreationTimeAfter`/`CreationTimeBefore`, `SortBy`
+(`types.SortModelsBy`), `SortOrder` (`types.SortOrder`). `validators.go` has
+no `validateOpListImportedModelsInput` at all -- no client-side range check
+on `MaxResults`, same as every other List op in this service; a large or
+negative value is neither clamped nor rejected by the real SDK, so gopherstack
+doesn't invent that behavior either.
+
+The premise held: `ListImportedModels` (model_import_jobs.go) took four bare
+positional params (nameContains, creationTimeAfter, creationTimeBefore,
+nextToken), had no `MaxResults`/Input struct, and the handler
+(handler_model_import_jobs.go) never even read the `maxResults` query
+param -- it always paginated at the fixed `bedrockDefaultPageSize` (100) via
+`paginateBedrockSlice`. Exact same shape `ListModelImportJobs` had before its
+own earlier fix (see that op's entry above): its sibling was already
+Input-struct-backed (`ListModelImportJobsInput`), so this fix follows suit
+rather than inventing a new pattern -- added `ListImportedModelsInput`
+(models.go) mirroring `ListModelImportJobsInput` minus `StatusEquals`/
+`SortBy`/`SortOrder` (this op never modeled those, before or after; out of
+scope here -- it has always sorted CreationTime-ascending only, tie-broken
+by ImportedModelArn, and still does). The backend now threads
+`in.MaxResults`/`in.NextToken` through the existing `paginate()` helper
+(same one `ListModelImportJobs`/`ListEvaluationJobs`/etc. use) instead of
+`paginateBedrockSlice`, which defaults an absent/non-positive `MaxResults`
+to `bedrockDefaultPageSize` -- i.e. today's behavior is unchanged for an
+absent `maxResults` (still page-100-by-default, not literally unbounded,
+since that was already true before this fix), while an explicit smaller or
+larger value is now honored instead of silently ignored.
+
+Declared errors (`awk`+`grep` on `deserializeOpErrorListImportedModels`,
+deserializers.go): `UnknownError`, `AccessDeniedException`,
+`InternalServerException`, `ThrottlingException`, `ValidationException` --
+unchanged by this fix, no error-path behavior touched.
+
+Ordering stability: `TestListImportedModelsSortIsTotal`
+(pagination_sort_totality_test.go, pre-existing, updated only for the new
+call signature) already walks 105 tied-CreationTime items 30 times and
+confirms zero drops/duplicates/reordering across repeated calls; new
+`TestListImportedModels_MaxResults/ordering_is_stable_across_calls` adds a
+direct two-call comparison scoped to this fix.
+
+TESTS: `model_import_jobs_maxresults_test.go` (new) --
+`TestListImportedModels_MaxResults` covers `smaller_page_returns_exactly_that_many_plus_a_token`,
+`resuming_with_the_token_returns_the_remainder`, `absent_maxresults_still_returns_everything`,
+`ordering_is_stable_across_calls`. `handler_list_maxresults_test.go` gained a
+`ListImportedModels` table entry (HTTP-level maxResults=1 query-string
+check). Confirmed failing against the unmodified backend: hand-reverted
+`ListImportedModels`'s pagination call from `paginate(models, maxResults,
+nextToken)` back to `paginateBedrockSlice(models, nextToken)` (ignoring
+`in.MaxResults` entirely, matching the original bug) -- the two page-size
+subtests and the new handler-table entry failed exactly as predicted
+(`"...should have 2 item(s), but has 5"`, `"...should have 1 item(s), but
+has 3"`), while `absent_maxresults_still_returns_everything` and
+`ordering_is_stable_across_calls` still passed (correctly -- those aspects
+were never broken); restored, all gates re-run clean.
+
+Gates: `go build`, `go test -race -count=1 ./services/bedrock/...`,
+`golangci-lint run services/bedrock/...` -- 0 issues, all clean.
+
+## 2026-09-06 second-pass audit sweep (gopherstack-wg7i): 2 ghost-row bugs fixed, 3 filed
+
+Second pass over the four items the 2026-09-04 bedrock audit ran out of
+budget for: janitor-interval/completion-delay mismatch, goroutine/timer
+leaks, unbounded map growth, and a dedicated ghost-row sweep of
+guardrail-versions / knowledge-base-data-sources / agent-aliases.
+
+**Sweep 1 -- janitor interval vs completion delay: CLEAN.** Read
+bedrockruntime's PARITY.md first for the prior bug's shape (its `StartWorker`
+hardcoded a 1-hour tick against a 5s `defaultAsyncInvokeCompletionDelay`, so
+a real running server left jobs unadvanced for up to an hour). bedrock's
+`janitor.go` defines both `defaultJobCompletionDelay` and
+`defaultJanitorInterval` as the same literal (`5 * time.Second`) in one
+`const` block; `Handler.StartWorker` (handler.go) passes
+`defaultJanitorInterval` to `RunJanitor`, and every advancer that takes a
+delay (`AdvanceCustomizationJobStatuses`, `AdvanceCopyImportJobStatuses`,
+`AdvanceAdvancedPromptOptimizationJobStatuses`) is called from
+`runJanitorTick` with `defaultJobCompletionDelay` -- a single shared source
+of truth, not two independently hardcoded numbers. The other two advancers
+(`AdvanceProvisionedModelThroughputStatuses`, `AdvanceCustomModelDeploymentStatuses`)
+take no delay parameter at all -- they advance any resource in `Creating` on
+the very next tick, so there is no delay for an interval to outpace.
+
+**Sweep 2 -- goroutine and timer leaks: CLEAN.** Grepped
+`go func(|time.NewTicker|time.NewTimer|time.After(` across every non-test
+`.go` file in this package: exactly one hit, `handler.go`'s `StartWorker`
+goroutine, which calls `Backend.RunJanitor` and participates in this
+package's `service.BackgroundWorker`/`service.Shutdowner` convention --
+`Shutdown` cancels `janitorCancel` and blocks on `janitorDone` (or the
+passed-in ctx). `RunJanitor` builds a `pkgs/worker.Group` and calls
+`g.Ticker(...)`, which internally does `ticker := time.NewTicker(interval);
+defer ticker.Stop()` (pkgs/worker/group.go:91-92) and returns only after
+`<-ctx.Done()`; `RunJanitor` itself blocks on `<-ctx.Done()` then calls
+`g.Stop()`. No hand-rolled ticker, no unstoppable goroutine.
+
+**Sweep 3 -- unbounded map growth: 2 genuine findings, both fixed.** Walked
+`InMemoryBackend`'s per-resource maps (store.go) against every `Delete*`
+method:
+  - `agentVersions`/`agentVersionCounters` (map[string]\*store.Table /
+    map[string]int, keyed by agentID) and `agentCollaborators`
+    (map[string]\*store.Table, keyed by agentID) were never touched by
+    `DeleteAgent` -- only `agentsByName`/`agentTags` were pruned there
+    (gopherstack-cq0z, 2026-09-06, fixed the latter). **FIXED**: `DeleteAgent`
+    (agents.go) now deletes `agentVersionCounters[agentID]` outright and
+    calls `.Reset()` (not `delete()`, see the added code comment) on the
+    agent's `agentVersions`/`agentCollaborators` tables if present --
+    `Reset()` because `agentVersionsStore`/`agentCollaboratorsStore`
+    (store_setup.go) register each per-agent table under
+    `"agentVersions:"+agentID` in `b.registry` exactly once; deleting the
+    outer map entry would make a later call to either accessor (e.g. from
+    `persistence.go`'s Restore, which pre-registers every
+    (prefix, parentID) pair present in an incoming snapshot) call
+    `store.Register` on that same name again and panic (`store: table ...
+    already registered`, registry.go:46). This is also a sweep-4 ghost-row
+    fix, see below. Test: `TestDeleteAgent_ClearsVersionsAndCollaborators`
+    (ghost_row_wg7i_test.go).
+  - `agentTags` (map[string]map[string]string, keyed by an entirely
+    caller-supplied `resourceArn` string) backs the generic
+    `/tags/{resourceArn}` REST route (`dispatchTagRoutes`, handler_agents.go)
+    shared by every agent-domain resource type (agent, agent alias,
+    knowledge base, data source, flow, flow alias, prompt, ...).
+    `TagAgentResource` (agents.go) does zero existence validation against
+    `resourceArn` -- any string, including one that names no real resource,
+    creates a permanent entry. Only `DeleteAgent` prunes its own resource's
+    entry (`agentTags[ag.AgentArn]`, gopherstack-cq0z); `DeleteKnowledgeBase`,
+    `DeleteDataSource`, `DeleteFlow`, `DeleteFlowAlias`, `DeletePrompt`,
+    `DeleteAgentAlias`, `DeleteAgentActionGroup` prune none of theirs. **NOT
+    FIXED this pass** -- a correct fix needs either a resourceArn-existence
+    check at Tag-time or a prune call added to every taggable resource's
+    Delete* across ~7 files, wider than this pass's two-fix budget. Filing
+    for gopherstack to track separately.
+  - Also noticed but not independently fixed (same shape, smaller/rarer):
+    `flowVersions`/`flowVersionCounters` (keyed by flowID) and `flowAliases`
+    entries are never pruned by `DeleteFlow`; `promptVersions`/
+    `promptVersionCounters` (keyed by promptID) are never pruned by
+    `DeletePrompt`; `arpVersionCountByPolicy` (keyed by policyARN) and
+    `arpAnnotations`/`arpAnnotationSetHash`/`arpAnnotationsUpdatedAt` (keyed
+    by `policyARN+":"+buildWorkflowID`) are never pruned by
+    `DeleteAutomatedReasoningPolicy`/`deleteARPArtifacts` or
+    `DeleteAutomatedReasoningPolicyBuildWorkflow`. Filing as a follow-up
+    (same root cause as the agentTags finding: this backend's "delete the
+    parent, forget the child index" pattern recurs across flows/prompts/ARP,
+    not just agents). `ingestionJobs`/`agentKBAssociations`/`kbDocuments`
+    orphan the same way on `DeleteKnowledgeBase` -- see sweep 4.
+
+**Sweep 4 -- ghost-row ish ick on named parent-child relationships:**
+  - **Guardrail versions: CLEAN.** `DeleteGuardrail` (guardrails.go), when
+    called with no version (full delete), already ranges
+    `b.guardrailVersions` and deletes every `GuardrailID+":"+Version` entry
+    belonging to the guardrail being removed. Pre-existing, correct.
+  - **Knowledge-base data sources: BUG, FIXED.** `bedrockagent@v1.58.4
+    api_op_DeleteKnowledgeBase.go`'s doc comment: "Deletes a knowledge base.
+    Before deleting a knowledge base, you should disassociate the knowledge
+    base from any agents that it is associated with by making a
+    DisassociateAgentKnowledgeBase request." -- no cascade documented, but no
+    finding here rests on an invented cascade: `CreateDataSourceWithConfiguration`
+    (data_sources.go) already validates the parent KB exists at creation
+    time, so `GetDataSource`/`ListDataSources`/`UpdateDataSourceWithConfiguration`
+    silently *not* re-checking that the KB still exists is this backend's
+    own internal inconsistency, not a missing AWS-documented cascade. Before
+    the fix, `GetDataSource(kbID, dsID)` and `ListDataSources(kbID, ...)`
+    both kept returning a data source after its parent KB was deleted.
+    **FIXED**: `DeleteKnowledgeBase` (knowledge_bases.go) now ranges
+    `b.dataSources` and deletes every entry whose `KnowledgeBaseID` matches,
+    mirroring `DeleteGuardrail`'s existing pattern exactly. Test:
+    `TestDeleteKnowledgeBase_RemovesDataSources` (ghost_row_wg7i_test.go).
+    `ingestionJobs` and `kbDocuments` (also keyed off kbID) have the identical
+    gap and were deliberately left alone this pass -- filing separately
+    rather than widening this fix.
+  - **Agent aliases: CLEAN (by construction).** `DeleteAgent` (agents.go)
+    already refuses deletion outright (`ErrAlreadyExists`, "has active
+    aliases and cannot be deleted") whenever `b.agentAliases` has any row
+    for that agentID, so an agent can never be deleted out from under a
+    live alias -- there is no code path that orphans one. Noted in passing,
+    not fixed: gopherstack does not implement real AWS's
+    `DeleteAgentInput.SkipResourceInUseCheck` bool
+    (`bedrockagent@v1.58.4 api_op_DeleteAgent.go:36-39`) at all, so this
+    block can never be bypassed even when a real caller sets that flag --
+    a parity gap in the opposite direction (too strict, not a leak), out of
+    this audit's scope; filing separately.
+
+Files changed: `services/bedrock/knowledge_bases.go` (DeleteKnowledgeBase
+cascades to data sources), `services/bedrock/agents.go` (DeleteAgent clears
+agentVersionCounters and Resets agentVersions/agentCollaborators),
+`services/bedrock/ghost_row_wg7i_test.go` (new -- both regression tests,
+each confirmed failing against the unmodified code before the fix, per
+commit history).
+
+Filed for tracking (not fixed this pass, all same discovered-but-out-of-budget
+shape): agentTags leak for every non-Agent taggable resource type;
+flowVersions/flowVersionCounters/flowAliases never pruned by DeleteFlow;
+promptVersions/promptVersionCounters never pruned by DeletePrompt;
+arpVersionCountByPolicy/arpAnnotations/arpAnnotationSetHash/
+arpAnnotationsUpdatedAt never pruned by DeleteAutomatedReasoningPolicy or
+DeleteAutomatedReasoningPolicyBuildWorkflow; ingestionJobs/kbDocuments never
+pruned by DeleteKnowledgeBase; DeleteAgent doesn't implement
+SkipResourceInUseCheck.
+
+**All five of the above (except SkipResourceInUseCheck, which is unrelated --
+too strict, not a leak) are now fixed: see gopherstack-jkiu below.**
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
+both clean.
+
+## 2026-09-07 (gopherstack-jkiu): 5 filed-not-fixed leaks from the wg7i sweep, closed
+
+Follow-up to the 2026-09-06 sweep above, which filed five parent-delete prune
+gaps rather than fixing them (over budget that pass). All five premises held
+up under re-verification, with one correction on item 1's resource list.
+
+1. **agentTags leak for non-Agent taggable resources -- GHOST ROW, fixed.**
+   `ListAgentResourceTags` (agents.go) does zero existence validation on
+   `resourceArn`, so a resource's tags stay visible via `GET /tags/{arn}`
+   after the resource itself is deleted -- not merely a leak. Verified which
+   agent-domain resource types actually have an ARN a client could tag:
+   Agent (already pruned by DeleteAgent, gopherstack-cq0z), AgentAlias
+   (`AgentAliasArn`), KnowledgeBase (`KnowledgeBaseArn`), Flow (`FlowArn`),
+   FlowAlias (`FlowAliasArn`), Prompt (`PromptArn`). **Correction to the
+   filed premise:** `DataSource` has no ARN field at all (models.go:898-909)
+   -- `CreateDataSourceWithConfiguration` never mints one -- so there is no
+   natural ARN for `DeleteDataSource` to prune; it was never really "leaking"
+   in the sense the other five are, only nameable by a client passing an
+   arbitrary string (true of any nonexistent resource, not specific to data
+   sources). **FIXED**: `DeleteAgentAlias` (agent_aliases.go), `DeleteFlow`
+   (flows.go), `DeleteFlowAlias` (flow_aliases.go), `DeletePrompt`
+   (prompts.go), and `DeleteKnowledgeBase` (knowledge_bases.go) now each
+   `delete(b.agentTags, <ownArn>)` before returning, mirroring `DeleteAgent`'s
+   existing prune of `agentTags[ag.AgentArn]`.
+
+2. **flowVersions/flowVersionCounters/flowAliases orphaned by DeleteFlow --
+   mixed, fixed.** `flowVersions[flowID]` is a lazily-registered
+   `*store.Table[FlowVersion]` (store_setup.go's `flowVersionsStore`,
+   registered under `"flowVersions:"+flowID`); `GetFlowVersion`/
+   `ListFlowVersions` don't check the parent flow still exists, so this is a
+   GHOST ROW, proven by `TestDeleteFlow_PrunesTagsVersionsAndAliases`.
+   `flowAliases` is the single global `*store.Table[FlowAlias]` (not
+   per-parent); `GetFlowAlias`/`ListFlowAliases` likewise return rows for a
+   deleted flow -- also a GHOST ROW, same test. `flowVersionCounters` is a
+   plain `map[string]int` (store_setup.go's registerAllTables doc comment) --
+   a MEMORY LEAK ONLY, since flow IDs are never reused (monotonic counter),
+   so a stale counter entry is never observed by any accessor. **Reset-vs-
+   delete**: `flowVersions[flowID]` gets `.Reset()` (landmine: it is
+   registered once on `b.registry` under a composite name; `delete()`-ing the
+   map entry would make a later accessor re-`Register` the same name and
+   panic -- exact mirror of `DeleteAgent`'s existing comment in agents.go).
+   `flowAliases` gets a range-and-delete of matching entries (it is the
+   single global table, not a lazy per-parent one -- `Reset()` would wipe
+   every flow's aliases, not just this one -- mirrors `DeleteKnowledgeBase`'s
+   existing `dataSources` cascade). `flowVersionCounters[flowID]` gets a
+   plain `delete()` (ordinary map, no registry involvement).
+
+3. **promptVersions/promptVersionCounters orphaned by DeletePrompt -- mixed,
+   fixed.** Same shape as item 2's flow half: `promptVersions[promptID]` is a
+   lazily-registered per-parent `store.Table` -- GHOST ROW via
+   `GetPromptVersion`/`ListPromptVersions`, proven by
+   `TestDeletePrompt_PrunesTagsAndVersions`, fixed with `.Reset()` (same
+   landmine). `promptVersionCounters[promptID]` is a plain counter map --
+   MEMORY LEAK ONLY (prompt IDs are never reused), fixed with `delete()`.
+   Prompts have no alias concept in this API, so there is no third leg here
+   (unlike flows).
+
+4. **ARP annotation and version-count maps orphaned by
+   DeleteAutomatedReasoningPolicy and DeleteAutomatedReasoningPolicyBuildWorkflow
+   -- MEMORY LEAK ONLY, fixed.** `arpVersionCountByPolicy`,
+   `arpAnnotations`, `arpAnnotationSetHash`, and `arpAnnotationsUpdatedAt` are
+   all plain maps (store_setup.go's registerAllTables doc comment
+   explicitly lists them as not `store.Table`-backed), so `delete()` is
+   correct throughout -- no Reset-vs-delete landmine applies. None is a
+   ghost row: every annotation accessor (`GetAutomatedReasoningPolicyAnnotations`,
+   `UpdateAutomatedReasoningPolicyAnnotations`, ...) calls
+   `mustGetARPBuildWorkflow` first, which 404s once the build workflow is
+   gone, so a stale `arpAnnotations` entry is never read back.
+   **Correction/refinement to the filed premise**: `arpVersionCountByPolicy`
+   is keyed by `policyARN` alone (not by build workflow), so it can only be
+   orphaned by `DeleteAutomatedReasoningPolicy`, not by
+   `DeleteAutomatedReasoningPolicyBuildWorkflow` -- fixed with a `delete()`
+   in `DeleteAutomatedReasoningPolicy` only. The three annotation-state maps
+   are keyed by `policyARN+":"+buildWorkflowID` and are genuinely orphaned by
+   *both* delete paths (a whole-policy delete implicitly deletes every one of
+   its build workflows via `deleteARPArtifacts`, and a single build-workflow
+   delete removes just that key) -- fixed by extracting a shared
+   `deleteARPAnnotationState(policyARN, buildWorkflowID)` helper, called from
+   both `deleteARPArtifacts`'s per-workflow loop and
+   `DeleteAutomatedReasoningPolicyBuildWorkflow` directly. Tests:
+   `TestDeleteAutomatedReasoningPolicy_PrunesVersionCounterAndAnnotations`,
+   `TestDeleteAutomatedReasoningPolicyBuildWorkflow_PrunesAnnotations`.
+
+5. **ingestionJobs/kbDocuments orphaned by DeleteKnowledgeBase -- GHOST ROW,
+   fixed.** Same root cause as gopherstack-wg7i's `dataSources` fix in this
+   exact function: `ingestionJobs` and `kbDocuments` are both single global
+   `store.Table`s filtered by `KnowledgeBaseID`/`DataSourceID` in their List
+   accessors, with no check that the parent KB still exists.
+   `GetIngestionJob`/`ListIngestionJobs` and `ListKnowledgeBaseDocuments` all
+   kept returning rows for a deleted KB before this fix -- proven by
+   `TestDeleteKnowledgeBase_PrunesAgentTagsAndIngestionArtifacts`. **FIXED**:
+   `DeleteKnowledgeBase` now also ranges `b.ingestionJobs` and `b.kbDocuments`
+   and deletes every entry whose `KnowledgeBaseID` matches, mirroring the
+   existing `dataSources` cascade in the same function. Not extended to
+   `DeleteDataSource` (deleting a single data source without deleting its
+   parent KB) -- that path has the identical gap but is not one of this
+   issue's five items; noted for a future pass rather than silently widening
+   scope. **Fixed 2026-09-07, see gopherstack-y0to below.**
+
+Files changed: `services/bedrock/agent_aliases.go` (DeleteAgentAlias prunes
+agentTags), `services/bedrock/flow_aliases.go` (DeleteFlowAlias prunes
+agentTags), `services/bedrock/flows.go` (DeleteFlow prunes agentTags, Resets
+flowVersions, clears flowVersionCounters, cascades to flowAliases),
+`services/bedrock/prompts.go` (DeletePrompt prunes agentTags, Resets
+promptVersions, clears promptVersionCounters),
+`services/bedrock/knowledge_bases.go` (DeleteKnowledgeBase prunes agentTags,
+cascades to ingestionJobs and kbDocuments),
+`services/bedrock/automated_reasoning_policies.go` (DeleteAutomatedReasoningPolicy
+clears arpVersionCountByPolicy; new `deleteARPAnnotationState` helper shared
+by DeleteAutomatedReasoningPolicy's `deleteARPArtifacts` and
+DeleteAutomatedReasoningPolicyBuildWorkflow), `services/bedrock/export_test.go`
+(new test-only bridges: FlowVersionCounterForTest, PromptVersionCounterForTest,
+ARPVersionCountForTest, ARPAnnotationStateExistsForTest),
+`services/bedrock/ghost_row_jkiu_test.go` (new -- seven regression tests, each
+confirmed failing against the unmodified code before the fix, then restored;
+see commit history).
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
+both clean.
+
+## 2026-09-07 (gopherstack-y0to): DeleteDataSource had the same ghost row one level down
+
+`DeleteKnowledgeBase` cascades to `ingestionJobs`/`kbDocuments` as of
+gopherstack-jkiu above, which explicitly declined to extend the fix to
+`DeleteDataSource` and filed this issue instead.
+
+**GHOST ROW, fixed.** `GetIngestionJob`/`ListIngestionJobs`
+(ingestion_jobs.go) and `ListKnowledgeBaseDocuments`
+(knowledge_base_documents.go) do zero existence check on the data source --
+they filter the single global `ingestionJobs`/`kbDocuments` tables by
+`KnowledgeBaseID`/`DataSourceID` fields alone -- so all three kept returning
+rows for a `DataSourceID` that `DeleteDataSource` had already removed. Same
+root cause as jkiu's item 5, one level down. (`GetKnowledgeBaseDocuments` is
+unaffected: it already existence-checks `b.dataSources` before reading, so
+it 404s correctly.)
+
+**FIXED**: `DeleteDataSource` (data_sources.go) now also ranges
+`b.ingestionJobs` and `b.kbDocuments` and deletes every entry whose
+`KnowledgeBaseID` and `DataSourceID` both match, mirroring
+`DeleteKnowledgeBase`'s existing cascade in knowledge_bases.go. No
+Reset-vs-delete landmine here: both are single global `store.Table`s, not
+lazily-registered per-parent ones, so range-and-delete is correct (same
+reasoning as jkiu item 5).
+
+**Sibling check**: nothing else is orphaned by `DeleteDataSource`.
+`DataSource` (models.go:898-909) still has no ARN field, confirming jkiu's
+finding that it cannot leak into `agentTags`. No other map in the backend is
+keyed by `DataSourceID` (store.go's field list checked).
+
+**Composition with `DeleteKnowledgeBase`**: the two cascades are independent
+range-and-delete passes over the same tables with no shared state or
+call-through -- `DeleteKnowledgeBase` does not call `DeleteDataSource`, so
+there is no double-delete or double-lock. Verified by
+`TestDeleteKnowledgeBase_StillCascadesAfterDataSourceCascadeFix` (KB deleted
+directly, without deleting its data source first, still cascades) alongside
+the new `DeleteDataSource`-path tests.
+
+Files changed: `services/bedrock/data_sources.go` (`DeleteDataSource`
+cascades to `ingestionJobs` and `kbDocuments`),
+`services/bedrock/ghost_row_y0to_test.go` (new -- three regression tests;
+the ghost-row assertion confirmed failing against the unmodified code before
+the fix, then restored; see commit history).
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
+both clean.
+
+## 2026-09-07 (gopherstack-kr6t): DeleteAgent ignored SkipResourceInUseCheck
+
+**TOO STRICT, fixed.** `DeleteAgentInput.SkipResourceInUseCheck` (a plain
+`bool`, not `*bool`; bedrockagent@v1.58.4 api_op_DeleteAgent.go:38, doc:
+"By default, this value is false and deletion is stopped if the resource is
+in use. If you set it to true , the resource will be deleted even if the
+resource is in use.") was declared in the SDK but never read on this
+backend's `DeleteAgent` path, so a caller who legitimately asked to bypass
+the alias-in-use precondition was refused with `ConflictException`
+unconditionally.
+
+Only the query param is wire-observable: `serializers.go:1564-1565`
+serializes it with `if v.SkipResourceInUseCheck { encoder.SetQuery(...) }`,
+so "absent" and "explicit false" are indistinguishable on the wire and both
+mean "perform the check" -- there is no separate "explicit false" case to
+get wrong at the plain-`bool` level despite the field not being a pointer.
+
+**Sibling check**: five `Delete*Input` structs in bedrockagent@v1.58.4 carry
+`SkipResourceInUseCheck` -- `DeleteAgent`, `DeleteAgentVersion`,
+`DeleteAgentActionGroup`, `DeleteFlow`, `DeleteFlowVersion` (grepped across
+the module's `api_op_Delete*.go`). `DeleteAgentAlias`, named as a candidate
+in the issue, does **not** carry the field at all -- its `Input` has only
+`AgentAliasId`/`AgentId`. Of the five, only `DeleteAgent` has an existing
+in-use gate in this backend (the alias check); `DeleteAgentVersion`,
+`DeleteAgentActionGroup`, `DeleteFlowVersion` delete unconditionally with no
+gate to skip, and `DeleteFlow` already unconditionally cascades its aliases
+with no gate either. So `DeleteAgent` is the only op with the omission this
+issue describes; the other four were left alone.
+
+**Alias fate when skipped**: skipping the check must not leave the
+bypassed aliases addressable as ghost rows -- gopherstack-wg7i's commit
+message had recorded "agent aliases are clean by construction since
+DeleteAgent refuses while any exist," an invariant this fix breaks on
+purpose. Matched this package's own cascade convention (`DeleteFlow`
+unconditionally deletes `flowAliases` for the flow being deleted;
+`DeleteKnowledgeBase`/`DeleteDataSource` cascade their dependents the same
+way): `DeleteAgent`, when `skipResourceInUseCheck` is true and aliases
+exist, now deletes every `AgentAlias` for that agent (and its `agentTags`
+entry, matching `DeleteAgentAlias`'s own per-item cleanup) instead of
+leaving them behind. Proven by
+`TestDeleteAgent_SkipResourceInUseCheck_True_CascadesAliases`, which creates
+two aliases on the deleted agent plus one on a sibling agent and asserts the
+sibling's alias survives untouched.
+
+**FIXED**: `DeleteAgent` (agents.go) takes a new `skipResourceInUseCheck
+bool` parameter; the alias-in-use guard is skipped when true, and the
+alias cascade above runs whenever the agent is deleted. `handleDeleteAgent`
+(handler_agents.go) reads `c.QueryParam("skipResourceInUseCheck")` via
+`strconv.ParseBool`, so a missing or unparsable value defaults to `false`
+(check performed), matching the SDK's own absent-means-false wire
+semantics.
+
+Files changed: `services/bedrock/agents.go` (`DeleteAgent` signature and
+alias-cascade), `services/bedrock/handler_agents.go` (reads the query
+param), `services/bedrock/ghost_row_wg7i_test.go` (updated the one existing
+caller for the new signature), `services/bedrock/ghost_row_kr6t_test.go`
+(new -- six regression tests; the two behavior-asserting ones confirmed
+failing against the unmodified guard/cascade before the fix, then
+restored; see commit history).
+
+Gates: `GOTOOLCHAIN=go1.26.6 go test -race ./services/bedrock/...` and
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/bedrock/...` -- 0 issues,
+both clean.

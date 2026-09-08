@@ -222,6 +222,29 @@ func TestAutoscalingHandler_DeleteLaunchConfiguration(t *testing.T) {
 			body:       "Action=DeleteLaunchConfiguration&Version=2011-01-01&LaunchConfigurationName=no-such-lc",
 			wantStatus: http.StatusBadRequest,
 		},
+		{
+			// api_op_DeleteLaunchConfiguration.go: "The launch configuration
+			// must not be attached to an Auto Scaling group."
+			name: "delete_lc_attached_to_group_rejected",
+			setup: func(t *testing.T, h *autoscaling.Handler) {
+				t.Helper()
+				postAutoscalingForm(
+					t,
+					h,
+					"Action=CreateLaunchConfiguration&Version=2011-01-01"+
+						"&LaunchConfigurationName=attached-lc&ImageId=ami-abc&InstanceType=t2.micro",
+				)
+				postAutoscalingForm(
+					t,
+					h,
+					"Action=CreateAutoScalingGroup&Version=2011-01-01"+
+						"&AutoScalingGroupName=lc-owner&MinSize=0&MaxSize=1"+
+						"&LaunchConfigurationName=attached-lc",
+				)
+			},
+			body:       "Action=DeleteLaunchConfiguration&Version=2011-01-01&LaunchConfigurationName=attached-lc",
+			wantStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -235,6 +258,10 @@ func TestAutoscalingHandler_DeleteLaunchConfiguration(t *testing.T) {
 
 			rec := postAutoscalingForm(t, h, tt.body)
 			assert.Equal(t, tt.wantStatus, rec.Code)
+
+			if tt.name == "delete_lc_attached_to_group_rejected" {
+				assert.Contains(t, rec.Body.String(), "ResourceInUse")
+			}
 		})
 	}
 }

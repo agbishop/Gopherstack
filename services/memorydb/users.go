@@ -160,9 +160,12 @@ func (b *InMemoryBackend) DeleteUser(ctx context.Context, name string) (*User, e
 		return nil, ErrUserNotFound
 	}
 
+	// DeleteUser cascades: "The user will be removed from all ACLs and in
+	// turn removed from all clusters" (api_op_DeleteUser.go doc comment).
+	// Unlike DeleteACL, membership is not a blocker here.
 	for _, a := range tableAll(b.acls[region]) {
-		if slices.Contains(a.UserNames, name) {
-			return nil, fmt.Errorf("user %q is a member of ACL %q: %w", name, a.Name, ErrUserInUse)
+		if idx := slices.Index(a.UserNames, name); idx != -1 {
+			a.UserNames = slices.Delete(a.UserNames, idx, idx+1)
 		}
 	}
 

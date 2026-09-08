@@ -362,6 +362,32 @@ func TestUserErrors(t *testing.T) {
 			},
 		},
 		{
+			// The real ConflictException shape carries a Reason enum
+			// (UNIQUENESS_CONSTRAINT_VIOLATION or CONCURRENT_MODIFICATION --
+			// see types/errors.go and types/enums.go in the aws-sdk-go-v2
+			// identitystore package). aws-sdk-go-v2's
+			// awsAwsjson11_deserializeDocumentConflictException parses a
+			// top-level "Reason" field from the response body; a real SDK
+			// caller needs it populated to distinguish the two cases.
+			name: "duplicate_user_conflict_reports_uniqueness_reason",
+			run: func(t *testing.T, h *identitystore.Handler) {
+				t.Helper()
+
+				doRequest(t, h, "CreateUser", map[string]any{
+					"IdentityStoreId": testStoreID,
+					"UserName":        "dup.reason.user",
+				})
+
+				rec := doRequest(t, h, "CreateUser", map[string]any{
+					"IdentityStoreId": testStoreID,
+					"UserName":        "dup.reason.user",
+				})
+				require.Equal(t, http.StatusConflict, rec.Code)
+				resp := parseResponse(t, rec)
+				assert.Equal(t, "UNIQUENESS_CONSTRAINT_VIOLATION", resp["Reason"])
+			},
+		},
+		{
 			name: "create_user_missing_store_id",
 			run: func(t *testing.T, h *identitystore.Handler) {
 				t.Helper()

@@ -48,7 +48,7 @@ func (h *Handler) handleBatchDescribeMergeConflicts(body []byte) (any, error) {
 	if !isValidMergeOption(in.MergeOption) {
 		return nil, fmt.Errorf(
 			"%w: mergeOption must be FAST_FORWARD_MERGE, SQUASH_MERGE, or THREE_WAY_MERGE",
-			ErrValidation,
+			ErrInvalidMergeOption,
 		)
 	}
 
@@ -150,6 +150,7 @@ func (h *Handler) handleMergeBranchesByFastForward(body []byte) (any, error) {
 		RepositoryName             string `json:"repositoryName"`
 		SourceCommitSpecifier      string `json:"sourceCommitSpecifier"`
 		DestinationCommitSpecifier string `json:"destinationCommitSpecifier"`
+		TargetBranch               string `json:"targetBranch"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
@@ -159,7 +160,7 @@ func (h *Handler) handleMergeBranchesByFastForward(body []byte) (any, error) {
 	}
 
 	commit, err := h.Backend.MergeBranchesByFastForward(
-		req.RepositoryName, req.SourceCommitSpecifier, req.DestinationCommitSpecifier,
+		req.RepositoryName, req.SourceCommitSpecifier, req.DestinationCommitSpecifier, req.TargetBranch,
 	)
 	if err != nil {
 		return nil, err
@@ -222,7 +223,7 @@ func (h *Handler) handleCreateUnreferencedMergeCommit(body []byte) (any, error) 
 	if !isValidMergeOption(req.MergeOption) {
 		return nil, fmt.Errorf(
 			"%w: mergeOption must be FAST_FORWARD_MERGE, SQUASH_MERGE, or THREE_WAY_MERGE",
-			ErrValidation,
+			ErrInvalidMergeOption,
 		)
 	}
 
@@ -302,7 +303,7 @@ func (h *Handler) handleGetMergeConflicts(body []byte) (any, error) {
 	if !isValidMergeOption(req.MergeOption) {
 		return nil, fmt.Errorf(
 			"%w: mergeOption must be FAST_FORWARD_MERGE, SQUASH_MERGE, or THREE_WAY_MERGE",
-			ErrValidation,
+			ErrInvalidMergeOption,
 		)
 	}
 
@@ -360,7 +361,7 @@ func (h *Handler) handleDescribeMergeConflicts(body []byte) (any, error) {
 	if !isValidMergeOption(req.MergeOption) {
 		return nil, fmt.Errorf(
 			"%w: mergeOption must be FAST_FORWARD_MERGE, SQUASH_MERGE, or THREE_WAY_MERGE",
-			ErrValidation,
+			ErrInvalidMergeOption,
 		)
 	}
 

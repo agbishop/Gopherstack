@@ -4,6 +4,70 @@ import (
 	"fmt"
 )
 
+// validateCertificates checks every listener certificate's CertificateArn against
+// the wired CertificateResolver. Callers must hold b.mu. A nil certResolver (the
+// default) accepts every CertificateArn unvalidated.
+func (b *InMemoryBackend) validateCertificates(certs []Certificate) error {
+	if b.certResolver == nil {
+		return nil
+	}
+
+	for _, c := range certs {
+		if c.CertificateArn == "" {
+			continue
+		}
+
+		if !b.certResolver.ResolveCertificate(c.CertificateArn) {
+			return fmt.Errorf("%w: %s", ErrCertificateNotFound, c.CertificateArn)
+		}
+	}
+
+	return nil
+}
+
+// markCertificatesInUse reports listenerArn's attachment to each certificate to the
+// wired CertificateResolver. Callers must hold b.mu. A nil certResolver is a no-op.
+func (b *InMemoryBackend) markCertificatesInUse(listenerArn string, certs []Certificate) {
+	if b.certResolver == nil {
+		return
+	}
+
+	for _, c := range certs {
+		if c.CertificateArn != "" {
+			b.certResolver.AddInUseBy(c.CertificateArn, listenerArn)
+		}
+	}
+}
+
+// unmarkCertificatesInUse reports listenerArn's detachment from each certificate to
+// the wired CertificateResolver. Callers must hold b.mu. A nil certResolver is a no-op.
+func (b *InMemoryBackend) unmarkCertificatesInUse(listenerArn string, certs []Certificate) {
+	if b.certResolver == nil {
+		return
+	}
+
+	for _, c := range certs {
+		if c.CertificateArn != "" {
+			b.certResolver.RemoveInUseBy(c.CertificateArn, listenerArn)
+		}
+	}
+}
+
+// unmarkCertificateArnsInUse is unmarkCertificatesInUse for bare ARNs, used by
+// RemoveListenerCertificates which receives certArns rather than []Certificate.
+// Callers must hold b.mu.
+func (b *InMemoryBackend) unmarkCertificateArnsInUse(listenerArn string, certArns []string) {
+	if b.certResolver == nil {
+		return
+	}
+
+	for _, a := range certArns {
+		if a != "" {
+			b.certResolver.RemoveInUseBy(a, listenerArn)
+		}
+	}
+}
+
 // AddListenerCertificates adds certificates to a listener.
 func (b *InMemoryBackend) AddListenerCertificates(listenerArn string, certs []Certificate) error {
 	b.mu.Lock("AddListenerCertificates")
@@ -12,6 +76,10 @@ func (b *InMemoryBackend) AddListenerCertificates(listenerArn string, certs []Ce
 	listener, ok := b.listeners.Get(listenerArn)
 	if !ok {
 		return ErrListenerNotFound
+	}
+
+	if err := b.validateCertificates(certs); err != nil {
+		return err
 	}
 
 	existing := make(map[string]bool, len(listener.Certificates))
@@ -25,6 +93,8 @@ func (b *InMemoryBackend) AddListenerCertificates(listenerArn string, certs []Ce
 			existing[c.CertificateArn] = true
 		}
 	}
+
+	b.markCertificatesInUse(listenerArn, certs)
 
 	return nil
 }
@@ -75,6 +145,7 @@ func (b *InMemoryBackend) RemoveListenerCertificates(listenerArn string, certArn
 	}
 
 	listener.Certificates = remaining
+	b.unmarkCertificateArnsInUse(listenerArn, certArns)
 
 	return nil
 }

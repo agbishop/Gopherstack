@@ -1,5 +1,15 @@
 package medialive
 
+import "time"
+
+// SetNow overrides the backend's time source, for tests exercising
+// PurchaseOffering's Start window relative to a controlled clock.
+func SetNow(b *InMemoryBackend, now func() time.Time) {
+	b.mu.Lock("SetNow")
+	defer b.mu.Unlock()
+	b.nowFunc = now
+}
+
 // ChannelCount returns the number of stored channels.
 func ChannelCount(b *InMemoryBackend) int {
 	b.mu.RLock("ChannelCount")
@@ -113,5 +123,28 @@ func ForceClusterState(b *InMemoryBackend, clusterID, state string) {
 
 	if c, ok := b.clusters.Get(clusterID); ok {
 		c.State = state
+	}
+}
+
+// ForceReservationEnd sets a reservation's term end, so a test can make it
+// still-active. State is derived from the term (see effectiveState).
+func ForceReservationEnd(b *InMemoryBackend, reservationID, end string) {
+	b.mu.Lock("ForceReservationEnd")
+	defer b.mu.Unlock()
+
+	if r, ok := b.reservations.Get(reservationID); ok {
+		r.End = end
+	}
+}
+
+// ForceSdiSourceInputs sets the Inputs attachment list of an SdiSource
+// directly, for testing purposes -- CreateInput/UpdateInput don't yet wire
+// the real SdiSources request field, so this is otherwise unreachable.
+func ForceSdiSourceInputs(b *InMemoryBackend, sdiSourceID string, inputIDs []string) {
+	b.mu.Lock("ForceSdiSourceInputs")
+	defer b.mu.Unlock()
+
+	if s, ok := b.sdiSources.Get(sdiSourceID); ok {
+		s.Inputs = inputIDs
 	}
 }

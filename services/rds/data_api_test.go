@@ -36,7 +36,7 @@ func TestEnableDisableHttpEndpoint(t *testing.T) {
 			resourceARN: "arn:aws:rds:us-east-1:123456789012:cluster:missing",
 			enable:      true,
 			wantErr:     true,
-			wantErrIs:   rds.ErrClusterNotFound,
+			wantErrIs:   rds.ErrResourceNotFound,
 		},
 	}
 	for _, tt := range tests {

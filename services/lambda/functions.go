@@ -308,21 +308,18 @@ func (b *InMemoryBackend) DeleteFunction(name string) error {
 		}
 
 		found = true
-
-		b.functions.Delete(name)
-
 		rt = b.runtimes[name]
-		delete(b.runtimes, name)
 
-		// Cascade-delete event source mappings for this function.
+		// Capture ESM IDs before deleteFunctionMapsLocked deletes them, so the
+		// kinesisPoller cascade below still runs.
 		fnARN := arn.Build("lambda", b.region, b.accountID, "function:"+name)
 		if ids, ok := b.esmByFunctionARN[fnARN]; ok {
 			for id := range ids {
-				b.eventSourceMappings.Delete(id)
 				esmIDsToRemove = append(esmIDsToRemove, id)
 			}
-			delete(b.esmByFunctionARN, fnARN)
 		}
+
+		b.deleteFunctionMapsLocked(name)
 	}()
 
 	if !found {

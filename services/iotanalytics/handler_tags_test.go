@@ -133,7 +133,11 @@ func TestHandler_CreateResource_InvalidTagsRejected(t *testing.T) {
 			name: "pipeline",
 			path: "/pipelines",
 			body: func(tags []map[string]string) map[string]any {
-				return map[string]any{"pipelineName": "invtag_pl", "tags": tags}
+				return map[string]any{
+					"pipelineName":       "invtag_pl",
+					"tags":               tags,
+					"pipelineActivities": validPipelineActivitiesBody(),
+				}
 			},
 		},
 	}
@@ -343,8 +347,9 @@ func TestHandler_TagsInDescribeResponse(t *testing.T) {
 			path:   "/pipelines/tagged_pipe",
 			create: "/pipelines",
 			body: map[string]any{
-				"pipelineName": "tagged_pipe",
-				"tags":         []map[string]string{{"key": "team", "value": "alpha"}},
+				"pipelineName":       "tagged_pipe",
+				"tags":               []map[string]string{{"key": "team", "value": "alpha"}},
+				"pipelineActivities": validPipelineActivitiesBody(),
 			},
 		},
 	}

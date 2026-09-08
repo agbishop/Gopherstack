@@ -600,6 +600,8 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err 
 		code, errType = http.StatusBadRequest, "InvalidNextTokenException"
 	case errors.Is(err, ErrValidation):
 		code, errType = http.StatusBadRequest, "InvalidInputException"
+	case errors.Is(err, ErrTagLimitExceeded):
+		code, errType = http.StatusBadRequest, "LimitExceededException"
 	default:
 		code, errType = http.StatusInternalServerError, "InternalServerException"
 	}

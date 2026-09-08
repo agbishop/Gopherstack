@@ -66,6 +66,39 @@ func TestCreateRestoreTestingSelection_Validation(t *testing.T) {
 	})
 }
 
+func TestDeleteRestoreTestingPlan_RequiresSelectionsDeletedFirst(t *testing.T) {
+	t.Parallel()
+
+	t.Run("plan with no selections deletes cleanly", func(t *testing.T) {
+		t.Parallel()
+		b := backup.NewInMemoryBackend("000000000000", "us-east-1")
+		_, err := b.CreateRestoreTestingPlan("empty-plan", "", 0, nil)
+		require.NoError(t, err)
+
+		require.NoError(t, b.DeleteRestoreTestingPlan("empty-plan"))
+	})
+
+	t.Run("plan with an active selection is rejected", func(t *testing.T) {
+		t.Parallel()
+		b := backup.NewInMemoryBackend("000000000000", "us-east-1")
+		_, err := b.CreateRestoreTestingPlan("busy-plan", "", 0, nil)
+		require.NoError(t, err)
+		_, err = b.CreateRestoreTestingSelection("busy-plan", "sel-a", backup.RestoreTestingSelectionInput{
+			ProtectedResourceType: "EC2",
+			IAMRoleArn:            "arn:aws:iam::000000000000:role/r",
+		})
+		require.NoError(t, err)
+
+		err = b.DeleteRestoreTestingPlan("busy-plan")
+		require.ErrorIs(t, err, backup.ErrInvalidRequest)
+
+		_, getErr := b.GetRestoreTestingPlan("busy-plan")
+		require.NoError(t, getErr, "plan must still exist after the rejected delete")
+		_, selErr := b.GetRestoreTestingSelection("busy-plan", "sel-a")
+		require.NoError(t, selErr, "selection must not be cascade-deleted by the rejected delete")
+	})
+}
+
 func TestUpdateRestoreTestingSelection_FullReplace(t *testing.T) {
 	t.Parallel()
 	b := backup.NewInMemoryBackend("000000000000", "us-east-1")

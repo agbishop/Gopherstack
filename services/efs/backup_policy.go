@@ -43,8 +43,12 @@ func (b *InMemoryBackend) PutBackupPolicy(ctx context.Context, fileSystemID, sta
 	b.mu.Lock("PutBackupPolicy")
 	defer b.mu.Unlock()
 
-	if _, ok := b.fileSystems.Get(regionKey(region, fileSystemID)); !ok {
+	fs, ok := b.fileSystems.Get(regionKey(region, fileSystemID))
+	if !ok {
 		return fmt.Errorf("%w: file system %s not found", ErrNotFound, fileSystemID)
+	}
+	if err := checkFileSystemAvailable(fs); err != nil {
+		return err
 	}
 
 	b.backupStore(region)[fileSystemID] = status

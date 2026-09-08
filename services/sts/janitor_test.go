@@ -300,18 +300,18 @@ func TestGetCallerIdentity_ExpiredSession_ReturnsExpiredToken(t *testing.T) {
 			})
 			require.NoError(t, err)
 
-			accessKeyID := resp.AssumeRoleResult.Credentials.AccessKeyID
+			creds := resp.AssumeRoleResult.Credentials
 
 			// Verify the session is valid before expiry.
-			ciResp, err := b.GetCallerIdentity(accessKeyID, "")
+			ciResp, err := b.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 			require.NoError(t, err)
 			assert.Contains(t, ciResp.GetCallerIdentityResult.Arn, "assumed-role")
 
 			// Force the session to be expired.
-			b.SetSessionExpiration(accessKeyID, time.Now().Add(-tt.expiredAgo))
+			b.SetSessionExpiration(creds.AccessKeyID, time.Now().Add(-tt.expiredAgo))
 
 			// After expiry, GetCallerIdentity must return ExpiredTokenException, not root identity.
-			_, err = b.GetCallerIdentity(accessKeyID, "")
+			_, err = b.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 			require.ErrorIs(t, err, sts.ErrSessionExpired)
 		})
 	}

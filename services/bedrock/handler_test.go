@@ -913,6 +913,31 @@ func TestHandler_AdvancedPromptOptimizationJobLifecycle(t *testing.T) {
 			},
 		},
 		{
+			// maxResults is a real ListAdvancedPromptOptimizationJobsInput field
+			// (bedrock@v1.66.4 api_op_ListAdvancedPromptOptimizationJobs.go:30-31,
+			// serialized as the "maxResults" query param at serializers.go:5661-5663)
+			// that the handler must page by, not silently ignore.
+			name: "list respects maxResults",
+			run: func(t *testing.T) {
+				t.Helper()
+
+				h := newTestHandler(t)
+				for _, name := range []string{"page-a", "page-b", "page-c"} {
+					rec := doRequest(t, h, http.MethodPost, "/advanced-prompt-optimization-jobs",
+						advancedPromptOptimizationJobCreateBody(name))
+					require.Equal(t, http.StatusOK, rec.Code)
+				}
+
+				listRec := doRequest(t, h, http.MethodGet, "/advanced-prompt-optimization-jobs?maxResults=1", nil)
+				require.Equal(t, http.StatusOK, listRec.Code)
+
+				var listOut map[string]any
+				mustUnmarshal(t, listRec, &listOut)
+				assert.Len(t, listOut["jobSummaries"], 1)
+				assert.NotEmpty(t, listOut["nextToken"])
+			},
+		},
+		{
 			name: "stop transitions status to Stopped",
 			run: func(t *testing.T) {
 				t.Helper()

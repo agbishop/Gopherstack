@@ -2,7 +2,9 @@ package waf_test
 
 // change_token_test.go covers WAF Classic change-token semantics:
 //
-//   - Issuance: GetChangeToken returns unique, PROVISIONED tokens.
+//   - Issuance: GetChangeToken returns PROVISIONED tokens; a repeated call
+//     returns the same outstanding token until it is consumed by a mutation,
+//     after which the next call mints a new one.
 //   - State machine: GetChangeTokenStatus transitions PROVISIONED -> INSYNC
 //     once a token is consumed by a mutation; unknown tokens report INSYNC.
 //   - Enforcement: Create/Update/Delete must reject a token that was never
@@ -34,10 +36,28 @@ func TestWAF_ChangeToken_Basic(t *testing.T) {
 func TestWAF_ChangeToken_Unique(t *testing.T) {
 	t.Parallel()
 
+	// Real AWS: "If your application submits a GetChangeToken request and
+	// then submits a second GetChangeToken request before submitting a
+	// create, update, or delete request, the second GetChangeToken request
+	// returns the same value as the first" (waf@v1.33.4
+	// api_op_GetChangeToken.go:23-27). A repeated call before any mutation
+	// must return the SAME outstanding token; only after that token is
+	// consumed by a mutation does the next call mint a new one.
 	h := newWAFHandler(t)
+
 	t1 := wafGetToken(t, h)
 	t2 := wafGetToken(t, h)
-	assert.NotEqual(t, t1, t2, "each GetChangeToken should return a unique token")
+	assert.Equal(t, t1, t2, "a repeated GetChangeToken before any mutation must return the same token")
+
+	rec := wafDo(t, h, "CreateRule", map[string]any{
+		"ChangeToken": t1,
+		"Name":        "unique-token-rule",
+		"MetricName":  "uniqueTokenRule",
+	})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	t3 := wafGetToken(t, h)
+	assert.NotEqual(t, t1, t3, "GetChangeToken must mint a new token once the outstanding one is consumed")
 }
 
 func TestWAF_GetChangeTokenStatus_Fresh(t *testing.T) {
@@ -87,8 +107,13 @@ func TestChangeTokenStatus_Lifecycle(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		mutate     func(t *testing.T, h *waf.Handler, token string)
+		name string
+		// setup runs, and fully consumes its own change token, BEFORE the
+		// outer token is fetched -- needed by DeleteWebACL_transitions_to_INSYNC,
+		// which must create its WebACL first so that creation does not steal
+		// the outstanding token this test reserves for the delete.
+		setup      func(t *testing.T, h *waf.Handler) string
+		mutate     func(t *testing.T, h *waf.Handler, token, setupResult string)
 		wantBefore string
 		wantAfter  string
 	}{
@@ -100,7 +125,7 @@ func TestChangeTokenStatus_Lifecycle(t *testing.T) {
 		},
 		{
 			name: "CreateWebACL_transitions_to_INSYNC",
-			mutate: func(t *testing.T, h *waf.Handler, token string) {
+			mutate: func(t *testing.T, h *waf.Handler, token, _ string) {
 				t.Helper()
 				rec := wafDo(t, h, "CreateWebACL", map[string]any{
 					"ChangeToken":   token,
@@ -115,7 +140,7 @@ func TestChangeTokenStatus_Lifecycle(t *testing.T) {
 		},
 		{
 			name: "CreateRule_transitions_to_INSYNC",
-			mutate: func(t *testing.T, h *waf.Handler, token string) {
+			mutate: func(t *testing.T, h *waf.Handler, token, _ string) {
 				t.Helper()
 				rec := wafDo(t, h, "CreateRule", map[string]any{
 					"ChangeToken": token,
@@ -129,7 +154,7 @@ func TestChangeTokenStatus_Lifecycle(t *testing.T) {
 		},
 		{
 			name: "CreateIPSet_transitions_to_INSYNC",
-			mutate: func(t *testing.T, h *waf.Handler, token string) {
+			mutate: func(t *testing.T, h *waf.Handler, token, _ string) {
 				t.Helper()
 				rec := wafDo(t, h, "CreateIPSet", map[string]any{
 					"ChangeToken": token,
@@ -142,9 +167,13 @@ func TestChangeTokenStatus_Lifecycle(t *testing.T) {
 		},
 		{
 			name: "DeleteWebACL_transitions_to_INSYNC",
-			mutate: func(t *testing.T, h *waf.Handler, token string) {
+			setup: func(t *testing.T, h *waf.Handler) string {
 				t.Helper()
-				aclID := wafCreateWebACL(t, h, "delete-me")
+
+				return wafCreateWebACL(t, h, "delete-me")
+			},
+			mutate: func(t *testing.T, h *waf.Handler, token, aclID string) {
+				t.Helper()
 				rec := wafDo(t, h, "DeleteWebACL", map[string]any{
 					"ChangeToken": token,
 					"WebACLId":    aclID,
@@ -161,6 +190,12 @@ func TestChangeTokenStatus_Lifecycle(t *testing.T) {
 			t.Parallel()
 
 			h := newWAFHandler(t)
+
+			var setupResult string
+			if tt.setup != nil {
+				setupResult = tt.setup(t, h)
+			}
+
 			token := wafGetToken(t, h)
 
 			// Check status before mutation
@@ -171,7 +206,7 @@ func TestChangeTokenStatus_Lifecycle(t *testing.T) {
 			assert.Equal(t, tt.wantBefore, before["ChangeTokenStatus"], "status before mutation")
 
 			if tt.mutate != nil {
-				tt.mutate(t, h, token)
+				tt.mutate(t, h, token, setupResult)
 			}
 
 			// Check status after mutation

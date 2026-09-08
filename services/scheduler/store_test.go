@@ -51,7 +51,7 @@ func TestScheduleGroupCount(t *testing.T) {
 	// Seeded with "default" group.
 	assert.Equal(t, 1, scheduler.ScheduleGroupCount(b))
 
-	_, err := b.CreateScheduleGroup(context.Background(), "prod", "", nil)
+	_, err := b.CreateScheduleGroup(context.Background(), "prod", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, scheduler.ScheduleGroupCount(b))
 }
@@ -107,7 +107,7 @@ func TestSchedulerBackend_Reset(t *testing.T) {
 		"ENABLED", scheduler.FlexibleTimeWindow{Mode: "OFF"})
 	require.NoError(t, err)
 
-	_, err = b.CreateScheduleGroup(context.Background(), "g1", "", nil)
+	_, err = b.CreateScheduleGroup(context.Background(), "g1", nil)
 	require.NoError(t, err)
 
 	b.Reset()
@@ -126,7 +126,7 @@ func TestInMemoryBackend_Reset_ViaCountHelpers(t *testing.T) {
 
 	b := scheduler.NewInMemoryBackend("000000000000", "us-east-1")
 
-	_, err := b.CreateScheduleGroup(context.Background(), "grp", "", nil)
+	_, err := b.CreateScheduleGroup(context.Background(), "grp", nil)
 	require.NoError(t, err)
 	_, err = b.CreateSchedule(context.Background(), "s1", "grp", "rate(1 minute)", "", "",
 		scheduler.Target{ARN: "arn:a", RoleARN: "arn:r"}, "ENABLED", scheduler.FlexibleTimeWindow{Mode: "OFF"})

@@ -279,9 +279,8 @@ func toQuoteWireBase(q *Quote) quoteWire {
 		SubmittedOrderId:        q.SubmittedOrderID,
 		RequestedPaymentOptions: cloneStrs(q.RequestedPaymentOptions),
 		RequestedPaymentTerms:   cloneStrs(q.RequestedPaymentTerms),
-	}
 
-	out.RequestedCapacities = make([]quoteCapacityWire, 0, len(q.RequestedCapacities))
+		RequestedCapacities: make([]quoteCapacityWire, 0, len(q.RequestedCapacities))}
 	for _, c := range q.RequestedCapacities {
 		out.RequestedCapacities = append(out.RequestedCapacities, toQuoteCapacityWire(c))
 	}
@@ -371,9 +370,8 @@ func toCapacityTaskResponse(t *CapacityTask) capacityTaskResponse {
 		OrderId:                       t.OrderID,
 		OutpostId:                     t.OutpostID,
 		TaskActionOnBlockingInstances: t.TaskActionOnBlockingInstances,
-	}
 
-	out.RequestedInstancePools = make([]instanceTypeCapacityWire, 0, len(t.RequestedInstancePools))
+		RequestedInstancePools: make([]instanceTypeCapacityWire, 0, len(t.RequestedInstancePools))}
 	for _, p := range t.RequestedInstancePools {
 		out.RequestedInstancePools = append(out.RequestedInstancePools, toInstanceTypeCapacityWire(p))
 	}
@@ -461,9 +459,8 @@ func toCatalogItemWire(c CatalogItem) catalogItemWire {
 		SupportedUplinkGbps: append([]int32(nil), c.SupportedUplinkGbps...),
 		PowerKva:            c.PowerKva,
 		WeightLbs:           c.WeightLbs,
-	}
 
-	out.EC2Capacities = make([]ec2CapacityWire, 0, len(c.EC2Capacities))
+		EC2Capacities: make([]ec2CapacityWire, 0, len(c.EC2Capacities))}
 	for _, ec := range c.EC2Capacities {
 		out.EC2Capacities = append(out.EC2Capacities, toEC2CapacityWire(ec))
 	}
@@ -481,11 +478,10 @@ func toDetailedInstanceTypeItemWire(it OrderableInstanceType) detailedInstanceTy
 		NetworkPerformance: it.NetworkPerformance,
 		MemoryInMib:        it.MemoryInMib,
 		VCPUs:              new(it.VCPUs),
-	}
 
-	out.FormFactorConfigs = []formFactorConfigWire{
-		{FormFactor: it.FormFactor, OutpostGeneration: it.OutpostGeneration},
-	}
+		FormFactorConfigs: []formFactorConfigWire{
+			{FormFactor: it.FormFactor, OutpostGeneration: it.OutpostGeneration},
+		}}
 
 	return out
 }

@@ -773,10 +773,64 @@ func TestInMemoryBackend_DeleteMemberCascadeARNIndex(t *testing.T) {
 	err := b.DeleteMember(n.ID, m.ID)
 	require.NoError(t, err)
 
-	// After deletion: only network remains
-	assert.Equal(t, 1, managedblockchain.ARNIndexSize(b))
+	// member1 was the network's last (and only) member, so real AWS deletes the
+	// network too ("If MemberId is the last member in a network specified by the
+	// last Amazon Web Services account, the network is deleted also." --
+	// aws-sdk-go-v2 managedblockchain api_op_DeleteMember.go doc comment,
+	// v1.34.4): network + member + node are all gone.
+	assert.Equal(t, 0, managedblockchain.ARNIndexSize(b))
 
 	// Tagging the deleted node's ARN should fail
 	err = b.TagResource(node.Arn, map[string]string{"k": "v"})
 	require.Error(t, err)
+}
+
+// TestInMemoryBackend_DeleteMemberNetworkCascade verifies real AWS's documented
+// DeleteMember side effect: "If MemberId is the last member in a network
+// specified by the last Amazon Web Services account, the network is deleted
+// also." (aws-sdk-go-v2 managedblockchain api_op_DeleteMember.go doc comment,
+// v1.34.4).
+func TestInMemoryBackend_DeleteMemberNetworkCascade(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		lastMember    bool
+		wantNetworkOK bool
+	}{
+		{
+			name:          "deleting the network's last member deletes the network",
+			lastMember:    true,
+			wantNetworkOK: false,
+		},
+		{
+			name:          "deleting one of several members leaves the network intact",
+			lastMember:    false,
+			wantNetworkOK: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := managedblockchain.NewInMemoryBackend()
+			n := b.AddNetworkInternal(testRegion, testAccountID, "net1")
+			m := b.AddMemberInternal(testRegion, testAccountID, n.ID, "member1")
+
+			if !tt.lastMember {
+				b.AddMemberInternal(testRegion, testAccountID, n.ID, "member2")
+			}
+
+			require.NoError(t, b.DeleteMember(n.ID, m.ID))
+
+			_, err := b.GetNetwork(n.ID)
+
+			if tt.wantNetworkOK {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, managedblockchain.ErrNetworkNotFound)
+			}
+		})
+	}
 }

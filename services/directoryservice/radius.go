@@ -14,6 +14,9 @@ func (b *InMemoryBackend) EnableRadius(ctx context.Context, directoryID string, 
 	if _, ok := b.directoryGet(region, directoryID); !ok {
 		return ErrDirectoryNotFound
 	}
+	if _, exists := b.radiusSettingsGet(region, directoryID); exists {
+		return ErrRadiusAlreadyEnabled
+	}
 
 	servers := make([]string, len(settings.RadiusServers))
 	copy(servers, settings.RadiusServers)

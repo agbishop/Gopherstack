@@ -20,7 +20,8 @@ func (b *InMemoryBackend) CancelInstanceRefresh(groupName string) (string, error
 
 	for _, r := range b.instanceRefreshes[groupName] {
 		if r.Status == statusInProgress || r.Status == statusPending {
-			r.Status = "Cancelling"
+			r.Status = statusCancelling
+			b.armRefreshTransition(r.InstanceRefreshID, groupName, statusCancelled)
 
 			return r.InstanceRefreshID, nil
 		}
@@ -81,6 +82,8 @@ func (b *InMemoryBackend) StartInstanceRefreshWithInput(input StartInstanceRefre
 		prefs.MinHealthyPercentage = 90
 	}
 
+	g, _ := b.groups.Get(input.AutoScalingGroupName)
+
 	refresh := &InstanceRefresh{
 		InstanceRefreshID:    uuid.NewString(),
 		AutoScalingGroupName: input.AutoScalingGroupName,
@@ -88,9 +91,11 @@ func (b *InMemoryBackend) StartInstanceRefreshWithInput(input StartInstanceRefre
 		StartTime:            time.Now(),
 		Strategy:             strategy,
 		Preferences:          prefs,
+		InstancesToUpdate:    int32(len(g.Instances)), //nolint:gosec // bounded by maxDesiredCapacity
 	}
 
 	b.instanceRefreshes[input.AutoScalingGroupName] = append(b.instanceRefreshes[input.AutoScalingGroupName], refresh)
+	b.armRefreshTransition(refresh.InstanceRefreshID, input.AutoScalingGroupName, statusSuccessful)
 
 	cp := *refresh
 
@@ -108,7 +113,8 @@ func (b *InMemoryBackend) RollbackInstanceRefresh(groupName string) (string, err
 
 	for _, r := range b.instanceRefreshes[groupName] {
 		if r.Status == statusInProgress || r.Status == statusPending {
-			r.Status = "RollbackInProgress"
+			r.Status = statusRollbackInProgress
+			b.armRefreshTransition(r.InstanceRefreshID, groupName, statusRollbackSuccessful)
 
 			return r.InstanceRefreshID, nil
 		}
@@ -157,4 +163,111 @@ func (b *InMemoryBackend) DescribeInstanceRefreshes(groupName string, refreshIDs
 	sort.Slice(result, func(i, j int) bool { return result[i].InstanceRefreshID < result[j].InstanceRefreshID })
 
 	return result, nil
+}
+
+// armRefreshTransition schedules refreshID's transition to nextStatus after
+// instanceRefreshTransitionDelay, replacing any transition already pending
+// for that refresh (cancel/rollback superseding an in-progress completion).
+// Must be called with b.mu held (write lock).
+func (b *InMemoryBackend) armRefreshTransition(refreshID, groupName, nextStatus string) {
+	if existing, ok := b.pendingRefreshActions.Get(refreshID); ok {
+		existing.timer.Stop()
+		b.pendingRefreshActions.Delete(refreshID)
+	}
+
+	action := &pendingRefreshAction{
+		ID:         refreshID,
+		GroupName:  groupName,
+		NextStatus: nextStatus,
+	}
+	action.timer = time.AfterFunc(instanceRefreshTransitionDelay, func() {
+		b.resolveRefreshTransition(refreshID)
+	})
+	b.pendingRefreshActions.Put(action)
+}
+
+// resolveRefreshTransition applies the scheduled status transition for
+// refreshID, if it is still pending. A miss means the action was already
+// superseded (cancel/rollback re-arming with a new timer) or the backend was
+// reset/restored/closed -- Close and Restore stop and clear
+// pendingRefreshActions before touching b.instanceRefreshes, so firing late
+// into a torn-down or replaced backend is a safe no-op rather than a stale
+// write. Called from the timer's own goroutine, hence it takes the lock
+// itself, matching resolveLifecycleWait.
+func (b *InMemoryBackend) resolveRefreshTransition(refreshID string) {
+	b.mu.Lock("resolveRefreshTransition")
+	defer b.mu.Unlock()
+
+	action, ok := b.pendingRefreshActions.Get(refreshID)
+	if !ok {
+		return
+	}
+
+	b.pendingRefreshActions.Delete(refreshID)
+
+	for _, r := range b.instanceRefreshes[action.GroupName] {
+		if r.InstanceRefreshID != refreshID {
+			continue
+		}
+
+		r.Status = action.NextStatus
+		r.EndTime = time.Now()
+
+		// This backend doesn't tick per-instance progress during InProgress,
+		// so PercentageComplete/InstancesToUpdate only move on the terminal
+		// transitions where AWS's own semantics pin their end value:
+		// Successful always reaches 100%/0 remaining, and a completed
+		// rollback always unwinds back to 0%/0 remaining (types.go:1126-1134,
+		// "gradually goes back down to zero during a rollback"). Cancelled
+		// keeps whatever value it had, matching a cancel that stops after
+		// any in-flight replacement completes.
+		switch action.NextStatus {
+		case statusSuccessful:
+			r.PercentageComplete = completedProgress
+			r.InstancesToUpdate = 0
+		case statusRollbackSuccessful:
+			r.PercentageComplete = 0
+			r.InstancesToUpdate = 0
+		}
+
+		break
+	}
+}
+
+// cleanupRefreshTimers cancels and removes any pending transition timer for
+// groupName's instance refreshes. Must be called with b.mu held (write lock)
+// and before groupName's entry in b.instanceRefreshes is deleted.
+func (b *InMemoryBackend) cleanupRefreshTimers(groupName string) {
+	for _, r := range b.instanceRefreshes[groupName] {
+		if existing, ok := b.pendingRefreshActions.Get(r.InstanceRefreshID); ok {
+			existing.timer.Stop()
+			b.pendingRefreshActions.Delete(r.InstanceRefreshID)
+		}
+	}
+}
+
+// rearmPendingRefreshes re-arms transition timers for any instance refresh
+// restored mid InProgress, Cancelling, or RollbackInProgress; in-flight
+// timers are never persisted (see pendingRefreshActions in persistence.go).
+// Must be called with b.mu held (write lock); intended to run once, right
+// after Restore repopulates b.instanceRefreshes.
+func (b *InMemoryBackend) rearmPendingRefreshes() {
+	for _, refreshes := range b.instanceRefreshes {
+		for _, r := range refreshes {
+			var next string
+
+			switch r.Status {
+			case statusInProgress, statusPending:
+				next = statusSuccessful
+			case statusCancelling:
+				next = statusCancelled
+			case statusRollbackInProgress:
+				next = statusRollbackSuccessful
+			default:
+				continue
+			}
+
+			b.armRefreshTransition(r.InstanceRefreshID, r.AutoScalingGroupName, next)
+		}
+	}
 }

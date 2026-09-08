@@ -73,6 +73,39 @@ func TestHandler_NotebookInstanceLifecycle(t *testing.T) {
 	assert.Equal(t, http.StatusOK, recDelete.Code)
 }
 
+// TestHandler_DeleteNotebookInstance_NotStopped asserts DeleteNotebookInstance
+// rejects a notebook instance that has not been stopped, matching
+// UpdateNotebookInstanceFull's sibling guard (api_op_DeleteNotebookInstance.go:
+// "Before you can delete a notebook instance, you must call the
+// StopNotebookInstance API.").
+func TestHandler_DeleteNotebookInstance_NotStopped(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doSageMakerRequest(t, h, "CreateNotebookInstance", map[string]any{
+		"NotebookInstanceName": "del-notebook",
+		"InstanceType":         "ml.t2.medium",
+		"RoleArn":              "arn:aws:iam::000000000000:role/notebook-role",
+	})
+
+	// Cannot delete while still Pending (not Stopped).
+	recEarly := doSageMakerRequest(t, h, "DeleteNotebookInstance", map[string]any{
+		"NotebookInstanceName": "del-notebook",
+	})
+	assert.Equal(t, http.StatusBadRequest, recEarly.Code)
+
+	recStop := doSageMakerRequest(t, h, "StopNotebookInstance", map[string]any{
+		"NotebookInstanceName": "del-notebook",
+	})
+	require.Equal(t, http.StatusOK, recStop.Code)
+
+	recDelete := doSageMakerRequest(t, h, "DeleteNotebookInstance", map[string]any{
+		"NotebookInstanceName": "del-notebook",
+	})
+	assert.Equal(t, http.StatusOK, recDelete.Code)
+}
+
 func TestHandler_NotebookInstance_EventuallyInService(t *testing.T) {
 	t.Parallel()
 

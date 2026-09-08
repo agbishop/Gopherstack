@@ -675,6 +675,7 @@ func (b *InMemoryBackend) DeleteDocument(
 	delete(b.documentVersionsStore(region), input.Name)
 	delete(b.documentPermissionsStore(region), input.Name)
 	delete(b.documentSharedVersionsStore(region), input.Name)
+	delete(b.miscResourceTagsStore(region), input.Name)
 
 	// b.documents itself is not pruned here — see the comment on
 	// cleanupEmptyParamRegion above for why a Table-backed region entry must
@@ -682,6 +683,7 @@ func (b *InMemoryBackend) DeleteDocument(
 	cleanupEmptyInnerMap(b.documentVersions, region)
 	cleanupEmptyInnerMap(b.documentPermissions, region)
 	cleanupEmptyInnerMap(b.documentSharedVersions, region)
+	cleanupEmptyInnerMap(b.miscResourceTags, region)
 
 	return &DeleteDocumentOutput{}, nil
 }

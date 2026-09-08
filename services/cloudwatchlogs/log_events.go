@@ -392,13 +392,61 @@ func (b *InMemoryBackend) appendEvents(
 	}
 }
 
+// logEventsTokenBackwardMarker distinguishes a backward-paging GetLogEvents
+// token from a forward one. encodeNextToken (store.go), used by every other
+// paginated op in this package, has no such marker -- a plain base64(decimal)
+// token decodes here as forward, for backward compatibility with tokens
+// issued before this marker existed.
+const logEventsTokenBackwardMarker = 'B'
+
+// encodeLogEventsToken encodes a GetLogEvents pagination cursor with its
+// direction, so a nextBackwardToken fed back in can be told apart from a
+// nextForwardToken -- see parseLogEventsToken.
+func encodeLogEventsToken(idx int, backward bool) string {
+	payload := strconv.Itoa(idx)
+	if backward {
+		payload = string(logEventsTokenBackwardMarker) + payload
+	}
+
+	return base64.StdEncoding.EncodeToString([]byte(payload))
+}
+
+// parseLogEventsToken decodes a GetLogEvents cursor back to its offset and
+// direction. Unmarked (legacy/plain-decimal) tokens decode as forward.
+func parseLogEventsToken(token string) (int, bool) {
+	if token == "" {
+		return 0, false
+	}
+
+	decoded := token
+	if d, err := base64.StdEncoding.DecodeString(token); err == nil {
+		decoded = string(d)
+	}
+
+	backward := strings.HasPrefix(decoded, string(logEventsTokenBackwardMarker))
+	if backward {
+		decoded = decoded[1:]
+	}
+
+	idx := 0
+	if n, err := strconv.Atoi(decoded); err == nil && n >= 0 {
+		idx = n
+	}
+
+	return idx, backward
+}
+
 // GetLogEvents returns events for a stream with optional time bounds, limit, and pagination.
 // startFromHead controls the iteration direction:
 //   - true  (start from oldest): begin at the oldest matching event.
 //   - false (AWS default when no nextToken is provided): begin at the newest events.
 //
-// In practice the AWS SDK always passes a nextToken once pagination begins, at which point the
-// token encodes the offset directly and startFromHead is ignored.
+// Once pagination begins, the AWS SDK passes back whichever of nextForwardToken/
+// nextBackwardToken it wants to continue with; the two are NOT interchangeable
+// offsets into the same forward read -- nextBackwardToken must return the window
+// immediately preceding the one it was issued from, not repeat it. This backend's
+// tokens (see encodeLogEventsToken/parseLogEventsToken) carry that direction so
+// GetLogEvents can tell them apart; startFromHead is ignored once a token is given.
 func (b *InMemoryBackend) GetLogEvents(
 	ctx context.Context,
 	groupName, streamName string,
@@ -431,29 +479,39 @@ func (b *InMemoryBackend) GetLogEvents(
 		limit = defaultEventLimit
 	}
 
-	var startIdx int
+	var tokenIdx int
+	var backward bool
 	if nextToken != "" {
 		// An explicit token always takes precedence over startFromHead.
-		startIdx = parseNextToken(nextToken)
+		tokenIdx, backward = parseLogEventsToken(nextToken)
 	} else if !startFromHead {
 		// No token + startFromHead=false (the AWS default): begin at the last page.
 		if len(filtered) > limit {
-			startIdx = len(filtered) - limit
+			tokenIdx = len(filtered) - limit
 		}
 	}
-	// nextToken=="" && startFromHead=true: startIdx stays 0 (oldest first).
+	// nextToken=="" && startFromHead=true: tokenIdx stays 0 (oldest first).
 
 	// A stale or adversarial token can name an offset past the current event
 	// count (e.g. retention swept older events out from under it); clamp
 	// before slicing so it degrades to an empty page instead of panicking.
-	startIdx = min(startIdx, len(filtered))
+	tokenIdx = min(tokenIdx, len(filtered))
 
-	end := min(startIdx+limit, len(filtered))
+	var startIdx, end int
+	if backward {
+		// A backward token names the start of the window it was issued for;
+		// paging backward from there returns the window immediately before it.
+		end = tokenIdx
+		startIdx = max(0, tokenIdx-limit)
+	} else {
+		startIdx = tokenIdx
+		end = min(tokenIdx+limit, len(filtered))
+	}
 
 	page := filtered[startIdx:end]
 
-	fwdToken := encodeNextToken(end)
-	bwdToken := encodeNextToken(startIdx)
+	fwdToken := encodeLogEventsToken(end, false)
+	bwdToken := encodeLogEventsToken(startIdx, true)
 
 	result := make([]OutputLogEvent, len(page))
 	for i, e := range page {

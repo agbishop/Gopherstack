@@ -266,6 +266,82 @@ func validateSourceBatchSize(sp *SourceParameters) error {
 	return nil
 }
 
+// validateSourceStartingPosition enforces that Kinesis and DynamoDB Streams
+// sources specify StartingPosition, matching aws-sdk-go-v2 pipes
+// validators.go's validatePipeSourceKinesisStreamParameters and
+// validatePipeSourceDynamoDBStreamParameters (both mark it required). This
+// applies only at CreatePipe: UpdatePipeSourceParameters carries no such
+// requirement, since starting position cannot be changed after creation.
+func validateSourceStartingPosition(sp *SourceParameters) error {
+	if sp == nil {
+		return nil
+	}
+	if kp := sp.KinesisStreamParameters; kp != nil && kp.StartingPosition == "" {
+		return fmt.Errorf("%w: KinesisStreamParameters.StartingPosition is required", ErrValidation)
+	}
+	if dp := sp.DynamoDBStreamParameters; dp != nil && dp.StartingPosition == "" {
+		return fmt.Errorf("%w: DynamoDBStreamParameters.StartingPosition is required", ErrValidation)
+	}
+
+	return nil
+}
+
+// validateSourceRequiredFields enforces required nested source fields at
+// CreatePipe, matching aws-sdk-go-v2 pipes validators.go's
+// validatePipeSourceActiveMQBrokerParameters, validatePipeSourceRabbitMQBrokerParameters
+// (Credentials and QueueName required), validatePipeSourceManagedStreamingKafkaParameters,
+// and validatePipeSourceSelfManagedKafkaParameters (TopicName required).
+func validateSourceRequiredFields(sp *SourceParameters) error {
+	if sp == nil {
+		return nil
+	}
+	if mp := sp.ActiveMQBrokerParameters; mp != nil {
+		if mp.Credentials == nil {
+			return fmt.Errorf("%w: ActiveMQBrokerParameters.Credentials is required", ErrValidation)
+		}
+		if mp.QueueName == "" {
+			return fmt.Errorf("%w: ActiveMQBrokerParameters.QueueName is required", ErrValidation)
+		}
+	}
+	if mp := sp.RabbitMQBrokerParameters; mp != nil {
+		if mp.Credentials == nil {
+			return fmt.Errorf("%w: RabbitMQBrokerParameters.Credentials is required", ErrValidation)
+		}
+		if mp.QueueName == "" {
+			return fmt.Errorf("%w: RabbitMQBrokerParameters.QueueName is required", ErrValidation)
+		}
+	}
+	if kp := sp.ManagedStreamingKafkaParameters; kp != nil && kp.TopicName == "" {
+		return fmt.Errorf("%w: ManagedStreamingKafkaParameters.TopicName is required", ErrValidation)
+	}
+	if kp := sp.SelfManagedKafkaParameters; kp != nil && kp.TopicName == "" {
+		return fmt.Errorf("%w: SelfManagedKafkaParameters.TopicName is required", ErrValidation)
+	}
+
+	return nil
+}
+
+// validateUpdateSourceRequiredFields enforces required nested source fields at
+// UpdatePipe, matching aws-sdk-go-v2 pipes validators.go's
+// validateUpdatePipeSourceActiveMQBrokerParameters and
+// validateUpdatePipeSourceRabbitMQBrokerParameters: only Credentials is
+// required on update. QueueName and TopicName cannot be changed after
+// creation and carry no update-side requirement; Kinesis and DynamoDB
+// Streams StartingPosition likewise (see validateSourceStartingPosition).
+func validateUpdateSourceRequiredFields(sp *SourceParameters) error {
+	if sp == nil {
+		return nil
+	}
+	if mp := sp.ActiveMQBrokerParameters; mp != nil && mp.Credentials == nil {
+		return fmt.Errorf("%w: ActiveMQBrokerParameters.Credentials is required", ErrValidation)
+	}
+	if mp := sp.RabbitMQBrokerParameters; mp != nil && mp.Credentials == nil {
+		return fmt.Errorf("%w: RabbitMQBrokerParameters.Credentials is required", ErrValidation)
+	}
+
+	return nil
+}
+
 func (p *Pipe) effectiveBatchSize() int {
 	if p.SourceParameters != nil {
 		if bs := sourceBatchSize(p.SourceParameters); bs > 0 {

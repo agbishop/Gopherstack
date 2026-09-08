@@ -582,8 +582,10 @@ func (b *InMemoryBackend) DeleteOpsItem(
 	opsItems := b.opsItemsStore(region)
 	opsItems.Delete(input.OpsItemID)
 	delete(b.opsItemRelatedItemsStore(region), input.OpsItemID)
+	delete(b.miscResourceTagsStore(region), input.OpsItemID)
 
 	cleanupEmptyInnerMap(b.opsItemRelatedItems, region)
+	cleanupEmptyInnerMap(b.miscResourceTags, region)
 
 	return &DeleteOpsItemOutput{}, nil
 }
@@ -763,8 +765,10 @@ func (b *InMemoryBackend) DeleteOpsMetadata(
 
 	delete(b.resourceIDToOpsMetadataArnStore(region), meta.ResourceID)
 	opsMetadata.Delete(input.OpsMetadataArn)
+	delete(b.miscResourceTagsStore(region), input.OpsMetadataArn)
 
 	cleanupEmptyInnerMap(b.resourceIDToOpsMetadataArn, region)
+	cleanupEmptyInnerMap(b.miscResourceTags, region)
 
 	return &DeleteOpsMetadataOutput{}, nil
 }

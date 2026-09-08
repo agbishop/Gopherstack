@@ -248,8 +248,7 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, operation stri
 	// If the backend returned a structured error (e.g. ResourceNotFoundException,
 	// ExpiredIteratorException), propagate its __type and message directly so the
 	// AWS SDK client can unmarshal the correct error type.
-	var backendErr *ddbbackend.Error
-	if errors.As(reqErr, &backendErr) {
+	if backendErr, ok := errors.AsType[*ddbbackend.Error](reqErr); ok {
 		httpStatus := http.StatusBadRequest
 		// InternalServerError maps to 500; all other DynamoDB Streams errors map to 400.
 		if strings.HasSuffix(backendErr.Type, "#InternalServerError") {

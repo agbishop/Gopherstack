@@ -172,12 +172,12 @@ func (b *InMemoryBackend) ListModelCustomizationJobs(
 		return list[i].JobArn < list[j].JobArn
 	})
 
-	nextToken := ""
+	maxResults, nextToken := 0, ""
 	if in != nil {
-		list, nextToken = paginateBedrockSlice(list, in.NextToken)
+		maxResults, nextToken = int(in.MaxResults), in.NextToken
 	}
 
-	return list, nextToken
+	return paginate(list, maxResults, nextToken)
 }
 
 // matchesCustomizationJobFilter reports whether a job satisfies the list

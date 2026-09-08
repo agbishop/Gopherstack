@@ -1144,7 +1144,7 @@ func (rc *ResourceCreator) Delete(
 		return err
 	}
 
-	return rc.deleteExtendedResource(ctx, resourceType, physicalID)
+	return rc.deleteExtendedResource(ctx, resourceType, physicalID, props)
 }
 
 // deleteCoreResource handles deletion of the original 7 core AWS resource types.
@@ -1184,12 +1184,13 @@ func (rc *ResourceCreator) deleteCoreResource(
 func (rc *ResourceCreator) deleteExtendedResource(
 	ctx context.Context,
 	resourceType, physicalID string,
+	props map[string]any,
 ) error {
 	if handled, err := rc.deleteInfraResource(ctx, resourceType, physicalID); handled {
 		return err
 	}
 
-	return rc.deleteServiceResource(ctx, resourceType, physicalID)
+	return rc.deleteServiceResource(ctx, resourceType, physicalID, props)
 }
 
 // deleteInfraResource handles Lambda, EventBridge, StepFunctions, Logs, and APIGateway deletions.
@@ -1272,12 +1273,13 @@ func (rc *ResourceCreator) deletePlatformResource(
 func (rc *ResourceCreator) deleteServiceResource(
 	ctx context.Context,
 	resourceType, physicalID string,
+	props map[string]any,
 ) error {
 	if handled, err := rc.deleteIAMEC2Resource(resourceType, physicalID); handled {
 		return err
 	}
 
-	return rc.deleteDataPlatformResource(ctx, resourceType, physicalID)
+	return rc.deleteDataPlatformResource(ctx, resourceType, physicalID, props)
 }
 
 // deleteIAMEC2Resource handles IAM and EC2 resource deletions.
@@ -1366,6 +1368,7 @@ func (rc *ResourceCreator) deleteRoute53Resource(resourceType, physicalID string
 func (rc *ResourceCreator) deleteDataPlatformResource(
 	ctx context.Context,
 	resourceType, physicalID string,
+	props map[string]any,
 ) error {
 	switch resourceType {
 	case "AWS::Kinesis::Stream":
@@ -1407,14 +1410,18 @@ func (rc *ResourceCreator) deleteDataPlatformResource(
 			return err
 		}
 
-		return rc.deleteNewServiceResource(ctx, physicalID, resourceType)
+		return rc.deleteNewServiceResource(ctx, physicalID, resourceType, props)
 	}
 }
 
 // deleteNewServiceResource handles RDS, ECS, ECR, Redshift, OpenSearch, Firehose,
 // Route53Resolver, SWF, AppSync, SES, ACM, Cognito, extended EC2, and phase-3 resource deletions.
-func (rc *ResourceCreator) deleteNewServiceResource(ctx context.Context, physicalID, resourceType string) error {
-	if handled, err := rc.deleteComputeStorageResource(ctx, physicalID, resourceType); handled {
+func (rc *ResourceCreator) deleteNewServiceResource(
+	ctx context.Context,
+	physicalID, resourceType string,
+	props map[string]any,
+) error {
+	if handled, err := rc.deleteComputeStorageResource(ctx, physicalID, resourceType, props); handled {
 		return err
 	}
 
@@ -1429,6 +1436,7 @@ func (rc *ResourceCreator) deleteNewServiceResource(ctx context.Context, physica
 func (rc *ResourceCreator) deleteComputeStorageResource(
 	ctx context.Context,
 	physicalID, resourceType string,
+	props map[string]any,
 ) (bool, error) {
 	switch resourceType {
 	case resTypeRDSDB:
@@ -1451,7 +1459,7 @@ func (rc *ResourceCreator) deleteComputeStorageResource(
 		return true, rc.deleteECSService(physicalID)
 	case "AWS::ECR::Repository":
 
-		return true, rc.deleteECRRepository(ctx, physicalID)
+		return true, rc.deleteECRRepository(ctx, physicalID, props)
 	case "AWS::Lambda::LayerVersion":
 
 		return true, rc.deleteLambdaLayerVersion(physicalID)
@@ -1723,11 +1731,13 @@ func (rc *ResourceCreator) deleteNetworkSecurityResource(ctx context.Context, ph
 	case "AWS::WAFv2::IPSet":
 		return rc.deleteWAFv2IPSet(ctx, physicalID)
 	case "AWS::WAFv2::RuleGroup":
-		return rc.deleteWAFv2RuleGroup(physicalID)
+		return rc.deleteWAFv2RuleGroup(ctx, physicalID)
 	case "AWS::Backup::BackupVault":
 		return rc.deleteBackupVault(physicalID)
 	case "AWS::Backup::BackupPlan":
 		return rc.deleteBackupPlan(physicalID)
+	case "AWS::Backup::BackupSelection":
+		return rc.deleteBackupSelection(physicalID)
 	case "AWS::RDS::DBCluster":
 		return rc.deleteRDSDBCluster(physicalID)
 	case "AWS::RDS::DBClusterParameterGroup":
@@ -2436,10 +2446,10 @@ func (rc *ResourceCreator) createExtraResource(
 		return id, true, err
 	}
 
-	if id, ok := rc.createSecretsManagerSupplementalResource(
-		logicalID, resourceType, props, params, physicalIDs,
+	if id, ok, err := rc.createSecretsManagerSupplementalResource(
+		ctx, logicalID, resourceType, props, params, physicalIDs,
 	); ok {
-		return id, true, nil
+		return id, true, err
 	}
 
 	if id, ok, err := rc.createSSMSupplementalResource(ctx, logicalID, resourceType, props, params, physicalIDs); ok {
@@ -2494,8 +2504,8 @@ func (rc *ResourceCreator) deleteExtraResource(
 		return true, err
 	}
 
-	if rc.deleteDynamoDBSupplementalResource(resourceType, physicalID) {
-		return true, nil
+	if handled, err := rc.deleteDynamoDBSupplementalResource(ctx, resourceType, physicalID); handled {
+		return true, err
 	}
 
 	if handled, err := rc.deleteGlueSupplementalResource(resourceType, physicalID); handled {

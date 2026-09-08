@@ -3,6 +3,7 @@ package codeconnections_test
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -469,6 +470,56 @@ func TestListConnectionsPagination(t *testing.T) {
 			assert.Equal(t, tt.wantToken, hasToken)
 		})
 	}
+}
+
+// TestListConnectionsOrdersTiedNamesByArn verifies that when two connections
+// share a ConnectionName (allowed -- CreateConnection has no
+// ResourceAlreadyExistsException for a duplicate name, see connections.go),
+// ListConnections still returns a deterministic total order between them,
+// broken by ConnectionArn. Connections are seeded via AddConnectionInternal
+// in descending-ARN insertion order: without a secondary sort key, tied-name
+// connections are left in insertion order, the reverse of the ascending-ARN
+// order this test asserts.
+func TestListConnectionsOrdersTiedNamesByArn(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+
+	arns := []string{
+		"arn:aws:codeconnections:us-east-1:123456789012:connection/c-third",
+		"arn:aws:codeconnections:us-east-1:123456789012:connection/b-second",
+		"arn:aws:codeconnections:us-east-1:123456789012:connection/a-first",
+	}
+
+	for _, connArn := range arns {
+		h.Backend.AddConnectionInternal(context.Background(), &codeconnections.Connection{
+			ConnectionArn:  connArn,
+			ConnectionName: "dup-name",
+			ProviderType:   "GitHub",
+			Status:         "AVAILABLE",
+			OwnerAccountID: "123456789012",
+		})
+	}
+
+	rec := doJSON(t, h, "ListConnections", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	resp := parseResp(t, rec)
+	conns, ok := resp["Connections"].([]any)
+	require.True(t, ok)
+	require.Len(t, conns, 3)
+
+	gotArns := make([]string, 0, len(conns))
+	for _, c := range conns {
+		item, isMap := c.(map[string]any)
+		require.True(t, isMap)
+		gotArns = append(gotArns, item["ConnectionArn"].(string))
+	}
+
+	wantArns := append([]string(nil), arns...)
+	sort.Strings(wantArns)
+
+	assert.Equal(t, wantArns, gotArns)
 }
 
 // TestListConnectionsContinuation verifies two-page traversal using NextToken.

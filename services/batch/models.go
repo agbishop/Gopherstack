@@ -556,7 +556,12 @@ type Job struct {
 	PlatformCapabilities       []string `json:"platformCapabilities,omitempty"`
 	CreatedAt                  int64    `json:"createdAt"`
 	SchedulingPriorityOverride int32    `json:"schedulingPriorityOverride,omitempty"`
-	PropagateTags              bool     `json:"propagateTags,omitempty"`
+	// attemptCount is the number of attempts that have run so far, used by the
+	// janitor to decide whether a timed-out attempt is retried (RetryStrategy.
+	// Attempts) or the job is failed for good. Unexported: internal bookkeeping,
+	// not part of the wire shape.
+	attemptCount  int32
+	PropagateTags bool `json:"propagateTags,omitempty"`
 	// IsCancelled/IsTerminated are set by CancelJob/TerminateJob respectively;
 	// see aws-sdk-go-v2/service/batch/types.JobDetail.IsCancelled/IsTerminated.
 	IsCancelled  bool `json:"isCancelled"`

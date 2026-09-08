@@ -317,12 +317,15 @@ func TestHandler_CreateCloudFormationChangeSet(t *testing.T) {
 			wantCode: http.StatusBadRequest,
 		},
 		{
-			name:    "app not found returns 404",
+			// CreateCloudFormationChangeSet models no NotFoundException (deserializers.go
+			// awsRestjson1_deserializeOpErrorCreateCloudFormationChangeSet): an unknown
+			// ApplicationId is a BadRequestException, not a 404.
+			name:    "app not found returns bad request",
 			appName: "not-found",
 			body: map[string]any{
 				"stackName": "my-stack",
 			},
-			wantCode: http.StatusNotFound,
+			wantCode: http.StatusBadRequest,
 		},
 	}
 
@@ -422,7 +425,8 @@ func TestCreateCloudFormationChangeSet_CapabilitiesAndTags(t *testing.T) {
 // CreateCloudFormationTemplate"): a templateId that was actually returned by a prior
 // CreateCloudFormationTemplate call for the same application is accepted, while an unknown
 // templateId, or one that belongs to a different application, is rejected as a
-// NotFoundException.
+// BadRequestException -- CreateCloudFormationChangeSet models no NotFoundException
+// (deserializers.go awsRestjson1_deserializeOpErrorCreateCloudFormationChangeSet).
 func TestCreateCloudFormationChangeSet_TemplateID(t *testing.T) {
 	t.Parallel()
 
@@ -443,7 +447,7 @@ func TestCreateCloudFormationChangeSet_TemplateID(t *testing.T) {
 		assert.Equal(t, http.StatusCreated, rec.Code)
 	})
 
-	t.Run("unknown templateId is rejected as not found", func(t *testing.T) {
+	t.Run("unknown templateId is rejected as bad request", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHandler(t)
@@ -455,10 +459,14 @@ func TestCreateCloudFormationChangeSet_TemplateID(t *testing.T) {
 				"stackName":  "my-stack",
 				"templateId": "does-not-exist",
 			})
-		assert.Equal(t, http.StatusNotFound, rec.Code)
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Equal(t, "BadRequestException", resp["__type"])
 	})
 
-	t.Run("templateId belonging to a different application is rejected as not found", func(t *testing.T) {
+	t.Run("templateId belonging to a different application is rejected as bad request", func(t *testing.T) {
 		t.Parallel()
 
 		h := newTestHandler(t)
@@ -475,7 +483,7 @@ func TestCreateCloudFormationChangeSet_TemplateID(t *testing.T) {
 				"stackName":  "my-stack",
 				"templateId": tmpl.TemplateID,
 			})
-		assert.Equal(t, http.StatusNotFound, rec.Code)
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 }
 

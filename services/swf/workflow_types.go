@@ -32,6 +32,10 @@ func (b *InMemoryBackend) RegisterWorkflowType(
 	b.mu.Lock("RegisterWorkflowType")
 	defer b.mu.Unlock()
 
+	if err := b.requireActiveDomainLocked(domain); err != nil {
+		return err
+	}
+
 	key := domain + ":" + name + ":" + version
 	if b.workflows.Has(key) {
 		return fmt.Errorf("%w: %s/%s", ErrTypeAlreadyExists, name, version)

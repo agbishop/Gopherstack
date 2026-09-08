@@ -4,9 +4,31 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: firehose
 sdk_module: aws-sdk-go-v2/service/firehose@v1.46.4
-last_audit_commit: da77e2959
-last_audit_date: 2026-08-29
+last_audit_commit: 3b475e203
+last_audit_date: 2026-09-04
 overall: A            # all 10 real SDK destination-configuration types now implemented; remaining gaps are documented data-movement-mechanics simplifications, not wire-shape bugs.
+                      # 2026-09-06 pass (bd gopherstack-pe7x): fixed the CloudWatchLoggingOptions
+                      # gap disclosed by the 2026-09-04 pass below -- delivery failures now actually
+                      # reach the emulated CloudWatch Logs backend via SetCWLogsBackend/
+                      # wireFirehoseCWLogs, not just a local slog warning. See the gaps entry below.
+                      # 2026-09-04 pass (bd gopherstack-o4ny): closed the gopherstack-rop lead below --
+                      # wired cli.go's wireFirehoseKinesisSource (called from
+                      # wireStorageAndSecretsIntegrations) so SetKinesisBackend is now actually called
+                      # in a real running server, and a KinesisStreamAsSource delivery stream really
+                      # polls and ingests records from its source Kinesis stream. See kinesis_source ops
+                      # entry and the matching gaps entry below.
+                      # 2026-09-04 pass (bd gopherstack-rop): confirmed and fixed the services/kinesis
+                      # audit's lead -- KinesisStreamAsSource has never actually polled Kinesis in a
+                      # real running server (SetKinesisBackend is only ever called from this service's
+                      # own tests, not from cli.go); a client can create such a stream and it silently,
+                      # permanently never ingests anything. Fixed the honesty half in scope (a warning
+                      # log on create, matching the Redshift precedent) and documented the cli.go wiring
+                      # half as a new gap; the fix itself is cli.go, out of this pass's scope. Also found
+                      # and fixed a real resource leak: Reset() (reachable via the production
+                      # /_gopherstack/reset endpoint) never cancelled running Kinesis pollers, so any
+                      # live poller outlived a Reset() forever. Also newly disclosed (not fixed, same
+                      # deferred-wiring class as Redshift/Iceberg/Snowflake): CloudWatchLoggingOptions
+                      # never actually writes to the emulated CloudWatch Logs backend.
                       # 2026-08-07 pass (bd gopherstack-ohdc): found and fixed a genuine silent-breakage
                       # bug in Redshift delivery -- deliverToRedshift constructed a real
                       # aws-sdk-go-v2/service/redshiftdata client via sdk_rddata.NewFromConfig with no
@@ -29,10 +51,10 @@ overall: A            # all 10 real SDK destination-configuration types now impl
                       # silent live-network call that looked like real delivery and wasn't.
 
 ops:
-  CreateDeliveryStream: {wire: ok, errors: ok, state: ok, persist: ok, note: "response is DeliveryStreamARN only, matches SDK. Added Iceberg/Snowflake/legacy-Elasticsearch destination-configuration parsing this pass; added the at-most-one-destination validation that was previously missing (see Notes). FIXED 2026-08-21 (gopherstack-us9u kind-mismatch sweep) -- MSKSourceConfiguration.ReadFromTimestamp was string; the real client serializes it as a JSON number (serializers.go: ok.Double(smithytime.FormatEpochSeconds(...))), so any real client setting an MSK source's ReadFromTimestamp failed CreateDeliveryStream's request decode outright (json: cannot unmarshal number into Go struct field ...ReadFromTimestamp of type string). Fixed by changing mskSourceConfigurationInput.ReadFromTimestamp to float64 (matching MSKSourceDescription's response-side fix below). KinesisStreamSourceDescription.DeliveryStartTimestamp is the same shape but never assigned anywhere in this backend (dead field, always omitted via omitempty) -- examined and left as-is; no live call path can be shown to fail on it today, see gopherstack-us9u notes for the follow-up issue tracking it for whenever Kinesis-source DeliveryStartTimestamp gets implemented. FIXED 2026-08-21 (gopherstack-r80d batch 28) -- see DescribeDeliveryStream's note; the request-side fields feeding this bug (S3DestinationConfiguration/ExtendedS3DestinationConfiguration.BufferingHints/EncryptionConfiguration/S3BackupConfiguration) are parsed here, buildS3DestinationDescription/buildS3BackupDescription now apply real-SDK defaults at this same choke point (shared with UpdateDestination). FIXED 2026-08-20: HttpEndpoint/Amazonopensearchservice/Splunk's single S3 bucket used the wrong wire key ('S3BackupConfiguration' instead of 'S3Configuration') — see 2026-08-20 Notes. FIXED 2026-08-23: AmazonOpenSearchServerlessDestinationConfiguration (the unimplemented 11th destination type) had no field in createDeliveryStreamInput at all, so a real client naming it as the sole destination was silently accept-and-dropped -- validateSingleDestination saw zero destinations and let the call through, creating a stream with NO destination and no error. Now detected (json.RawMessage presence marker) and rejected explicitly with InvalidArgumentException. See 2026-08-23 Notes. FIXED 2026-08-29 (write-only-state sweep): three real, accepted CreateDeliveryStreamInput members were silently dropped in their entirety -- createDeliveryStreamInput had no field for DeliveryStreamEncryptionConfigurationInput, DirectPutSourceConfiguration, or DatabaseSourceConfiguration at all (serializers.go:3813,3818,3822-area). DeliveryStreamEncryptionConfigurationInput was the highest-severity of the three: a client encrypting a stream at creation time (rather than a separate StartDeliveryStreamEncryption call) got a stream that was never actually encrypted -- s.Encryption stayed nil, so DescribeDeliveryStream's DeliveryStreamEncryptionConfiguration stayed absent and PutRecord/PutRecordBatch's Encrypted field stayed false, silently. Fixed by adding the field and routing it through the existing StartDeliveryStreamEncryption backend method (validated pre-create via the new shared validateEncryptionConfigInput, so an invalid CUSTOMER_MANAGED_CMK/KeyARN combination fails atomically rather than leaving a half-created stream). DirectPutSourceConfiguration.ThroughputHintInMBs and the full DatabaseSourceConfiguration wire shape (preview API; Databases/Tables/Columns include-exclude lists, auth/VPC configuration, SurrogateKeys, etc.) are now accepted, stored, and echoed via SourceDescription.DirectPutSourceDescription/DatabaseSourceDescription -- same documented-simplification pattern as MSK (wire shape real, no polling/replication mechanics). See wire_field_fixes_test.go."}
+  CreateDeliveryStream: {wire: ok, errors: ok, state: ok, persist: ok, note: "response is DeliveryStreamARN only, matches SDK. Added Iceberg/Snowflake/legacy-Elasticsearch destination-configuration parsing this pass; added the at-most-one-destination validation that was previously missing (see Notes). FIXED 2026-08-21 (gopherstack-us9u kind-mismatch sweep) -- MSKSourceConfiguration.ReadFromTimestamp was string; the real client serializes it as a JSON number (serializers.go: ok.Double(smithytime.FormatEpochSeconds(...))), so any real client setting an MSK source's ReadFromTimestamp failed CreateDeliveryStream's request decode outright (json: cannot unmarshal number into Go struct field ...ReadFromTimestamp of type string). Fixed by changing mskSourceConfigurationInput.ReadFromTimestamp to float64 (matching MSKSourceDescription's response-side fix below). KinesisStreamSourceDescription.DeliveryStartTimestamp is the same shape but never assigned anywhere in this backend (dead field, always omitted via omitempty) -- examined and left as-is; no live call path can be shown to fail on it today, see gopherstack-us9u notes for the follow-up issue tracking it for whenever Kinesis-source DeliveryStartTimestamp gets implemented. FIXED 2026-08-21 (gopherstack-r80d batch 28) -- see DescribeDeliveryStream's note; the request-side fields feeding this bug (S3DestinationConfiguration/ExtendedS3DestinationConfiguration.BufferingHints/EncryptionConfiguration/S3BackupConfiguration) are parsed here, buildS3DestinationDescription/buildS3BackupDescription now apply real-SDK defaults at this same choke point (shared with UpdateDestination). FIXED 2026-08-20: HttpEndpoint/Amazonopensearchservice/Splunk's single S3 bucket used the wrong wire key ('S3BackupConfiguration' instead of 'S3Configuration') — see 2026-08-20 Notes. FIXED 2026-08-23: AmazonOpenSearchServerlessDestinationConfiguration (the unimplemented 11th destination type) had no field in createDeliveryStreamInput at all, so a real client naming it as the sole destination was silently accept-and-dropped -- validateSingleDestination saw zero destinations and let the call through, creating a stream with NO destination and no error. Now detected (json.RawMessage presence marker) and rejected explicitly with InvalidArgumentException. See 2026-08-23 Notes. FIXED 2026-08-29 (write-only-state sweep): three real, accepted CreateDeliveryStreamInput members were silently dropped in their entirety -- createDeliveryStreamInput had no field for DeliveryStreamEncryptionConfigurationInput, DirectPutSourceConfiguration, or DatabaseSourceConfiguration at all (serializers.go:3813,3818,3822-area). DeliveryStreamEncryptionConfigurationInput was the highest-severity of the three: a client encrypting a stream at creation time (rather than a separate StartDeliveryStreamEncryption call) got a stream that was never actually encrypted -- s.Encryption stayed nil, so DescribeDeliveryStream's DeliveryStreamEncryptionConfiguration stayed absent and PutRecord/PutRecordBatch's Encrypted field stayed false, silently. Fixed by adding the field and routing it through the existing StartDeliveryStreamEncryption backend method (validated pre-create via the new shared validateEncryptionConfigInput, so an invalid CUSTOMER_MANAGED_CMK/KeyARN combination fails atomically rather than leaving a half-created stream). DirectPutSourceConfiguration.ThroughputHintInMBs and the full DatabaseSourceConfiguration wire shape (preview API; Databases/Tables/Columns include-exclude lists, auth/VPC configuration, SurrogateKeys, etc.) are now accepted, stored, and echoed via SourceDescription.DirectPutSourceDescription/DatabaseSourceDescription -- same documented-simplification pattern as MSK (wire shape real, no polling/replication mechanics). See wire_field_fixes_test.go. CONFIRMED 2026-09-07 (gopherstack-t2wb errtargetaudit sweep) -- a class A finding flagged this op referencing a ResourceNotFoundException sentinel (via TagDeliveryStream/StartDeliveryStreamEncryption, called immediately after this op's own successful create); false positive, guard cannot fire on the just-created name in any real single-client call path. No fix. See Notes."}
   DeleteDeliveryStream: {wire: ok, errors: ok, state: ok, persist: ok, note: "cascade-cleans all destination pointers, Tags registry, pending-flush watch entry, and Kinesis poller on delete — verified no ghost state survives across the 5 new destination fields added this pass."}
   DescribeDeliveryStream: {wire: ok, errors: ok, state: ok, persist: ok, note: "Destinations[] wrapper extended this pass with IcebergDestinationDescription/SnowflakeDestinationDescription/ElasticsearchDestinationDescription entries, exact-case wire keys verified against deserializers.go. Snowflake's write-only PrivateKey/KeyPassphrase are correctly never echoed back (matches real SDK, which has no such fields on the Description type). FIXED 2026-08-21 (gopherstack-us9u) -- MSKSourceDescription.ReadFromTimestamp changed to float64; see CreateDeliveryStream's note (request+response share this fix). Proven via a real aws-sdk-go-v2/service/firehose client round trip through both ops (wire_msk_timestamp_test.go), hand-reverted/confirmed-failing (request: json: cannot unmarshal number into Go struct field ...ReadFromTimestamp of type string)/restored, md5sum-verified byte-identical. FIXED 2026-08-21 (gopherstack-r80d batch 28, required-output-member cut) -- 3 bugs in the S3-family Destinations[] entries, all traced through buildS3DestinationDescription/buildS3BackupDescription (types.go:2763 S3DestinationDescription's own required set): (1) BufferingHints/EncryptionConfiguration are *BufferingHints/*EncryptionConfiguration (required, optional on input per validateS3DestinationConfiguration/validateExtendedS3DestinationConfiguration only null-checking RoleARN/BucketARN) -- gopherstack passed the nil pointers straight through and both were tagged omitempty, so any client that simply never set these two common optional fields got a response missing both required members; fixed by defaulting to AWS's documented values (BufferingHints{SizeInMBs:5,IntervalInSeconds:300}, EncryptionConfiguration{NoEncryptionConfig:\"NoEncryption\"}) in buildS3DestinationDescription. (2) BucketARN/RoleARN are required *string on the real type but the real client-side validator only null-checks them, not their content, so a client can legally send an explicit empty string; gopherstack's non-pointer BucketARN/RoleARN fields were tagged omitempty, dropping the key entirely for that value -- omitempty removed (same 'client only null-checks the pointer' class the cognitoidp batch of this campaign established). (3) structurally-absent class: the real SDK's S3BackupConfiguration/S3BackupDescription fields (used by every backup-capable destination: S3, Redshift, OpenSearch, Elasticsearch, Splunk) are literally typed as S3DestinationConfiguration/S3DestinationDescription (types.go:1496,1575,2568,2621) -- the exact same required set as a primary S3 destination -- but gopherstack modeled the backup slot as its own narrower S3BackupDescription struct with no EncryptionConfiguration field at all, so any backup-enabled destination unconditionally dropped this required member on every single call, not merely when a client omitted it. Added the field to both s3BackupInput (request) and S3BackupDescription (response) and routed it through the same buildS3BackupDescription default. CompressionFormat (non-pointer CompressionFormat enum on the real type) was also defaulted to UNCOMPRESSED for correctness but is NOT counted as a proven bug -- omitted and present-empty decode identically for any real client, same as State in kafka's Configuration fix earlier this campaign. All 3 counted fixes proven via real aws-sdk-go-v2/service/firehose client round trips (wire_output_required_r80d_test.go), hand-reverted (all 3 touched files together via git show HEAD:<path>)/confirmed-failing/restored, md5sum-verified byte-identical. FIXED 2026-08-20: HttpEndpoint/Amazonopensearchservice/Splunk/Elasticsearch's single S3 bucket was returned under wire key 'S3BackupDescription' but the real deserializer reads 'S3DestinationDescription' for these 4 families — see 2026-08-20 Notes. FIXED 2026-08-29: DeliveryStreamEncryptionConfiguration/Source.DirectPutSourceDescription/Source.DatabaseSourceDescription now round-trip real values instead of staying permanently absent -- this op's own read path (deliveryStreamDescriptionFields.EncryptionConfiguration: s.Encryption, Source: s.Source) was already correct; the bug was entirely on CreateDeliveryStream's write side never populating those fields to begin with. See CreateDeliveryStream's note and wire_field_fixes_test.go."}
-  ListDeliveryStreams: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-20: DeliveryStreamType filter now accepts all 4 real enum values (DirectPut, KinesisStreamAsSource, MSKAsSource, DatabaseAsSource) — previously rejected the latter 2 with ErrValidation even though they are valid SDK enum values."}
+  ListDeliveryStreams: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-20: DeliveryStreamType filter now accepts all 4 real enum values (DirectPut, KinesisStreamAsSource, MSKAsSource, DatabaseAsSource) — previously rejected the latter 2 with ErrValidation even though they are valid SDK enum values. FIXED 2026-09-07 (gopherstack-t2wb errtargetaudit sweep): this op's real declared error set is UnknownError only (deserializers.go) -- it cannot legitimately reject any input at all, so the 2026-08-20 fix did not go far enough. Deleted isValidDeliveryStreamType entirely; an unrecognized DeliveryStreamType filter value now just matches no stream instead of erroring, matching the declared-set evidence. See Notes."}
   PutRecord: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: Encrypted (optional bool) now populated from the stream's live SSE status via a new IsStreamEncrypted backend method (kept PutRecord's own signature unchanged — cli.go's snsFirehosePutterAdapter forwards PutRecordBatch's (int, error) return directly and could not be touched). RecordId (required *string) confirmed always populated via newRecordID; PutRecordBatchResponseEntry (checked for PutRecordBatch below) and this op's own required set re-verified against the real SDK's zero-required-member domain structs during the 2026-08-21 gopherstack-r80d batch-28 required-output sweep -- no bug here."}
   PutRecordBatch: {wire: ok, errors: ok, state: ok, persist: ok, note: "FailedPutCount always 0 — every record that reaches the backend has already passed validation, matching how this emulator models delivery (no partial-batch throttling). FIXED this pass: Encrypted now populated, same mechanism as PutRecord. Re-verified 2026-08-21 (gopherstack-r80d batch 28): RequestResponses always a non-nil make(...) slice, matching the required-array convention; PutRecordBatchResponseEntry itself declares zero required members in the real SDK (confirmed via AST walk of types.go) -- no bug here."}
   ListTagsForDeliveryStream: {wire: ok, errors: ok, state: ok, persist: ok, note: "Re-verified 2026-08-21 (gopherstack-r80d batch 28): Tags/HasMoreTags always emitted (non-nil make(...) slice, no omitempty on the bool); tags.KV.Key carries no omitempty, matching the real Tag type's sole required member. No bug."}
@@ -44,7 +66,7 @@ ops:
 
 families:
   destination_delivery: {status: ok, note: "All 10 real SDK destination-configuration types now field-diffed and implemented: S3, ExtendedS3, HttpEndpoint, Redshift, Amazonopensearchservice, legacy Elasticsearch (NEW this pass), Splunk, Iceberg (NEW), Snowflake (NEW). S3/HTTP/Redshift/OpenSearch/Elasticsearch/Splunk delivery pipelines verified as real (Lambda transform, dynamic partitioning, S3 backup, error-output routing, retry/backoff) — not disguised no-ops. Elasticsearch reuses the OpenSearch bulk-API delivery path (the two share an identical wire protocol; only the Firehose destination-configuration shape differs). Iceberg/Snowflake land processed records into their required S3Configuration staging bucket via the same writeRecordsToBucket helper S3 delivery uses — genuine state mutation, not a stub — but neither drives a real Iceberg/Glue-catalog commit or Snowflake Snowpipe-Streaming ingest; see gaps (same documented-simplification pattern as the pre-existing Redshift gap). AmazonOpenSearchServerless (a distinct 11th real SDK destination-configuration type, `AmazonOpenSearchServerlessDestinationConfiguration`) remains unimplemented — out of scope for this pass's explicit destination list, not field-diffed, do not mark ok."}
-  kinesis_source: {status: ok, note: "KinesisStreamAsSource polling launches a real background poller (launchKinesisPoller) wired to the Kinesis backend; not audited in depth this pass (unchanged since prior work, well covered by kinesis_source_test.go)."}
+  kinesis_source: {status: ok, note: "KinesisStreamAsSource polling code (launchKinesisPoller) is real and well covered by kinesis_source_test.go. FIXED 2026-09-04 (gopherstack-o4ny): SetKinesisBackend is now actually called from cli.go -- wireFirehoseKinesisSource (cli.go, called from wireStorageAndSecretsIntegrations alongside wireFirehoseDelivery) wires the real Kinesis InMemoryBackend into Firehose via a kinesisStreamReaderAdapter (shared with kinesisanalyticsbackend's DiscoverInputSchema sampling -- both need the same narrow ListShards/GetShardIterator/GetRecords shape over the same real Kinesis backend), so shouldPoll now actually fires in a real running server and a KinesisStreamAsSource stream ingests records from its source stream for real. Previously (gopherstack-rop) SetKinesisBackend was only ever called from this service's own tests, so b.kinesisBackend was always nil in production; that pass added a CreateDeliveryStream WarnContext log for the nil-backend case (kept -- still correct for a deliberately-unwired backend, e.g. in tests), covered by TestFirehose_KinesisSource_NoBackendLogsWarning. The wiring fix itself is covered by TestFirehose_KinesisSource_Wiring in cli_test.go (asserts SetKinesisBackend's effect: a poller now starts and PollerCount goes to 1 immediately after CreateDeliveryStream on a wired backend) plus the pre-existing kinesis_source_test.go poller-mechanics tests."}
 
 gaps:
   - >
@@ -95,6 +117,45 @@ gaps:
     instead of silently succeeding. See CreateDeliveryStream/UpdateDestination ops entries
     and the 2026-08-23 Notes section below. The remaining, still-open half (a real
     OpenSearch-Serverless delivery pipeline) is unchanged and correctly still deferred.
+  - >
+    IDENTIFIED 2026-09-04 (gopherstack-rop, the services/kinesis audit's lead), FIXED
+    2026-09-04 (gopherstack-o4ny): KinesisStreamAsSource had never actually polled Kinesis
+    in a real running gopherstack server. The wire shape
+    (SourceDescription.KinesisStreamSourceDescription) and the background poller
+    (launchKinesisPoller/pollKinesisStream/pollKinesisShard in kinesis_source.go) were both
+    real and well-tested in isolation, but SetKinesisBackend -- the only way b.kinesisBackend
+    is ever set -- was called exclusively from this service's own tests, never from cli.go.
+    CreateDeliveryStream's shouldPoll gate requires b.kinesisBackend != nil, so in production
+    it was always false: a client could CreateDeliveryStream with
+    DeliveryStreamType=KinesisStreamAsSource and a valid KinesisStreamSourceDescription, get
+    back 200 OK and a real ARN, and that stream would never deliver a single record for as
+    long as it existed -- a silent, permanent, client-observable no-op, exactly the no-stub
+    violation parity-principles.md prohibits. gopherstack-rop fixed the honesty half in scope
+    at the time (a warning log on create, matching the Redshift precedent; kept -- still
+    correct for a deliberately-unwired backend, e.g. tests). gopherstack-o4ny fixed the wiring
+    itself: cli.go's wireFirehoseKinesisSource (called from wireStorageAndSecretsIntegrations
+    alongside wireFirehoseDelivery) now wires the real Kinesis InMemoryBackend into Firehose
+    via SetKinesisBackend, using a kinesisStreamReaderAdapter shared with
+    kinesisanalyticsbackend's DiscoverInputSchema sampling wiring (both need the same narrow
+    ListShards/GetShardIterator/GetRecords shape over the same real Kinesis backend). Proof:
+    TestInitializeServices_FirehoseKinesisSourceWiring (root package) drives the actual
+    initializeServices composition root, puts a record into a real Kinesis stream, and
+    verifies it lands in the destination S3 bucket through the real poller -- hand-reverted
+    (git show HEAD:cli.go > cli.go) it fails (no S3 object ever appears; 10s Eventually
+    timeout), restored it passes.
+  - >
+    FIXED 2026-09-06 (bd gopherstack-pe7x): CloudWatchLoggingOptions previously only
+    reached logDeliveryIssue (flush.go) as a local slog WarnContext record, never writing
+    an event to the emulated CloudWatch Logs backend's log group/stream. Added
+    firehose.CWLogsBackend (EnsureLogGroupAndStream/PutLogLines, mirroring
+    lambda.CWLogsBackend) plus SetCWLogsBackend, and wired it in cli.go's
+    wireFirehoseCWLogs, reusing the existing cwLogsAdapter (lambda's adapter already
+    matched the shape exactly). logDeliveryIssue now also calls
+    deliverCWLogEvent, which ensures the destination's LogGroupName/LogStreamName exist
+    and writes the same failure message via PutLogLines. Unwired (no SetCWLogsBackend
+    call, e.g. every test backend) stays a silent no-op -- delivery still proceeds
+    normally. See TestLambdaTransformError_DeliversCloudWatchLogEvent and
+    TestLambdaTransformError_UnwiredCloudWatchLogsStaysPermissive (flush_test.go).
 
 deferred:
   - Redshift RedshiftDataExecutor cli.go wiring (mechanics implemented 2026-08-07, see gaps)
@@ -117,10 +178,78 @@ deferred:
     empty slice (honest -- no snapshot has ever been taken -- not fabricated), and there is
     no database-source backend wiring, same structural gap class as MSK.
 
-leaks: {status: clean, note: "Kinesis poller cancel funcs tracked per region/name and cancelled on DeleteDeliveryStream; tags.Tags registries closed on Delete/Reset. streamCopy (store.go) deep-copies all destination pointer fields including the 3 new ones added this pass (Elasticsearch/Iceberg/Snowflake) — verified this was needed: a shallow struct copy alone would have shared destination-struct pointers between the backend's live state and every DescribeDeliveryStream/AddStreamInternal caller, an isolation bug. No new goroutines introduced this pass; IsStreamEncrypted (new PutRecord/PutRecordBatch Encrypted-field support) takes only a short-lived RLock."}
+leaks: {status: "fixed this pass", note: "FIXED 2026-09-04 (gopherstack-rop): Kinesis poller cancel funcs were tracked per region/name and cancelled on DeleteDeliveryStream, but NOT on Reset() -- the prior note's 'cancelled on DeleteDeliveryStream' claim was true but incomplete, since Reset() (reachable in production via the /_gopherstack/reset admin endpoint, cli.go's buildResetHandler) only cleared the streams table and closed Tags registries, leaving every b.pollerCancel entry both un-cancelled and un-forgotten: any live Kinesis-source poller goroutine kept running forever against a stream that had just been deleted out from under it (injectKinesisRecord's ErrNotFound on every attempt, logged forever, never terminating). Fixed by having Reset() cancel and clear every tracked poller, plus reset the pendingFlush/sortedNamesCache maps that had the same problem (stale region/name entries surviving a Reset with no compensating cleanup, unlike DeleteDeliveryStream which already clears both). Proof: kinesis_source_test.go's TestFirehose_KinesisSource_ResetCancelsPoller, hand-reverted (git show HEAD:services/firehose/store.go), confirmed failing (PollerCount stayed 1 after Reset instead of dropping to 0), restored, md5sum byte-identical. Prior-pass claims otherwise stand: tags.Tags registries closed on Delete/Reset; streamCopy (store.go) deep-copies all destination pointer fields correctly."}
 ---
 
 ## Notes
+
+### 2026-09-07 (gopherstack-t2wb -- errtargetaudit class A findings, first triage of this block)
+
+No prior error-envelope/errtargetaudit entry existed for this service; genuinely
+untriaged. `GOTOOLCHAIN=go1.26.6 go run ./cmd/errtargetaudit`: `operations with SDK
+ground truth: 124, resolved: 12, with an emission found: 11` -- coverage warning (only
+10% of ops resolved to a handler; treated as unverified, not a signal this service is
+thin). `class A findings (2)`.
+
+Protocol confirmed AWS JSON 1.1 (`Firehose_20150804.<Op>` target,
+`application/x-amz-json-1.1`): `services/firehose/handler.go`'s `handleError` emits
+`{"__type": "<Code>Exception", "message": "..."}` off one global sentinel table
+(`ErrNotFound` -> `ResourceNotFoundException`/404, `ErrAlreadyExists` ->
+`ResourceInUseException`/400, `ErrValidation`/`awserr.ErrInvalidParameter`/JSON decode
+errors -> `InvalidArgumentException`/400) -- exactly the global-sentinel-map shape
+flagged by gopherstack-hdvu, so each finding below was checked for whether the firing
+call site's *own* declared set (not just the sentinel's typical mapping) actually
+allows the code, and whether the guard could fire in that call path at all.
+
+Verified both findings against `deserializers.go`'s per-op typed-error switch (`awk
+"/deserializeOpError<Op>\(/,/^}/" deserializers.go | grep -oE '"[A-Za-z0-9]+"'`, pinned
+`firehose@v1.46.4`) rather than trusting the tool's classification:
+
+- **`CreateDeliveryStream` / `ResourceNotFoundException`
+  (`services/firehose/encryption.go:37`, `services/firehose/tags.go:32`) -- false
+  positive, class 4 (guard cannot fire: resource created moments earlier in the same
+  request).** Raw extraction for `CreateDeliveryStream`: `UnknownError`,
+  `InvalidArgumentException`, `InvalidKMSResourceException`, `LimitExceededException`,
+  `ResourceInUseException` -- no `ResourceNotFoundException`. The sentinel references
+  are `StartDeliveryStreamEncryption`'s and `TagDeliveryStream`'s own (legitimate,
+  correctly-declared) not-found guards, reached one hop away via
+  `handler_delivery_streams.go`'s `handleCreateDeliveryStream`, which calls
+  `h.Backend.TagDeliveryStream`/`h.Backend.StartDeliveryStreamEncryption` with the exact
+  same `DeliveryStreamName` immediately after `h.Backend.CreateDeliveryStream` has just
+  inserted a stream under that same name. Each backend method takes its own
+  lock-then-release cycle (coarse `*lockmetrics.RWMutex` in `store.go`), so there is a
+  narrow theoretical window for a concurrent `DeleteDeliveryStream` on that exact
+  brand-new name to race it, but that is not a code path any single real client request
+  can hit, and matches why the real op's own declared set has no such code at all (this
+  is the same shape as elb's `CreateLoadBalancer`/`LoadBalancerNotFound` dismissal from
+  the same campaign). No fix applied.
+- **`ListDeliveryStreams` / `InvalidArgumentException`
+  (`services/firehose/handler_delivery_streams.go:1084`, pre-fix line) -- real bug,
+  FIXED.** Raw extraction for `ListDeliveryStreams`: `UnknownError` only -- the op
+  declares no exception beyond that, so per this campaign's rule it cannot legitimately
+  reject any input (the cloudcontrol `ListResourceRequests` precedent). The pre-existing
+  `isValidDeliveryStreamType` validator rejected an unrecognized `DeliveryStreamType`
+  filter value with `InvalidArgumentException`/400; deleted the validator (and the two
+  enum constants -- `deliveryStreamTypeMSKSource`/`deliveryStreamTypeDatabaseSource` --
+  that existed only to feed it) rather than remapping it. An unrecognized filter value
+  now simply matches no stored stream and returns an empty (or partial) list, same as
+  `ListDeliveryStreamsByType`'s existing string-equality filter already does for any
+  other non-matching value -- no separate code path was added.
+  `TestListDeliveryStreams_TypeFilter`'s final block previously asserted the wrong
+  behavior (`400`) with no note that it was pinning a known-bad response; corrected to
+  assert `200` and that the bogus filter matches neither existing stream. Neutered:
+  reverted the `handler_delivery_streams.go` diff, confirmed it still built, ran the
+  test -- failed exactly as expected at the new `require.Equal(t, http.StatusOK,
+  recInvalid.Code)` line (`expected: 200, actual: 400`) -- then restored the fix.
+
+No field was added to any persisted struct, so the `pkgs/persistence` snapshot-version
+guard was not run.
+
+Gates: `go build ./services/firehose/...` clean; `go test -race -count=1
+./services/firehose/...` ok (1.8s); `golangci-lint run services/firehose/...` 0 issues.
+Re-ran the tool after the fix: `with an emission found: 10`, `class A findings (1)` --
+the dismissed `CreateDeliveryStream`/`ResourceNotFoundException` finding above;
+`ListDeliveryStreams`'s finding is gone.
 
 ### 2026-08-29 pass: write-only-state sweep -- CreateDeliveryStream silently dropped three real request members
 

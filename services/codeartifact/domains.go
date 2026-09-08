@@ -84,16 +84,21 @@ func (b *InMemoryBackend) ListDomains(ctx context.Context) []*Domain {
 	return list
 }
 
-// DeleteDomain deletes a domain by name, cascade-deleting all its repositories,
-// packages, package versions, package groups, external connections, policies, and Tags.
-// A nonexistent domain returns (nil, nil) rather than ErrNotFound: unlike every
-// sibling Delete op in this package (DeleteRepository, DeletePackage,
-// DeletePackageGroup), codeartifact@v1.41.4's awsRestjson1_deserializeOpErrorDeleteDomain
-// switch does not type ResourceNotFoundException at all, so a real client would see
-// an untyped smithy.GenericAPIError instead of *types.ResourceNotFoundException.
-// Inference: a delete this op's own SDK cannot report not-found for must be
-// idempotent instead (DeleteDomainOutput.Domain is a nilable pointer on the wire,
-// so omitting it is not a fabrication).
+// DeleteDomain deletes a domain by name, cascade-deleting its package groups,
+// domain policy, and Tags. A nonexistent domain returns (nil, nil) rather than
+// ErrNotFound: unlike every sibling Delete op in this package (DeleteRepository,
+// DeletePackage, DeletePackageGroup), codeartifact@v1.41.4's
+// awsRestjson1_deserializeOpErrorDeleteDomain switch does not type
+// ResourceNotFoundException at all, so a real client would see an untyped
+// smithy.GenericAPIError instead of *types.ResourceNotFoundException. Inference: a
+// delete this op's own SDK cannot report not-found for must be idempotent instead
+// (DeleteDomainOutput.Domain is a nilable pointer on the wire, so omitting it is not
+// a fabrication).
+//
+// Per api_op_DeleteDomain.go: "You cannot delete a domain that contains
+// repositories. If you want to delete a domain with repositories, first delete its
+// repositories." -- DeleteDomain models ConflictException for exactly this, so a
+// domain with any repository is rejected instead of cascade-deleted.
 func (b *InMemoryBackend) DeleteDomain(ctx context.Context, name string) (*Domain, error) {
 	region := getRegion(ctx, b.region)
 
@@ -106,44 +111,18 @@ func (b *InMemoryBackend) DeleteDomain(ctx context.Context, name string) (*Domai
 	}
 	cp := *d
 
-	repos := slices.Clone(b.repositoriesByRegion.Get(region))
-	pkgs := slices.Clone(b.packagesByRegion.Get(region))
-	pvs := slices.Clone(b.packageVersionsByRegion.Get(region))
-	groups := slices.Clone(b.packageGroupsByRegion.Get(region))
-	externalConnections := b.externalConnectionsStore(region)
-
-	// Cascade: delete all repositories in this domain plus their dependents.
-	for _, r := range repos {
-		if r.DomainName != name {
-			continue
+	for _, r := range b.repositoriesByRegion.Get(region) {
+		if r.DomainName == name {
+			return nil, fmt.Errorf("%w: domain %s contains repositories", ErrAlreadyExists, name)
 		}
-
-		for _, p := range pkgs {
-			if p.DomainName == r.DomainName && p.Repository == r.Name {
-				b.packages.Delete(regionKey(region, packageKey(
-					p.DomainName, p.Repository, p.Format, p.Namespace, p.Name,
-				)))
-			}
-		}
-		for _, pv := range pvs {
-			if pv.DomainName == r.DomainName && pv.Repository == r.Name {
-				b.packageVersions.Delete(regionKey(region, packageVersionKey(
-					pv.DomainName, pv.Repository, pv.Format, pv.Namespace, pv.PackageName, pv.Version,
-				)))
-			}
-		}
-
-		key := repoKey(r.DomainName, r.Name)
-		delete(externalConnections, key)
-		b.repositoryPolicies.Delete(regionKey(region, key))
-		r.Tags.Close()
-		b.repositories.Delete(regionKey(region, key))
 	}
 
+	groups := slices.Clone(b.packageGroupsByRegion.Get(region))
+
 	// Cascade: delete every package group owned by this domain (ghost rows +
-	// a Tags leak otherwise -- package groups are keyed by
-	// domainName+pattern, not by repository, so they aren't covered by the
-	// repository loop above).
+	// a Tags leak otherwise -- package groups are keyed by domainName+pattern,
+	// independent of repositories, so they survive the repository-emptiness
+	// check above).
 	for _, pg := range groups {
 		if pg.DomainName != name {
 			continue
@@ -186,8 +165,12 @@ func (b *InMemoryBackend) GetDomainPermissionsPolicy(
 }
 
 // PutDomainPermissionsPolicy stores a permissions policy for a domain.
+// policyRevision, when non-empty, must match the existing policy's revision
+// (see checkPolicyRevision); a domain with no existing policy accepts any
+// policyRevision, matching PutDomainPermissionsPolicyInput's own semantics of
+// locking against a policy that must already exist to have a revision.
 func (b *InMemoryBackend) PutDomainPermissionsPolicy(
-	ctx context.Context, domainName, document string,
+	ctx context.Context, domainName, document, policyRevision string,
 ) (*DomainPermissionsPolicy, error) {
 	region := getRegion(ctx, b.region)
 
@@ -197,6 +180,12 @@ func (b *InMemoryBackend) PutDomainPermissionsPolicy(
 	d, ok := b.domains.Get(regionKey(region, domainName))
 	if !ok {
 		return nil, fmt.Errorf("%w: domain %s not found", ErrNotFound, domainName)
+	}
+
+	if existing, hasPolicy := b.domainPolicies.Get(regionKey(region, domainName)); hasPolicy {
+		if err := checkPolicyRevision(policyRevision, existing.Revision); err != nil {
+			return nil, err
+		}
 	}
 
 	pol := &DomainPermissionsPolicy{
@@ -214,8 +203,10 @@ func (b *InMemoryBackend) PutDomainPermissionsPolicy(
 
 // DeleteDomainPermissionsPolicy removes the permissions policy from a domain.
 // Returns ErrNotFound if the domain does not exist or if no policy has been set.
+// policyRevision, when non-empty, must match the existing policy's revision
+// (see checkPolicyRevision).
 func (b *InMemoryBackend) DeleteDomainPermissionsPolicy(
-	ctx context.Context, domainName string,
+	ctx context.Context, domainName, policyRevision string,
 ) (*DomainPermissionsPolicy, error) {
 	region := getRegion(ctx, b.region)
 
@@ -229,6 +220,9 @@ func (b *InMemoryBackend) DeleteDomainPermissionsPolicy(
 	pol, ok := b.domainPolicies.Get(regionKey(region, domainName))
 	if !ok {
 		return nil, fmt.Errorf("%w: no permissions policy found for domain %s", ErrNotFound, domainName)
+	}
+	if err := checkPolicyRevision(policyRevision, pol.Revision); err != nil {
+		return nil, err
 	}
 	cp := *pol
 	b.domainPolicies.Delete(regionKey(region, domainName))

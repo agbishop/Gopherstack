@@ -643,3 +643,32 @@ func TestAppStream_FleetStartedStateRunning(t *testing.T) {
 	fleet := resp["Fleets"].([]any)[0].(map[string]any)
 	assert.Equal(t, "RUNNING", fleet["State"])
 }
+
+// TestAppStream_DeleteFleet_ClearsAssociations proves DeleteFleet drops the
+// deleted fleet's own association-map entry rather than leaving it behind
+// keyed by the (reusable) fleet name. Regression for gopherstack-65w:
+// DeleteFleet previously iterated every fleet's stack-association map trying
+// to delete an entry keyed by the deleted *fleet's* name -- a no-op, since
+// those inner maps are keyed by stack name -- so b.associations[name] itself
+// was never removed. A fleet re-created with the same name then inherited
+// the stale associations of the fleet it replaced.
+func TestAppStream_DeleteFleet_ClearsAssociations(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	createFleet(t, h, "reused-fleet")
+	createStack(t, h, "ghost-stack")
+	doRequest(t, h, "AssociateFleet", map[string]any{"FleetName": "reused-fleet", "StackName": "ghost-stack"})
+
+	rec := doRequest(t, h, "DeleteFleet", map[string]any{"Name": "reused-fleet"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	createFleet(t, h, "reused-fleet")
+
+	rec = doRequest(t, h, "ListAssociatedStacks", map[string]any{"FleetName": "reused-fleet"})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	assert.Empty(t, resp["Names"], "re-created fleet must not inherit the deleted fleet's stack associations")
+}

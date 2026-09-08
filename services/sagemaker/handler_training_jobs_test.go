@@ -62,11 +62,50 @@ func TestHandler_TrainingJobLifecycle(t *testing.T) {
 	})
 	assert.Equal(t, http.StatusOK, recUpdate.Code)
 
+	// Wait for the simulated job to leave Stopping before deleting it.
+	time.Sleep(400 * time.Millisecond)
+
 	// DeleteTrainingJob.
 	recDelete := doSageMakerRequest(t, h, "DeleteTrainingJob", map[string]any{
 		"TrainingJobName": "my-training-job",
 	})
 	assert.Equal(t, http.StatusOK, recDelete.Code)
+}
+
+// TestHandler_DeleteTrainingJob_InProgress asserts that DeleteTrainingJob
+// rejects a job that is still InProgress or Stopping, matching
+// DeleteProcessingJob's sibling guard
+// (api_op_DeleteTrainingJob.go: "You cannot delete a job that is in the
+// InProgress or Stopping state.").
+func TestHandler_DeleteTrainingJob_InProgress(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doSageMakerRequest(t, h, "CreateTrainingJob", map[string]any{
+		"TrainingJobName":        "del-tj",
+		"AlgorithmSpecification": map[string]any{"TrainingInputMode": "File"},
+		"OutputDataConfig":       map[string]any{"S3OutputPath": "s3://bucket/output"},
+		"ResourceConfig": map[string]any{
+			"InstanceType":   "ml.m5.large",
+			"InstanceCount":  1,
+			"VolumeSizeInGB": 20,
+		},
+		"StoppingCondition": map[string]any{"MaxRuntimeInSeconds": 3600},
+	})
+
+	// Cannot delete while still InProgress.
+	recEarly := doSageMakerRequest(t, h, "DeleteTrainingJob", map[string]any{"TrainingJobName": "del-tj"})
+	assert.Equal(t, http.StatusBadRequest, recEarly.Code)
+
+	// Wait for the simulated job to reach a terminal state.
+	time.Sleep(400 * time.Millisecond)
+
+	recDelete := doSageMakerRequest(t, h, "DeleteTrainingJob", map[string]any{"TrainingJobName": "del-tj"})
+	require.Equal(t, http.StatusOK, recDelete.Code)
+
+	recDescribe := doSageMakerRequest(t, h, "DescribeTrainingJob", map[string]any{"TrainingJobName": "del-tj"})
+	assert.Equal(t, http.StatusBadRequest, recDescribe.Code)
 }
 
 // TestHandler_UpdateTrainingJob_KeepAlivePeriod_RealClient asserts

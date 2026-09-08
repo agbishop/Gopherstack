@@ -1,6 +1,6 @@
 ---
 service: iot
-sdk_module: aws-sdk-go-v2/service/iot@v1.77.4
+sdk_module: aws-sdk-go-v2/service/iot@v1.83.0
 sibling_sdk_modules: [aws-sdk-go-v2/service/iotdataplane@v1.35.0]  # device-shadow ops (Get/Update/DeleteThingShadow, ListNamedShadowsForThing); see device_shadows family
 last_audit_commit: 2a94081753c196de1bbad6b25b8f9b9a90dce321  # pass #4; pass #5 below is uncommitted at write time
 last_audit_date: 2026-08-29
@@ -162,12 +162,13 @@ ops:
   CreateThing: {wire: ok, errors: ok, state: ok, persist: ok, note: "now accepts+wires billingGroupName (was silently dropped)"}
   DescribeThing: {wire: ok, errors: ok, state: ok, persist: ok, note: "now returns billingGroupName (was omitted entirely)"}
   UpdateThing: {wire: ok, errors: ok, state: ok, persist: ok, note: "AttributePayload.merge default was inverted (defaulted to merge; AWS defaults to replace) and empty-value attribute removal was missing -- both fixed via applyAttributePayload"}
-  DeleteThing: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteThing: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED (gopherstack-4c0r, b8484292f) -- left b.resourceTags[thingARN] and b.thingBillingGroups[thingName] behind, inherited by a recreated thing of the same name (ListTagsForResource / DescribeThing.BillingGroupName); now cleared alongside its existing jobExecutions cascade. Regression: TestDeleteThing_ClearsGhostStateOnRecreate. Map enumeration (that pass) found the same resourceTags gap unfixed on the rest of this service's Delete* paths (filed gopherstack-1ycq) and a related but distinct ghost-reference bug where DeleteThingGroup/DeleteBillingGroup don't clean the thingThingGroups/thingBillingGroups reverse index for surviving members (filed gopherstack-6pt8). Both now resolved (2026-09-06 pass) -- see the Notes section entry for the full enumeration, observability verdicts, and regression tests; neither was DeleteThing's own bug, so this entry is unchanged beyond the status update."}
   ListThings: {wire: ok, errors: ok, state: ok, persist: ok}
   CreateThingGroup: {wire: ok, errors: ok, state: ok, persist: ok}
   DescribeThingGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "thingGroupMetadata.creationDate was a raw time.Time (RFC3339 string on the wire) instead of epoch-seconds; fixed via awstime.Epoch"}
   UpdateThingGroup: {wire: ok, errors: ok, state: ok, persist: ok, note: "same AttributePayload.merge bug as UpdateThing (handler didn't even parse merge from the request); fixed with the same applyAttributePayload helper"}
-  DeleteThingGroup: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteThingGroup: {wire: ok, errors: ok, state: fixed, persist: ok, note: "(gopherstack-1ycq/6pt8, 2026-09-06) left b.resourceTags[thingGroupARN] behind on delete (fixed, same shape as DeleteThing/DeletePolicy) and never removed the deleted group from thingThingGroups for surviving former members, so SearchIndex kept reporting membership in a group that no longer existed (fixed via the same removeThingFromGroupIndexes helper UpdateThingGroupsForThing already used correctly). DeleteDynamicThingGroup had both identical gaps (shares thingGroups/thingGroupMembers with the static path) and got the same fix. Regressions: TestDeleteResource_ClearsResourceTagsOnRecreate/{thing_group,dynamic_thing_group}, TestDeleteThingGroup_ClearsReverseIndexForSurvivingMembers, TestDeleteDynamicThingGroup_ClearsReverseIndexForSurvivingMembers."}
+  RemoveThingFromThingGroup: {wire: ok, errors: ok, state: fixed, persist: ok, note: "(gopherstack-6pt8, 2026-09-06) only updated thingGroupMembers[groupName], never thingThingGroups[thingName] -- inconsistent with its own sibling UpdateThingGroupsForThing's ThingGroupsToRemove path, which already called the shared removeThingFromGroupIndexes helper correctly. Now calls the same helper. Regression: TestRemoveThingFromThingGroup_UpdatesReverseIndex (negative: TestRemoveThingFromThingGroup_LeavesOtherGroupsIntact)."}
   AttachPolicy: {wire: ok, errors: ok, state: ok, persist: ok, note: "was appending without dedup, so double-attach produced duplicate ListAttachedPolicies entries; fixed with appendUnique (AWS attach ops are idempotent/set semantics)"}
   AttachPrincipalPolicy: {wire: ok, errors: ok, state: ok, persist: ok, note: "same duplicate-entry bug as AttachPolicy; fixed"}
   AttachThingPrincipal: {wire: ok, errors: ok, state: ok, persist: ok, note: "same duplicate-entry bug; fixed"}
@@ -176,20 +177,20 @@ ops:
   ListSecurityProfiles: {wire: fixed, errors: ok, state: ok, persist: ok, note: "(pass #4) two real bugs: (1) RouteMatcher whitelist never matched plain \"/security-profiles\" (no trailing slash) -- op dispatch was already correct, but no real client request ever reached it; fixed. (2) securityProfileIdentifiers entries used the full \"securityProfileName\"/\"securityProfileArn\" keys instead of the real, shortened \"name\"/\"arn\" (types.SecurityProfileIdentifier, confirmed against awsRestjson1_deserializeDocumentSecurityProfileIdentifier) -- fixed. Also now paginates via maxResults/nextToken (previously unpaginated)."}
   ListSecurityProfilesForTarget: {wire: fixed, errors: ok, state: ok, persist: ok, note: "(pass #4) same RouteMatcher-whitelist gap as ListSecurityProfiles for \"/security-profiles-for-target\"; fixed. Also, securityProfileTargetMappings entries were missing both the identifier's \"arn\" and the entire sibling \"target\" object real types.SecurityProfileTargetMapping has (confirmed against awsRestjson1_deserializeDocumentSecurityProfileTargetMapping); fixed. Also now paginates."}
   ListTargetsForSecurityProfile: {wire: fixed, errors: ok, state: ok, persist: ok, note: "(pass #4) securityProfileTargets entries used an invented \"securityProfileTargetArn\" key instead of the real \"arn\" (types.SecurityProfileTarget, confirmed against awsRestjson1_deserializeDocumentSecurityProfileTarget); fixed. Already reachable (RouteMatcher whitelists /security-profiles/ as a prefix). Also now paginates."}
-  DeleteSecurityProfile: {wire: ok, errors: ok, state: fixed, persist: ok, note: "(pass #4) never cleaned up the deleted profile's securityProfileTargets attachment-map entry, leaving a ghost row a same-named profile re-created later would incorrectly inherit; fixed via cascade-delete."}
+  DeleteSecurityProfile: {wire: ok, errors: ok, state: fixed, persist: ok, note: "(pass #4) never cleaned up the deleted profile's securityProfileTargets attachment-map entry, leaving a ghost row a same-named profile re-created later would incorrectly inherit; fixed via cascade-delete. (gopherstack-1ycq, 2026-09-06) also left b.resourceTags[securityProfileARN] behind; fixed the same way. Regression: TestDeleteResource_ClearsResourceTagsOnRecreate/security_profile."}
   ValidateSecurityProfileBehaviors: {wire: ok, errors: ok, state: ok, persist: n/a, note: "(pass #4) re-verified reachable (POST /security-profile-behaviors/validate, already RouteMatcher-whitelisted via pathValidateSecurityProfileBehaviors) and its standalone validation-only semantics unchanged; its SecurityProfileBehavior/SecurityProfileBehaviorCriteria shapes were extended (not duplicated) to also serve as the real persisted Behaviors shape -- see security_profiles family note."}
   DetachPolicy: {wire: ok, errors: ok, state: ok, persist: ok}
   ListAttachedPolicies: {wire: ok, errors: ok, state: ok, persist: ok}
   CreatePolicy: {wire: ok, errors: ok, state: ok, persist: ok}
   GetPolicy: {wire: ok, errors: ok, state: ok, persist: ok, note: "creationDate/lastModifiedDate were raw time.Time (RFC3339 string) instead of epoch-seconds; fixed via awstime.Epoch"}
-  DeletePolicy: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeletePolicy: {wire: ok, errors: ok, state: fixed, persist: ok, note: "(gopherstack-6kyn sweep) left two ghost rows: resourceTags[policyARN] (already tracked by gopherstack-6kyn, fixed prior pass) and policyVersions[policyName] -- the latter meant GetPolicyVersion on a deleted policy still returned the stale default version instead of ErrPolicyVersionNotFound (ListPolicyVersions was unaffected: it already checked policies.Has first). CreatePolicy overwrites policyVersions[name] wholesale, so a same-named recreate wasn't vulnerable, but the direct-get leak was real and observable; fixed via delete(b.policyVersions, policyName)."}
   ListPolicies: {wire: fixed, errors: ok, state: ok, persist: ok, note: "2026-08-29 (wrapper-key-sweep): two bugs. (1) binding trap -- handler read maxResults/nextToken (parseIoTPagination) but the real wire binding is pageSize/marker (serializers.go awsRestjson1_serializeOpHttpBindingsListPoliciesInput), so a real client's pageSize/marker were silently ignored; switched to parseIoTMarkerPagination. (2) AscendingOrder (\"results are returned in ascending creation order\") was never read at all -- results were always name-sorted (ListPolicies() default), not by CreatedAt; now sorted by CreatedAt per the flag."}
   CreatePolicyVersion: {wire: fixed, errors: ok, state: ok, persist: ok, note: "response was missing policyArn (real CreatePolicyVersionOutput has it); fixed"}
   GetPolicyVersion: {wire: fixed, errors: ok, state: ok, persist: ok, note: "used wrong date field name \"createDate\" (real GetPolicyVersionOutput uses \"creationDate\", verified against v1.76.0's awsRestjson1_deserializeOpDocumentGetPolicyVersionOutput -- \"createDate\" is only correct for the ListPolicyVersions summary shape) and was missing generationId/lastModifiedDate + epoch encoding; fixed, added GenerationID to the PolicyVersion domain type"}
   ListPolicyVersions: {wire: fixed, errors: ok, state: ok, persist: ok, note: "createDate was a raw time.Time; fixed via awstime.Epoch"}
   CreateTopicRule: {wire: ok, errors: ok, state: ok, persist: ok}
   GetTopicRule: {wire: fixed, errors: ok, state: ok, persist: ok, note: "rule.createdAt was a raw time.Time (RFC3339 string) instead of epoch-seconds; fixed via awstime.Epoch"}
-  DeleteTopicRule: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteTopicRule: {wire: ok, errors: ok, state: fixed, persist: ok, note: "(gopherstack-1ycq, 2026-09-06) left b.resourceTags[ruleARN] behind on delete, inherited by a same-named recreate; fixed. Regression: TestDeleteResource_ClearsResourceTagsOnRecreate/topic_rule."}
   ReplaceTopicRule: {wire: ok, errors: ok, state: ok, persist: ok}
   EnableTopicRule: {wire: ok, errors: ok, state: ok, persist: ok}
   DisableTopicRule: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -219,7 +220,7 @@ ops:
   GetJobDocument: {wire: fixed, errors: ok, state: ok, persist: ok, note: "(pass #3) was routed at /jobs/{jobId}/document; real AWS IoT's GetJobDocument path is /jobs/{jobId}/job-document (confirmed against awsRestjson1_serializeOpGetJobDocument's SplitURI call) -- completely unreachable by any real SDK client. Fixed."}
   ListJobs: {wire: ok, errors: ok, state: ok, persist: ok, note: "(pass #3) op dispatch itself was already correct, but the RouteMatcher whitelist (the layer deciding whether a request reaches the IoT handler at all in a real deployment) never matched \"/jobs\" with no trailing slash -- a real ListJobs request never reached op dispatch. Fixed in matchCoreIoTPathSecondary/matchJobAndTemplatePath (handler_routing.go)."}
   ListJobTemplates: {wire: ok, errors: ok, state: ok, persist: ok, note: "(pass #3) same RouteMatcher-whitelist gap as ListJobs -- the entire /job-templates path family (this op plus CreateJobTemplate/DescribeJobTemplate/DeleteJobTemplate) was absent from the whitelist, so no request in that family ever reached the IoT handler in a real deployment. Fixed."}
-  DeleteJobTemplate: {wire: ok, errors: ok, state: ok, persist: ok, note: "(pass #3) same RouteMatcher-whitelist gap as ListJobs/ListJobTemplates; fixed"}
+  DeleteJobTemplate: {wire: ok, errors: ok, state: fixed, persist: ok, note: "(pass #3) same RouteMatcher-whitelist gap as ListJobs/ListJobTemplates; fixed. (gopherstack-1ycq, 2026-09-06) also left b.resourceTags[jobTemplateARN] behind; fixed. Regression: TestDeleteResource_ClearsResourceTagsOnRecreate/job_template."}
   AssociateTargetsWithJob: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "mutated jobTargets for any job ID without checking the job existed; now returns ResourceNotFoundException for an unknown job (gopherstack-ep0r). (pass #3) response was also missing \"description\" (real AssociateTargetsWithJobOutput has it); newly associated targets are now merged into the job's own Targets list (previously only written to an otherwise-unread jobTargets map, so DescribeJob never reflected them) and immediately fanned out into QUEUED JobExecution rows, matching CreateJob's own fan-out for a CONTINUOUS job's initial targets."}
   DescribeJobExecution: {wire: fixed, errors: ok, state: ok, persist: ok, note: "(2026-07-25 #2) was routed under /jobs/{jobId}/things/{thingName}, a path no real client sends (real AWS: /things/{thingName}/jobs/{jobId}, confirmed against serializers.go http bindings) -- completely unreachable by a real SDK client. Also leaked an invented \"thingName\" field instead of the real \"thingArn\", and was missing statusDetails/versionNumber/forceCanceled/approximateSecondsBeforeTimedOut entirely. Both fixed."}
   CancelJobExecution: {wire: fixed, errors: fixed, state: fixed, persist: ok, note: "(2026-07-25 #2) same routing bug as DescribeJobExecution, fixed. Also silently ignored force/expectedVersion/statusDetails entirely; now rejects an IN_PROGRESS cancel without force=true (InvalidStateTransitionException) and a mismatched expectedVersion (VersionConflictException), matching real CancelJobExecutionInput semantics"}
@@ -262,7 +263,7 @@ families:
   device_defender: {status: ok, note: "(pass #3) CLOSED for everything within this family's own scope. StartAuditMitigationActionsTask's target resolution fixed (combined auditTaskId+auditCheckToReasonCodeFilter AND semantics, real reason-code-list matching instead of check-name-only). ML-Detect surface (StartDetectMitigationActionsTask and siblings) field-diffed: DetectMitigationActionsTaskSummary's actionsDefinition wire shape fixed (was an invented \"actions\" field), ListDetectMitigationActionsTasks now returns the same rich summary type Describe does (was a hand-picked 4-field subset), DetectMitigationActionExecution's executionStartDate/executionEndDate field names fixed (were wire-keyed wrong), violationEventOccurrenceRange added. Violations surface (ListActiveViolations/ListViolationEvents) field-diffed: lastViolationTime/violationEventAdditionalInfo added, listSuppressedAlerts filter implemented. ListAuditFindings.resourceIdentifier filtering implemented (previously the family's most-cited unimplementable gap) by modeling a real, fully-typed ResourceIdentifier struct instead of a freeform map. Also found the entire \"/mitigationactions/\" path family (CreateMitigationAction and siblings) was absent from the RouteMatcher whitelist -- completely unreachable in a real deployment despite correct op-dispatch routing. (pass #4) ListActiveViolations/ListViolationEvents' behaviorCriteriaType filter is now also implemented, once security_profiles (see below) closed the Behaviors-persistence gap that previously blocked it."}
   security_profiles: {status: ok, note: "(pass #4) CLOSED. CreateSecurityProfile's real input (types.CreateSecurityProfileInput) has Behaviors/AlertTargets/AdditionalMetricsToRetain/AdditionalMetricsToRetainV2/MetricsExportConfig -- this backend's SecurityProfile struct stored NONE of them; the request fields were silently accepted and dropped (the same severe 'dropped request field' bug class flagged elsewhere in this campaign, e.g. elasticache). All five are now modeled on SecurityProfile and wired end-to-end. Extended (rather than duplicated) ValidateSecurityProfileBehaviors' existing SecurityProfileBehavior/SecurityProfileBehaviorCriteria shapes to also be the real persisted Behaviors shape: SecurityProfileBehavior gained MetricDimension/ExportMetric/SuppressAlerts, SecurityProfileBehaviorCriteria gained Value/StatisticalThreshold/MlDetectionConfig (field-diffed against types.Behavior/types.BehaviorCriteria). New types SecurityProfileAlertTarget/SecurityProfileMetricToRetain/SecurityProfileMetricsExportConfig/SecurityProfileMetricDimension/SecurityProfileMetricValue/SecurityProfileStatisticalThreshold/SecurityProfileMLDetectionConfig mirror types.AlertTarget/MetricToRetain/MetricsExportConfig/MetricDimension/MetricValue/StatisticalThreshold/MachineLearningDetectionConfig. DescribeSecurityProfile/UpdateSecurityProfile field-diffed against DescribeSecurityProfileOutput/UpdateSecurityProfileOutput and confirmed to have had the identical gap (UpdateSecurityProfile previously accepted only securityProfileDescription); both rebuilt to return the full real field set, epoch-encoded creationDate/lastModifiedDate. UpdateSecurityProfile now also implements ExpectedVersion's optimistic-lock semantics (-> ErrVersionConflict/VersionConflictException on mismatch, confirmed against awsRestjson1_serializeOpHttpBindingsUpdateSecurityProfileInput -- expectedVersion is a QUERY parameter, not a body field) and every DeleteX-flag-vs-field mutual exclusion rule (deleteBehaviors/deleteAlertTargets/deleteAdditionalMetricsToRetain/deleteMetricsExportConfig, each rejecting InvalidRequestException-mapped ErrValidation when the corresponding field is also supplied in the same call, matching real AWS's documented semantics). Also found and fixed a real 'invented field' leak while field-diffing: SecurityProfile's pre-existing Tags field was surfaced on Describe/Update responses, but real DescribeSecurityProfileOutput/UpdateSecurityProfileOutput have NO \"tags\" field at all (tags are only ever retrievable via the separate ListTagsForResource op) -- fixed via json:\"-\" (same pattern as Job/JobTemplate's previously-fixed leaked \"tags\"). Persistence required no persistence.go changes: SecurityProfile already round-trips via the generic store.Table[SecurityProfile] registry (store.go/store_setup.go), which marshals the full struct -- confirmed by a new persistence regression case seeding a profile with all five previously-dropped fields. Closing this also unblocked device_defender's ListActiveViolations/ListViolationEvents behaviorCriteriaType filter (STATIC/STATISTICAL/MACHINE_LEARNING, types.BehaviorCriteriaType), now implemented via securityProfileBehaviorCriteriaTypeLocked, which resolves a violation's owning security profile's now-real stored Behaviors live -- see device_defender's own families: entry, updated below. ROUTING VERIFIED: with the Behaviors gap closed, every security-profile op (CreateSecurityProfile, UpdateSecurityProfile, DescribeSecurityProfile, ListSecurityProfiles, ListSecurityProfilesForTarget, AttachSecurityProfile, DetachSecurityProfile, ListTargetsForSecurityProfile, ValidateSecurityProfileBehaviors) was driven through a real generated AWS SDK v2 IoT client against the actual service.Router path (newIoTSDKClient/TestSecurityProfile_RoutingWireShapesAndBehaviorCriteriaType_SDKRoundTrip, handler_security_profiles_test.go; also TestHandler_RouteMatcher's list_security_profiles/list_security_profiles_for_target cases), not just h.Handler() directly -- the same class of gate three prior passes each found real bugs in for other op families. This turned up two more, previously-undiscovered bugs in this family specifically: (1) ListSecurityProfiles (GET /security-profiles, no trailing slash) and ListSecurityProfilesForTarget (GET /security-profiles-for-target) were BOTH entirely absent from the RouteMatcher whitelist (matchCoreIoTPathSecondary, handler_routing.go) -- op dispatch itself (resolveSecurityProfileOps) already handled both paths correctly, but a real client's request never reached op dispatch at all in a real deployment; fixed. (2) three wire-shape key-name bugs, confirmed against v1.76.0's awsRestjson1_deserializeDocumentSecurityProfileIdentifier/SecurityProfileTarget/SecurityProfileTargetMapping: ListSecurityProfiles' securityProfileIdentifiers used the full \"securityProfileName\"/\"securityProfileArn\" keys instead of the real, SHORTENED \"name\"/\"arn\" SecurityProfileIdentifier keys; ListTargetsForSecurityProfile's securityProfileTargets used an invented \"securityProfileTargetArn\" key instead of the real \"arn\"; ListSecurityProfilesForTarget's securityProfileTargetMappings nested only {securityProfileIdentifier:{name}} with no arn and no sibling \"target\" object at all, instead of the real {securityProfileIdentifier:{name,arn}, target:{arn}} -- a real client's deserializer would have left the affected fields permanently nil/empty under all three. All three fixed; all three List ops also gained maxResults/nextToken pagination (previously always returned every item in one page, unlike sibling List ops elsewhere in this service). Two smaller bugs found in the same pass: DetachSecurityProfile silently no-op'd for an unknown security profile name instead of returning ResourceNotFoundException (AttachSecurityProfile already had this validation, from gopherstack-ep0r, but it was never mirrored onto Detach); and DeleteSecurityProfile never cleaned up the deleted profile's entry in the securityProfileTargets attachment map, leaving a ghost row that a same-named profile re-created later would incorrectly inherit -- both fixed (TestSecurityProfile_DetachNotFoundAndDeleteCascade)."}
   fleet_indexing: {status: ok, note: "Field-diffed against v1.76.0 this pass (previously entirely untouched). Two real, previously-unflagged wire-shape bugs found and fixed: (1) SearchIndex's ThingGroupDocument sent a single \"parentGroupName\" string (direct parent only) instead of the real \"parentGroupNames\" LIST field (the full ancestor chain) -- confirmed against awsRestjson1_deserializeDocumentThingGroupDocument, a real client's deserializer would never find the key it looks for under the old shape and silently leave the field empty; also added the missing \"thingGroupDescription\" field. (2) DescribeThingGroup's thingGroupMetadata was completely missing \"rootToParentThingGroups\" (root-first ancestor name+ARN list) -- confirmed against awsRestjson1_deserializeDocumentThingGroupMetadata; not implemented at all previously. Both fixed via a new thingGroupAncestors backend helper (indexing.go) that reconstructs the full chain by walking gopherstack's per-group direct-ParentGroupName links, since the domain model only stores one level per group. (3) GetStatistics' Statistics response was missing \"sumOfSquares\" entirely (types.Statistics has it; confirmed against awsRestjson1_deserializeDocumentStatistics) -- fixed by computing it in computeStatistics alongside the existing sum/variance accumulation. GetCardinality/GetPercentiles/GetBucketsAggregation/DescribeIndex/ListIndices output shapes also field-diffed against their real GetCardinalityOutput/GetPercentilesOutput/GetBucketsAggregationOutput/types.PercentPair/types.Bucket counterparts -- no further gaps found on this pass's sample."}
-  billing_group: {status: ok, note: "AddThingToBillingGroup/RemoveThingFromBillingGroup/ListThingsInBillingGroup verified real state mutation via thingBillingGroups map; DescribeThing now surfaces it (see CreateThing/DescribeThing above)"}
+  billing_group: {status: fixed, note: "AddThingToBillingGroup/RemoveThingFromBillingGroup/ListThingsInBillingGroup verified real state mutation via thingBillingGroups map; DescribeThing now surfaces it (see CreateThing/DescribeThing above). (gopherstack-1ycq/6pt8, 2026-09-06) DeleteBillingGroup left two ghost rows: b.resourceTags[billingGroupARN] (same shape as the rest of gopherstack-1ycq) and thingBillingGroups[thingName] for every thing still pointing at the deleted group, so DescribeThing.BillingGroupName kept naming a group that no longer existed (RemoveThingFromBillingGroup already clears this correctly for a single thing; DeleteBillingGroup just never swept the rest). Both fixed. Regressions: TestDeleteResource_ClearsResourceTagsOnRecreate/billing_group, TestDeleteBillingGroup_ClearsThingBillingGroupsForSurvivingMembers."}
   persistence: {status: ok, note: "backendSnapshot/Restore in persistence.go covers all backend maps observed during this audit (policyTargets, thingPrincipals, thingBillingGroups, thingThingGroups, securityProfileTargets, resourceTags, certificateTransfers, etc.); Handler.Snapshot/Restore already delegate correctly -- no gaps found. Certificate struct's new transfer-lifecycle fields (OwnedBy/PreviousOwnedBy/GenerationID/CertificateMode/CustomerVersion/Validity*/Transfer*) round-trip correctly since persistence marshals the full struct, not the handler-layer wire shape."}
   fleet_metric: {status: ok, note: "(pass #5, 2026-08-13, gopherstack-oc9v) CLOSED. Prior pass fixed UpdateFleetMetric's dropped expectedVersion but left indexName/aggregationType/aggregationField/queryVersion/unit unfixed. This pass converted handler_metrics.go's 3 remaining anonymous inline request structs (UpdateFleetMetric, UpdateCustomMetric, UpdateDimension -- part of the wire-sweep-blind-spot campaign, gopherstack-oc9v) to named types (UpdateFleetMetricInput/UpdateCustomMetricInput/UpdateDimensionInput, metrics.go), and while doing so field-diffed the whole family against v1.77.4's UpdateFleetMetricInput/CreateFleetMetricInput/DescribeFleetMetricOutput directly. Fixed all 5 of those documented UpdateFleetMetric gaps (indexName, aggregationType, aggregationField, queryVersion, unit all now applied). Also found a SIXTH, previously-untracked gap the same diff surfaced: CreateFleetMetricInput was ALSO missing aggregationField/aggregationType entirely (both `This member is required` on the real type) -- CreateFleetMetric silently dropped them with no error, and FleetMetric never modeled them at all, so DescribeFleetMetric/ListFleetMetrics could never have surfaced them either even if a caller worked around the drop. New `AggregationType{Name,Values}` type (metrics.go) mirrors types.AggregationType; both Create and Update now thread aggregationField/aggregationType through end to end (request parsing, backend storage on FleetMetric, response wire shape -- confirmed against awsRestjson1_deserializeOpDocumentDescribeFleetMetricOutput's \"aggregationField\"/\"aggregationType\" keys, aggregationType nested as {name,values}). UpdateCustomMetric/UpdateDimension's inline structs were already field-complete (DisplayName-only / StringValues-only, matching real UpdateCustomMetricInput/UpdateDimensionInput exactly) -- converted for tooling visibility only, no bug. Regression: TestFleetMetric_AggregationAndUpdateFields (handler_metrics_test.go), verified to fail against the pre-fix code by temporarily reverting the field-wiring."}
   device_shadows: {status: ok, note: "NEW entry (2026-07-31, reverse sdkcheck sweep, gopherstack-vhw2): DeleteThingShadow/GetThingShadow/ListNamedShadowsForThing/UpdateThingShadow are real IoT Data Plane operations, on a separate SDK client (aws-sdk-go-v2/service/iotdataplane) from this service's control-plane client (aws-sdk-go-v2/service/iot) -- confirmed by name against iotdataplane.Client. pkgs/sdkcheck's reverse check was flagging all 4 as 'phantom' only because it compared them against iotsdk.Client instead of iotdataplanesdk.Client; sdk_completeness_test.go now checks this family separately against the correct client (notImplemented: DeleteConnection/GetConnection/GetRetainedMessage/ListRetainedMessages/ListSubscriptions/Publish/SendDirectMessage, the rest of that client's surface, covered instead by the separate services/iotdataplane package -- this Handler's shadow REST routes (handler_shadows.go) and services/iotdataplane's own shadow implementation are a pre-existing duplication across the two packages, not introduced by this fix and not resolved here). No wire-shape field-diff done, naming/completeness only."}
@@ -1724,3 +1725,248 @@ caused by or related to this pass), `go test -race -count=1
 issues; one `unparam` finding on the first-draft `respondAsCode(..., status
 int)` was fixed by dropping the always-409 `status` parameter and renaming
 to `respondAsConflictCode`, not suppressed).
+
+- **2026-09-06 pass (gopherstack-1ycq, gopherstack-6pt8)**: resolved both
+  ghost-row bugs the 4c0r/6kyn sweep found but left filed for a future pass
+  (see the `DeleteThing` entry above).
+
+  **gopherstack-1ycq (resourceTags leak on delete)**: enumerated every
+  `putResourceTagsLocked` call site (the only way a resource's tags enter
+  `b.resourceTags`) against every `Delete*` path. 26 taggable resource
+  types exist; before this pass only `DeleteThing` and `DeletePolicy`
+  cleared their entry. The other 24 leaked -- the prior pass's "22" was an
+  estimate, not a count; the real number, enumerated here, is 24:
+  `DeleteScheduledAudit`, `DeleteMitigationAction`,
+  `DeleteCertificateProvider`, `DeleteCACertificate`, `DeleteAuthorizer`,
+  `DeleteCommand`, `DeleteIoTPackage`, `DeleteIoTPackageVersion`,
+  `DeleteJob`, `DeleteJobTemplate`, `DeleteBillingGroup`,
+  `DeleteTopicRule`, `DeleteThingType`, `DeleteFleetMetric`,
+  `DeleteCustomMetric`, `DeleteDimension`, `DeleteOTAUpdate`,
+  `DeleteRoleAlias`, `DeleteDomainConfiguration`,
+  `DeleteProvisioningTemplate`, `DeleteStream`, `DeleteSecurityProfile`,
+  `DeleteThingGroup`, `DeleteDynamicThingGroup`.
+
+  For each, checked whether the leak is *observable*: is the resource's ARN
+  deterministic from its user-chosen name/id (so delete + recreate under
+  the same name lands on the same ARN and `ListTagsForResource` returns the
+  stale tags), or does the ARN embed a value regenerated fresh on every
+  create regardless of user input (making the leaked map entry permanently
+  unreachable -- the same "unobservable, declined" shape an earlier ec2
+  pass in this campaign correctly left alone)? 23 of the 24 build their ARN
+  from `fmt.Sprintf(".../%s", <user-chosen name or id>)` -- deterministic,
+  observable, fixed. The 24th, `DeleteCACertificate`, is the exception:
+  `RegisterCACertificate` mints `id := uuid.NewString()[:12]` fresh on
+  every call regardless of PEM content, so no re-register can ever land on
+  a deleted cert's old ARN again. Left unfixed with a landmine comment at
+  the call site explaining why -- there is no reachable path to prove a
+  fix with a real observable-leak test, and no such test was written.
+
+  Regression tests: `tags_delete_cleanup_test.go` adds
+  `TestDeleteResource_ClearsResourceTagsOnRecreate` and
+  `TestDeleteResource_LeavesOtherResourceTagsIntact`, both table-driven
+  over the 23 fixed resource types via a shared `tagCleanupCase` (a
+  `create`/`delete` closure pair per type) -- each type gets its own
+  subtest, so a regression in one type's cleanup fails only that subtest,
+  not a shared assertion. The first proves delete -> recreate under the
+  same key yields no stale tags (and that the ARN really is stable,
+  guarding against a future accidental ARN change silently making the test
+  meaningless); the second proves deleting one resource doesn't touch a
+  surviving resource of the same type. All 23 fixes were verified to fail
+  their own subtest, and only their own subtest, when neutered individually
+  by exact line content (confirmed compiling after the neuter, confirmed
+  restored byte-for-byte after) -- see commit for the full neuter log.
+
+  **gopherstack-6pt8 (thingThingGroups/thingBillingGroups reverse-index
+  staleness)**: `thingGroupMembers` (group -> members) and `thingThingGroups`
+  (thing -> groups) are meant to be kept symmetric; `UpdateThingGroupsForThing`
+  already did this correctly via a shared `removeThingFromGroupIndexes`
+  helper. `DeleteThingGroup`/`DeleteDynamicThingGroup` and
+  `RemoveThingFromThingGroup` did not use it and only updated
+  `thingGroupMembers`, leaving `thingThingGroups` stale. This is observable
+  through `SearchIndex`'s `AWS_Things` index (`ThingGroupNames` field and
+  `thingGroupNames:` query key), which reads `thingThingGroups` directly
+  (`searchThingsIndex`/`matchedThings`, indexing.go) -- NOT through
+  `ListThingGroupsForThing`, which was already correct (it derives from
+  `thingGroupMembers`, not `thingThingGroups`).
+
+  Fix semantics: `RemoveThingFromThingGroup` removes one thing from one
+  group -- the group survives, so only that thing's `thingThingGroups`
+  entry loses that one group name; now implemented as a direct call to
+  `removeThingFromGroupIndexes`. `DeleteThingGroup`/`DeleteDynamicThingGroup`
+  remove the whole group -- every former member's `thingThingGroups` entry
+  loses that group name (the group's own `thingGroupMembers` entry is
+  deleted outright either way, so calling the helper once per former member
+  before the group-level delete is sufficient and correct).
+  `DeleteBillingGroup` has the same shape one level over: it left
+  `thingBillingGroups[thingName]` pointing at the deleted group for every
+  member, so `DescribeThing.BillingGroupName` kept naming a group that no
+  longer existed; fixed by clearing every `thingBillingGroups` entry equal
+  to the deleted group's name (matching the shape `RemoveThingFromBillingGroup`
+  already used for a single thing).
+
+  Regression tests: `thing_group_reverse_index_test.go` --
+  `TestRemoveThingFromThingGroup_UpdatesReverseIndex` (+ negative
+  `_LeavesOtherGroupsIntact`), `TestDeleteThingGroup_ClearsReverseIndexForSurvivingMembers`
+  (one surviving member keeps its other group, one loses its only group),
+  `TestDeleteDynamicThingGroup_ClearsReverseIndexForSurvivingMembers`, and
+  `TestDeleteBillingGroup_ClearsThingBillingGroupsForSurvivingMembers` (+
+  negative, a second thing's own billing group is untouched). All assert
+  through `SearchIndex`/`DescribeThing`, not internal maps. Each of the 4
+  reverse-index cleanup sites was neutered individually (by exact line
+  content, or -- for `RemoveThingFromThingGroup`, whose single-line fix
+  isn't safely reducible to a no-op without an unused-variable compile
+  error -- by reverting to the exact pre-fix forward-index-only body) and
+  confirmed to fail only its own test(s), then restored byte-for-byte.
+
+  Not reached: no other iot ghost-row classes were searched for beyond
+  what 1ycq/6pt8 already named; this pass did not re-run a fresh
+  map-vs-delete-path walk of the rest of the service.
+
+  Gates: baseline (pre-edit) `golangci-lint run ./services/iot/...` was
+  already `0 issues`; baseline `go test -race -count=1 ./services/iot/...`
+  was already passing (1.172s). Post-fix: `go build ./services/iot/...`
+  clean, `go test -race -count=1 ./services/iot/...` pass, `golangci-lint
+  run ./services/iot/...` `0 issues`. No persisted snapshot DTO changed
+  (no new struct fields; only added `delete(...)` calls and one reverse-index
+  loop), so `TestSnapshotVersionGuard` was not affected and not run.
+
+## 2026-09-07 errtargetaudit re-sweep (gopherstack-yr88): same 10 findings, 0 fixed
+
+`errtargetaudit` reports the identical 10 class-A findings the 2026-08-31
+sweep already resolved down to (immediately above): 6 `ResourceAlreadyExistsException`
+false positives (`CreateCommand`/`CreateJobTemplate`/`CreatePackage`/
+`CreatePackageVersion`/`StartAuditMitigationActionsTask`/
+`StartDetectMitigationActionsTask`) and the same 4 `DeleteCommand`/
+`DeleteCommandExecution`/`DeletePackage`/`DeletePackageVersion`
+`ResourceNotFoundException` findings the prior pass explicitly left open.
+Re-verified everything from scratch rather than trusting the prior write-up.
+
+**Confirmed false positive, all 6, not touched**: the tool's trace stops at
+the sentinel-creation call site inside the *backend* method (e.g.
+`commands.go:52`'s `return nil, fmt.Errorf(..., ErrAlreadyExists)`), one hop
+short of the *handler*, which already renders the correct declared code via
+a per-call-site override added by the 2026-08-31 pass:
+`respondAsConflictCode(c, err, ErrAlreadyExists, "ConflictException")`
+(`handler_commands.go:83`, `handler_jobs.go:430`, `handler_packages.go:153`,
+`handler_packages.go:252`) and `respondAsConflictCode(c, err, ErrAlreadyExists,
+"TaskAlreadyExistsException")` (`handler_devicedefender.go:159`,
+`handler_devicedefender.go:281`). Re-extracted each op's declared set
+directly from `iot@v1.77.4/deserializers.go` and confirmed every override
+matches: `CreateCommand`/`CreateJobTemplate`/`CreatePackage`/
+`CreatePackageVersion` all declare `ConflictException`;
+`StartAuditMitigationActionsTask`/`StartDetectMitigationActionsTask` both
+declare `TaskAlreadyExistsException`. This is a variant of the tool's known
+"one hop of callees" blind spot not yet enumerated in its false-positive
+taxonomy: the miscoded value isn't inferred from a guard the tool can't
+see (classes 2-5) or a doc/model disagreement (class 6) -- it's inferred
+correctly at the sentinel, then silently overridden a second hop away, at
+the handler call site, which the tool's single-hop trace never visits.
+
+**Confirmed real, all 4, deliberately left unfixed -- same conclusion as
+2026-08-31, re-derived independently**: re-extracted the full declared set
+per op directly from `iot@v1.77.4/deserializers.go` (`DeleteCommand`/
+`DeleteCommandExecution`: `{ConflictException, InternalServerException,
+ThrottlingException, ValidationException, UnknownError}`; `DeletePackage`/
+`DeletePackageVersion`: `{InternalServerException, ThrottlingException,
+ValidationException, UnknownError}`) and independently cross-checked
+against the live public API reference
+(`docs.aws.amazon.com/iot/latest/apireference/API_DeleteCommand.html`,
+`.../API_DeletePackage.html`) -- both list the same set with no
+`ResourceNotFoundException` and no sentence describing idempotent-delete
+behavior for an unknown id. This adds no evidence beyond what the
+2026-08-31 pass already had from `deserializers.go` alone (the API
+reference is generated from the same model). Weighed fixing this as the
+"operation's model declares no not-found code at all -> no error" bug
+shape (this service's own `TopicRule` family and workmail's
+`DeleteMobileDeviceAccessOverride` both confirmed real instances of this
+shape elsewhere): none of the 4 operations' declared codes fit "resource
+missing" semantically (`ConflictException`/`ValidationException` are both
+wrong shape), so an idempotent no-op read as the only internally-consistent
+value among the declared set. But per this service's own prior verdict on
+these exact 4 operations, that inference is not proof of AWS's actual
+behavior absent either an explicit doc sentence (which workmail had and
+this doesn't) or an idempotency-token argument that would need to apply
+uniformly (`DeletePackage`/`DeletePackageVersion` carry a `clientToken`
+idempotency parameter consistent with idempotent-retry semantics;
+`DeleteCommand`/`DeleteCommandExecution` carry no such parameter, so the
+same argument doesn't explain their identical gap). No new evidence
+changes the prior pass's tiebreak. Left unchanged, matching gopherstack-yr88's
+own instruction to fix only unambiguous findings and describe an ambiguous
+one for the filer rather than guess: the two live options are (a) make all
+4 idempotent (return success, no error, on an already-gone resource) or
+(b) leave the current `ResourceNotFoundException` emission as-is since no
+declared alternative is demonstrably more correct. Both were fully
+implemented, regression-tested (table-driven idempotency test plus a
+negative case proving sibling Get/Update ops still 404), lint-clean, and
+neutered-verified to actually be reachable by the assertions during this
+pass, then reverted before commit once the ambiguity above was recognized
+-- reported here rather than left silently reverted.
+
+No code changes this pass. Gates: `go build ./services/iot/...` clean,
+`go test -race -count=1 ./services/iot/...` pass (unchanged from baseline),
+`golangci-lint run ./services/iot/...` `0 issues`. `errtargetaudit` iot
+count after this pass: unchanged at 10 (6 confirmed-correct-but-flagged,
+4 confirmed-real-but-ambiguous) -- filed as gopherstack-yr88 stays open for
+a human tiebreak on the 4, not because verification was skipped.
+
+## 2026-09-08 pass (gopherstack-y3om): the client-breakage premise itself doesn't hold here
+
+Every prior pass on these same 4 findings (`DeleteCommand`, `DeleteCommandExecution`,
+`DeletePackage`, `DeletePackageVersion`) assumed the usual reason an
+undeclared wire code matters: a real client's
+`errors.As(err, &types.XException{})` can supposedly never match a code its
+operation's `deserializeOpError` switch doesn't list. That assumption was
+never actually tested against a live client for this service, and it is
+false for iot's currently-pinned SDK.
+
+**iot@v1.83.0 has no `deserializers.go`.** Confirmed by directory listing of
+the pinned module (`~/go/pkg/mod/.../service/iot@v1.83.0/`): no per-operation
+`deserializeOpError` switches exist at all. Instead the module ships
+`type_registry.go` (a `smithy.TypeRegistry` keyed by absolute shape ID, e.g.
+`"com.amazonaws.iot#ResourceNotFoundException"`) and a generated `schemas/`
+package -- smithy-go's schema-based codegen, the same shape confirmed for
+codepipeline@v1.54.0 (`services/codepipeline/undeclared_error_codes_test.go`).
+Error deserialization in this codegen resolves the wire error code against
+the whole-service `TypeRegistry`, not the calling operation's declared set.
+
+**Empirically verified, not just inferred from the codegen shape**: drove
+all 4 ops through a real `aws-sdk-go-v2/service/iot` client
+(`newTestIoTClient`, httptest server) against an unknown resource ID and
+checked `errors.As`. All 4 deserialize into their own specific
+`*types.ResourceNotFoundException` and do NOT coerce into any of their own
+op's declared types (`ConflictException` for the two Command ops,
+`ValidationException` for the two Package ops). Locked as a permanent
+regression: `undeclared_error_codes_test.go`,
+`TestUndeclaredErrorCodes_MatchTheirOwnRealSDKType` (4 subtests, one per
+op) plus `TestUndeclaredErrorCodes_NoTypeRegistryEntry_WouldFailToDeserialize`
+(pins that the `ResourceNotFoundException` TypeRegistry entry itself exists,
+so a future SDK repin that drops it fails loudly here instead of silently).
+
+**Verdict: this is a documentation divergence, not a client-breaking
+defect.** The consequence every prior pass cited as the reason to treat this
+as a bug -- "a real caller's typed catch for `ResourceNotFoundException`
+can never fire" -- does not happen. A caller doing
+`errors.As(err, &types.ResourceNotFoundException{})` today gets exactly what
+they'd get from real AWS if AWS also returns this code (undocumented in the
+model, but the wire code itself is real and has a real exception type).
+gopherstack's operation model (its own `deserializeOpError`-shaped
+declared-set reasoning in the entries above) is stale for the reason it was
+written, not for the code it emits.
+
+**The idempotency question is unaffected by this finding and remains
+unresolved for the same reason as every prior pass**: re-checked
+botocore's `iot/2015-05-28/service-2.json` `errors` lists directly (not
+`deserializers.go`, since none exists to check) --
+identical sets to the ones already recorded above. Doc text: `DeleteCommand`
+"Delete a command resource.", `DeleteCommandExecution` "Delete a command
+execution. Only command executions that enter a terminal state can be
+deleted from your account.", `DeletePackage`/`DeletePackageVersion` "Deletes
+a specific version from a software package." -- none describe idempotent
+behavior for a missing resource, unlike workmail's
+`DeleteMobileDeviceAccessOverride`. No new evidence on this axis beyond what
+2026-08-31/gopherstack-yr88 already weighed and reverted. Left unchanged.
+
+No code changes this pass -- only the regression test above, which locks
+present behavior rather than changing it. Gates: `go test -race
+./services/iot/...` pass, `golangci-lint run ./services/iot/...` `0
+issues`.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -87,6 +88,81 @@ func TestFileSystemPolicyValidation(t *testing.T) {
 				require.ErrorIs(t, err, tt.wantErrIs)
 				require.NotErrorIs(t, err, efs.ErrValidation,
 					"malformed FileSystemPolicy must map to InvalidPolicyException, not ValidationException")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestPutFileSystemPolicy_RequiresAvailableFileSystem verifies PutFileSystemPolicy
+// rejects requests while the file system's lifecycle state is not "available"
+// (efs@v1.44.4 types/errors.go: IncorrectFileSystemLifeCycleState, "Returned if
+// the file system's lifecycle state is not \"available\"").
+func TestPutFileSystemPolicy_RequiresAvailableFileSystem(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		wantErr       error
+		name          string
+		activateDelay time.Duration
+	}{
+		{name: "creating_state_rejected", activateDelay: time.Hour, wantErr: efs.ErrIncorrectFileSystemLifeCycleState},
+		{name: "available_state_allowed", activateDelay: 0, wantErr: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestEFSBackend()
+			efs.SetFSActivationDelay(b, tt.activateDelay)
+
+			fs, err := b.CreateFileSystem(context.Background(), fsReq("tok-pfp-lifecycle-"+tt.name))
+			require.NoError(t, err)
+
+			err = b.PutFileSystemPolicy(
+				context.Background(), fs.FileSystemID, `{"Version":"2012-10-17","Statement":[]}`,
+			)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestDeleteFileSystemPolicy_RequiresAvailableFileSystem verifies
+// DeleteFileSystemPolicy rejects requests while the file system's lifecycle
+// state is not "available" (efs@v1.44.4 types/errors.go:
+// IncorrectFileSystemLifeCycleState, "Returned if the file system's lifecycle
+// state is not \"available\"").
+func TestDeleteFileSystemPolicy_RequiresAvailableFileSystem(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		wantErr       error
+		name          string
+		activateDelay time.Duration
+	}{
+		{name: "creating_state_rejected", activateDelay: time.Hour, wantErr: efs.ErrIncorrectFileSystemLifeCycleState},
+		{name: "available_state_allowed", activateDelay: 0, wantErr: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestEFSBackend()
+			efs.SetFSActivationDelay(b, tt.activateDelay)
+
+			fs, err := b.CreateFileSystem(context.Background(), fsReq("tok-dfp-lifecycle-"+tt.name))
+			require.NoError(t, err)
+
+			err = b.DeleteFileSystemPolicy(context.Background(), fs.FileSystemID)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
 			} else {
 				require.NoError(t, err)
 			}

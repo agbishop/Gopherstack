@@ -957,6 +957,37 @@ func TestStreams_GetRecords_Limit(t *testing.T) {
 	assert.Len(t, recOut.Records, 3, "GetRecords must honor the Limit parameter")
 }
 
+// TestStreams_GetRecords_LimitExceeded verifies AWS's documented behavior:
+// "GetRecords was called with a value of more than 1000 for the limit request
+// parameter" returns LimitExceededException instead of silently clamping.
+func TestStreams_GetRecords_LimitExceeded(t *testing.T) {
+	t.Parallel()
+
+	db := newStreamsTestDB(t)
+	ctx := t.Context()
+
+	require.NoError(t, db.EnableStream(ctx, "StreamsTestTable", "KEYS_ONLY"))
+
+	table, ok := db.GetTable("StreamsTestTable")
+	require.True(t, ok)
+
+	iterOut, err := db.GetShardIterator(ctx, &dynamodbstreams.GetShardIteratorInput{
+		StreamArn:         aws.String(table.StreamARN),
+		ShardId:           aws.String(ddb.StreamShardID),
+		ShardIteratorType: streamstypes.ShardIteratorTypeTrimHorizon,
+	})
+	require.NoError(t, err)
+
+	limit := int32(1001)
+	_, err = db.GetRecords(ctx, &dynamodbstreams.GetRecordsInput{
+		ShardIterator: iterOut.ShardIterator,
+		Limit:         &limit,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "LimitExceededException",
+		"GetRecords with Limit > 1000 must return LimitExceededException")
+}
+
 func TestStreams_GetRecords_EmptyStream(t *testing.T) {
 	t.Parallel()
 

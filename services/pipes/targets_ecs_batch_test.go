@@ -486,6 +486,373 @@ func TestECS_Overrides(t *testing.T) {
 	}
 }
 
+// TestECS_ContainerOverrides_RoundTrip verifies EcsTaskOverride.ContainerOverrides
+// round-trips through HTTP, including its lowercase-keyed leaf shapes
+// (Environment's name/value, EnvironmentFiles/ResourceRequirements' type/value --
+// verified against serializers.go/deserializers.go, which use ECS's own RunTask
+// override casing here rather than Pipes' usual PascalCase).
+func TestECS_ContainerOverrides_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	h := b2Handler(t)
+	body := map[string]any{
+		"RoleArn": "arn:aws:iam::123456789012:role/r",
+		"Source":  b2SQSSource,
+		"Target":  b2ECSTarget,
+		"TargetParameters": map[string]any{
+			"EcsTaskParameters": map[string]any{
+				"TaskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/td:1",
+				"Overrides": map[string]any{
+					"ContainerOverrides": []map[string]any{
+						{
+							"Name":              "app",
+							"Command":           []string{"echo", "hi"},
+							"Cpu":               256,
+							"Memory":            512,
+							"MemoryReservation": 256,
+							"Environment": []map[string]any{
+								{"name": "KEY", "value": "VALUE"},
+							},
+							"EnvironmentFiles": []map[string]any{
+								{"type": "s3", "value": "arn:aws:s3:::bucket/env"},
+							},
+							"ResourceRequirements": []map[string]any{
+								{"type": "GPU", "value": "1"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	resp := b2Create(t, h, "ecs-container-overrides", body)
+
+	tp := resp["TargetParameters"].(map[string]any)
+	ecs := tp["EcsTaskParameters"].(map[string]any)
+	ov := ecs["Overrides"].(map[string]any)
+	cos, ok := ov["ContainerOverrides"].([]any)
+	require.True(t, ok, "ContainerOverrides should be array")
+	require.Len(t, cos, 1)
+	co := cos[0].(map[string]any)
+
+	assert.Equal(t, "app", co["Name"])
+	assert.InEpsilon(t, float64(256), co["Cpu"], 0.01)
+	assert.InEpsilon(t, float64(512), co["Memory"], 0.01)
+	assert.InEpsilon(t, float64(256), co["MemoryReservation"], 0.01)
+
+	env, ok := co["Environment"].([]any)
+	require.True(t, ok, "Environment should be array")
+	require.Len(t, env, 1)
+	envEntry := env[0].(map[string]any)
+	assert.Equal(t, "KEY", envEntry["name"], "Environment entries key lowercase (SDK ECS casing)")
+	assert.Equal(t, "VALUE", envEntry["value"])
+
+	files, ok := co["EnvironmentFiles"].([]any)
+	require.True(t, ok, "EnvironmentFiles should be array")
+	require.Len(t, files, 1)
+	fileEntry := files[0].(map[string]any)
+	assert.Equal(t, "s3", fileEntry["type"], "EnvironmentFiles keys lowercase (SDK ECS casing)")
+	assert.Equal(t, "arn:aws:s3:::bucket/env", fileEntry["value"])
+
+	rrs, ok := co["ResourceRequirements"].([]any)
+	require.True(t, ok, "ResourceRequirements should be array")
+	require.Len(t, rrs, 1)
+	rrEntry := rrs[0].(map[string]any)
+	assert.Equal(t, "GPU", rrEntry["type"], "ResourceRequirements keys lowercase (SDK ECS casing)")
+	assert.Equal(t, "1", rrEntry["value"])
+}
+
+// TestECS_EphemeralStorage_RoundTrip verifies EcsTaskOverride.EphemeralStorage
+// round-trips, including its lowercase "sizeInGiB" wire key (deserializers.go).
+func TestECS_EphemeralStorage_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	h := b2Handler(t)
+	body := map[string]any{
+		"RoleArn": "arn:aws:iam::123456789012:role/r",
+		"Source":  b2SQSSource,
+		"Target":  b2ECSTarget,
+		"TargetParameters": map[string]any{
+			"EcsTaskParameters": map[string]any{
+				"TaskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/td:1",
+				"Overrides": map[string]any{
+					"EphemeralStorage": map[string]any{"sizeInGiB": 42},
+				},
+			},
+		},
+	}
+	resp := b2Create(t, h, "ecs-ephemeral-storage", body)
+
+	sz := nestedFloat(t, resp,
+		"TargetParameters", "EcsTaskParameters", "Overrides", "EphemeralStorage", "sizeInGiB")
+	assert.InEpsilon(t, float64(42), sz, 0.01)
+}
+
+// TestECS_InferenceAcceleratorOverrides_RoundTrip verifies
+// EcsTaskOverride.InferenceAcceleratorOverrides round-trips, including its
+// lowercase deviceName/deviceType wire keys (serializers.go).
+func TestECS_InferenceAcceleratorOverrides_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	h := b2Handler(t)
+	body := map[string]any{
+		"RoleArn": "arn:aws:iam::123456789012:role/r",
+		"Source":  b2SQSSource,
+		"Target":  b2ECSTarget,
+		"TargetParameters": map[string]any{
+			"EcsTaskParameters": map[string]any{
+				"TaskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/td:1",
+				"Overrides": map[string]any{
+					"InferenceAcceleratorOverrides": []map[string]any{
+						{"deviceName": "acc1", "deviceType": "eia1.medium"},
+					},
+				},
+			},
+		},
+	}
+	resp := b2Create(t, h, "ecs-inference-accelerator", body)
+
+	tp := resp["TargetParameters"].(map[string]any)
+	ecs := tp["EcsTaskParameters"].(map[string]any)
+	ov := ecs["Overrides"].(map[string]any)
+	iaos, ok := ov["InferenceAcceleratorOverrides"].([]any)
+	require.True(t, ok, "InferenceAcceleratorOverrides should be array")
+	require.Len(t, iaos, 1)
+	iao := iaos[0].(map[string]any)
+	assert.Equal(t, "acc1", iao["deviceName"])
+	assert.Equal(t, "eia1.medium", iao["deviceType"])
+}
+
+// TestECS_PropagateTagsReferenceIdTags_RoundTrip verifies
+// ECSTaskTargetParameters' PropagateTags/ReferenceId/Tags round-trip.
+func TestECS_PropagateTagsReferenceIdTags_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	h := b2Handler(t)
+	body := map[string]any{
+		"RoleArn": "arn:aws:iam::123456789012:role/r",
+		"Source":  b2SQSSource,
+		"Target":  b2ECSTarget,
+		"TargetParameters": map[string]any{
+			"EcsTaskParameters": map[string]any{
+				"TaskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/td:1",
+				"PropagateTags":     "TASK_DEFINITION",
+				"ReferenceId":       "ref-123",
+				"Tags": []map[string]any{
+					{"Key": "env", "Value": "prod"},
+				},
+			},
+		},
+	}
+	resp := b2Create(t, h, "ecs-propagate-tags", body)
+
+	tp := resp["TargetParameters"].(map[string]any)
+	ecs := tp["EcsTaskParameters"].(map[string]any)
+	assert.Equal(t, "TASK_DEFINITION", ecs["PropagateTags"])
+	assert.Equal(t, "ref-123", ecs["ReferenceId"])
+	tags, ok := ecs["Tags"].([]any)
+	require.True(t, ok, "Tags should be array")
+	require.Len(t, tags, 1)
+	tag := tags[0].(map[string]any)
+	assert.Equal(t, "env", tag["Key"])
+	assert.Equal(t, "prod", tag["Value"])
+}
+
+// TestECS_OverridesFull_BackendAPI verifies the full restored EcsTaskOverride
+// shape survives a backend Create/Get round trip, using typed Go structs.
+func TestECS_OverridesFull_BackendAPI(t *testing.T) {
+	t.Parallel()
+
+	b := b2Backend()
+	_, err := b.CreatePipe(context.Background(), pipes.CreatePipeInput{
+		RoleARN: "arn:aws:iam::123456789012:role/r",
+		Name:    "ecs-overrides-full",
+		Source:  b2SQSSource,
+		Target:  b2ECSTarget,
+		TargetParameters: &pipes.TargetParameters{
+			EcsTaskParameters: &pipes.ECSTaskTargetParameters{
+				TaskDefinitionArn: "arn:aws:ecs:us-east-1:123456789012:task-definition/td:1",
+				PropagateTags:     "TASK_DEFINITION",
+				ReferenceID:       "ref-full",
+				Tags:              []pipes.Tag{{Key: "env", Value: "prod"}},
+				Overrides: &pipes.EcsTaskOverride{
+					TaskRoleArn: "arn:aws:iam::123456789012:role/task-role",
+					EphemeralStorage: &pipes.EcsEphemeralStorage{
+						SizeInGiB: 42,
+					},
+					ContainerOverrides: []pipes.EcsContainerOverride{
+						{
+							Name:              "app",
+							CPU:               256,
+							Memory:            512,
+							MemoryReservation: 256,
+							Command:           []string{"echo", "hi"},
+							Environment: []pipes.EcsEnvironmentVariable{
+								{Name: "KEY", Value: "VALUE"},
+							},
+							EnvironmentFiles: []pipes.EcsEnvironmentFile{
+								{Type: "s3", Value: "arn:aws:s3:::bucket/env"},
+							},
+							ResourceRequirements: []pipes.EcsResourceRequirement{
+								{Type: "GPU", Value: "1"},
+							},
+						},
+					},
+					InferenceAcceleratorOverrides: []pipes.EcsInferenceAcceleratorOverride{
+						{DeviceName: "acc1", DeviceType: "eia1.medium"},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	p, err := b.GetPipe(context.Background(), "ecs-overrides-full")
+	require.NoError(t, err)
+
+	ecs := p.TargetParameters.EcsTaskParameters
+	assert.Equal(t, "TASK_DEFINITION", ecs.PropagateTags)
+	assert.Equal(t, "ref-full", ecs.ReferenceID)
+	require.Len(t, ecs.Tags, 1)
+	assert.Equal(t, "env", ecs.Tags[0].Key)
+
+	require.NotNil(t, ecs.Overrides)
+	require.NotNil(t, ecs.Overrides.EphemeralStorage)
+	assert.Equal(t, 42, ecs.Overrides.EphemeralStorage.SizeInGiB)
+	require.Len(t, ecs.Overrides.ContainerOverrides, 1)
+	co := ecs.Overrides.ContainerOverrides[0]
+	assert.Equal(t, "app", co.Name)
+	assert.Equal(t, 256, co.CPU)
+	require.Len(t, co.Environment, 1)
+	assert.Equal(t, "VALUE", co.Environment[0].Value)
+	require.Len(t, co.EnvironmentFiles, 1)
+	assert.Equal(t, "s3", co.EnvironmentFiles[0].Type)
+	require.Len(t, co.ResourceRequirements, 1)
+	assert.Equal(t, "GPU", co.ResourceRequirements[0].Type)
+	require.Len(t, ecs.Overrides.InferenceAcceleratorOverrides, 1)
+	assert.Equal(t, "acc1", ecs.Overrides.InferenceAcceleratorOverrides[0].DeviceName)
+}
+
+// TestClone_ECSOverridesIsolation verifies cloneEcsTaskOverride isolates
+// ContainerOverrides' nested slices and EphemeralStorage from the stored copy.
+func TestClone_ECSOverridesIsolation(t *testing.T) {
+	t.Parallel()
+
+	b := b2Backend()
+	_, err := b.CreatePipe(context.Background(), pipes.CreatePipeInput{
+		RoleARN: "arn:aws:iam::123456789012:role/r",
+		Name:    "ecs-overrides-clone",
+		Source:  b2SQSSource,
+		Target:  b2ECSTarget,
+		TargetParameters: &pipes.TargetParameters{
+			EcsTaskParameters: &pipes.ECSTaskTargetParameters{
+				TaskDefinitionArn: "arn:aws:ecs:us-east-1:123456789012:task-definition/td:1",
+				Tags:              []pipes.Tag{{Key: "env", Value: "prod"}},
+				Overrides: &pipes.EcsTaskOverride{
+					EphemeralStorage: &pipes.EcsEphemeralStorage{SizeInGiB: 21},
+					ContainerOverrides: []pipes.EcsContainerOverride{
+						{
+							Name:    "app",
+							Command: []string{"echo", "hi"},
+							Environment: []pipes.EcsEnvironmentVariable{
+								{Name: "K", Value: "V"},
+							},
+						},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	p1, err := b.GetPipe(context.Background(), "ecs-overrides-clone")
+	require.NoError(t, err)
+
+	p1.TargetParameters.EcsTaskParameters.Overrides.EphemeralStorage.SizeInGiB = 999
+	p1.TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[0].Command[0] = "mutated"
+	p1.TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[0].Environment[0].Value = "mutated"
+	p1.TargetParameters.EcsTaskParameters.Tags[0].Value = "mutated"
+
+	p2, err := b.GetPipe(context.Background(), "ecs-overrides-clone")
+	require.NoError(t, err)
+
+	assert.Equal(t, 21, p2.TargetParameters.EcsTaskParameters.Overrides.EphemeralStorage.SizeInGiB)
+	assert.Equal(t, "echo", p2.TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[0].Command[0])
+	assert.Equal(t, "V", p2.TargetParameters.EcsTaskParameters.Overrides.ContainerOverrides[0].Environment[0].Value)
+	assert.Equal(t, "prod", p2.TargetParameters.EcsTaskParameters.Tags[0].Value)
+}
+
+// TestBatch_ResourceRequirements_RoundTrip verifies
+// BatchContainerOverrides.ResourceRequirements round-trips through HTTP.
+func TestBatch_ResourceRequirements_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	h := b2Handler(t)
+	body := map[string]any{
+		"RoleArn": "arn:aws:iam::123456789012:role/r",
+		"Source":  b2SQSSource,
+		"Target":  "arn:aws:batch:us-east-1:123456789012:job-queue/q",
+		"TargetParameters": map[string]any{
+			"BatchJobParameters": map[string]any{
+				"JobDefinition": "arn:aws:batch:us-east-1:123456789012:job-definition/jd:1",
+				"JobName":       "my-job",
+				"ContainerOverrides": map[string]any{
+					"ResourceRequirements": []map[string]any{
+						{"Type": "VCPU", "Value": "2"},
+						{"Type": "MEMORY", "Value": "4096"},
+					},
+				},
+			},
+		},
+	}
+	resp := b2Create(t, h, "batch-resource-requirements", body)
+
+	tp := resp["TargetParameters"].(map[string]any)
+	batch := tp["BatchJobParameters"].(map[string]any)
+	co := batch["ContainerOverrides"].(map[string]any)
+	rrs, ok := co["ResourceRequirements"].([]any)
+	require.True(t, ok, "ResourceRequirements should be array")
+	require.Len(t, rrs, 2)
+	first := rrs[0].(map[string]any)
+	assert.Equal(t, "VCPU", first["Type"])
+	assert.Equal(t, "2", first["Value"])
+}
+
+// TestClone_BatchResourceRequirementsIsolation verifies
+// cloneBatchJobParameters isolates ResourceRequirements from the stored copy.
+func TestClone_BatchResourceRequirementsIsolation(t *testing.T) {
+	t.Parallel()
+
+	b := b2Backend()
+	_, err := b.CreatePipe(context.Background(), pipes.CreatePipeInput{
+		RoleARN: "arn:aws:iam::123456789012:role/r",
+		Name:    "batch-rr-clone",
+		Source:  b2SQSSource,
+		Target:  "arn:aws:batch:us-east-1:123456789012:job-queue/q",
+		TargetParameters: &pipes.TargetParameters{
+			BatchJobParameters: &pipes.BatchJobTargetParameters{
+				JobDefinition: "jd",
+				JobName:       "job",
+				ContainerOverrides: &pipes.BatchContainerOverrides{
+					ResourceRequirements: []pipes.BatchResourceRequirement{
+						{Type: "VCPU", Value: "1"},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	p1, err := b.GetPipe(context.Background(), "batch-rr-clone")
+	require.NoError(t, err)
+
+	p1.TargetParameters.BatchJobParameters.ContainerOverrides.ResourceRequirements[0].Value = "mutated"
+
+	p2, err := b.GetPipe(context.Background(), "batch-rr-clone")
+	require.NoError(t, err)
+	assert.Equal(t, "1", p2.TargetParameters.BatchJobParameters.ContainerOverrides.ResourceRequirements[0].Value)
+}
+
 // TestECS_ExtraFields verifies Group, PlatformVersion, EnableECSManagedTags, EnableExecuteCommand.
 func TestECS_ExtraFields(t *testing.T) {
 	t.Parallel()

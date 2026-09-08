@@ -21,7 +21,10 @@ var (
 	// ErrCachePolicyNotFound is returned when a requested cache policy does not exist.
 	ErrCachePolicyNotFound = awserr.New("NoSuchCachePolicy", awserr.ErrNotFound)
 	// ErrAnycastIPListNotFound is returned when a requested anycast IP list does not exist.
-	ErrAnycastIPListNotFound = awserr.New("NoSuchAnycastIPList", awserr.ErrNotFound)
+	// Code is EntityNotFound -- see ErrConnectionFunctionNotFound; "NoSuchAnycastIPList"
+	// does not exist anywhere in the pinned SDK (Get/Update/DeleteAnycastIpList all model
+	// EntityNotFound, cloudfront@v1.67.4 deserializers.go).
+	ErrAnycastIPListNotFound = awserr.New(codeEntityNotFound, awserr.ErrNotFound)
 	// ErrConnectionFunctionNotFound is returned when a connection function does not exist.
 	// Code is EntityNotFound: every connection-function op's own deserializer
 	// (cloudfront@v1.67.4 deserializers.go) models EntityNotFound, never a

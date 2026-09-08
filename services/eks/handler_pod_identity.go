@@ -69,7 +69,7 @@ func podIdentityToJSON(a *PodIdentityAssociation) map[string]any {
 		keyClusterName:       a.ClusterName,
 		"associationId":      a.AssociationID,
 		"associationArn":     a.ARN,
-		"namespace":          a.Namespace,
+		keyNamespace:         a.Namespace,
 		"serviceAccount":     a.ServiceAccount,
 		"roleArn":            a.RoleARN,
 		keyCreatedAt:         a.CreatedAt.Unix(),
@@ -108,7 +108,7 @@ func podIdentitySummaryToJSON(a *PodIdentityAssociation) map[string]any {
 		keyClusterName:   a.ClusterName,
 		"associationId":  a.AssociationID,
 		"associationArn": a.ARN,
-		"namespace":      a.Namespace,
+		keyNamespace:     a.Namespace,
 		"serviceAccount": a.ServiceAccount,
 	}
 

@@ -99,6 +99,7 @@ func (b *InMemoryBackend) DeleteAgreement(serverID, agreementID string) error {
 	}
 
 	b.agreements.Delete(key)
+	delete(b.tagsStore, agreementARN(b.accountID, b.region, serverID, agreementID))
 
 	return nil
 }

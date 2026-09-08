@@ -132,7 +132,9 @@ func (b *InMemoryBackend) AttachInternetGateway(igwID, vpcID string) error {
 	return nil
 }
 
-// DetachInternetGateway detaches an IGW from a VPC.
+// DetachInternetGateway detaches an IGW from a VPC. Matching real AWS, this
+// fails with DependencyViolation while vpcID still has a running instance
+// with a public IPv4 address or an associated Elastic IP.
 func (b *InMemoryBackend) DetachInternetGateway(igwID, vpcID string) error {
 	b.mu.Lock("DetachInternetGateway")
 	defer b.mu.Unlock()
@@ -144,6 +146,10 @@ func (b *InMemoryBackend) DetachInternetGateway(igwID, vpcID string) error {
 
 	for i, att := range igw.Attachments {
 		if att.VPCID == vpcID {
+			if err := b.igwDetachDependencyViolationLocked(vpcID); err != nil {
+				return err
+			}
+
 			igw.Attachments = append(igw.Attachments[:i], igw.Attachments[i+1:]...)
 
 			return nil
@@ -151,4 +157,40 @@ func (b *InMemoryBackend) DetachInternetGateway(igwID, vpcID string) error {
 	}
 
 	return fmt.Errorf("%w: IGW %s is not attached to VPC %s", ErrInvalidParameter, igwID, vpcID)
+}
+
+// igwDetachDependencyViolationLocked returns a DependencyViolation error if
+// vpcID has a running instance with a public IPv4 address or an associated
+// Elastic IP. Must be called with b.mu held.
+func (b *InMemoryBackend) igwDetachDependencyViolationLocked(vpcID string) error {
+	for _, inst := range b.instances.All() {
+		if inst.VPCID != vpcID || inst.State != StateRunning || inst.PublicIPAddress == "" {
+			continue
+		}
+
+		return fmt.Errorf(
+			"%w: the vpc %s has dependencies (instance %s with a public IP address) "+
+				"and cannot detach its internet gateway",
+			ErrDependencyViolation, vpcID, inst.ID,
+		)
+	}
+
+	for _, addr := range b.addresses.All() {
+		if addr.InstanceID == "" {
+			continue
+		}
+
+		inst, ok := b.instances.Get(addr.InstanceID)
+		if !ok || inst.VPCID != vpcID || inst.State != StateRunning {
+			continue
+		}
+
+		return fmt.Errorf(
+			"%w: the vpc %s has dependencies (elastic IP %s associated with instance %s) "+
+				"and cannot detach its internet gateway",
+			ErrDependencyViolation, vpcID, addr.PublicIP, inst.ID,
+		)
+	}
+
+	return nil
 }

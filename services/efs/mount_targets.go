@@ -52,6 +52,129 @@ func azNameToID(azName string) string {
 	return fmt.Sprintf("%s-az%d", regionPart, suffix)
 }
 
+// resolvedSubnetPlacement returns the VPC and Availability Zone a new mount
+// target in subnetID would get, preferring the wired EC2Resolver over the
+// mock's deterministic subnet-ID-derived fallback (subnetDerivedVpcID /
+// mountTargetAZName). A One Zone file system always pins its Availability
+// Zone regardless of the subnet's real zone, matching
+// api_op_CreateMountTarget.go's One Zone precondition. Callers must hold b.mu.
+func (b *InMemoryBackend) resolvedSubnetPlacement(
+	region string,
+	fs *FileSystem,
+	subnetID string,
+) (string, string) {
+	vpcID := subnetDerivedVpcID(subnetID)
+	azName := mountTargetAZName(fs, region)
+
+	if b.ec2Resolver == nil {
+		return vpcID, azName
+	}
+
+	if v := b.ec2Resolver.SubnetVPC(subnetID); v != "" {
+		vpcID = v
+	}
+	if fs.AvailabilityZoneName == "" {
+		if az := b.ec2Resolver.SubnetAZ(subnetID); az != "" {
+			azName = az
+		}
+	}
+
+	return vpcID, azName
+}
+
+// checkSubnetPlacement enforces CreateMountTarget's documented placement rule
+// against the wired EC2Resolver (api_op_CreateMountTarget.go: "you can
+// create mount targets for a file system in only one VPC, and there can be
+// only one mount target per Availability Zone"). Callers must hold b.mu and
+// have confirmed b.ec2Resolver is non-nil.
+func (b *InMemoryBackend) checkSubnetPlacement(region string, fs *FileSystem, req CreateMountTargetRequest) error {
+	if !b.ec2Resolver.SubnetExists(req.SubnetID) {
+		return fmt.Errorf("%w: subnet %s not found", ErrSubnetNotFound, req.SubnetID)
+	}
+
+	vpcID, azName := b.resolvedSubnetPlacement(region, fs, req.SubnetID)
+
+	for _, mtID := range b.mtSubnetIdx[region][req.FileSystemID] {
+		existing, ok := b.mountTargets.Get(regionKey(region, mtID))
+		if !ok {
+			continue
+		}
+
+		if existing.VpcID != vpcID {
+			return fmt.Errorf(
+				"%w: subnet %s is in a different VPC than file system %s's existing mount targets",
+				ErrMountTargetConflict,
+				req.SubnetID,
+				req.FileSystemID,
+			)
+		}
+
+		if existing.AvailabilityZoneName == azName {
+			return fmt.Errorf(
+				"%w: file system %s already has a mount target in Availability Zone %s",
+				ErrMountTargetConflict,
+				req.FileSystemID,
+				azName,
+			)
+		}
+	}
+
+	return nil
+}
+
+// checkMountTargetPreconditions validates the file system's lifecycle state and its
+// existing mount targets against the CreateMountTarget rules in
+// api_op_CreateMountTarget.go:21-30 before a new mount target is created.
+func (b *InMemoryBackend) checkMountTargetPreconditions(
+	region string,
+	fs *FileSystem,
+	req CreateMountTargetRequest,
+) error {
+	// api_op_CreateMountTarget.go:29-30: "To create a mount target for a file system,
+	// the file system's lifecycle state must be available."
+	if fs.LifeCycleState != statusAvailable {
+		return fmt.Errorf(
+			"%w: file system %s is in lifecycle state %q, not %q",
+			ErrIncorrectFileSystemLifeCycleState,
+			req.FileSystemID,
+			fs.LifeCycleState,
+			statusAvailable,
+		)
+	}
+
+	existingMTCount := len(b.mtSubnetIdx[region][req.FileSystemID])
+
+	// api_op_CreateMountTarget.go:21-22: "You can create only one mount target for a
+	// One Zone file system."
+	if fs.AvailabilityZoneName != "" && existingMTCount > 0 {
+		return fmt.Errorf(
+			"%w: file system %s is a One Zone file system and already has a mount target",
+			ErrMountTargetConflict,
+			req.FileSystemID,
+		)
+	}
+
+	// O(1) subnet conflict check via index: one mount target per subnet per file system.
+	if req.SubnetID != "" && b.mtSubnetIdx[region] != nil {
+		if _, dup := b.mtSubnetIdx[region][req.FileSystemID][req.SubnetID]; dup {
+			return fmt.Errorf(
+				"%w: mount target already exists for file system %s in subnet %s",
+				ErrMountTargetConflict,
+				req.FileSystemID,
+				req.SubnetID,
+			)
+		}
+	}
+
+	if b.ec2Resolver != nil && req.SubnetID != "" {
+		if err := b.checkSubnetPlacement(region, fs, req); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // CreateMountTarget creates a mount target for a file system.
 // Returns ErrMountTargetConflict if a mount target already exists in the same subnet.
 func (b *InMemoryBackend) CreateMountTarget(
@@ -65,9 +188,11 @@ func (b *InMemoryBackend) CreateMountTarget(
 	case ipAddressTypeIPv4Only, ipAddressTypeIPv6Only, ipAddressTypeDualStack:
 		// valid
 	default:
+		// CreateMountTarget declares BadRequest, never ValidationException, for malformed
+		// input (efs@v1.44.4 deserializers.go).
 		return nil, fmt.Errorf(
 			"%w: invalid IpAddressType %q, must be IPV4_ONLY, IPV6_ONLY, or DUAL_STACK",
-			ErrValidation,
+			ErrBadRequest,
 			req.IPAddressType,
 		)
 	}
@@ -82,18 +207,8 @@ func (b *InMemoryBackend) CreateMountTarget(
 		return nil, fmt.Errorf("%w: file system %s not found", ErrNotFound, req.FileSystemID)
 	}
 
-	// O(1) subnet conflict check via index: one mount target per subnet per file system.
-	if req.SubnetID != "" {
-		if b.mtSubnetIdx[region] != nil {
-			if _, dup := b.mtSubnetIdx[region][req.FileSystemID][req.SubnetID]; dup {
-				return nil, fmt.Errorf(
-					"%w: mount target already exists for file system %s in subnet %s",
-					ErrMountTargetConflict,
-					req.FileSystemID,
-					req.SubnetID,
-				)
-			}
-		}
+	if err := b.checkMountTargetPreconditions(region, fs, req); err != nil {
+		return nil, err
 	}
 
 	if len(req.SecurityGroups) > maxSecurityGroups {
@@ -112,11 +227,9 @@ func (b *InMemoryBackend) CreateMountTarget(
 	sgs := make([]string, len(req.SecurityGroups))
 	copy(sgs, req.SecurityGroups)
 
-	// Synthesise VPC and AZ fields from the subnet ID and file system config.
-	// AWS derives these from real VPC/subnet metadata; the mock approximates them
-	// deterministically so callers receive non-empty, stable values.
-	vpcID := subnetDerivedVpcID(req.SubnetID)
-	azName := mountTargetAZName(fs, region)
+	// Resolve VPC and AZ from the wired EC2 backend when available, falling back to a
+	// deterministic subnet-ID derivation so callers always receive non-empty, stable values.
+	vpcID, azName := b.resolvedSubnetPlacement(region, fs, req.SubnetID)
 	azID := azNameToID(azName)
 
 	mt := &MountTarget{

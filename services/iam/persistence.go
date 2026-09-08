@@ -41,6 +41,7 @@ type backendSnapshot struct {
 	CurrentPassword            string                           `json:"currentPassword,omitempty"`
 	GlobalEndpointTokenVersion string                           `json:"globalEndpointTokenVersion,omitempty"`
 	AccountAliases             []string                         `json:"accountAliases,omitempty"`
+	CurrentPasswordHistory     []string                         `json:"currentPasswordHistory,omitempty"`
 	Version                    int                              `json:"version"`
 }
 
@@ -89,6 +90,7 @@ func (b *InMemoryBackend) Snapshot(ctx context.Context) []byte {
 		DeletedV1Policies:          b.deletedV1Policies,
 		PasswordPolicy:             b.passwordPolicy,
 		CurrentPassword:            b.currentPassword,
+		CurrentPasswordHistory:     b.currentPasswordHistory,
 		GlobalEndpointTokenVersion: b.globalEndpointTokenVersion,
 		OutboundFederationEnabled:  &outboundFederationEnabled,
 	}
@@ -167,6 +169,7 @@ func (b *InMemoryBackend) restoreSnapshotLocked(ctx context.Context, snap *backe
 	}
 	b.passwordPolicy = snap.PasswordPolicy
 	b.currentPassword = snap.CurrentPassword
+	b.currentPasswordHistory = snap.CurrentPasswordHistory
 
 	if snap.GlobalEndpointTokenVersion != "" {
 		b.globalEndpointTokenVersion = snap.GlobalEndpointTokenVersion

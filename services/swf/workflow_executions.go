@@ -432,8 +432,8 @@ func (b *InMemoryBackend) StartWorkflowExecution(
 	// createExecutionLocked's already-open guard below.
 	b.sweepTimedOutExecutionsLocked(time.Now())
 
-	if !b.domains.Has(input.Domain) {
-		return nil, fmt.Errorf("%w: domain %s not found", ErrNotFound, input.Domain)
+	if err := b.requireActiveDomainLocked(input.Domain); err != nil {
+		return nil, err
 	}
 
 	defaults, err := b.resolveExecutionDefaultsLocked(input)

@@ -5,25 +5,39 @@ import (
 	"sort"
 )
 
-// ModifyCluster modifies a cluster's attributes.
-// When applyImmediately is false, changes are stored in PendingModifiedValues
-// and returned without being applied to the live cluster.
+// ModifyClusterOptions groups ModifyCluster's optional fields. Real
+// ModifyClusterInput (redshift@v1.65.4 api_op_ModifyCluster.go) has ~30
+// fields; this backend models the subset gopherstack-igsa scoped in, plus
+// the pre-existing NodeType/NumberOfNodes/Encrypted/EnhancedVpcRouting.
 //
-// encrypted and enhancedVpcRouting are tri-state (nil means "not specified,
-// leave unchanged"): real ModifyClusterInput.Encrypted/EnhancedVpcRouting are
-// *bool, and the SDK can explicitly send "false" to disable either setting
-// (e.g. to decrypt a cluster). A plain bool cannot distinguish "not sent"
-// from "explicitly false", which previously made it impossible to ever turn
-// either setting off via ModifyCluster.
-func (b *InMemoryBackend) ModifyCluster(
-	id string,
-	nodeType string,
-	numberOfNodes int,
-	_ string, // masterUserPassword is accepted but not stored
-	encrypted *bool,
-	enhancedVpcRouting *bool,
-	applyImmediately bool,
-) (*Cluster, error) {
+// Encrypted, EnhancedVpcRouting and PubliclyAccessible are tri-state (nil
+// means "not specified, leave unchanged"): their real ModifyClusterInput
+// counterparts are *bool, and the SDK can explicitly send "false" to disable
+// a setting (e.g. to decrypt a cluster). A plain bool cannot distinguish
+// "not sent" from "explicitly false".
+type ModifyClusterOptions struct {
+	Encrypted           *bool
+	EnhancedVpcRouting  *bool
+	PubliclyAccessible  *bool
+	NodeType            string
+	MasterUserPassword  string
+	ClusterVersion      string
+	VpcSecurityGroupIDs []string
+	NumberOfNodes       int
+	Port                int
+	ApplyImmediately    bool
+}
+
+// ModifyCluster modifies a cluster's attributes.
+// When ApplyImmediately is false, NodeType/NumberOfNodes/Encrypted/
+// ClusterVersion/PubliclyAccessible are stored in PendingModifiedValues and
+// returned without being applied to the live cluster -- these are exactly
+// the fields the real types.PendingModifiedValues (types/types.go:1491)
+// tracks. VpcSecurityGroupIds and Port are applied unconditionally: real
+// ModifyClusterInput documents VpcSecurityGroupIds as "asynchronously
+// applied as soon as possible" (not gated by ApplyImmediately), and Port has
+// no entry in PendingModifiedValues at all.
+func (b *InMemoryBackend) ModifyCluster(id string, opts ModifyClusterOptions) (*Cluster, error) {
 	if id == "" {
 		return nil, fmt.Errorf("%w: ClusterIdentifier is required", ErrInvalidParameter)
 	}
@@ -36,46 +50,89 @@ func (b *InMemoryBackend) ModifyCluster(
 		return nil, fmt.Errorf("%w: cluster %s not found", ErrClusterNotFound, id)
 	}
 
-	if !applyImmediately {
-		pending := &ClusterPendingModifiedValues{}
-		if nodeType != "" {
-			pending.NodeType = nodeType
-		}
+	if cluster.Status != clusterStatusAvailable {
+		return nil, fmt.Errorf(
+			"%w: cluster %s is not in the available state (status %q)",
+			ErrClusterInvalidState, id, cluster.Status,
+		)
+	}
 
-		if numberOfNodes > 0 {
-			pending.NumberOfNodes = numberOfNodes
-		}
+	if opts.VpcSecurityGroupIDs != nil {
+		cluster.VpcSecurityGroupIDs = opts.VpcSecurityGroupIDs
+	}
 
-		if encrypted != nil {
-			pending.Encrypted = *encrypted
-		}
+	if opts.Port > 0 {
+		cluster.Port = opts.Port
+	}
 
-		cluster.PendingModifiedValues = pending
+	if !opts.ApplyImmediately {
+		cluster.PendingModifiedValues = pendingModifiedValuesFrom(opts)
 		cp := cloneCluster(cluster)
 
 		return &cp, nil
 	}
 
-	if nodeType != "" {
-		cluster.NodeType = nodeType
-	}
-
-	if numberOfNodes > 0 {
-		cluster.NumberOfNodes = numberOfNodes
-	}
-
-	if encrypted != nil {
-		cluster.Encrypted = *encrypted
-	}
-
-	if enhancedVpcRouting != nil {
-		cluster.EnhancedVpcRouting = *enhancedVpcRouting
-	}
-
+	applyModifyClusterImmediate(cluster, opts)
 	cluster.PendingModifiedValues = nil
 	cp := cloneCluster(cluster)
 
 	return &cp, nil
+}
+
+// pendingModifiedValuesFrom builds the PendingModifiedValues ModifyCluster
+// queues when ApplyImmediately is false -- exactly the fields real
+// types.PendingModifiedValues (types/types.go:1491) tracks.
+func pendingModifiedValuesFrom(opts ModifyClusterOptions) *ClusterPendingModifiedValues {
+	pending := &ClusterPendingModifiedValues{}
+	if opts.NodeType != "" {
+		pending.NodeType = opts.NodeType
+	}
+
+	if opts.NumberOfNodes > 0 {
+		pending.NumberOfNodes = opts.NumberOfNodes
+	}
+
+	if opts.Encrypted != nil {
+		pending.Encrypted = *opts.Encrypted
+	}
+
+	if opts.ClusterVersion != "" {
+		pending.ClusterVersion = opts.ClusterVersion
+	}
+
+	if opts.PubliclyAccessible != nil {
+		pending.PubliclyAccessible = *opts.PubliclyAccessible
+	}
+
+	return pending
+}
+
+// applyModifyClusterImmediate applies opts directly to cluster, used when
+// ApplyImmediately is true (or for the fields never gated by it).
+func applyModifyClusterImmediate(cluster *Cluster, opts ModifyClusterOptions) {
+	if opts.NodeType != "" {
+		cluster.NodeType = opts.NodeType
+	}
+
+	if opts.NumberOfNodes > 0 {
+		cluster.NumberOfNodes = opts.NumberOfNodes
+	}
+
+	if opts.Encrypted != nil {
+		cluster.Encrypted = *opts.Encrypted
+	}
+
+	if opts.EnhancedVpcRouting != nil {
+		cluster.EnhancedVpcRouting = *opts.EnhancedVpcRouting
+	}
+
+	if opts.ClusterVersion != "" {
+		cluster.ClusterVersion = opts.ClusterVersion
+	}
+
+	if opts.PubliclyAccessible != nil {
+		cluster.PubliclyAccessible = *opts.PubliclyAccessible
+	}
 }
 
 // RebootCluster initiates a reboot of the specified cluster.
@@ -253,6 +310,13 @@ func (b *InMemoryBackend) ModifyClusterIamRoles(id string, addRoles, removeRoles
 	cluster, exists := b.clusters.Get(id)
 	if !exists {
 		return nil, fmt.Errorf("%w: cluster %s not found", ErrClusterNotFound, id)
+	}
+
+	if cluster.Status != clusterStatusAvailable {
+		return nil, fmt.Errorf(
+			"%w: cluster %s is not in the available state (status %q)",
+			ErrClusterInvalidState, id, cluster.Status,
+		)
 	}
 
 	// Build a set of current roles for O(1) lookup.

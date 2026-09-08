@@ -5,13 +5,23 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
-	"strings"
 )
 
 // GenerateDataKey generates a random data key, returning both plaintext and encrypted forms.
 func (b *InMemoryBackend) GenerateDataKey(
 	ctx context.Context,
 	input *GenerateDataKeyInput,
+) (*GenerateDataKeyOutput, error) {
+	return b.generateDataKey(ctx, input, "GenerateDataKey")
+}
+
+// generateDataKey implements GenerateDataKey and GenerateDataKeyWithoutPlaintext, which share
+// identical validation and key material but must be checked against the grant Operations list
+// under their own (distinct) grant-operation names.
+func (b *InMemoryBackend) generateDataKey(
+	ctx context.Context,
+	input *GenerateDataKeyInput,
+	operation string,
 ) (*GenerateDataKeyOutput, error) {
 	if err := validateGenerateDataKeyInput(input); err != nil {
 		return nil, err
@@ -22,7 +32,7 @@ func (b *InMemoryBackend) GenerateDataKey(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKey(ctx, input.KeyID)
+	key, err := b.lookupKey(ctx, input.KeyID, ErrKeyNotFound)
 	if err != nil {
 		return nil, err
 	}
@@ -53,12 +63,12 @@ func (b *InMemoryBackend) GenerateDataKey(
 		return nil, randErr
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}
 
-	if err = b.validateGrantTokenConstraints(ctx, input.GrantTokens, input.EncryptionContext); err != nil {
+	if err = b.validateGrantTokenConstraints(ctx, input.GrantTokens, operation, input.EncryptionContext); err != nil {
 		return nil, err
 	}
 
@@ -67,7 +77,7 @@ func (b *InMemoryBackend) GenerateDataKey(
 		return nil, encErr
 	}
 
-	b.recordLastUsage(region, key.KeyID, "GenerateDataKey")
+	b.recordLastUsage(region, key.KeyID, operation)
 
 	return &GenerateDataKeyOutput{
 		CiphertextBlob: blob,
@@ -93,22 +103,15 @@ func dataKeySize(keySpec string, numBytes *int32) int {
 func (b *InMemoryBackend) GenerateDataKeyWithoutPlaintext(
 	ctx context.Context, input *GenerateDataKeyWithoutPlaintextInput,
 ) (*GenerateDataKeyWithoutPlaintextOutput, error) {
-	out, err := b.GenerateDataKey(ctx, &GenerateDataKeyInput{
+	out, err := b.generateDataKey(ctx, &GenerateDataKeyInput{
 		KeyID:             input.KeyID,
 		KeySpec:           input.KeySpec,
 		NumberOfBytes:     input.NumberOfBytes,
 		EncryptionContext: input.EncryptionContext,
 		GrantTokens:       input.GrantTokens,
-	})
+	}, "GenerateDataKeyWithoutPlaintext")
 	if err != nil {
 		return nil, err
-	}
-
-	// Override the operation name recorded by GenerateDataKey to reflect the actual caller.
-	// out.KeyID is the key ARN; the canonical UUID follows the last "/".
-	region := getRegion(ctx, b.defaultRegion)
-	if idx := strings.LastIndexByte(out.KeyID, '/'); idx >= 0 {
-		b.recordLastUsage(region, out.KeyID[idx+1:], "GenerateDataKeyWithoutPlaintext")
 	}
 
 	return &GenerateDataKeyWithoutPlaintextOutput{
@@ -123,8 +126,17 @@ func (b *InMemoryBackend) GenerateDataKeyWithoutPlaintext(
 func (b *InMemoryBackend) GenerateDataKeyPair(
 	ctx context.Context, input *GenerateDataKeyPairInput,
 ) (*GenerateDataKeyPairOutput, error) {
+	return b.generateDataKeyPair(ctx, input, "GenerateDataKeyPair")
+}
+
+// generateDataKeyPair implements GenerateDataKeyPair and GenerateDataKeyPairWithoutPlaintext,
+// which share identical validation and key material but must be checked against the grant
+// Operations list under their own (distinct) grant-operation names.
+func (b *InMemoryBackend) generateDataKeyPair(
+	ctx context.Context, input *GenerateDataKeyPairInput, operation string,
+) (*GenerateDataKeyPairOutput, error) {
 	if input.KeyPairSpec == "" {
-		return nil, fmt.Errorf("%w: KeyPairSpec must not be empty", ErrValidation)
+		return nil, fmt.Errorf("%w: KeyPairSpec must not be empty", ErrUnsupportedParameter)
 	}
 
 	if err := validateEncryptionContextSize(input.EncryptionContext); err != nil {
@@ -136,7 +148,7 @@ func (b *InMemoryBackend) GenerateDataKeyPair(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	wrapKey, err := b.lookupKey(ctx, input.KeyID)
+	wrapKey, err := b.lookupKey(ctx, input.KeyID, ErrKeyNotFound)
 	if err != nil {
 		return nil, err
 	}
@@ -153,11 +165,11 @@ func (b *InMemoryBackend) GenerateDataKeyPair(
 		)
 	}
 
-	if err = b.validateGrantTokenConstraints(ctx, input.GrantTokens, input.EncryptionContext); err != nil {
+	if err = b.validateGrantTokenConstraints(ctx, input.GrantTokens, operation, input.EncryptionContext); err != nil {
 		return nil, err
 	}
 
-	wrapKM, err := b.requireKeyMaterial(region, wrapKey.KeyID)
+	wrapKM, err := b.requireKeyMaterial(region, wrapKey)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +194,7 @@ func (b *InMemoryBackend) GenerateDataKeyPair(
 		return nil, fmt.Errorf("encrypting private key: %w", err)
 	}
 
-	b.recordLastUsage(region, wrapKey.KeyID, "GenerateDataKeyPair")
+	b.recordLastUsage(region, wrapKey.KeyID, operation)
 
 	return &GenerateDataKeyPairOutput{
 		KeyID:                    wrapKey.Arn,
@@ -198,20 +210,14 @@ func (b *InMemoryBackend) GenerateDataKeyPair(
 func (b *InMemoryBackend) GenerateDataKeyPairWithoutPlaintext(
 	ctx context.Context, input *GenerateDataKeyPairWithoutPlaintextInput,
 ) (*GenerateDataKeyPairWithoutPlaintextOutput, error) {
-	out, err := b.GenerateDataKeyPair(ctx, &GenerateDataKeyPairInput{
+	out, err := b.generateDataKeyPair(ctx, &GenerateDataKeyPairInput{
 		KeyID:             input.KeyID,
 		KeyPairSpec:       input.KeyPairSpec,
 		EncryptionContext: input.EncryptionContext,
 		GrantTokens:       input.GrantTokens,
-	})
+	}, "GenerateDataKeyPairWithoutPlaintext")
 	if err != nil {
 		return nil, err
-	}
-
-	// Override the operation name recorded by GenerateDataKeyPair to reflect the actual caller.
-	region := getRegion(ctx, b.defaultRegion)
-	if idx := strings.LastIndexByte(out.KeyID, '/'); idx >= 0 {
-		b.recordLastUsage(region, out.KeyID[idx+1:], "GenerateDataKeyPairWithoutPlaintext")
 	}
 
 	return &GenerateDataKeyPairWithoutPlaintextOutput{

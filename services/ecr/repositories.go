@@ -103,10 +103,13 @@ func (b *InMemoryBackend) DescribeRepositories(
 	return out, nil
 }
 
-// DeleteRepository removes a repository by name.
+// DeleteRepository removes a repository by name. The emptiness check and the
+// delete happen under the same write-lock acquisition, so a PutImage cannot
+// land between them (gopherstack-e4qn).
 func (b *InMemoryBackend) DeleteRepository(
 	ctx context.Context, //nolint:revive // existing issue.
 	name string,
+	force bool,
 ) (*Repository, error) {
 	b.mu.Lock("DeleteRepository")
 	defer b.mu.Unlock()
@@ -114,6 +117,11 @@ func (b *InMemoryBackend) DeleteRepository(
 	r, ok := b.repos.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrRepositoryNotFound, name)
+	}
+
+	if !force && len(b.imagesByRepo.Get(name)) > 0 {
+		return nil, fmt.Errorf("%w: %s contains images; set force=true to override",
+			ErrRepositoryNotEmpty, name)
 	}
 
 	b.repos.Delete(name)

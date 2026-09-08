@@ -25,7 +25,9 @@ func TestHandler_AcknowledgeThirdPartyJob(t *testing.T) {
 		{
 			name: "success",
 			setup: func(h *codepipeline.Handler) {
-				h.Backend.AddJobInternal(&codepipeline.Job{ID: "tp-job-1", Nonce: "tp-nonce", Status: "Created"})
+				h.Backend.AddJobInternal(&codepipeline.Job{
+					ID: "tp-job-1", Nonce: "tp-nonce", Status: "Created", ClientID: "token-abc",
+				})
 			},
 			input: map[string]any{
 				"jobId":       "tp-job-1",
@@ -78,8 +80,9 @@ func TestHandler_ThirdPartyJobResults(t *testing.T) {
 	h := newTestHandler(t)
 
 	h.Backend.AddJobInternal(&codepipeline.Job{
-		ID:    "tp-job-001",
-		Nonce: "nonce-tp-001",
+		ID:       "tp-job-001",
+		Nonce:    "nonce-tp-001",
+		ClientID: "token",
 	})
 
 	// Acknowledge third party job
@@ -106,8 +109,9 @@ func TestHandler_ThirdPartyJobResults(t *testing.T) {
 	assert.Equal(t, 400, rec.Code)
 
 	h.Backend.AddJobInternal(&codepipeline.Job{
-		ID:    "tp-job-002",
-		Nonce: "nonce-tp-002",
+		ID:       "tp-job-002",
+		Nonce:    "nonce-tp-002",
+		ClientID: "token",
 	})
 
 	// Put third party job failure
@@ -204,7 +208,8 @@ func TestGetThirdPartyJobDetails_DataPopulated(t *testing.T) {
 					Provider: tt.provider,
 					Version:  tt.version,
 				},
-				Status: "Queued",
+				Status:   "Queued",
+				ClientID: "token",
 			})
 
 			rec := doRequest(t, h, "GetThirdPartyJobDetails", map[string]any{

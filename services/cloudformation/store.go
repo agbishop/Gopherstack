@@ -112,7 +112,7 @@ type StorageBackend interface {
 	ActivateType(typeName, typeArn string) (string, error)
 	DeactivateType(typeName, typeArn string) error
 	RegisterType(typeName, schemaHandlerPackage string) (string, error)
-	DeregisterType(arn string) error
+	DeregisterType(typeName, typeArn, versionID string) error
 	PublishType(typeName string) (string, error)
 	SetTypeDefaultVersion(arn, version string) error
 	SetTypeConfiguration(typeName, configuration string) (string, error)
@@ -120,7 +120,7 @@ type StorageBackend interface {
 		identifiers []TypeConfigurationIdentifier,
 	) ([]TypeConfigurationDetail, []BatchDescribeTypeConfigurationsError, []TypeConfigurationIdentifier)
 	ListTypes(nextToken string) ([]TypeSummary, error)
-	ListTypeVersions(typeName, nextToken string) ([]string, error)
+	ListTypeVersions(typeName, deprecatedStatus string) ([]string, error)
 	ListTypeRegistrations(typeName, nextToken string) ([]string, error)
 	DescribeTypeRegistration(registrationToken string) (string, error)
 	DescribeType(typeName, arn, versionID string) (*TypeDetails, error)

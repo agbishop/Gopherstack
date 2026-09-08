@@ -11,6 +11,14 @@ import (
 // matching the AWS MediaStore Data limit.
 const maxPathLength = 900
 
+// Object size limits per aws-sdk-go-v2/service/mediastoredata's PutObject doc
+// comment (api_op_PutObject.go:13-14): object sizes are limited to 25 MB for
+// standard upload availability and 10 MB for streaming upload availability.
+const (
+	maxObjectSizeStandard  = 25 * 1024 * 1024
+	maxObjectSizeStreaming = 10 * 1024 * 1024
+)
+
 var (
 	// ErrNotFound is returned when a requested object does not exist.
 	ErrNotFound = awserr.New("ObjectNotFoundException", awserr.ErrNotFound)
@@ -41,6 +49,13 @@ var (
 	// UploadAvailability's only Values()). See [ErrInvalidPath]'s doc comment
 	// for why the wire __type is "ValidationException".
 	ErrInvalidUploadAvailability = awserr.New("ValidationException", awserr.ErrInvalidParameter)
+
+	// ErrObjectTooLarge is returned when a PutObject body exceeds the size
+	// limit for its upload availability. See [maxObjectSizeStandard]/
+	// [maxObjectSizeStreaming]. See [ErrInvalidPath]'s doc comment for why the
+	// wire __type is "ValidationException" -- this limit has no exception of
+	// its own in mediastoredata's 4-exception model (types/errors.go).
+	ErrObjectTooLarge = awserr.New("ValidationException", awserr.ErrInvalidParameter)
 )
 
 // isValidStorageClass reports whether sc is a known MediaStore Data storage

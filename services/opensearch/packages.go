@@ -163,7 +163,8 @@ func (b *InMemoryBackend) CreatePackage(
 	return &cp, nil
 }
 
-// DeletePackage removes a package by ID.
+// DeletePackage removes a package by ID. Real AWS: "The package can't be
+// associated with any OpenSearch Service domain".
 func (b *InMemoryBackend) DeletePackage(packageID string) (*Package, error) {
 	b.mu.Lock("DeletePackage")
 	defer b.mu.Unlock()
@@ -171,6 +172,10 @@ func (b *InMemoryBackend) DeletePackage(packageID string) (*Package, error) {
 	pkg, exists := b.packages.Get(packageID)
 	if !exists {
 		return nil, fmt.Errorf("%w: package %s not found", ErrPackageNotFound, packageID)
+	}
+
+	if len(b.packageAssociations[packageID]) > 0 {
+		return nil, fmt.Errorf("%w: package %s is associated with a domain", ErrPackageAssociated, packageID)
 	}
 
 	cp := *pkg

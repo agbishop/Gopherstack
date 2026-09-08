@@ -179,7 +179,13 @@ func (b *InMemoryBackend) ListClusters(ctx context.Context) []*Cluster {
 	return out
 }
 
-// DeleteCluster deletes a cluster by ARN, cascading to its SCRAM secrets, topics and cluster policy.
+// DeleteCluster deletes a cluster by ARN, cascading to its SCRAM secrets,
+// topics, cluster policy, VPC connections and channels. VPC connections and
+// channels previously survived cluster deletion as ghost rows: both are
+// stored keyed by their own ARN (VpcConnectionArn / ChannelArn) with a
+// TargetClusterArn/ClusterArn back-reference, but nothing removed them here,
+// so DescribeVpcConnection/DescribeChannel and the global ListVpcConnections
+// kept returning rows pointing at a deleted cluster.
 func (b *InMemoryBackend) DeleteCluster(_ context.Context, clusterArn string) error {
 	b.mu.Lock("DeleteCluster")
 	defer b.mu.Unlock()
@@ -192,12 +198,20 @@ func (b *InMemoryBackend) DeleteCluster(_ context.Context, clusterArn string) er
 	delete(b.scramSecrets, clusterArn)
 	delete(b.clusterPolicies, clusterArn)
 
-	// Remove all topics belonging to this cluster. The index's slice is
-	// cloned before deleting from it, since Table.Delete mutates
-	// topicsByCluster's backing group in place and would otherwise corrupt
+	// Remove all topics/VPC connections/channels belonging to this cluster.
+	// Each index's slice is cloned before deleting from it, since Table.Delete
+	// mutates the index's backing group in place and would otherwise corrupt
 	// this loop's own iteration.
 	for _, t := range slices.Clone(b.topicsByCluster.Get(clusterArn)) {
 		b.topics.Delete(topicKey(t.ClusterArn, t.TopicName))
+	}
+
+	for _, v := range slices.Clone(b.vpcConnectionsByCluster.Get(clusterArn)) {
+		b.vpcConnections.Delete(v.VpcConnectionArn)
+	}
+
+	for _, ch := range slices.Clone(b.channelsByCluster.Get(clusterArn)) {
+		b.channels.Delete(ch.ChannelArn)
 	}
 
 	return nil

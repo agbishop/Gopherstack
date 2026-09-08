@@ -173,10 +173,14 @@ type RemoveClientIDFromOpenIDConnectProviderResponse struct {
 
 // LoginProfile represents an IAM user login profile (console access).
 type LoginProfile struct {
-	CreateDate            time.Time `json:"CreateDate"`
-	UserName              string    `json:"UserName,omitempty"`
-	Password              string    `json:"Password,omitempty"`
-	PasswordResetRequired bool      `json:"PasswordResetRequired,omitempty"`
+	CreateDate time.Time `json:"CreateDate"`
+	UserName   string    `json:"UserName,omitempty"`
+	Password   string    `json:"Password,omitempty"`
+	// PasswordHistory holds previously-set passwords, most recent first, bounded
+	// to the account password policy's PasswordReusePrevention. Index 0 is
+	// always the current password.
+	PasswordHistory       []string `json:"PasswordHistory,omitempty"`
+	PasswordResetRequired bool     `json:"PasswordResetRequired,omitempty"`
 }
 
 // LoginProfileXML is the XML representation of a LoginProfile.

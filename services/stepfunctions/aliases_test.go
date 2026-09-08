@@ -299,7 +299,14 @@ func TestCreateStateMachineAlias_RoutingViaHandler(t *testing.T) {
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
-	assert.Equal(t, "InvalidRoutingConfiguration", resp["__type"])
+	// CHANGED (orphan-code sweep, gopherstack-yatn): this assertion previously
+	// checked for "InvalidRoutingConfiguration", which is not a real sfn SDK
+	// error type -- CreateStateMachineAlias's own deserializeOpError switch
+	// (sfn@v1.45.4 deserializers.go) declares ValidationException, not this.
+	// The old assertion just confirmed the bug, not correct behavior; see
+	// TestCreateStateMachineAlias_InvalidRoutingConfig_RealClient for the
+	// real-client proof.
+	assert.Equal(t, "ValidationException", resp["__type"])
 }
 
 // ─── Tag Validation ───────────────────────────────────────────────────────────

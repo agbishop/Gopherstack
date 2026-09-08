@@ -661,12 +661,16 @@ func TestPutParameter_AllowedPattern_Mismatch(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, code)
 	assert.Contains(t, out["message"], "AllowedPattern")
+	// InvalidAllowedPatternException, not the generic ValidationException:
+	// it is PutParameter's own declared exception for this
+	// (ssm@v1.73.4 deserializers.go:13880, gopherstack-jpfk).
+	assert.Equal(t, "InvalidAllowedPatternException", out["__type"])
 }
 func TestPutParameter_AllowedPattern_InvalidRegex(t *testing.T) {
 	t.Parallel()
 	h := newHandler()
 
-	code, _ := postJSON(t, h, "PutParameter", map[string]any{
+	code, out := postJSON(t, h, "PutParameter", map[string]any{
 		"Name":           "/app/bad-regex",
 		"Type":           "String",
 		"Value":          "v",
@@ -674,6 +678,23 @@ func TestPutParameter_AllowedPattern_InvalidRegex(t *testing.T) {
 	})
 
 	assert.Equal(t, http.StatusBadRequest, code)
+	assert.Equal(t, "InvalidAllowedPatternException", out["__type"])
+}
+func TestPutParameter_Type_Unsupported(t *testing.T) {
+	t.Parallel()
+	h := newHandler()
+
+	code, out := postJSON(t, h, "PutParameter", map[string]any{
+		"Name":  "/app/bad-type",
+		"Type":  "Bogus",
+		"Value": "v",
+	})
+
+	assert.Equal(t, http.StatusBadRequest, code)
+	// UnsupportedParameterType, not the generic ValidationException: it is
+	// PutParameter's own declared exception for this
+	// (ssm@v1.73.4 deserializers.go:13910, gopherstack-jpfk).
+	assert.Equal(t, "UnsupportedParameterType", out["__type"])
 }
 func TestPutParameter_DataType_Text(t *testing.T) {
 	t.Parallel()
@@ -705,7 +726,7 @@ func TestPutParameter_DataType_Invalid(t *testing.T) {
 	t.Parallel()
 	h := newHandler()
 
-	code, _ := postJSON(t, h, "PutParameter", map[string]any{
+	code, out := postJSON(t, h, "PutParameter", map[string]any{
 		"Name":     "/app/dt-bad",
 		"Type":     "String",
 		"Value":    "v",
@@ -713,6 +734,9 @@ func TestPutParameter_DataType_Invalid(t *testing.T) {
 	})
 
 	assert.Equal(t, http.StatusBadRequest, code)
+	// No declared PutParameter exception fits an invalid DataType (checked
+	// ssm@v1.73.4 deserializers.go); ValidationException stays deliberately.
+	assert.Equal(t, "ValidationException", out["__type"])
 }
 
 // TestSSMHandler_Reset verifies the reset method clears state.

@@ -31,6 +31,14 @@ func (h *Handler) handleUpdateTraceSegmentDestination(_ context.Context, body []
 		return nil, fmt.Errorf("%w: Destination is required", errInvalidRequest)
 	}
 
+	// aws-sdk-go-v2/service/xray/types/enums.go: TraceSegmentDestination has exactly
+	// two values, XRay and CloudWatchLogs.
+	if in.Destination != "XRay" && in.Destination != "CloudWatchLogs" {
+		return nil, fmt.Errorf(
+			"%w: Destination must be XRay or CloudWatchLogs, got %q", errInvalidRequest, in.Destination,
+		)
+	}
+
 	dest := h.Backend.UpdateTraceSegmentDestination(in.Destination)
 
 	return json.Marshal(map[string]any{

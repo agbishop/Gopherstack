@@ -312,3 +312,50 @@ func TestAppStream_AppBlockBuilderStreamingURL(t *testing.T) {
 	assert.NotEmpty(t, resp["StreamingURL"])
 	assert.NotEmpty(t, resp["Expires"])
 }
+
+// TestAppStream_DeleteAppBlock_InUseByApplication proves DeleteAppBlock
+// rejects an app block still referenced by an application's AppBlockArn.
+// Regression for gopherstack-65w: DeleteAppBlock models ResourceInUseException
+// but the backend deleted unconditionally, regardless of whether an
+// application still pointed at it via the required AppBlockArn member
+// (api_op_CreateApplication.go: "This member is required").
+func TestAppStream_DeleteAppBlock_InUseByApplication(t *testing.T) {
+	t.Parallel()
+
+	t.Run("referenced by application", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		abRec := doRequest(t, h, "CreateAppBlock", map[string]any{"Name": "inuse-block"})
+		require.Equal(t, http.StatusOK, abRec.Code)
+
+		var abResp map[string]any
+		require.NoError(t, json.Unmarshal(abRec.Body.Bytes(), &abResp))
+		ab := abResp["AppBlock"].(map[string]any)
+
+		appRec := doRequest(t, h, "CreateApplication", map[string]any{
+			"Name":        "block-user-app",
+			"LaunchPath":  "/app/block-user-app",
+			"AppBlockArn": ab["Arn"],
+			"IconS3Location": map[string]any{
+				"S3Bucket": "icon-bucket",
+				"S3Key":    "icons/block-user-app.png",
+			},
+			"InstanceFamilies": []string{"GENERAL_PURPOSE"},
+		})
+		require.Equal(t, http.StatusOK, appRec.Code)
+
+		delRec := doRequest(t, h, "DeleteAppBlock", map[string]any{"Name": "inuse-block"})
+		assert.Equal(t, http.StatusBadRequest, delRec.Code)
+	})
+
+	t.Run("not referenced deletes fine", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		createAppBlock(t, h, "free-block")
+
+		rec := doRequest(t, h, "DeleteAppBlock", map[string]any{"Name": "free-block"})
+		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+}

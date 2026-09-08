@@ -3,7 +3,6 @@ package ecr
 import (
 	"context"
 	"encoding/base64"
-	"fmt"
 )
 
 // repositoryView is the JSON representation of a repository.
@@ -184,16 +183,7 @@ func (h *Handler) handleDeleteRepository(
 	ctx context.Context,
 	in *deleteRepositoryInput,
 ) (*deleteRepositoryOutput, error) {
-	// Real AWS requires force=true to delete repositories containing images.
-	if !in.Force {
-		imgs, descErr := h.Backend.DescribeImages(ctx, in.RepositoryName, nil)
-		if descErr == nil && len(imgs) > 0 {
-			return nil, fmt.Errorf("%w: %s contains images; set force=true to override",
-				ErrRepositoryNotEmpty, in.RepositoryName)
-		}
-	}
-
-	repo, err := h.Backend.DeleteRepository(ctx, in.RepositoryName)
+	repo, err := h.Backend.DeleteRepository(ctx, in.RepositoryName, in.Force)
 	if err != nil {
 		return nil, err
 	}

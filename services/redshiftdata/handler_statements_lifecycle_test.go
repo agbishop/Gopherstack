@@ -43,8 +43,9 @@ func TestBatchExecuteStatement_QueryStringIsFirstSQL(t *testing.T) {
 	h := newTestHandler(t)
 
 	rec := doRequest(t, h, "BatchExecuteStatement", map[string]any{
-		"Sqls":     []string{"SELECT 1", "SELECT 2", "SELECT 3"},
-		"Database": "testdb",
+		"Sqls":              []string{"SELECT 1", "SELECT 2", "SELECT 3"},
+		"Database":          "testdb",
+		"ClusterIdentifier": "my-cluster",
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -70,8 +71,9 @@ func TestDescribeStatement_ResultSizeAndRows(t *testing.T) {
 	h := newTestHandler(t)
 
 	rec := doRequest(t, h, "ExecuteStatement", map[string]any{
-		"Sql":      "SELECT 1",
-		"Database": "testdb",
+		"Sql":               "SELECT 1",
+		"Database":          "testdb",
+		"ClusterIdentifier": "my-cluster",
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -100,8 +102,9 @@ func TestDescribeStatement_SubStatements(t *testing.T) {
 
 	sqls := []string{"SELECT 1", "SELECT 2"}
 	rec := doRequest(t, h, "BatchExecuteStatement", map[string]any{
-		"Sqls":     sqls,
-		"Database": "testdb",
+		"Sqls":              sqls,
+		"Database":          "testdb",
+		"ClusterIdentifier": "my-cluster",
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -133,8 +136,9 @@ func TestGetStatementResult_ReturnsDemoRow(t *testing.T) {
 	h := newTestHandler(t)
 
 	rec := doRequest(t, h, "ExecuteStatement", map[string]any{
-		"Sql":      "SELECT 1",
-		"Database": "testdb",
+		"Sql":               "SELECT 1",
+		"Database":          "testdb",
+		"ClusterIdentifier": "my-cluster",
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -175,8 +179,9 @@ func TestListStatements_MaxResults(t *testing.T) {
 
 	for range testPaginationStatements {
 		doRequest(t, h, "ExecuteStatement", map[string]any{
-			"Sql":      "SELECT 1",
-			"Database": "testdb",
+			"Sql":               "SELECT 1",
+			"Database":          "testdb",
+			"ClusterIdentifier": "my-cluster",
 		})
 	}
 
@@ -226,9 +231,10 @@ func TestWithEvent_AcceptedButNotEchoed(t *testing.T) {
 	h := newTestHandler(t)
 
 	rec := doRequest(t, h, "ExecuteStatement", map[string]any{
-		"Sql":       "SELECT 1",
-		"Database":  "testdb",
-		"WithEvent": true,
+		"Sql":               "SELECT 1",
+		"Database":          "testdb",
+		"WithEvent":         true,
+		"ClusterIdentifier": "my-cluster",
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -318,7 +324,9 @@ func TestConcurrent_AccessSafe(t *testing.T) {
 	// Concurrent writes
 	for range goroutines {
 		wg.Go(func() {
-			_, _ = b.ExecuteStatement(context.Background(), "SELECT 1", "", "", "dev", "", "", "", false, "", nil, "")
+			_, _ = b.ExecuteStatement(
+				context.Background(), "SELECT 1", "my-cluster", "", "dev", "", "", "", false, "", nil, "",
+			)
 		})
 	}
 
@@ -380,9 +388,10 @@ func TestGetStatementResultV2_DemoRow(t *testing.T) {
 	h := newTestHandler(t)
 
 	execRec := doRequest(t, h, "ExecuteStatement", map[string]any{
-		"Sql":          "SELECT 1",
-		"Database":     "dev",
-		"ResultFormat": "CSV",
+		"Sql":               "SELECT 1",
+		"Database":          "dev",
+		"ResultFormat":      "CSV",
+		"ClusterIdentifier": "my-cluster",
 	})
 	require.Equal(t, http.StatusOK, execRec.Code)
 
@@ -478,8 +487,9 @@ func TestDescribeStatement_RedshiftQueryId(t *testing.T) {
 	h := newTestHandler(t)
 
 	execRec := doRequest(t, h, "ExecuteStatement", map[string]any{
-		"Sql":      "SELECT 1",
-		"Database": "dev",
+		"Sql":               "SELECT 1",
+		"Database":          "dev",
+		"ClusterIdentifier": "my-cluster",
 	})
 	require.Equal(t, http.StatusOK, execRec.Code)
 
@@ -530,8 +540,9 @@ func TestGetStatementResult_HasNextToken(t *testing.T) {
 	h := newTestHandler(t)
 
 	execRec := doRequest(t, h, "ExecuteStatement", map[string]any{
-		"Sql":      "SELECT 1",
-		"Database": "dev",
+		"Sql":               "SELECT 1",
+		"Database":          "dev",
+		"ClusterIdentifier": "my-cluster",
 	})
 	require.Equal(t, http.StatusOK, execRec.Code)
 

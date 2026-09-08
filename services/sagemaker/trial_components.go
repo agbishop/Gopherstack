@@ -22,6 +22,8 @@ var (
 	ErrTrialComponentNotFound = awserr.New("ResourceNotFound", awserr.ErrNotFound)
 	// ErrTrialComponentAlreadyExists is returned when a trial component already exists.
 	ErrTrialComponentAlreadyExists = awserr.New("ResourceInUse", awserr.ErrConflict)
+	// ErrTrialComponentInUse is returned when deleting a trial component still associated with a trial.
+	ErrTrialComponentInUse = awserr.New("ResourceInUse", awserr.ErrConflict)
 )
 
 // TrialComponent represents a SageMaker Trial Component.
@@ -187,6 +189,15 @@ func (b *InMemoryBackend) DeleteTrialComponent(ctx context.Context, name string)
 	tc, ok := store.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("%w: trial component %q not found", ErrTrialComponentNotFound, name)
+	}
+
+	for _, assoc := range b.trialComponentAssociationsStoreRO(region).All() {
+		if assoc.TrialComponentName == name {
+			return nil, fmt.Errorf(
+				"%w: trial component %q is still associated with trial %q",
+				ErrTrialComponentInUse, name, assoc.TrialName,
+			)
+		}
 	}
 
 	cp := cloneTrialComponent(tc)

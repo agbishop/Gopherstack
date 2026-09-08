@@ -116,12 +116,13 @@ func generateKeyMaterial(keySpec string) (*keyMaterial, error) {
 	case keySpecHMAC512:
 		return generateHMACKeyMaterial(hmac512Bytes)
 	default:
-		// Wrap with ErrValidation (in addition to errUnsupportedKeySpec) so an
-		// unrecognized KeySpec/KeyPairSpec classifies as ValidationException (400)
-		// rather than falling through classifyKMSError's default KMSInternalException
-		// (500). CreateKey and GenerateDataKeyPair both route unvalidated spec
-		// strings here.
-		return nil, fmt.Errorf("%w: %w: %s", ErrValidation, errUnsupportedKeySpec, keySpec)
+		// Wrap with ErrUnsupportedParameter (in addition to errUnsupportedKeySpec) so
+		// an unrecognized KeySpec/KeyPairSpec classifies as UnsupportedOperationException
+		// (400) rather than falling through classifyKMSError's default
+		// KMSInternalException (500). CreateKey, GenerateDataKeyPair(WithoutPlaintext)
+		// and key rotation all route unvalidated spec strings here, and all recognize
+		// UnsupportedOperationException in their deserializeOpError.
+		return nil, fmt.Errorf("%w: %w: %s", ErrUnsupportedParameter, errUnsupportedKeySpec, keySpec)
 	}
 }
 
@@ -758,6 +759,12 @@ func validateSigningAlgorithm(signingAlgorithm, keySpec string) error {
 // by buildEncryptionContextAAD: sorted "key=value" pairs separated by NUL
 // bytes (we omit the leading keyID and treat keyID separator weight as 1 byte
 // per pair, matching the AAD shape minus the prefix).
+//
+// Reached by GenerateDataKey(Pair)(WithoutPlaintext), Encrypt, Decrypt and
+// ReEncrypt; none of their declared sets has a size-shaped code (gopherstack-4ra7).
+// ErrValidation is kept: this is a single-field length cap, not a cross-field
+// business rule, so it fits the pre-dispatch/structural class of fault
+// gopherstack-q9bs confirmed the ValidationException allowlist entry is for.
 func validateEncryptionContextSize(ctx map[string]string) error {
 	if len(ctx) == 0 {
 		return nil
@@ -814,7 +821,7 @@ func validateMacAlgorithm(macAlgorithm, keySpec string) error {
 
 	return fmt.Errorf(
 		"%w: MAC algorithm %q is not supported for key spec %q; supported: %v",
-		ErrInvalidAlgorithm, macAlgorithm, keySpec, supported,
+		ErrInvalidKeyUsage, macAlgorithm, keySpec, supported,
 	)
 }
 

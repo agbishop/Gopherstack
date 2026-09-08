@@ -193,13 +193,21 @@ func (b *InMemoryBackend) CreateWorkspaceBundle(
 	return bun, nil
 }
 
-// DeleteWorkspaceBundle removes a custom bundle.
+// DeleteWorkspaceBundle removes a custom bundle. Returns errBundleInUse when a
+// WorkSpace still references the bundle (ResourceAssociatedException is
+// modelled for this operation).
 func (b *InMemoryBackend) DeleteWorkspaceBundle(bundleID string) error {
 	b.mu.Lock("DeleteWorkspaceBundle")
 	defer b.mu.Unlock()
 
 	if !b.customBundles.Has(bundleID) {
 		return errBundleNotFound
+	}
+
+	for _, w := range b.workspaces.All() {
+		if w.BundleID == bundleID {
+			return errBundleInUse
+		}
 	}
 
 	b.customBundles.Delete(bundleID)

@@ -52,6 +52,58 @@ func TestDeleteVpcEndpoints(t *testing.T) {
 	assert.Empty(t, remaining)
 }
 
+// TestDeleteVpcEndpoints_RejectedForGatewayLoadBalancerWithRoutes locks
+// real AWS's DeleteVpcEndpoints doc comment: "You can only delete Gateway
+// Load Balancer endpoints when the routes that are associated with the
+// endpoint are deleted." An Interface/Gateway endpoint with the same route
+// table association is unaffected -- the guard is scoped to
+// GatewayLoadBalancer endpoints only.
+func TestDeleteVpcEndpoints_RejectedForGatewayLoadBalancerWithRoutes(t *testing.T) {
+	t.Parallel()
+
+	b := ec2.NewInMemoryBackend("123456789012", "us-east-1")
+
+	rt, err := b.CreateRouteTable("vpc-default")
+	require.NoError(t, err)
+
+	gwlb, err := b.CreateVpcEndpointWithRouteTableIDs(
+		"vpc-default", "com.amazonaws.us-east-1.gwlb-svc", "GatewayLoadBalancer",
+		nil, []string{rt.ID},
+	)
+	require.NoError(t, err)
+
+	unsuccessful, err := b.DeleteVpcEndpoints([]string{gwlb.ID})
+	require.ErrorIs(t, err, ec2.ErrDependencyViolation)
+	assert.Equal(t, []string{gwlb.ID}, unsuccessful)
+
+	remaining := b.DescribeVpcEndpoints([]string{gwlb.ID})
+	require.Len(t, remaining, 1, "endpoint must survive the rejected delete")
+
+	// An Interface endpoint with the same route table association is not
+	// subject to this guard.
+	iface, err := b.CreateVpcEndpointWithRouteTableIDs(
+		"vpc-default", "com.amazonaws.us-east-1.ec2", "Interface",
+		nil, []string{rt.ID},
+	)
+	require.NoError(t, err)
+
+	unsuccessful2, err := b.DeleteVpcEndpoints([]string{iface.ID})
+	require.NoError(t, err)
+	assert.Empty(t, unsuccessful2)
+
+	// A Gateway Load Balancer endpoint with no route table associations is
+	// not blocked.
+	gwlbNoRoutes, err := b.CreateVpcEndpointWithRouteTableIDs(
+		"vpc-default", "com.amazonaws.us-east-1.gwlb-svc2", "GatewayLoadBalancer",
+		nil, nil,
+	)
+	require.NoError(t, err)
+
+	unsuccessful3, err := b.DeleteVpcEndpoints([]string{gwlbNoRoutes.ID})
+	require.NoError(t, err)
+	assert.Empty(t, unsuccessful3)
+}
+
 // TestDeleteVpcEndpoints_NotFound verifies error on missing endpoint.
 
 // TestDeleteVpcEndpoints_NotFound verifies error on missing endpoint.

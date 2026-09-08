@@ -279,28 +279,62 @@ func TestHandler_UpdateIntegration(t *testing.T) {
 	}
 }
 
+// TestHandler_CreateIntegration_InvalidType also proves the per-protocol
+// integrationType restriction api_op_CreateIntegration.go documents: AWS,
+// HTTP, and MOCK are each "Supported only for WebSocket APIs", so only
+// AWS_PROXY/HTTP_PROXY are valid on an HTTP API. Before this fix, buildIntegration's
+// validTypes check ignored the API's protocolType entirely, so an HTTP API
+// accepted AWS/HTTP/MOCK and only failed opaquely (500) at invoke time.
 func TestHandler_CreateIntegration_InvalidType(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		body       map[string]any
-		name       string
-		wantStatus int
+		body         map[string]any
+		name         string
+		protocolType string
+		wantStatus   int
 	}{
 		{
-			name:       "valid_http",
-			body:       map[string]any{"integrationType": "HTTP"},
-			wantStatus: http.StatusCreated,
+			name:         "http_api_rejects_http_type",
+			protocolType: "HTTP",
+			body:         map[string]any{"integrationType": "HTTP"},
+			wantStatus:   http.StatusBadRequest,
 		},
 		{
-			name:       "valid_mock",
-			body:       map[string]any{"integrationType": "MOCK"},
-			wantStatus: http.StatusCreated,
+			name:         "http_api_rejects_mock",
+			protocolType: "HTTP",
+			body:         map[string]any{"integrationType": "MOCK"},
+			wantStatus:   http.StatusBadRequest,
 		},
 		{
-			name:       "invalid_type",
-			body:       map[string]any{"integrationType": "INVALID"},
-			wantStatus: http.StatusBadRequest,
+			name:         "http_api_rejects_aws",
+			protocolType: "HTTP",
+			body:         map[string]any{"integrationType": "AWS"},
+			wantStatus:   http.StatusBadRequest,
+		},
+		{
+			name:         "http_api_accepts_aws_proxy",
+			protocolType: "HTTP",
+			body:         map[string]any{"integrationType": "AWS_PROXY"},
+			wantStatus:   http.StatusCreated,
+		},
+		{
+			name:         "websocket_api_accepts_http",
+			protocolType: "WEBSOCKET",
+			body:         map[string]any{"integrationType": "HTTP"},
+			wantStatus:   http.StatusCreated,
+		},
+		{
+			name:         "websocket_api_accepts_mock",
+			protocolType: "WEBSOCKET",
+			body:         map[string]any{"integrationType": "MOCK"},
+			wantStatus:   http.StatusCreated,
+		},
+		{
+			name:         "invalid_type",
+			protocolType: "HTTP",
+			body:         map[string]any{"integrationType": "INVALID"},
+			wantStatus:   http.StatusBadRequest,
 		},
 	}
 
@@ -309,9 +343,16 @@ func TestHandler_CreateIntegration_InvalidType(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler()
-			apiID := createAPI(t, h, "test-api")
 
-			rr := doRequest(t, h, http.MethodPost, fmt.Sprintf("/v2/apis/%s/integrations", apiID), tt.body)
+			rr := doRequest(t, h, http.MethodPost, "/v2/apis", map[string]any{
+				"name": "test-api", "protocolType": tt.protocolType,
+			})
+			require.Equal(t, http.StatusCreated, rr.Code)
+
+			var api apigatewayv2.API
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &api))
+
+			rr = doRequest(t, h, http.MethodPost, fmt.Sprintf("/v2/apis/%s/integrations", api.APIID), tt.body)
 			assert.Equal(t, tt.wantStatus, rr.Code)
 		})
 	}

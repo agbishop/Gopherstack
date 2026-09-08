@@ -5,6 +5,8 @@ import (
 	"slices"
 	"sort"
 	"time"
+
+	"github.com/blackbirdworks/gopherstack/pkgs/ptrconv"
 )
 
 // cloneVault returns a deep copy of the vault with Tags and NotificationEvents cloned.
@@ -32,13 +34,16 @@ func (b *InMemoryBackend) CreateVault(accountID, region, vaultName string) (*Vau
 	}
 
 	v := &Vault{
-		VaultName:    vaultName,
-		VaultARN:     vArn,
-		AccountID:    accountID,
-		Region:       region,
-		CreationDate: formatDate(time.Now()),
-		Tags:         make(map[string]string),
-		Archives:     make(map[string]*Archive),
+		VaultName:                       vaultName,
+		VaultARN:                        vArn,
+		AccountID:                       accountID,
+		Region:                          region,
+		CreationDate:                    formatDate(time.Now()),
+		Tags:                            make(map[string]string),
+		Archives:                        make(map[string]*Archive),
+		NumberOfArchivesAtLastInventory: new(int64),
+		SizeInBytesAtLastInventory:      new(int64),
+		WriteSinceLastInventory:         new(bool),
 	}
 	b.vaults.Put(v)
 
@@ -74,7 +79,20 @@ func (b *InMemoryBackend) DeleteVault(accountID, region, vaultName string) error
 		return err
 	}
 
-	if len(v.Archives) > 0 {
+	// Per api_op_DeleteVault.go's doc comment: delete only if there are no
+	// archives as of the last inventory and no writes since -- not whether
+	// the vault is empty right now.
+	//
+	// A nil NumberOfArchivesAtLastInventory means this vault came from a
+	// snapshot taken before gopherstack-x8em added these fields (CreateVault
+	// always sets them, so a live vault is never nil here). Fall back to the
+	// pre-x8em check -- live archive count -- rather than treating the
+	// missing fields as "empty as of inventory" (gopherstack-c8sa).
+	if v.NumberOfArchivesAtLastInventory == nil {
+		if len(v.Archives) > 0 {
+			return ErrVaultNotEmpty
+		}
+	} else if *v.NumberOfArchivesAtLastInventory > 0 || ptrconv.Bool(v.WriteSinceLastInventory) {
 		return ErrVaultNotEmpty
 	}
 
@@ -93,10 +111,12 @@ func (b *InMemoryBackend) DeleteVault(accountID, region, vaultName string) error
 		// AbortMultipartUpload/CompleteMultipartUpload already do for a single
 		// upload -- otherwise deleting a vault with in-progress multipart uploads
 		// leaves orphaned rows behind forever.
-		delete(b.multipartParts, uploadKey{
+		uKey := uploadKey{
 			AccountID: accountID, Region: region, VaultName: vaultName,
 			UploadID: up.MultipartUploadID,
-		})
+		}
+		delete(b.multipartParts, uKey)
+		delete(b.multipartPartData, uKey)
 	}
 
 	b.vaultLocks.Delete(vArn)

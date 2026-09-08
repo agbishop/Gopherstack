@@ -83,6 +83,21 @@ func (b *InMemoryBackend) LayerUploadCount() int {
 	return len(b.layerUploads)
 }
 
+// RepoUploadIndexCount returns the total number of repo->uploadID entries
+// tracked across all repositories. Used only in tests to verify that Reset
+// clears this index the same way Restore does.
+func (b *InMemoryBackend) RepoUploadIndexCount() int {
+	b.mu.RLock("RepoUploadIndexCount")
+	defer b.mu.RUnlock()
+
+	total := 0
+	for _, ids := range b.repoUploadIndex {
+		total += len(ids)
+	}
+
+	return total
+}
+
 // AgeAllLayerUploadsForTest backdates every in-progress layer upload's
 // CreatedAt by the given duration so abandoned-upload pruning can be exercised
 // without waiting for the real TTL.

@@ -15,6 +15,18 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/httputils"
 )
 
+// errInvalidInvocationType and errInvalidLogType are returned unwritten by
+// validateInvocationHeaders so handleInvoke can map and write the response
+// exactly once. validateInvocationHeaders used to write its own rejection
+// via h.writeError and return that call's (always-nil) result, so
+// handleInvoke's `if valErr != nil` never fired and the function was
+// invoked anyway on top of the already-written 400 (gopherstack-3t96, the
+// gopherstack-8haq shape).
+var (
+	errInvalidInvocationType = errors.New("invalid InvocationType")
+	errInvalidLogType        = errors.New("invalid LogType")
+)
+
 func (h *Handler) validateInvocationHeaders(c *echo.Context) (string, string, string, error) {
 	invType := c.Request().Header.Get("X-Amz-Invocation-Type")
 	if invType == "" {
@@ -22,17 +34,12 @@ func (h *Handler) validateInvocationHeaders(c *echo.Context) (string, string, st
 	} else if invType != InvocationTypeRequestResponse &&
 		invType != InvocationTypeEvent &&
 		invType != InvocationTypeDryRun {
-		return "", "", "", h.writeError(
-			c,
-			http.StatusBadRequest,
-			"InvalidParameterValueException",
-			"Invalid InvocationType",
-		)
+		return "", "", "", errInvalidInvocationType
 	}
 
 	logType := c.Request().Header.Get("X-Amz-Log-Type")
 	if logType != "" && logType != LogTypeTail && logType != LogTypeNone {
-		return "", "", "", h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException", "Invalid LogType")
+		return "", "", "", errInvalidLogType
 	}
 
 	clientContext := c.Request().Header.Get("X-Amz-Client-Context")
@@ -45,7 +52,7 @@ func (h *Handler) handleInvoke(c *echo.Context, name string) error {
 
 	invType, logType, clientContext, valErr := h.validateInvocationHeaders(c)
 	if valErr != nil {
-		return valErr
+		return h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException", valErr.Error())
 	}
 
 	qualifier := c.Request().URL.Query().Get("Qualifier")

@@ -1,6 +1,7 @@
 package forecast_test
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -105,4 +106,102 @@ func TestTags_RoundTrip(t *testing.T) {
 	tags = m["Tags"].([]any)
 	assert.Len(t, tags, 1)
 	assert.Equal(t, "owner", tags[0].(map[string]any)["Key"])
+}
+
+// tagKVs builds n {"Key":"k<i>","Value":"v<i>"} entries starting at offset,
+// the []any shape TagResource's Tags field expects.
+func tagKVs(n, offset int) []any {
+	out := make([]any, n)
+	for i := range n {
+		k := fmt.Sprintf("k%d", offset+i)
+		out[i] = map[string]any{"Key": k, "Value": "v" + k}
+	}
+
+	return out
+}
+
+// TestTagResource_LimitExceeded verifies Amazon Forecast's documented 50
+// tag-per-resource maximum (https://docs.aws.amazon.com/forecast/latest/dg/limits.html,
+// "Maximum number of tags you can add to a resource | 50 | No"): the check
+// is on the resource's resulting tag set, not the incoming request size, and
+// re-tagging an existing key is an update rather than an addition.
+func TestTagResource_LimitExceeded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		wantType   string
+		newTags    []any
+		preTagKeys int
+		wantCode   int
+	}{
+		{
+			name:       "exactly_50_succeeds",
+			preTagKeys: 0,
+			newTags:    tagKVs(50, 0),
+			wantCode:   http.StatusOK,
+		},
+		{
+			name:       "51_fails",
+			preTagKeys: 0,
+			newTags:    tagKVs(51, 0),
+			wantCode:   http.StatusBadRequest,
+			wantType:   "LimitExceededException",
+		},
+		{
+			name:       "accumulation_45_plus_10_fails",
+			preTagKeys: 45,
+			newTags:    tagKVs(10, 45),
+			wantCode:   http.StatusBadRequest,
+			wantType:   "LimitExceededException",
+		},
+		{
+			name:       "retagging_existing_key_at_limit_succeeds",
+			preTagKeys: 50,
+			newTags:    []any{map[string]any{"Key": "k0", "Value": "updated"}},
+			wantCode:   http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHandler()
+			code, created := request(t, h, "CreateDatasetGroup", map[string]any{
+				"DatasetGroupName": "tag-limit-" + tt.name, "Domain": "RETAIL",
+			})
+			require.Equal(t, http.StatusOK, code)
+			arn := created["DatasetGroupArn"].(string)
+
+			if tt.preTagKeys > 0 {
+				code, _ = request(t, h, "TagResource", map[string]any{
+					"ResourceArn": arn,
+					"Tags":        tagKVs(tt.preTagKeys, 0),
+				})
+				require.Equal(t, http.StatusOK, code)
+			}
+
+			code, resp := request(t, h, "TagResource", map[string]any{
+				"ResourceArn": arn,
+				"Tags":        tt.newTags,
+			})
+			assert.Equal(t, tt.wantCode, code)
+			if tt.wantType != "" {
+				assert.Equal(t, tt.wantType, resp["__type"])
+			}
+
+			if tt.name == "retagging_existing_key_at_limit_succeeds" {
+				_, list := request(t, h, "ListTagsForResource", map[string]any{"ResourceArn": arn})
+				listedTags := list["Tags"].([]any)
+				require.Len(t, listedTags, 50)
+				for _, tag := range listedTags {
+					m := tag.(map[string]any)
+					if m["Key"] == "k0" {
+						assert.Equal(t, "updated", m["Value"])
+					}
+				}
+			}
+		})
+	}
 }

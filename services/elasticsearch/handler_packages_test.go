@@ -501,3 +501,54 @@ func TestElasticsearchHandler_Package_Timestamps(t *testing.T) {
 	assert.InEpsilon(t, createdAt, updated["CreatedAt"], 0)
 	assert.GreaterOrEqual(t, updated["LastUpdatedAt"], lastUpdatedAt)
 }
+
+// TestElasticsearchHandler_ListPackagesForDomain_UnknownDomain verifies
+// ListPackagesForDomain rejects a domain name that does not exist with
+// ResourceNotFoundException (404), matching real AWS:
+// ListPackagesForDomainOutput's deserializer (elasticsearchservice@v1.45.4
+// deserializers.go, awsRestjson1_deserializeOpErrorListPackagesForDomain)
+// declares ResourceNotFoundException among its modelled errors. Before the
+// fix the backend never checked domain existence at all and always returned
+// an empty (or ghost-populated) list with 200 OK.
+func TestElasticsearchHandler_ListPackagesForDomain_UnknownDomain(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+	resp := doRequest(t, h, http.MethodGet, "/2015-01-01/domain/no-such-domain/packages", nil)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// TestElasticsearchHandler_DeleteDomain_ClearsPackageAssociations verifies
+// that deleting a domain removes it from every package's association list
+// (packageAssociationsStore), instead of leaving a ghost row that
+// ListDomainsForPackage would keep reporting forever. Both directions are
+// checked: ListDomainsForPackage must no longer list the deleted domain, and
+// ListPackagesForDomain against the now-gone domain name must 404 rather
+// than read the stale association.
+func TestElasticsearchHandler_DeleteDomain_ClearsPackageAssociations(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+	domain := createTestDomainName(t, h, "ghost-assoc-dom")
+	pkgID := createTestPackage(t, h, "ghost-assoc-pkg")
+
+	assocResp := doRequest(t, h, http.MethodPost,
+		"/2015-01-01/packages/associate/"+pkgID+"/"+domain, nil)
+	assocResp.Body.Close()
+	require.Equal(t, http.StatusOK, assocResp.StatusCode)
+
+	delResp := doRequest(t, h, http.MethodDelete, "/2015-01-01/es/domain/"+domain, nil)
+	delResp.Body.Close()
+	require.Equal(t, http.StatusOK, delResp.StatusCode)
+
+	domainsResp := doRequest(t, h, http.MethodGet, "/2015-01-01/packages/"+pkgID+"/domains", nil)
+	defer domainsResp.Body.Close()
+	require.Equal(t, http.StatusOK, domainsResp.StatusCode)
+
+	domainsOut := readJSONBody(t, domainsResp)
+	details, ok := domainsOut["DomainPackageDetailsList"].([]any)
+	require.True(t, ok)
+	assert.Empty(t, details, "deleted domain must not remain in the package's association list")
+}

@@ -348,8 +348,20 @@ func (h *Handler) handleUpdateTemplate(c *echo.Context, templateName, templateTy
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
-	if updateErr := h.applyTemplateUpdate(c, body, templateName, templateType); updateErr != nil {
-		return updateErr
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
+	if updateErr := h.applyTemplateUpdate(body, templateName, templateType); updateErr != nil {
+		if errors.Is(updateErr, errInvalidRequestBody) {
+			return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")
+		}
+
+		if errors.Is(updateErr, errUnknownTemplateType) {
+			return writeErrorResponse(c, http.StatusNotFound, "NotFoundException", "unknown template type")
+		}
+
+		return writeNotFoundOrInternal(c, updateErr)
 	}
 
 	httputils.WriteJSON(
@@ -362,92 +374,93 @@ func (h *Handler) handleUpdateTemplate(c *echo.Context, templateName, templateTy
 	return nil
 }
 
-// applyTemplateUpdate applies the update for the given template type.
-func (h *Handler) applyTemplateUpdate(c *echo.Context, body []byte, templateName, templateType string) error {
+// errUnknownTemplateType is returned by applyTemplateUpdate for a
+// templateType outside the five modeled template channels.
+var errUnknownTemplateType = errors.New("unknown template type")
+
+// applyTemplateUpdate applies the update for the given template type,
+// returning the raw backend/validation error unwritten so handleUpdateTemplate
+// can map and write it exactly once. The functions below used to write their
+// own rejection response and return its (always-nil, per writeErrorResponse)
+// result directly; handleUpdateTemplate stored that nil in updateErr and
+// tested it before continuing, so the rejection was silently treated as
+// success and a second response got written on top of the committed one
+// (gopherstack-246v, the gopherstack-8haq shape).
+func (h *Handler) applyTemplateUpdate(body []byte, templateName, templateType string) error {
 	switch templateType {
 	case templateTypeEmail:
-		return h.updateEmailTemplateFromBody(c, body, templateName)
+		return h.updateEmailTemplateFromBody(body, templateName)
 	case templateTypeInApp:
-		return h.updateInAppTemplateFromBody(c, body, templateName)
+		return h.updateInAppTemplateFromBody(body, templateName)
 	case templateTypePush:
-		return h.updatePushTemplateFromBody(c, body, templateName)
+		return h.updatePushTemplateFromBody(body, templateName)
 	case templateTypeSMS:
-		return h.updateSMSTemplateFromBody(c, body, templateName)
+		return h.updateSMSTemplateFromBody(body, templateName)
 	case templateTypeVoice:
-		return h.updateVoiceTemplateFromBody(c, body, templateName)
+		return h.updateVoiceTemplateFromBody(body, templateName)
 	}
 
-	return writeErrorResponse(c, http.StatusNotFound, "NotFoundException", "unknown template type")
+	return errUnknownTemplateType
 }
 
 // updateEmailTemplateFromBody parses and applies an email template update.
-func (h *Handler) updateEmailTemplateFromBody(c *echo.Context, body []byte, name string) error {
+func (h *Handler) updateEmailTemplateFromBody(body []byte, name string) error {
 	var req createEmailTemplateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")
+		return errInvalidRequestBody
 	}
 
-	if _, err := h.Backend.UpdateEmailTemplate(name, req); err != nil {
-		return writeNotFoundOrInternal(c, err)
-	}
+	_, err := h.Backend.UpdateEmailTemplate(name, req)
 
-	return nil
+	return err
 }
 
 // updateInAppTemplateFromBody parses and applies an in-app template update.
-func (h *Handler) updateInAppTemplateFromBody(c *echo.Context, body []byte, name string) error {
+func (h *Handler) updateInAppTemplateFromBody(body []byte, name string) error {
 	var req createInAppTemplateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")
+		return errInvalidRequestBody
 	}
 
-	if _, err := h.Backend.UpdateInAppTemplate(name, req); err != nil {
-		return writeNotFoundOrInternal(c, err)
-	}
+	_, err := h.Backend.UpdateInAppTemplate(name, req)
 
-	return nil
+	return err
 }
 
 // updatePushTemplateFromBody parses and applies a push template update.
-func (h *Handler) updatePushTemplateFromBody(c *echo.Context, body []byte, name string) error {
+func (h *Handler) updatePushTemplateFromBody(body []byte, name string) error {
 	var req createPushTemplateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")
+		return errInvalidRequestBody
 	}
 
-	if _, err := h.Backend.UpdatePushTemplate(name, req); err != nil {
-		return writeNotFoundOrInternal(c, err)
-	}
+	_, err := h.Backend.UpdatePushTemplate(name, req)
 
-	return nil
+	return err
 }
 
 // updateSMSTemplateFromBody parses and applies an SMS template update.
-func (h *Handler) updateSMSTemplateFromBody(c *echo.Context, body []byte, name string) error {
+func (h *Handler) updateSMSTemplateFromBody(body []byte, name string) error {
 	var req createSmsTemplateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")
+		return errInvalidRequestBody
 	}
 
-	if _, err := h.Backend.UpdateSmsTemplate(name, req); err != nil {
-		return writeNotFoundOrInternal(c, err)
-	}
+	_, err := h.Backend.UpdateSmsTemplate(name, req)
 
-	return nil
+	return err
 }
 
 // updateVoiceTemplateFromBody parses and applies a voice template update.
-func (h *Handler) updateVoiceTemplateFromBody(c *echo.Context, body []byte, name string) error {
+func (h *Handler) updateVoiceTemplateFromBody(body []byte, name string) error {
 	var req createVoiceTemplateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")
+		return errInvalidRequestBody
 	}
 
-	if _, err := h.Backend.UpdateVoiceTemplate(name, req); err != nil {
-		return writeNotFoundOrInternal(c, err)
-	}
+	_, err := h.Backend.UpdateVoiceTemplate(name, req)
 
-	return nil
+	return err
 }
 
 // handleDeleteTemplateByType handles DELETE for any template type.
@@ -535,7 +548,11 @@ func (h *Handler) handleListTemplateVersions(c *echo.Context, templateName, temp
 
 // handleUpdateTemplateActiveVersion handles PUT /v1/templates/{templateName}/{type}/active-version.
 func (h *Handler) handleUpdateTemplateActiveVersion(c *echo.Context, templateName, templateType string) error {
-	_, _ = httputils.ReadBody(c.Request())
+	body, _ := httputils.ReadBody(c.Request())
+
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
 
 	if err := h.Backend.UpdateTemplateActiveVersion(templateName, templateType); err != nil {
 		return writeNotFoundOrInternal(c, err)

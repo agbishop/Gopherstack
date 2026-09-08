@@ -16,6 +16,7 @@ func (h *Handler) handleDescribeAlarmHistory(form url.Values, c *echo.Context) e
 	alarmTypes := parseMemberList(form, "AlarmTypes.")
 	historyItemType := form.Get("HistoryItemType")
 	nextToken := form.Get("NextToken")
+	scanBy := form.Get("ScanBy")
 	maxRecords, _ := strconv.Atoi(form.Get("MaxRecords"))
 
 	var startDate, endDate time.Time
@@ -31,6 +32,7 @@ func (h *Handler) handleDescribeAlarmHistory(form url.Values, c *echo.Context) e
 		alarmTypes,
 		historyItemType,
 		nextToken,
+		scanBy,
 		startDate,
 		endDate,
 		maxRecords,

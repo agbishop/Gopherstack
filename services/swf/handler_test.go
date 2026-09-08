@@ -152,6 +152,7 @@ func TestSWFHandler_Actions(t *testing.T) {
 		},
 		{
 			name:     "RegisterWorkflowType",
+			setup:    []setupAction{{action: "RegisterDomain", body: map[string]any{"name": "my-domain"}}},
 			action:   "RegisterWorkflowType",
 			body:     map[string]any{"domain": "my-domain", "name": "my-workflow", "version": "1.0"},
 			wantCode: http.StatusOK,
@@ -159,6 +160,7 @@ func TestSWFHandler_Actions(t *testing.T) {
 		{
 			name: "ListWorkflowTypes",
 			setup: []setupAction{
+				{action: "RegisterDomain", body: map[string]any{"name": "d1"}},
 				{action: "RegisterWorkflowType", body: map[string]any{"domain": "d1", "name": "wf1", "version": "1.0"}},
 			},
 			action:           "ListWorkflowTypes",
@@ -212,9 +214,12 @@ func TestSWFHandler_Actions(t *testing.T) {
 		},
 		{
 			name: "RegisterWorkflowType_AlreadyExists",
-			setup: []setupAction{{action: "RegisterWorkflowType", body: map[string]any{
-				"domain": "my-domain", "name": "my-wf", "version": "1.0",
-			}}},
+			setup: []setupAction{
+				{action: "RegisterDomain", body: map[string]any{"name": "my-domain"}},
+				{action: "RegisterWorkflowType", body: map[string]any{
+					"domain": "my-domain", "name": "my-wf", "version": "1.0",
+				}},
+			},
 			action:   "RegisterWorkflowType",
 			body:     map[string]any{"domain": "my-domain", "name": "my-wf", "version": "1.0"},
 			wantCode: http.StatusBadRequest,
@@ -523,7 +528,13 @@ func TestSWFHandler_ErrorTypes(t *testing.T) {
 			wantType: "DomainAlreadyExistsFault",
 		},
 		{
-			name:   "DomainDeprecatedFault",
+			// Per aws-sdk-go-v2's DomainAlreadyExistsFault doc comment, "You may
+			// get this fault if you are registering a domain that is either
+			// already registered or deprecated" -- RegisterDomain's modelled
+			// error set has no DomainDeprecatedFault at all, so re-registering a
+			// deprecated domain surfaces DomainAlreadyExistsFault, same as a
+			// non-deprecated duplicate.
+			name:   "RegisterDomain_OnDeprecatedDomain_ReturnsAlreadyExistsFault",
 			action: "RegisterDomain",
 			setup: []setupAction{
 				{action: "RegisterDomain", body: map[string]any{"name": "dep-domain"}},
@@ -531,12 +542,13 @@ func TestSWFHandler_ErrorTypes(t *testing.T) {
 			},
 			body:     map[string]any{"name": "dep-domain"},
 			wantCode: http.StatusBadRequest,
-			wantType: "DomainDeprecatedFault",
+			wantType: "DomainAlreadyExistsFault",
 		},
 		{
 			name:   "TypeAlreadyExistsFault",
 			action: "RegisterWorkflowType",
 			setup: []setupAction{
+				{action: "RegisterDomain", body: map[string]any{"name": "d1"}},
 				{action: "RegisterWorkflowType", body: map[string]any{"domain": "d1", "name": "wf1", "version": "1.0"}},
 			},
 			body:     map[string]any{"domain": "d1", "name": "wf1", "version": "1.0"},

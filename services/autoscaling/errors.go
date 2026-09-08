@@ -37,4 +37,10 @@ var (
 	// group whose DeletionProtection setting forbids the requested delete.
 	// Matches the real SDK's ResourceInUseFault, whose ErrorCode() is "ResourceInUse".
 	ErrDeletionProtected = errors.New("ResourceInUse")
+	// ErrLaunchConfigurationInUse is returned when DeleteLaunchConfiguration is
+	// called on a launch configuration still attached to an Auto Scaling group.
+	// api_op_DeleteLaunchConfiguration.go: "The launch configuration must not be
+	// attached to an Auto Scaling group." Same wire code as ErrDeletionProtected
+	// ("ResourceInUse" -- ResourceInUseFault).
+	ErrLaunchConfigurationInUse = errors.New("ResourceInUse")
 )

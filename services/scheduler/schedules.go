@@ -279,6 +279,15 @@ func (b *InMemoryBackend) UpdateSchedule(
 		s.State = state
 	}
 	s.FlexibleTimeWindow = ftw
+	// UpdateSchedule is a full replacement (api_op_UpdateSchedule.go:16-19: "uses all
+	// values, including empty values... if you do not set an optional field in your
+	// request, that field will be set to its system-default value"). Unlike State
+	// above, StartDate/EndDate/KmsKeyArn are true pointer/optional fields on the wire
+	// (not ambiguous zero-value enums), so clear them here and let opts below
+	// re-populate whatever the caller did specify.
+	s.StartDate = nil
+	s.EndDate = nil
+	s.KmsKeyArn = ""
 	s.LastModificationDate = time.Now().UTC()
 	applyScheduleOptions(opts, s)
 

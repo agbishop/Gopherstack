@@ -79,6 +79,21 @@ func (b *InMemoryBackend) GetRecoveryPointRestoreMetadata(
 	return map[string]string{}, nil
 }
 
+// recoveryPointUnderActiveLegalHold reports whether rp is covered by any
+// active legal hold's RecoveryPointSelection. Caller must already hold b.mu.
+// CreateLegalHold (backup@v1.59.4 api_op_CreateLegalHold.go) says any action
+// to delete or disassociate a recovery point fails if one or more active
+// legal holds are on it.
+func (b *InMemoryBackend) recoveryPointUnderActiveLegalHold(rp *RecoveryPoint) bool {
+	for _, lh := range b.legalHolds.All() {
+		if lh.Status == statusActive && recoveryPointMatchesSelection(rp, lh.RecoveryPointSelection) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // DeleteRecoveryPoint deletes a recovery point from a vault.
 func (b *InMemoryBackend) DeleteRecoveryPoint(vaultName, recoveryPointArn string) error {
 	b.mu.Lock("DeleteRecoveryPoint")
@@ -89,12 +104,34 @@ func (b *InMemoryBackend) DeleteRecoveryPoint(vaultName, recoveryPointArn string
 	}
 
 	key := recoveryPointKey(vaultName, recoveryPointArn)
-	if !b.recoveryPoints.Has(key) {
+	rp, ok := b.recoveryPoints.Get(key)
+	if !ok {
 		return fmt.Errorf("%w: recovery point %s not found", ErrNotFound, recoveryPointArn)
 	}
 
+	// PutBackupVaultLockConfiguration (backup@v1.59.4 api_op_PutBackupVaultLockConfiguration.go):
+	// "Applies Backup Vault Lock to a backup vault, preventing attempts to
+	// delete any recovery point stored in or created in a backup vault."
+	if b.vaultLockConfigs.Has(vaultName) {
+		return fmt.Errorf(
+			"%w: vault %s is locked; recovery points cannot be deleted",
+			ErrInvalidRequest, vaultName,
+		)
+	}
+
+	if b.recoveryPointUnderActiveLegalHold(rp) {
+		return fmt.Errorf(
+			"%w: recovery point %s is under an active legal hold",
+			ErrInvalidRequest, recoveryPointArn,
+		)
+	}
+
 	b.recoveryPoints.Delete(key)
-	if v, ok := b.vaults.Get(vaultName); ok {
+	// recoveryPointIndexStatus is a hand-rolled map keyed "vaultName:arn"
+	// (not a store.Index), so it needs explicit cleanup here or it grows
+	// forever and leaks into Snapshot().
+	delete(b.recoveryPointIndexStatus, vaultName+":"+recoveryPointArn)
+	if v, found := b.vaults.Get(vaultName); found {
 		if v.NumberOfRecoveryPoints > 0 {
 			v.NumberOfRecoveryPoints--
 		}
@@ -113,8 +150,18 @@ func (b *InMemoryBackend) DisassociateRecoveryPoint(vaultName, recoveryPointArn 
 	}
 
 	key := recoveryPointKey(vaultName, recoveryPointArn)
-	if !b.recoveryPoints.Has(key) {
+	rp, ok := b.recoveryPoints.Get(key)
+	if !ok {
 		return fmt.Errorf("%w: recovery point %s not found", ErrNotFound, recoveryPointArn)
+	}
+
+	// See DeleteRecoveryPoint: CreateLegalHold's doc explicitly names
+	// "delete or disassociate" as the blocked actions.
+	if b.recoveryPointUnderActiveLegalHold(rp) {
+		return fmt.Errorf(
+			"%w: recovery point %s is under an active legal hold",
+			ErrInvalidRequest, recoveryPointArn,
+		)
 	}
 
 	b.recoveryPoints.Delete(key)

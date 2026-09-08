@@ -76,6 +76,8 @@ func (b *InMemoryBackend) Reset() {
 	b.tags = make(map[string]map[string]string)
 	b.policies = make(map[string]string)
 	b.policyRevisions = make(map[string]string)
+	b.policyCreatedAt = make(map[string]time.Time)
+	b.policyModifiedAt = make(map[string]time.Time)
 }
 
 // StartJob submits an analysis job with AWS-style initial status. tags are
@@ -342,7 +344,11 @@ func (b *InMemoryBackend) UpdateResource(resourceArn, resourceType string, value
 
 // DeleteResource removes a stored resource and its tags. AWS returns
 // ResourceInUseException when deleting a classifier or recognizer that is
-// still training (status SUBMITTED or IN_PROGRESS).
+// still training (status SUBMITTED or IN_PROGRESS), and also -- per
+// DeleteDocumentClassifierInput/DeleteEntityRecognizerInput's own doc
+// comments ("If an active inference job is using the model, a
+// ResourceInUseException will be returned") -- when an async detection job
+// still referencing the model is itself SUBMITTED or IN_PROGRESS.
 func (b *InMemoryBackend) DeleteResource(resourceArn, resourceType string) error {
 	b.mu.Lock("DeleteResource")
 	defer b.mu.Unlock()
@@ -358,6 +364,9 @@ func (b *InMemoryBackend) DeleteResource(resourceArn, resourceType string) error
 			"%w: resource %q cannot be deleted in status %s",
 			ErrConflict, resourceArn, resource.Status,
 		)
+	}
+	if activeJobUsesModel(b.jobs.All(), resource.Type, resourceArn) {
+		return fmt.Errorf("%w: an active inference job is using model %q", ErrConflict, resourceArn)
 	}
 
 	b.resources.Delete(resourceArn)
@@ -630,6 +639,33 @@ func isTrainingResourceType(rType string) bool {
 	return false
 }
 
+// activeJobUsesModel reports whether any non-terminal (SUBMITTED or
+// IN_PROGRESS) job still references resourceArn as its model: a
+// document-classification-job's DocumentClassifierArn for
+// resourceTypeDocClassifier, or an entities-detection-job's
+// EntityRecognizerArn for resourceTypeEntityRecognizer. These are the only
+// two job families that carry either field (see asyncJobSpecs,
+// handler_jobs.go).
+func activeJobUsesModel(jobs []*Job, resourceType, resourceArn string) bool {
+	for _, job := range jobs {
+		if job.JobStatus != statusSubmitted && job.JobStatus != statusInProgress {
+			continue
+		}
+		switch resourceType {
+		case resourceTypeDocClassifier:
+			if job.DocumentClassifierArn == resourceArn {
+				return true
+			}
+		case resourceTypeEntityRecognizer:
+			if job.EntityRecognizerArn == resourceArn {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // advanceTrainingResource steps a classifier/recognizer one lifecycle state
 // forward on each Describe call: SUBMITTED → IN_PROGRESS → TRAINED (or FAILED).
 func advanceTrainingResource(resource *Resource) {
@@ -727,22 +763,28 @@ func mergedTagKeyCount(current map[string]string, tags []Tag) int {
 // CreateResource's generic pass-through path (which stores and echoes the
 // whole input map via cloneMap -- a supplied value already round-trips fine)
 // did not enforce for presence: CreateFlywheelInput's DataAccessRoleArn and
-// DataLakeS3Uri, and CreateEndpointInput's DesiredInferenceUnits.
-// FlywheelName/EndpointName are not listed here because CreateResource's own
-// Name-presence check above already covers every resourceSpecs() nameField.
+// DataLakeS3Uri, CreateEndpointInput's DesiredInferenceUnits, and
+// CreateDatasetInput's FlywheelArn and InputDataConfig.
+// FlywheelName/EndpointName/DatasetName are not listed here because
+// CreateResource's own Name-presence check above already covers every
+// resourceSpecs() nameField.
 // Keying by resourceType (not by action) is safe here, unlike forecast's
-// action-keyed equivalent: no other operation creates a resourceTypeFlywheel
-// or resourceTypeEndpoint resource (ImportModel only ever creates
-// resourceTypeDocClassifier/resourceTypeEntityRecognizer). Verified against
-// aws-sdk-go-v2/service/comprehend@v1.43.4/validators.go's
+// action-keyed equivalent: no other operation creates a resourceTypeFlywheel,
+// resourceTypeEndpoint, or resourceTypeDataset resource (ImportModel only
+// ever creates resourceTypeDocClassifier/resourceTypeEntityRecognizer).
+// Verified against aws-sdk-go-v2/service/comprehend@v1.43.4/validators.go's
 // validateOpCreateFlywheelInput/validateOpCreateEndpointInput
 // (gopherstack-wl0s); DataAccessRoleArn is required there too even though
 // the originating audit only named DataLakeS3Uri/DesiredInferenceUnits.
+// validateOpCreateDatasetInput likewise marks FlywheelArn and
+// InputDataConfig required (DatasetName's presence is already covered by
+// the Name-presence check above).
 //
 //nolint:gochecknoglobals // static declarative table, mirrors resourceSpecs above
 var requiredResourceFields = map[string][]string{
 	resourceTypeFlywheel: {"DataAccessRoleArn", "DataLakeS3Uri"},
 	resourceTypeEndpoint: {"DesiredInferenceUnits"},
+	resourceTypeDataset:  {"FlywheelArn", "InputDataConfig"},
 }
 
 // kmsKeyIDRe matches a bare KMS key ID (UUID form).

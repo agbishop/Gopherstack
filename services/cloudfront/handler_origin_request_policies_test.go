@@ -318,3 +318,127 @@ func TestOriginRequestPolicyWhitelistItems_WireRoundTrip(t *testing.T) {
 		assert.Contains(t, body, "<Name>utm_source</Name>", "path %s", path)
 	}
 }
+
+// TestUpdateOriginRequestPolicy_PartialConfigRejected pins the fix for a
+// data-loss bug: updating with only one sub-config used to null out the
+// other two instead of being rejected, silently discarding the caller's
+// whitelisted headers/cookies/query strings.
+func TestCreateOriginRequestPolicy_PartialConfigRejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		partial *cloudfront.OriginRequestPolicyConfig
+		name    string
+	}{
+		{
+			name: "only_headers_config",
+			partial: &cloudfront.OriginRequestPolicyConfig{
+				HeadersConfig: &cloudfront.ORPHeadersConfig{HeaderBehavior: "none"},
+			},
+		},
+		{
+			name: "only_cookies_config",
+			partial: &cloudfront.OriginRequestPolicyConfig{
+				CookiesConfig: &cloudfront.ORPCookiesConfig{CookieBehavior: "none"},
+			},
+		},
+		{
+			name: "only_query_strings_config",
+			partial: &cloudfront.OriginRequestPolicyConfig{
+				QueryStringsConfig: &cloudfront.ORPQueryStringsConfig{QueryStringBehavior: "none"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			before := h.Backend.ListOriginRequestPolicies()
+
+			_, err := h.Backend.CreateOriginRequestPolicy("orp-partial-create", "comment", tt.partial)
+			require.ErrorIs(t, err, cloudfront.ErrValidation)
+
+			assert.Len(t, h.Backend.ListOriginRequestPolicies(), len(before),
+				"rejected create must not store a policy")
+		})
+	}
+}
+
+func TestUpdateOriginRequestPolicy_PartialConfigRejected(t *testing.T) {
+	t.Parallel()
+
+	headersCfg := &cloudfront.ORPHeadersConfig{
+		HeaderBehavior: "whitelist",
+		Headers:        []string{"X-Custom-Header"},
+	}
+	cookiesCfg := &cloudfront.ORPCookiesConfig{
+		CookieBehavior: "whitelist",
+		Cookies:        []string{"session-id"},
+	}
+	queryStringsCfg := &cloudfront.ORPQueryStringsConfig{
+		QueryStringBehavior: "whitelist",
+		QueryStrings:        []string{"utm_source"},
+	}
+	fullConfig := &cloudfront.OriginRequestPolicyConfig{
+		HeadersConfig:      headersCfg,
+		CookiesConfig:      cookiesCfg,
+		QueryStringsConfig: queryStringsCfg,
+	}
+
+	tests := []struct {
+		partial *cloudfront.OriginRequestPolicyConfig
+		name    string
+	}{
+		{
+			name: "only_headers_config",
+			partial: &cloudfront.OriginRequestPolicyConfig{
+				HeadersConfig: &cloudfront.ORPHeadersConfig{HeaderBehavior: "none"},
+			},
+		},
+		{
+			name: "only_cookies_config",
+			partial: &cloudfront.OriginRequestPolicyConfig{
+				CookiesConfig: &cloudfront.ORPCookiesConfig{CookieBehavior: "none"},
+			},
+		},
+		{
+			name: "only_query_strings_config",
+			partial: &cloudfront.OriginRequestPolicyConfig{
+				QueryStringsConfig: &cloudfront.ORPQueryStringsConfig{QueryStringBehavior: "none"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			created, err := h.Backend.CreateOriginRequestPolicy(
+				"orp-partial-update",
+				"orig comment",
+				fullConfig,
+			)
+			require.NoError(t, err)
+
+			_, err = h.Backend.UpdateOriginRequestPolicy(
+				created.ID,
+				"orp-partial-update",
+				"new comment",
+				tt.partial,
+			)
+			require.ErrorIs(t, err, cloudfront.ErrValidation)
+
+			after, getErr := h.Backend.GetOriginRequestPolicy(created.ID)
+			require.NoError(t, getErr)
+			assert.Equal(
+				t,
+				created,
+				after,
+				"rejected update must leave the stored policy unchanged",
+			)
+		})
+	}
+}

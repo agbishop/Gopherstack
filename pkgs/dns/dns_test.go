@@ -104,9 +104,11 @@ func TestSyntheticHostname(t *testing.T) {
 	}
 }
 
-// startTestServer starts a DNS server on a free port and returns the server and its address.
-// It retries up to 5 times with a fresh random port to avoid TOCTOU port-conflict races in CI.
-func startTestServer(t *testing.T) (*gopherDNS.Server, string) {
+// startTestServer starts a DNS server on a free port and returns the server, its address, and
+// the cancel func for the context passed to Start. It retries up to 5 times with a fresh random
+// port to avoid TOCTOU port-conflict races in CI. Cleanup cancels the context and calls Stop;
+// both are safe to call again if the test invokes the returned cancel func itself.
+func startTestServer(t *testing.T) (*gopherDNS.Server, string, context.CancelFunc) {
 	t.Helper()
 
 	const maxAttempts = 5
@@ -141,12 +143,12 @@ func startTestServer(t *testing.T) (*gopherDNS.Server, string) {
 			_ = srv.Stop()
 		})
 
-		return srv, addr
+		return srv, addr, cancel
 	}
 
 	t.Fatal("failed to start DNS test server after retries")
 
-	return nil, ""
+	return nil, "", nil
 }
 
 // queryA performs a DNS A query and returns the first IP answer.
@@ -179,7 +181,7 @@ func queryA(t *testing.T, addr, hostname string) (string, int) {
 func TestServer_RegisteredHostnameResolvesToIP(t *testing.T) {
 	t.Parallel()
 
-	srv, addr := startTestServer(t)
+	srv, addr, _ := startTestServer(t)
 
 	hostname := "my-cluster.abc.us-east-1.cache.amazonaws.com"
 	srv.Register(hostname)
@@ -192,7 +194,7 @@ func TestServer_RegisteredHostnameResolvesToIP(t *testing.T) {
 func TestServer_UnregisteredHostnameReturnsNXDOMAIN(t *testing.T) {
 	t.Parallel()
 
-	_, addr := startTestServer(t)
+	_, addr, _ := startTestServer(t)
 
 	_, rcode := queryA(t, addr, "unknown.example.com")
 	assert.Equal(t, dns.RcodeNameError, rcode)
@@ -201,7 +203,7 @@ func TestServer_UnregisteredHostnameReturnsNXDOMAIN(t *testing.T) {
 func TestServer_DeregisteredHostnameReturnsNXDOMAIN(t *testing.T) {
 	t.Parallel()
 
-	srv, addr := startTestServer(t)
+	srv, addr, _ := startTestServer(t)
 
 	hostname := "temp.us-east-1.rds.amazonaws.com"
 	srv.Register(hostname)
@@ -219,7 +221,7 @@ func TestServer_DeregisteredHostnameReturnsNXDOMAIN(t *testing.T) {
 func TestServer_NonAQueryReturnsNoData(t *testing.T) {
 	t.Parallel()
 
-	srv, addr := startTestServer(t)
+	srv, addr, _ := startTestServer(t)
 
 	hostname := "my-cluster.abc.us-east-1.cache.amazonaws.com"
 	srv.Register(hostname)
@@ -241,32 +243,19 @@ func TestServer_NonAQueryReturnsNoData(t *testing.T) {
 func TestServer_Stop(t *testing.T) {
 	t.Parallel()
 
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := pc.LocalAddr().(*net.UDPAddr).Port
-	_ = pc.Close()
+	// startTestServer retries on the port-pick-then-rebind TOCTOU race; the
+	// inline single-attempt version this used to run had none, so it flaked
+	// under full-suite parallel load (gopherstack-nn94).
+	srv, _, _ := startTestServer(t)
 
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-
-	srv, err := gopherDNS.New(gopherDNS.Config{
-		ListenAddr: addr,
-		ResolveIP:  "127.0.0.1",
-	})
-	require.NoError(t, err)
-
-	ctx := t.Context()
-
-	err = srv.Start(ctx)
-	require.NoError(t, err)
-
-	err = srv.Stop()
+	err := srv.Stop()
 	assert.NoError(t, err)
 }
 
 func TestServer_TCPQuery(t *testing.T) {
 	t.Parallel()
 
-	srv, addr := startTestServer(t)
+	srv, addr, _ := startTestServer(t)
 
 	hostname := "my-db.abc.us-east-1.rds.amazonaws.com"
 	srv.Register(hostname)
@@ -300,27 +289,28 @@ func TestRegister_WithLogger(t *testing.T) {
 func TestServer_ContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := pc.LocalAddr().(*net.UDPAddr).Port
-	_ = pc.Close()
+	srv, addr, cancel := startTestServer(t)
 
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	hostname := "cancel-test.us-east-1.rds.amazonaws.com"
+	srv.Register(hostname)
 
-	srv, startErr := gopherDNS.New(gopherDNS.Config{
-		ListenAddr: addr,
-		ResolveIP:  "127.0.0.1",
-	})
-	require.NoError(t, startErr)
+	_, rcode := queryA(t, addr, hostname)
+	require.Equal(t, dns.RcodeSuccess, rcode, "server must be answering queries before cancellation")
 
-	ctx, cancel := context.WithCancel(t.Context())
-
-	err = srv.Start(ctx)
-	require.NoError(t, err)
-
-	// Cancel the context — the server should shut down via the background goroutine.
+	// Cancel the context — the background watcher goroutine should call Stop(), which closes
+	// the TCP listener. A dial to addr then fails once shutdown has actually happened.
 	cancel()
-	time.Sleep(100 * time.Millisecond)
+
+	require.Eventually(t, func() bool {
+		conn, dialErr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+
+			return false
+		}
+
+		return true
+	}, 2*time.Second, 10*time.Millisecond, "server did not shut down after context cancellation")
 }
 
 // TestServer_StopBeforeStart verifies that calling Stop() before Start() does not corrupt the

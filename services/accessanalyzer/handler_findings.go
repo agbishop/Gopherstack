@@ -146,6 +146,7 @@ func (h *Handler) handleUpdateFindings(body []byte) (int, error) {
 	var req struct {
 		AnalyzerArn string   `json:"analyzerArn"`
 		Status      string   `json:"status"`
+		ResourceArn string   `json:"resourceArn"`
 		IDs         []string `json:"ids"`
 	}
 
@@ -159,7 +160,7 @@ func (h *Handler) handleUpdateFindings(body []byte) (int, error) {
 
 	analyzerName := analyzerNameFromArn(req.AnalyzerArn)
 
-	if err := h.Backend.UpdateFindings(analyzerName, req.IDs, FindingStatus(req.Status)); err != nil {
+	if err := h.Backend.UpdateFindings(analyzerName, req.IDs, req.ResourceArn, FindingStatus(req.Status)); err != nil {
 		return 0, err
 	}
 

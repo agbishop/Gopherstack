@@ -52,7 +52,7 @@ func (b *InMemoryBackend) StartSpeechSynthesisTask(
 		)
 	}
 
-	normal, err := b.validateOptions(options)
+	normal, err := b.validateOptions(options, true)
 	if err != nil {
 		return nil, err
 	}

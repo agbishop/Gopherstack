@@ -93,6 +93,48 @@ func TestInMemoryBackend_ServiceProfile_DeleteNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, iotwireless.ErrServiceProfileNotFound)
 }
 
+func TestInMemoryBackend_DeleteDeviceProfile_InUse(t *testing.T) {
+	t.Parallel()
+
+	bk := iotwireless.NewInMemoryBackend()
+
+	dp, err := bk.CreateDeviceProfile(testAccountID, testRegion, "dp-1", nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = bk.CreateWirelessDevice(
+		testAccountID, testRegion, "dev-1", "LoRaWAN", "dest-1", "", "",
+		&iotwireless.LoRaWANDevice{DeviceProfileID: &dp.ID}, nil, nil,
+	)
+	require.NoError(t, err)
+
+	err = bk.DeleteDeviceProfile(testAccountID, testRegion, dp.ID)
+	require.ErrorIs(t, err, iotwireless.ErrDeviceProfileInUse)
+
+	_, err = bk.GetDeviceProfile(testAccountID, testRegion, dp.ID)
+	require.NoError(t, err, "device profile must still exist after the refused delete")
+}
+
+func TestInMemoryBackend_DeleteServiceProfile_InUse(t *testing.T) {
+	t.Parallel()
+
+	bk := iotwireless.NewInMemoryBackend()
+
+	sp, err := bk.CreateServiceProfile(testAccountID, testRegion, "sp-1", nil, nil)
+	require.NoError(t, err)
+
+	_, err = bk.CreateWirelessDevice(
+		testAccountID, testRegion, "dev-1", "LoRaWAN", "dest-1", "", "",
+		&iotwireless.LoRaWANDevice{ServiceProfileID: &sp.ID}, nil, nil,
+	)
+	require.NoError(t, err)
+
+	err = bk.DeleteServiceProfile(testAccountID, testRegion, sp.ID)
+	require.ErrorIs(t, err, iotwireless.ErrServiceProfileInUse)
+
+	_, err = bk.GetServiceProfile(testAccountID, testRegion, sp.ID)
+	require.NoError(t, err, "service profile must still exist after the refused delete")
+}
+
 func TestInMemoryBackend_ListServiceProfiles(t *testing.T) {
 	t.Parallel()
 

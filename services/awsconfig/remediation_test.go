@@ -60,6 +60,33 @@ func TestDeleteRemediationConfiguration(t *testing.T) {
 	}
 }
 
+// TestDeleteRemediationConfiguration_ClearsExceptions verifies that
+// DeleteRemediationConfiguration clears remediation exceptions for the rule.
+// Otherwise a new remediation configuration put back under the same
+// (user-chosen, reusable) ConfigRuleName inherits the deleted configuration's
+// stale exceptions.
+func TestDeleteRemediationConfiguration_ClearsExceptions(t *testing.T) {
+	t.Parallel()
+
+	b := awsconfig.NewInMemoryBackend()
+	require.NoError(t, b.PutRemediationConfigurations(
+		[]awsconfig.RemediationConfiguration{{ConfigRuleName: "reused-rule"}},
+	))
+	require.NoError(t, b.PutRemediationExceptions("reused-rule", []awsconfig.RemediationExceptionResourceKey{
+		{ResourceType: "AWS::S3::Bucket", ResourceID: "bucket1"},
+	}))
+	require.Len(t, b.DescribeRemediationExceptions("reused-rule"), 1)
+
+	require.NoError(t, b.DeleteRemediationConfiguration("reused-rule"))
+
+	require.NoError(t, b.PutRemediationConfigurations(
+		[]awsconfig.RemediationConfiguration{{ConfigRuleName: "reused-rule"}},
+	))
+
+	assert.Empty(t, b.DescribeRemediationExceptions("reused-rule"),
+		"recreated remediation configuration must not inherit the deleted configuration's exceptions")
+}
+
 // TestDeleteRemediationConfiguration_NotFound drives the real SDK client and
 // asserts the typed exception configservice's own deserializeOpError models
 // for this op (configservice@v1.68.4 deserializers.go, "You specified an
@@ -145,13 +172,17 @@ func TestAWSConfigBackend_StartRemediationExecution(t *testing.T) {
 		assert.ErrorIs(t, err, awsconfig.ErrNoSuchRemediationConfiguration)
 	})
 
+	// wantErr was awsconfig.ErrValidation until this pass; StartRemediationExecution's
+	// deserializer declares InvalidParameterValueException, never ValidationException
+	// (configservice@v1.68.4 deserializers.go) -- the old assertion locked in the
+	// exact wire-code defect this pass fixed.
 	t.Run("empty_rule_name_is_validation_error", func(t *testing.T) {
 		t.Parallel()
 
 		b := awsconfig.NewInMemoryBackend()
 		err := b.StartRemediationExecution("", nil)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, awsconfig.ErrValidation)
+		assert.ErrorIs(t, err, awsconfig.ErrInvalidParameterValue)
 	})
 
 	t.Run("records_execution_readable_via_describe", func(t *testing.T) {

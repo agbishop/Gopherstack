@@ -1,8 +1,8 @@
 ---
 service: emrserverless
 sdk_module: aws-sdk-go-v2/service/emrserverless@v1.44.4
-last_audit_commit: adb374d97  # gopherstack-tuh5 fix (2026-08-13): ListApplications/ListJobRuns/ListSessions Get-field leaks; this pass (2026-08-20) re-derived every op's wire shape from the pinned SDK from scratch and found the prior manifest's placeholder hash (b0d0cfe0) pointed at an unrelated resourcegroupstaggingapi commit
-last_audit_date: 2026-08-20
+last_audit_commit: cfa41e2b0  # gopherstack-420 (2026-09-04): state-machine/precondition sweep (not the wire-shape re-derivation this field previously tracked -- see below); prior value adb374d97 was gopherstack-tuh5's fix commit for the 2026-08-13 ListApplications/ListJobRuns/ListSessions Get-field leaks
+last_audit_date: 2026-09-04
 overall: A
 ops:
   CreateApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "config sub-object allowlist extended to cover every types.CreateApplicationInput sub-object (added identityCenterConfiguration/diskEncryptionConfiguration/jobLevelCostAllocationConfiguration/schedulerConfiguration -- previously silently dropped); clientToken idempotency retained from prior pass"}
@@ -11,15 +11,15 @@ ops:
   UpdateApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "PATCH merges config sub-objects into ExtraConfig (shallow per-top-level-key replace, matching AWS partial-update semantics); now covers the same extended sub-object allowlist as CreateApplication"}
   DeleteApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "rejects delete while STARTED/STARTING/STOPPING/CREATING; cascades job runs + sessions; cleans sessionTokens + jobRunTokens for the deleted app"}
   StartApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: state-machine switch no longer references the invented ApplicationStateTerminatedWithError sentinel (see gaps history -- deleted this pass, not a real ApplicationState enum value)"}
-  StopApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "same ApplicationStateTerminatedWithError cleanup as StartApplication"}
-  StartJobRun: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed real wire-shape bug: JobRun response (GetJobRun/ListJobRuns) was emitting the request-only field name \"executionRoleArn\" instead of the actual response field \"executionRole\" (confirmed against awsRestjson1_deserializeDocumentJobRun/JobRunSummary in the SDK's deserializers.go -- a real AWS SDK client parsing gopherstack's response would get a nil ExecutionRole). Also fixed: the required response field createdBy was entirely absent (now populated with the execution role ARN as a best-effort substitute, matching the convention already used by ListJobRunAttempts); executionIamPolicy/executionTimeoutMinutes/retryPolicy (real StartJobRunInput fields) were silently dropped -- now stored and echoed, with executionTimeoutMinutes defaulting to 720 per the documented AWS behavior when unset"}
+  StopApplication: {wire: ok, errors: fixed, state: fixed, persist: ok, note: "2026-09-04 (gopherstack-420): api_op_StopApplication.go doc -- \"All scheduled and running jobs must be completed or cancelled before stopping an application\" -- was entirely unenforced; StopApplication only checked the application's own state, never its job runs, so an application with a SUBMITTED/RUNNING job run could be stopped (and then deleted, silently discarding an active job run's terminal state). Now rejects with the same ErrInvalidState used by the app-state checks (proven by TestStopApplication_RejectsWithActiveJobRuns). Same ApplicationStateTerminatedWithError cleanup as StartApplication carried over from a prior pass."}
+  StartJobRun: {wire: ok, errors: fixed, state: fixed, persist: ok, note: "fixed real wire-shape bug (prior pass): JobRun response (GetJobRun/ListJobRuns) was emitting the request-only field name \"executionRoleArn\" instead of the actual response field \"executionRole\" (confirmed against awsRestjson1_deserializeDocumentJobRun/JobRunSummary in the SDK's deserializers.go -- a real AWS SDK client parsing gopherstack's response would get a nil ExecutionRole). Also fixed (prior pass): the required response field createdBy was entirely absent (now populated with the execution role ARN as a best-effort substitute, matching the convention already used by ListJobRunAttempts); executionIamPolicy/executionTimeoutMinutes/retryPolicy (real StartJobRunInput fields) were silently dropped -- now stored and echoed, with executionTimeoutMinutes defaulting to 720 per the documented AWS behavior when unset. 2026-09-04 (gopherstack-420): types.AutoStartConfig.Enabled doc -- \"Enables the application to automatically start on job submission. Defaults to true\" -- was stored as an inert opaque passthrough (applicationConfigFields) but never read; StartJobRun accepted job runs on a CREATED/STOPPED application without ever transitioning app.State, so GetApplication kept reporting a stale non-STARTED state while a job actively ran under it (bug pattern: stale state after mutation). Now auto-starts the application by default and rejects with the new ErrConflict (ConflictException, modeled specifically on this op) only when the caller explicitly set autoStartConfiguration.enabled=false. Proven by TestStartJobRun_AutoStartsApplication and TestStartJobRun_RejectsWhenAutoStartDisabled."}
   GetJobRun: {wire: fixed, errors: ok, state: ok, persist: ok, note: "now returns executionRole (fixed key)/createdBy/executionTimeoutMinutes/jobDriver/configurationOverrides/executionIamPolicy/retryPolicy; 2026-08-21: required releaseLabel (types.JobRun) was dropped by an omitempty-style conditional whenever the owning application's own ReleaseLabel was an explicit empty string -- reachable, since CreateApplicationInput's validator only null-checks the ReleaseLabel pointer, never its content -- now always emitted; required jobDriver also now always emitted (fixed, not counted -- see gopherstack-r80d batch 20 note below for why no real client can observe the difference). See gopherstack-r80d batch 20 note below."}
   ListJobRuns: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-tuh5: was reusing jobRunToMap (the full GetJobRun converter) unscoped, leaking jobRunId/tags/executionTimeoutMinutes/jobDriver/configurationOverrides/executionIamPolicy/retryPolicy, none of which types.JobRunSummary declares. Now emits types.JobRunSummary (applicationId/arn/attempt/attemptCreatedAt/attemptUpdatedAt/createdAt/createdBy/executionRole/id/mode/name/releaseLabel/state/stateDetails/type/updatedAt, confirmed against awsRestjson1_deserializeDocumentJobRunSummary) via a dedicated jobRunSummaryToMap; states filter + pagination ok; 2026-08-21: same required-releaseLabel-dropped bug as GetJobRun, same fix -- see gopherstack-r80d batch 20 note below"}
-  CancelJobRun: {wire: ok, errors: ok, state: ok, persist: ok, note: "route is DELETE /applications/{appId}/jobruns/{jobRunId}, confirmed correct; rejects terminal states"}
+  CancelJobRun: {wire: ok, errors: fixed, state: ok, persist: ok, note: "route is DELETE /applications/{appId}/jobruns/{jobRunId}, confirmed correct; rejects terminal states. errors: fixed as a side effect of the ErrInvalidState code fix (see error_codes)."}
   GetDashboardForJobRun: {wire: ok, errors: ok, state: ok, persist: n/a, note: "synthesized console URL, no persisted state to round-trip"}
   ListJobRunAttempts: {wire: fixed, errors: ok, state: ok, persist: n/a, note: "synthesizes a single attempt (0) from the job run; documented limitation, not a bug -- backend does not model retries. 2026-08-20: jobRunAttemptToMap was missing the \"mode\" key entirely -- types.JobRunAttemptSummary declares Mode (confirmed against awsRestjson1_deserializeDocumentJobRunAttemptSummary), but JobRunAttemptSummary (models.go) had no Mode field and the synthesized attempt (job_run_attempts.go) never copied jr.Mode onto it, so a real SDK client's JobRunAttempts[].Mode always decoded as the zero value regardless of the job run's actual BATCH/STREAMING mode. Fixed: added JobRunAttemptSummary.Mode, wired from jr.Mode, added to jobRunAttemptToMap. Proven by TestListJobRunAttempts_Mode_SDKRoundTrip (wire_sdk_roundtrip_test.go). 2026-08-21: the synthesized attempt's required releaseLabel/stateDetails (types.JobRunAttemptSummary) were hardcoded to empty string under a comment claiming neither was tracked by the backend -- false, both are already stored on the backing JobRun -- now mirrors jr.ReleaseLabel/jr.StateDetails. See gopherstack-r80d batch 20 note below."}
   GetResourceDashboard: {wire: ok, errors: ok, state: ok, persist: n/a}
-  StartSession: {wire: ok, errors: ok, state: ok, persist: ok, note: "field-diffed this pass against types.StartSessionInput/Output -- clientToken/executionRoleArn/configurationOverrides/idleTimeoutMinutes/name/tags all match; response root applicationId/arn/sessionId matches StartSessionOutput exactly"}
+  StartSession: {wire: ok, errors: fixed, state: fixed, persist: ok, note: "field-diffed this pass against types.StartSessionInput/Output -- clientToken/executionRoleArn/configurationOverrides/idleTimeoutMinutes/name/tags all match; response root applicationId/arn/sessionId matches StartSessionOutput exactly. 2026-09-04 (gopherstack-420): api_op_StartSession.go doc -- \"The application must be in the STARTED state or have AutoStart enabled\" -- previously rejected unconditionally with ErrInvalidState whenever the application was not already STARTED, ignoring the documented AutoStart exception (which defaults to enabled, same AutoStartConfig.Enabled field as StartJobRun). Now mirrors StartJobRun's auto-start/ErrConflict handling. Proven by TestHandler_StartSession_AutoStartsApplication (auto-start succeeds) and the updated start_requires_started_application_when_autostart_disabled case (409 ConflictException only when explicitly disabled)."}
   GetSession: {wire: ok, errors: ok, state: ok, persist: ok, note: "field-diffed against awsRestjson1_deserializeDocumentSession: applicationId/arn/createdAt/createdBy/executionRoleArn (NOT executionRole -- Session uses the opposite field name from JobRun, confirmed via deserializers.go)/releaseLabel/sessionId/state/stateDetails/updatedAt (all required) plus startedAt/endedAt/idleTimeoutMinutes/configurationOverrides/tags all present and correctly keyed; sessionToMap needed no fix"}
   ListSessions: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-tuh5: was reusing sessionToMap (the full GetSession converter) unscoped, leaking startedAt/endedAt/idleTimeoutMinutes/configurationOverrides/tags, none of which types.SessionSummary declares. The prior entry here verified only that SessionSummary's required fields were present and stopped there -- a one-direction check presented as a full wire verdict. Now emits types.SessionSummary (applicationId/arn/createdAt/createdBy/executionRoleArn/name/releaseLabel/sessionId/state/stateDetails/updatedAt, confirmed against awsRestjson1_deserializeDocumentSessionSummary) via a dedicated sessionSummaryToMap; states + createdAtAfter/Before filters + pagination ok"}
   TerminateSession: {wire: ok, errors: ok, state: ok, persist: ok, note: "response shape (applicationId/sessionId) matches TerminateSessionOutput exactly"}
@@ -29,7 +29,7 @@ ops:
   UntagResource: {wire: ok, errors: ok, state: ok, persist: ok}
 families:
   route_matcher: {status: ok, note: "verified every op's REST path + HTTP method against emrserverless@v1.40.2 serializers.go: POST /applications, GET/PATCH/DELETE /applications/{id}, POST /applications/{id}/start|stop, POST/GET /applications/{id}/jobruns, GET/DELETE /applications/{id}/jobruns/{jobRunId}, GET .../dashboard, GET .../attempts, GET/POST/DELETE /tags/{resourceArn}, session sub-routes. All match; RouteMatcher's service-name disambiguation vs AppConfig (/applications collision) unaffected by this pass."}
-  error_codes: {status: ok, note: "ErrNotFound->404 ResourceNotFoundException, ErrAlreadyExists->409 ConflictException, ErrValidation->400 ValidationException, ErrInvalidState->400 RequestFailedException, default->500 InternalFailure -- all mapped, no missing errCodeLookup entries found"}
+  error_codes: {status: fixed, note: "2026-09-04 (gopherstack-420): ErrInvalidState carried the wire code \"RequestFailedException\", which is not a real emrserverless error type at all -- types/errors.go models only ConflictException/InternalServerException/ResourceNotFoundException/ServiceQuotaExceededException/ValidationException, confirmed by checking every state-precondition op's own deserializeOpError* switch (DeleteApplication/StartApplication/StopApplication/CancelJobRun/TerminateSession/GetSessionEndpoint all list ValidationException as their only client-error type, none lists RequestFailedException). A real SDK client would deserialize this as an untyped *smithy.GenericAPIError instead of any typed exception. Fixed: ErrInvalidState now carries ValidationException. A second sentinel, ErrConflict (ConflictException), was added for the new StartJobRun/StartSession auto-start-conflict path, since ConflictException is modeled specifically on those two ops. Current mapping: ErrNotFound->404 ResourceNotFoundException, ErrAlreadyExists->409 ConflictException, ErrValidation->400 ValidationException, ErrInvalidState->400 ValidationException, ErrConflict->409 ConflictException, default->500 InternalFailure."}
   timestamps: {status: ok, note: "all createdAt/updatedAt/startedAt/endedAt/authTokenExpiresAt/jobCreatedAt use epochSeconds() (float64 Unix seconds), matching restjson1 epoch-seconds timestamp serialization -- no ISO8601 string bugs found"}
   session_family: {status: fixed, note: "fully field-diffed against types.Session/SessionSummary and every session op's Input/Output shape in the SDK module; optional resource-usage fields (billedResourceUtilization/totalResourceUtilization/totalExecutionDurationSeconds/idleSince/networkConfiguration) are intentionally omitted since this backend does not simulate real resource billing, matching the same documented omission already accepted for JobRun/Application. This pass (gopherstack-tuh5): that field-diff covered presence of required fields but not absence of extras -- ListSessions was in fact leaking 5 Get-only members (see ops); a dedicated sessionSummaryToMap now scopes it correctly"}
   list_summary_shape: {status: fixed, note: "gopherstack-tuh5: ListApplications/ListJobRuns/ListSessions each reused their Get sibling's full converter (applicationToMap/jobRunToMap/sessionToMap) unscoped. Two prior audit entries (ListApplications, ListSessions) had verified only that each Summary type's required fields were present, and recorded wire: ok on that basis -- a correct check of one direction (presence) presented as a complete wire verdict; the other direction (absence of extras) was never checked, and gopherstack is a wire emulator seen by raw HTTP/non-SDK callers, not only SDK clients that happen to discard unrecognised keys. All three now have a dedicated *SummaryToMap converter built by reading that op's own types.*Summary struct and deserializer individually rather than assumed from a sibling; regression coverage in handler_list_summary_test.go asserts on the raw JSON body, not through an SDK client, which cannot observe this class of bug. codeartifact's sibling sweep in the same pass found a second bug class (a Summary member emitted under the wrong wire key, silently dropped by real deserializers) not present in emrserverless -- checked for here and not found: applicationSummaryToMap/jobRunSummaryToMap/sessionSummaryToMap key every field under the same name its own deserializer recognises."}
@@ -368,3 +368,217 @@ checked write-only state both directions:
 Verdict: no bugs found this pass. This is the second independent
 confirmation (after 2026-08-20's from-scratch re-derivation) that this
 service's wire shape is correct in both directions.
+
+### 2026-09-04: state-machine and precondition sweep, three bugs (gopherstack-420)
+
+Prior passes (above) exhaustively verified wire *shape* -- field presence,
+key names, nesting -- but had not independently re-derived the *behavioral*
+preconditions and state-machine documented in each op's own doc comment.
+This pass read every mutating op's `api_op_*.go` doc comment and per-op
+error-code switch in `deserializers.go` fresh, cross-checked against
+`types/errors.go`, and found three real bugs:
+
+1. **`ErrInvalidState` carried a fabricated error code, `RequestFailedException`,
+   which does not exist anywhere in this service's error model**
+   (`errors.go`, `handler.go`). `types/errors.go` defines exactly five
+   exception types for emrserverless: `ConflictException`/
+   `InternalServerException`/`ResourceNotFoundException`/
+   `ServiceQuotaExceededException`/`ValidationException`. Checked every op
+   that returns `ErrInvalidState` (`DeleteApplication`/`StartApplication`/
+   `StopApplication`/`CancelJobRun`/`TerminateSession`/`GetSessionEndpoint`)
+   against its own `awsRestjson1_deserializeOpError<Op>` switch in
+   `deserializers.go`: all six list `ValidationException` as their only
+   client-error type, none lists `RequestFailedException` (that type
+   belongs to unrelated services -- confirmed present in `acmpca`'s and
+   `codepipeline`'s `types/errors.go`, absent from emrserverless's). A real
+   AWS SDK client hitting any of these six state-violation paths would get
+   an untyped `*smithy.GenericAPIError` instead of a recognised exception
+   type, breaking any caller doing `errors.As(err, &types.ValidationException{})`.
+   Fixed: `ErrInvalidState` now carries `ValidationException`. Proven via
+   `TestHandler_ErrInvalidStateMapping`, which the prior version of this
+   test itself encoded the bug into (asserted `"RequestFailedException"`
+   as the *expected* value) -- fixed alongside the code. Hand-reverted
+   (`handler.go`'s literal restored to `"RequestFailedException"`),
+   confirmed the test fails (`expected: "ValidationException", actual:
+   "RequestFailedException"`), restored, md5sum byte-identical.
+
+2. **`StopApplication` never enforced its documented job-run precondition**
+   (`applications.go`). `api_op_StopApplication.go`: "Stops a specified
+   application and releases initial capacity if configured. All scheduled
+   and running jobs must be completed or cancelled before stopping an
+   application." The handler only checked the application's own state
+   (already STOPPED/TERMINATED), never its job runs -- an application with
+   a SUBMITTED or RUNNING job run could be stopped (and, since
+   `DeleteApplication` cascade-deletes job runs unconditionally once an
+   app is STOPPED/CREATED, subsequently deleted), silently discarding an
+   active job run instead of rejecting the request as AWS documents. Fixed
+   by rejecting with `ErrInvalidState` when any job run under the
+   application (`jobRunsByApplication` index) is not in a terminal state
+   (`isTerminalJobRunState`, the same helper `CancelJobRun` already used).
+   Proven by `TestStopApplication_RejectsWithActiveJobRuns`. Hand-reverted
+   (removed the job-run loop), confirmed the test fails ("An error is
+   expected but got nil"), restored, md5sum byte-identical. Blast radius:
+   `TestHandler_DeleteApplication_CleansUpJobRunsAndSessions` relied on
+   stopping an application that still had a live (never-cancelled) job
+   run -- updated to cancel the job run before stopping, matching the now-
+   enforced precondition.
+
+3. **`autoStartConfiguration` was a fully inert opaque passthrough --
+   `StartJobRun`/`StartSession` never read it, and `StartJobRun` never
+   auto-started a non-STARTED application, leaving `Application.State`
+   stale after a job run began** (`applications.go`, `job_runs.go`,
+   `session.go`). `types.AutoStartConfig.Enabled`'s doc: "Enables the
+   application to automatically start on job submission. Defaults to
+   true." `StartJobRun` accepted job runs against a CREATED or STOPPED
+   application unconditionally (no state check at all) but never mutated
+   `app.State`, so `GetApplication` kept reporting the application's old
+   state indefinitely while a job actively ran under it -- the "stale
+   cache / partial sync after mutation" pattern. Separately,
+   `api_op_StartSession.go`'s doc ("The application must be in the
+   STARTED state or have AutoStart enabled") was only half-implemented:
+   `StartSession` unconditionally rejected a non-STARTED application with
+   `ErrInvalidState`, never honoring the documented AutoStart exception.
+   Fixed both: added `applicationAutoStartEnabled` (reads
+   `ExtraConfig["autoStartConfiguration"]["enabled"]`, defaulting to `true`
+   per the doc when absent or malformed), and both `StartJobRun` and
+   `StartSession` now auto-start a non-STARTED application when enabled
+   (the common case) and reject with a new sentinel, `ErrConflict`
+   (`ConflictException`, 409) -- modeled specifically on both these ops,
+   per each op's own error switch, unlike `ErrInvalidState`'s ops above --
+   only when the caller explicitly set `enabled: false`. Proven by
+   `TestStartJobRun_AutoStartsApplication`,
+   `TestStartJobRun_RejectsWhenAutoStartDisabled`, and
+   `TestHandler_StartSession_AutoStartsApplication`; the existing
+   `start_requires_started_application` handler test case encoded the old
+   unconditional-rejection behavior as correct and was rewritten to
+   `start_requires_started_application_when_autostart_disabled` (creates
+   the application with `autoStartConfiguration.enabled: false` and
+   expects 409, not 400). Each new test hand-reverted and confirmed
+   failing without its fix (state check comparisons and "error expected,
+   got nil"), then restored, md5sums byte-identical.
+
+**Deliberately not changed, and why:**
+- `StartJobRun`'s modelled `ConflictException` was initially considered as
+  evidence that submitting a job run to a non-STARTED application should
+  unconditionally fail -- but `CreateApplication` and `StartSession` also
+  model `ConflictException` despite having no comparable state constraint
+  in prose, and both (like `StartJobRun`) accept a `ClientToken`; the more
+  parsimonious explanation covering all three is AWS's standard
+  idempotency-token-reuse-conflict semantics, not a state constraint. Only
+  `StartSession`'s prose directly documents a state precondition, so only
+  it (and, by the shared `AutoStartConfig` field, `StartJobRun`) got a
+  state-conflict path -- `CreateApplication` was left untouched.
+- `types.AutoStopConfig` ("configuration for an application to
+  automatically stop after a certain amount of time being idle") is fully
+  round-tripped (accepted on Create/Update, persisted in
+  `Application.ExtraConfig`, echoed by Get/List -- proven by
+  `TestHandler_CreateApplication_ConfigPassthrough` and
+  `TestHandler_UpdateApplication_ConfigMerge`) but **enforcement** (actually
+  stopping an idle application) remains unimplemented. Implementing
+  enforcement would require simulating wall-clock idle time via a
+  background ticker, which this service has none of (`leaks: {status:
+  clean, note: "no goroutines/janitors in this service"}` above) --
+  re-verified 2026-09-07 (gopherstack-3vyq): no `janitor.go`, no
+  `service.BackgroundWorker`/`Shutdowner` implementation in `provider.go`,
+  unlike e.g. amplify's `Janitor`/`WithJanitor`. The pattern is well
+  established elsewhere in this repo (38 other services have a
+  `janitor.go`) and wiring one in is not architecturally blocked, but
+  building it is real, non-trivial work (needs an idle-since clock per
+  application/job-run-count check, a ticker wired through
+  `provider.Init`, and a `testing/synctest`-based test in the style of
+  `services/sagemaker/lifecycle_test.go`) and is deferred, not attempted
+  this pass; flagged here as a known, disclosed gap rather than
+  guess-implemented. 2026-09-07: fixed a smaller, real defect found while
+  re-checking this gap -- `idleTimeoutMinutes` has a documented AWS range
+  ("Valid Range: Minimum value of 1. Maximum value of 10080", API
+  reference; not stated in the Go SDK's doc comment, which gives only the
+  default of 15) that gopherstack did not enforce at all, accepting e.g.
+  `idleTimeoutMinutes: 0` or `10081` with a 200 instead of the documented
+  `ValidationException`. Fixed via `validateAutoStopConfig`
+  (`applications.go`), called from both `handleCreateApplication` and
+  `handleUpdateApplication`; proven by
+  `TestHandler_ErrValidationMapping`'s two new
+  `autoStopConfiguration_idleTimeoutMinutes_*` cases and
+  `TestHandler_UpdateApplication_AutoStopConfigValidation` (rejects 0 and
+  10081, accepts the 1 and 10080 boundaries).
+- `ApplicationState`'s `CREATING`/`STARTING`/`STOPPING` and `TERMINATED`
+  remain unreachable (nothing in this backend ever sets them) -- this is
+  the same class of simplification already disclosed for `JobRunState`'s
+  `QUEUED`/`PENDING`/etc. (see `gaps`, above): every reachable state
+  transition (`CreateApplication`->CREATED, `StartApplication`/auto-start
+  ->STARTED, `StopApplication`->STOPPED) is instantaneous and
+  self-consistent, so no client-observable staleness results. Not fixed;
+  simulating asynchronous provisioning is out of scope for this pass.
+- Verified and left as-is: `DeleteApplication`'s own precondition ("has to
+  be in a stopped or created state in order to be deleted") is correctly
+  enforced for every state this backend can actually reach (`CREATED`/
+  `STARTED`/`STOPPED` -- `STARTING`/`STOPPING`/`CREATING`/`TERMINATED` are
+  all unreachable per above, so the existing switch's handling of them,
+  while technically over-broad against the doc's exact wording, is inert).
+
+Tools: `GOTOOLCHAIN=go1.26.6 go build ./...`, `go vet
+./services/emrserverless/...`, `go test -race -count=1
+./services/emrserverless/...`, `go test -race -count=1
+./services/cloudformation/... ./services/emr/...` (dependents), and
+`golangci-lint run ./services/emrserverless/...` all clean, 0 issues.
+
+### 2026-09-07: gopherstack-3vyq -- AutoStopConfig audit, idleTimeoutMinutes bounds fixed
+
+Issue gopherstack-3vyq was filed title-only ("AutoStopConfig idle timeout is
+accepted but never enforced; needs a background ticker this service
+deliberately lacks") with no description. Re-derived the specifics:
+
+- **"Deliberately" is documented, not an assumption.** The prior
+  2026-09-04 pass already recorded this exact decision in the
+  "Deliberately not changed" section above (`leaks.note`: "no
+  goroutines/janitors in this service"), so the issue title accurately
+  reflects a real, pre-existing, disclosed design decision -- it did not
+  need to be re-litigated as a documentation gap.
+- **AutoStopConfig round-trips correctly**, contrary to what "accepted but
+  never enforced" alone might suggest as a defect class: it is not
+  silently dropped. `CreateApplication`/`UpdateApplication` store it in
+  `Application.ExtraConfig` via the same generic opaque-passthrough
+  mechanism as the service's other 13 config sub-objects, and
+  `GetApplication`/`ListApplications` echo it back --
+  `TestHandler_CreateApplication_ConfigPassthrough` and
+  `TestHandler_UpdateApplication_ConfigMerge` already proved this before
+  this pass.
+- **Real, fixable defect found and fixed**: `idleTimeoutMinutes` has a
+  documented range on AWS's API reference page
+  (docs.aws.amazon.com/emr-serverless/latest/APIReference/API_AutoStopConfig.html):
+  "Valid Range: Minimum value of 1. Maximum value of 10080." (not stated
+  in the pinned Go SDK's doc comment, `types/types.go:186-188`, which
+  gives only the default of 15 minutes) -- gopherstack enforced no bound
+  at all, accepting e.g. `0` or `10081` with `200 OK`. Fixed with
+  `validateAutoStopConfig` (`applications.go`), wired into both
+  `handleCreateApplication` and `handleUpdateApplication` in
+  `handler.go`, returning the documented `ValidationException`/400 (same
+  sentinel and status as every other input-validation failure in this
+  service). Regression tests written first and confirmed failing against
+  unmodified code (`expected: 400 / actual: 200`, `expected:
+  "ValidationException" / actual: ""`) in
+  `TestHandler_ErrValidationMapping`'s two new
+  `autoStopConfiguration_idleTimeoutMinutes_*` cases, then in
+  `TestHandler_UpdateApplication_AutoStopConfigValidation` (also proves
+  the 1 and 10080 boundaries are still accepted, not off-by-one rejected).
+- **Enforcement (a ticker that actually stops idle applications) is a
+  real, deferred gap, not a fixable-now bug.** `provider.go` implements
+  neither `service.BackgroundWorker` nor `service.Shutdowner`
+  (`pkgs/service/service.go:111-124`), and there is no `janitor.go` in
+  this directory, confirming the issue's premise. The pattern itself is
+  not exotic -- 38 other services in this repo have a `janitor.go`, and
+  amplify's `Janitor` (`services/amplify/janitor.go`) is a close
+  structural match: a `pkgs/worker.NewGroup`-based ticker advancing
+  resources out of a transient state, wired via `handler.WithJanitor` in
+  its `provider.go`. Building the equivalent here (idle-since tracking
+  per application, keyed off last job-run/session activity, ticked and
+  transitioning STARTED->STOPPED, with a `testing/synctest`-based test
+  along the lines of `services/sagemaker/lifecycle_test.go`) is feasible
+  but is real, multi-file, non-mechanical work -- out of scope for this
+  pass per the investigating issue's explicit scope note. Left as a
+  disclosed gap (see the "Deliberately not changed" bullet above, updated
+  this pass).
+
+Tools re-run after the fix: `GOTOOLCHAIN=go1.27.0 go test -race
+./services/emrserverless/...` and `GOTOOLCHAIN=go1.27.0 golangci-lint run
+./services/emrserverless/...`, both clean, 0 issues.

@@ -30,7 +30,7 @@ func (b *InMemoryBackend) GetParametersForImport(
 			return nil, fmt.Errorf(
 				"%w: WrappingAlgorithm %q is not valid; must be one of RSAES_PKCS1_V1_5, "+
 					"RSAES_OAEP_SHA_1, RSAES_OAEP_SHA_256, RSA_AES_KEY_WRAP_SHA_1, or RSA_AES_KEY_WRAP_SHA_256",
-				ErrValidation,
+				ErrUnsupportedParameter,
 				input.WrappingAlgorithm,
 			)
 		}
@@ -46,7 +46,7 @@ func (b *InMemoryBackend) GetParametersForImport(
 		if _, ok := validWrappingKeySpecs[input.WrappingKeySpec]; !ok {
 			return nil, fmt.Errorf(
 				"%w: WrappingKeySpec %q is not valid; must be RSA_2048, RSA_3072, or RSA_4096",
-				ErrValidation, input.WrappingKeySpec,
+				ErrUnsupportedParameter, input.WrappingKeySpec,
 			)
 		}
 	}
@@ -78,7 +78,7 @@ func (b *InMemoryBackend) GetParametersForImport(
 	b.mu.RLock("GetParametersForImport")
 	defer b.mu.RUnlock()
 
-	key, err := b.lookupKey(ctx, input.KeyID)
+	key, err := b.lookupKey(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return nil, err
 	}
@@ -142,18 +142,23 @@ func (b *InMemoryBackend) resolveKeyMaterial(keyID string, material []byte) ([]b
 	if !loaded {
 		return nil, fmt.Errorf(
 			"%w: no wrapping key found for %s; call GetParametersForImport first",
-			ErrValidation, keyID,
+			ErrInvalidImportToken, keyID,
 		)
 	}
 
 	privKey, ok := privKeyAny.(*rsa.PrivateKey)
 	if !ok {
+		// Defensive only -- importWrappingKeys only ever stores *rsa.PrivateKey
+		// (see GetParametersForImport), so no request can hit this.
 		return nil, fmt.Errorf("%w: internal: wrapping key type assertion failed", ErrValidation)
 	}
 
 	raw, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privKey, material, nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: RSA-OAEP decrypt of key material failed: %w", ErrInvalidKeyUsage, err)
+		// InvalidCiphertextException's doc (kms@v1.55.4 types/errors.go) covers this
+		// exactly for ImportKeyMaterial: "KMS could not decrypt the encrypted (wrapped)
+		// key material."
+		return nil, fmt.Errorf("%w: RSA-OAEP decrypt of key material failed: %w", ErrInvalidCiphertext, err)
 	}
 
 	b.importWrappingKeys.Delete(keyID)
@@ -174,7 +179,7 @@ func (b *InMemoryBackend) ImportKeyMaterial(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}
@@ -189,19 +194,24 @@ func (b *InMemoryBackend) ImportKeyMaterial(
 
 	// Only allow import when the key is awaiting material.
 	if key.KeyState != KeyStatePendingImport {
-		return keyStateError(key)
+		return fmt.Errorf("%w: key %q is not awaiting key material", ErrKeyInvalidState, key.KeyID)
 	}
 
 	// Only symmetric (AES-256) key material is supported for external import.
+	// UnsupportedOperationException's doc covers this: "a specified ... resource is
+	// not valid for this operation" -- the key's own KeySpec, not a request parameter.
 	if key.KeySpec != keySpecSymmetric {
 		return fmt.Errorf(
 			"%w: ImportKeyMaterial only supports SYMMETRIC_DEFAULT keys; got %s",
-			ErrInvalidKeyUsage, key.KeySpec,
+			ErrUnsupportedParameter, key.KeySpec,
 		)
 	}
 
+	// IncorrectKeyMaterialException's own doc disjunction -- "is, expired, invalid, or
+	// does not meet expectations" -- covers empty material under "invalid", same
+	// declared code as the wrong-length check below under "does not meet expectations".
 	if len(input.KeyMaterial) == 0 {
-		return fmt.Errorf("%w: KeyMaterial must not be empty", ErrInvalidKeyUsage)
+		return fmt.Errorf("%w: KeyMaterial must not be empty", ErrIncorrectKeyMaterial)
 	}
 
 	rawMaterial, err := b.resolveKeyMaterial(key.KeyID, input.KeyMaterial)
@@ -212,7 +222,7 @@ func (b *InMemoryBackend) ImportKeyMaterial(
 	if len(rawMaterial) != aes256Bytes {
 		return fmt.Errorf(
 			"%w: symmetric key material must be exactly %d bytes, got %d",
-			ErrInvalidKeyUsage, aes256Bytes, len(rawMaterial),
+			ErrIncorrectKeyMaterial, aes256Bytes, len(rawMaterial),
 		)
 	}
 
@@ -251,7 +261,7 @@ func (b *InMemoryBackend) DeleteImportedKeyMaterial(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKeyWrite(ctx, input.KeyID)
+	key, err := b.lookupKeyWrite(ctx, input.KeyID, ErrInvalidArn)
 	if err != nil {
 		return err
 	}

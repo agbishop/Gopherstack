@@ -40,6 +40,38 @@ func effectiveStepStatus(s StepStatus) StepStatus {
 	return cp
 }
 
+// allStepsTerminal reports whether every step on a cluster has reached a
+// terminal status (COMPLETED or CANCELLED), using effectiveStepStatus so a
+// still-PENDING step within its completion delay counts as not terminal. A
+// cluster with no steps at all is not "all steps terminal" -- there is
+// nothing for KeepJobFlowAliveWhenNoSteps=false to have completed yet.
+func allStepsTerminal(steps []Step) bool {
+	if len(steps) == 0 {
+		return false
+	}
+
+	for _, s := range steps {
+		if effectiveStepStatus(s.Status).State == StepStatePending {
+			return false
+		}
+	}
+
+	return true
+}
+
+// clusterAcceptsSteps reports whether a cluster in the given state may
+// accept new steps via AddJobFlowSteps, per real AddJobFlowSteps' doc
+// ("You can only add steps to a cluster that is in one of the following
+// states: STARTING, BOOTSTRAPPING, RUNNING, or WAITING").
+func clusterAcceptsSteps(state string) bool {
+	switch state {
+	case StateStarting, StateBootstrapping, StateRunning, StateWaiting:
+		return true
+	default:
+		return false
+	}
+}
+
 // The following Get/Has/Put/Delete/InRegion helpers replace the old lazy
 // per-region map accessors (clustersStore(region) etc.) with store.Table /
 // store.Index operations. Callers must still hold b.mu, exactly as before --
@@ -304,6 +336,14 @@ func (b *InMemoryBackend) RunJobFlow(ctx context.Context, params RunJobFlowParam
 	b.mu.Lock("RunJobFlow")
 	defer b.mu.Unlock()
 
+	if params.SecurityConfiguration != "" {
+		if _, ok := b.securityConfigGet(region, params.SecurityConfiguration); !ok {
+			return nil, fmt.Errorf(
+				"%w: security configuration %s not found", ErrNotFound, params.SecurityConfiguration,
+			)
+		}
+	}
+
 	id := b.nextID()
 	cluster := b.buildNewCluster(region, id, releaseLabel, params)
 
@@ -526,7 +566,7 @@ func (b *InMemoryBackend) TerminateJobFlows(ctx context.Context, ids []string) e
 			return fmt.Errorf("%w: cluster %s not found", ErrNotFound, id)
 		}
 
-		if err := terminateSingle(cluster, id); err != nil {
+		if err := terminateSingle(cluster, id, "USER_REQUEST", "Terminated by user request"); err != nil {
 			return err
 		}
 	}
@@ -534,7 +574,13 @@ func (b *InMemoryBackend) TerminateJobFlows(ctx context.Context, ids []string) e
 	return nil
 }
 
-func terminateSingle(cluster *Cluster, id string) error {
+// terminateSingle transitions cluster straight to TERMINATED (this backend
+// never simulates TERMINATING). reasonCode/reasonMessage populate
+// Status.StateChangeReason -- callers pass real
+// types.ClusterStateChangeReasonCode values (emr@v1.64.4 types/enums.go),
+// e.g. "USER_REQUEST" for an explicit TerminateJobFlows call or
+// "ALL_STEPS_COMPLETED" for the janitor's auto-termination sweep.
+func terminateSingle(cluster *Cluster, id, reasonCode, reasonMessage string) error {
 	if cluster.Status.State == StateTerminated ||
 		cluster.Status.State == StateTerminatedWithErrors {
 		return nil
@@ -547,8 +593,8 @@ func terminateSingle(cluster *Cluster, id string) error {
 	now := time.Now()
 	cluster.Status.State = StateTerminated
 	cluster.Status.StateChangeReason = map[string]any{
-		"Code":    "USER_REQUEST",
-		"Message": "Terminated by user request",
+		"Code":    reasonCode,
+		"Message": reasonMessage,
 	}
 	cluster.Status.Timeline[timelineKeyEnd] = awstime.Epoch(now)
 	cluster.terminatedAt = now

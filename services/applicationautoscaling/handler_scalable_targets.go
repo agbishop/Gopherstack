@@ -14,13 +14,13 @@ type suspendedStateInput struct {
 
 type registerScalableTargetInput struct {
 	SuspendedState    *suspendedStateInput `json:"SuspendedState,omitempty"`
+	MinCapacity       *int32               `json:"MinCapacity,omitempty"`
+	MaxCapacity       *int32               `json:"MaxCapacity,omitempty"`
 	Tags              map[string]string    `json:"Tags,omitempty"`
 	ServiceNamespace  string               `json:"ServiceNamespace"`
 	ResourceID        string               `json:"ResourceId"`
 	ScalableDimension string               `json:"ScalableDimension"`
 	RoleARN           string               `json:"RoleARN,omitempty"`
-	MinCapacity       int32                `json:"MinCapacity"`
-	MaxCapacity       int32                `json:"MaxCapacity"`
 }
 
 type registerScalableTargetOutput struct {

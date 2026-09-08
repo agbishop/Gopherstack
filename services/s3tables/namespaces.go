@@ -85,10 +85,17 @@ func (b *InMemoryBackend) GetNamespace(
 	return cloneNamespace(ns), nil
 }
 
-// DeleteNamespace deletes a namespace from a table bucket.
+// DeleteNamespace deletes a namespace from a table bucket. Real S3 Tables
+// requires the namespace to contain no tables first ("Before you delete a
+// table namespace ... you must delete all tables within the namespace, or
+// move them under another namespace" -- AWS docs, s3-tables-namespace-delete.html);
+// a namespace that still has tables returns ErrNamespaceNotEmpty.
 func (b *InMemoryBackend) DeleteNamespace(tableBucketARN string, namespace []string) error {
 	b.muNamespaces.Lock("DeleteNamespace")
 	defer b.muNamespaces.Unlock()
+
+	b.muTables.RLock("DeleteNamespace")
+	defer b.muTables.RUnlock()
 
 	nsStr := joinNamespace(namespace)
 	key := namespaceKey(tableBucketARN, nsStr)
@@ -100,6 +107,17 @@ func (b *InMemoryBackend) DeleteNamespace(tableBucketARN string, namespace []str
 			nsStr,
 			tableBucketARN,
 		)
+	}
+
+	for _, t := range b.tablesByBucket.Get(tableBucketARN) {
+		if joinNamespace(t.Namespace) == nsStr {
+			return fmt.Errorf(
+				"%w: namespace %q in bucket %s still contains tables",
+				ErrNamespaceNotEmpty,
+				nsStr,
+				tableBucketARN,
+			)
+		}
 	}
 
 	b.namespaces.Delete(key)

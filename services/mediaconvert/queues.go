@@ -22,7 +22,7 @@ func (b *InMemoryBackend) CreateQueue(
 	name, description, pricingPlan, status string,
 	tags map[string]string,
 ) (*Queue, error) {
-	return b.CreateQueueFull(name, description, pricingPlan, status, tags, 0, nil)
+	return b.CreateQueueFull(name, description, pricingPlan, status, tags, nil, nil)
 }
 
 // QueueCreateExtras carries newer optional CreateQueue fields
@@ -38,7 +38,7 @@ type QueueCreateExtras struct {
 func (b *InMemoryBackend) CreateQueueFull(
 	name, description, pricingPlan, status string,
 	tags map[string]string,
-	concurrentJobs int,
+	concurrentJobs *int,
 	reservationPlan *ReservationPlan,
 	extras ...QueueCreateExtras,
 ) (*Queue, error) {
@@ -81,7 +81,7 @@ func (b *InMemoryBackend) CreateQueueFull(
 		Tags:                   nonNilTagsCopy(tags),
 		CreatedAt:              now,
 		LastUpdated:            now,
-		ConcurrentJobs:         concurrentJobs,
+		ConcurrentJobs:         cloneIntPtr(concurrentJobs),
 		ReservationPlan:        cloneReservationPlan(reservationPlan),
 		MaximumConcurrentFeeds: cloneIntPtr(extra.MaximumConcurrentFeeds),
 	}
@@ -199,7 +199,7 @@ func (b *InMemoryBackend) UpdateQueue(
 	}
 
 	if concurrentJobs != nil {
-		q.ConcurrentJobs = *concurrentJobs
+		q.ConcurrentJobs = cloneIntPtr(concurrentJobs)
 	}
 
 	if reservationPlanSettings != nil {
@@ -261,6 +261,7 @@ func cloneQueue(q *Queue) *Queue {
 	cp := *q
 	cp.Tags = nonNilTagsCopy(q.Tags)
 	cp.MaximumConcurrentFeeds = cloneIntPtr(q.MaximumConcurrentFeeds)
+	cp.ConcurrentJobs = cloneIntPtr(q.ConcurrentJobs)
 
 	if q.ReservationPlan != nil {
 		rp := *q.ReservationPlan

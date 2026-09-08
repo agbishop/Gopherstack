@@ -178,12 +178,19 @@ func (b *InMemoryBackend) DeleteRoute(apiID, routeID string) error {
 		return ErrAPINotFound
 	}
 
-	if !b.routes.Delete(routeKey(apiID, routeID)) {
+	r, ok := b.routes.Get(routeKey(apiID, routeID))
+	if !ok {
 		return ErrRouteNotFound
 	}
 
+	b.routes.Delete(routeKey(apiID, routeID))
+
 	for _, rr := range slices.Clone(b.routeResponsesByRoute.Get(routeKey(apiID, routeID))) {
 		b.routeResponses.Delete(routeResponseKey(apiID, routeID, rr.RouteResponseID))
+	}
+
+	for _, s := range b.stagesByAPI.Get(apiID) {
+		b.clearRouteThrottleBucket(apiID, s.StageName, r.RouteKey)
 	}
 
 	b.autoDeployLocked(apiID)
@@ -330,7 +337,15 @@ func (b *InMemoryBackend) UpdateRoute(
 		return nil, err
 	}
 
+	oldRouteKey := r.RouteKey
+
 	applyRouteUpdate(r, input)
+
+	if r.RouteKey != oldRouteKey {
+		for _, s := range b.stagesByAPI.Get(apiID) {
+			b.clearRouteThrottleBucket(apiID, s.StageName, oldRouteKey)
+		}
+	}
 
 	b.autoDeployLocked(apiID)
 

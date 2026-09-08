@@ -147,6 +147,9 @@ func (h *Handler) handleDescribeAlarms(form url.Values, c *echo.Context) error {
 	stateValue := form.Get("StateValue")
 	nextToken := form.Get("NextToken")
 	maxRecords, _ := strconv.Atoi(form.Get("MaxRecords"))
+	actionPrefix := form.Get("ActionPrefix")
+	childrenOfAlarmName := form.Get("ChildrenOfAlarmName")
+	parentsOfAlarmName := form.Get("ParentsOfAlarmName")
 
 	metricPage, compositePage, logPage, err := h.Backend.DescribeAlarms(
 		alarmNames,
@@ -155,8 +158,15 @@ func (h *Handler) handleDescribeAlarms(form url.Values, c *echo.Context) error {
 		stateValue,
 		nextToken,
 		maxRecords,
+		actionPrefix,
+		childrenOfAlarmName,
+		parentsOfAlarmName,
 	)
 	if err != nil {
+		if errors.Is(err, ErrValidation) {
+			return h.xmlError(c, http.StatusBadRequest, "InvalidParameterValue", err.Error())
+		}
+
 		return h.xmlError(c, http.StatusInternalServerError, "InternalFailure", err.Error())
 	}
 

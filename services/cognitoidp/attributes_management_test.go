@@ -492,8 +492,15 @@ func TestIDTokenUserAttributeClaims(t *testing.T) {
 	var signupResp map[string]any
 	require.NoError(t, json.Unmarshal(signupRec.Body.Bytes(), &signupResp))
 
-	// Auto-confirmed because email is in AutoVerifiedAttributes.
-	require.True(t, signupResp["UserConfirmed"].(bool), "user should be auto-confirmed")
+	// AutoVerifiedAttributes only selects which channel receives the confirmation
+	// code; it does not skip confirmation itself (see TestSignUpWithValidation_AutoVerify).
+	require.False(t, signupResp["UserConfirmed"].(bool), "user should not be auto-confirmed")
+
+	confirmRec := doCognitoRequest(t, h, "AdminConfirmSignUp", map[string]any{
+		"UserPoolId": poolID,
+		"Username":   "attruser",
+	})
+	require.Equal(t, http.StatusOK, confirmRec.Code)
 
 	authRec := doCognitoRequest(t, h, "InitiateAuth", map[string]any{
 		"ClientId": clientID,

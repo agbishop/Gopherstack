@@ -40,11 +40,11 @@ func (b *InMemoryBackend) GetCallerIdentity(
 	}()
 
 	if ok {
-		// When the caller presents a session token, it must match the stored value.
-		// AWS rejects a mismatched session token with HTTP 400 InvalidClientTokenId,
-		// not 403 AccessDenied.
-		if sessionToken != "" && session.SessionToken != "" &&
-			sessionToken != session.SessionToken {
+		// A session minted with a token requires that same token here too: an
+		// absent/wrong X-Amz-Security-Token must not be treated as a match, or the
+		// ASIA access key ID alone would impersonate the session. AWS rejects a
+		// mismatched session token with HTTP 400 InvalidClientTokenId, not 403 AccessDenied.
+		if session.SessionToken != "" && sessionToken != session.SessionToken {
 			return nil, fmt.Errorf(
 				"%w: the security token included in the request is invalid",
 				ErrUnknownAccessKeyID,

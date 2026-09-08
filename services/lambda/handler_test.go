@@ -26,6 +26,7 @@ type mockBackend struct {
 	invokeErr    error
 	functions    map[string]*lambda.FunctionConfiguration
 	invokeResult []byte
+	invokeCount  int
 	mu           sync.RWMutex
 }
 
@@ -106,6 +107,8 @@ func (m *mockBackend) InvokeFunction(
 	invocationType lambda.InvocationType,
 	_ []byte,
 ) ([]byte, int, error) {
+	m.invokeCount++
+
 	if m.invokeErr != nil {
 		return nil, http.StatusInternalServerError, m.invokeErr
 	}
@@ -665,6 +668,7 @@ func TestInvoke(t *testing.T) {
 		wantErrType  string
 		wantContains string
 		wantCode     int
+		wantNoInvoke bool
 	}{
 		{
 			name: "request_response",
@@ -723,6 +727,39 @@ func TestInvoke(t *testing.T) {
 			body:     "",
 			wantCode: http.StatusOK,
 		},
+		{
+			// validateInvocationHeaders (handler_invocation.go) used to write
+			// its rejection via h.writeError and return that call's
+			// (always-nil) result, so handleInvoke's `if valErr != nil` never
+			// fired and the function was invoked anyway on top of the
+			// already-written 400 (gopherstack-3t96, the gopherstack-8haq
+			// shape). wantNoInvoke asserts the backend was never called, not
+			// just the status code -- a status-only assertion passes against
+			// this bug, since httptest.ResponseRecorder keeps the first
+			// WriteHeader call.
+			name: "invalid_invocation_type_not_invoked",
+			setup: func(bk *mockBackend) {
+				bk.functions["bad-invtype-func"] = &lambda.FunctionConfiguration{FunctionName: "bad-invtype-func"}
+			},
+			funcName:     "bad-invtype-func",
+			body:         `{}`,
+			headers:      map[string]string{"X-Amz-Invocation-Type": "Bogus"},
+			wantCode:     http.StatusBadRequest,
+			wantErrType:  "InvalidParameterValueException",
+			wantNoInvoke: true,
+		},
+		{
+			name: "invalid_log_type_not_invoked",
+			setup: func(bk *mockBackend) {
+				bk.functions["bad-logtype-func"] = &lambda.FunctionConfiguration{FunctionName: "bad-logtype-func"}
+			},
+			funcName:     "bad-logtype-func",
+			body:         `{}`,
+			headers:      map[string]string{"X-Amz-Log-Type": "Bogus"},
+			wantCode:     http.StatusBadRequest,
+			wantErrType:  "InvalidParameterValueException",
+			wantNoInvoke: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -743,6 +780,10 @@ func TestInvoke(t *testing.T) {
 				tt.headers,
 			)
 			assert.Equal(t, tt.wantCode, rec.Code)
+
+			if tt.wantNoInvoke {
+				assert.Equal(t, 0, bk.invokeCount, "a rejected invocation header must not reach the backend")
+			}
 
 			if tt.wantErrType != "" {
 				assertLambdaError(t, rec, tt.wantErrType)

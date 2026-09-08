@@ -21,7 +21,7 @@ func TestGenerateMac_WrongAlgorithm_HMAC256KeyWithSHA512(t *testing.T) {
 		MacAlgorithm: "HMAC_SHA_512", // wrong for HMAC_256
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAlgorithmException")
+	assert.Contains(t, err.Error(), "InvalidKeyUsageException")
 }
 
 func TestGenerateMac_WrongAlgorithm_HMAC512KeyWithSHA256(t *testing.T) {
@@ -35,7 +35,7 @@ func TestGenerateMac_WrongAlgorithm_HMAC512KeyWithSHA256(t *testing.T) {
 		MacAlgorithm: "HMAC_SHA_256", // wrong for HMAC_512
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAlgorithmException")
+	assert.Contains(t, err.Error(), "InvalidKeyUsageException")
 }
 
 func TestVerifyMac_WrongAlgorithm(t *testing.T) {
@@ -50,7 +50,7 @@ func TestVerifyMac_WrongAlgorithm(t *testing.T) {
 		MacAlgorithm: "HMAC_SHA_256", // wrong for HMAC_384
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "InvalidAlgorithmException")
+	assert.Contains(t, err.Error(), "InvalidKeyUsageException")
 }
 
 func TestGenerateMac_CorrectAlgorithm_AllSpecs(t *testing.T) {
@@ -160,7 +160,10 @@ func TestVerifyMac_WrongMac(t *testing.T) {
 		Message:      []byte("message"),
 		Mac:          []byte("wrong-mac"),
 	})
-	require.ErrorIs(t, err, kms.ErrInvalidSignature)
+	// VerifyMac's own deserializeOpError (kms@v1.55.4 deserializers.go) recognizes
+	// KMSInvalidMacException, not KMSInvalidSignatureException -- that code belongs to
+	// Verify only (gopherstack-8u3f).
+	require.ErrorIs(t, err, kms.ErrInvalidMac)
 }
 
 func TestVerifyMac_EmptyAlgorithm(t *testing.T) {

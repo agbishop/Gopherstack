@@ -152,6 +152,17 @@ func (b *InMemoryBackend) BatchAssociateUserStack(
 			continue
 		}
 
+		if !b.stacks.Has(assoc.StackName) {
+			a := assoc
+			errs = append(errs, UserStackAssociationError{
+				UserStackAssociation: &a,
+				ErrorCode:            "STACK_NOT_FOUND",
+				ErrorMessage:         "Stack not found",
+			})
+
+			continue
+		}
+
 		if b.userStackAssoc[key] == nil {
 			b.userStackAssoc[key] = make(map[string]bool)
 		}
@@ -179,6 +190,17 @@ func (b *InMemoryBackend) BatchDisassociateUserStack(
 				UserStackAssociation: &a,
 				ErrorCode:            "USER_NAME_NOT_FOUND",
 				ErrorMessage:         "User not found",
+			})
+
+			continue
+		}
+
+		if !b.stacks.Has(assoc.StackName) {
+			a := assoc
+			errs = append(errs, UserStackAssociationError{
+				UserStackAssociation: &a,
+				ErrorCode:            "STACK_NOT_FOUND",
+				ErrorMessage:         "Stack not found",
 			})
 
 			continue

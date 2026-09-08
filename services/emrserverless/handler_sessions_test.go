@@ -163,11 +163,26 @@ func TestHandler_SessionOperations(t *testing.T) {
 			wantField:  "sessionId",
 		},
 		{
-			name: "start_requires_started_application",
+			// autoStartConfiguration defaults to enabled (types.AutoStartConfig.
+			// Enabled doc: "Defaults to true"), so a session start on a
+			// non-STARTED application only fails when it's explicitly disabled.
+			name: "start_requires_started_application_when_autostart_disabled",
 			setup: func(t *testing.T, h *emrserverless.Handler) setupResult {
 				t.Helper()
 
-				return setupResult{appID: createApp(t, h, "stopped-app")}
+				rec := doRequest(t, h, http.MethodPost, "/applications", map[string]any{
+					"name":                   "stopped-app",
+					"type":                   "SPARK",
+					"releaseLabel":           "emr-6.6.0",
+					"autoStartConfiguration": map[string]any{"enabled": false},
+				})
+				require.Equal(t, http.StatusOK, rec.Code)
+
+				var out map[string]string
+				mustUnmarshal(t, rec, &out)
+				require.NotEmpty(t, out["applicationId"])
+
+				return setupResult{appID: out["applicationId"]}
 			},
 			method: http.MethodPost,
 			path:   func(r setupResult) string { return "/applications/" + r.appID + "/sessions" },
@@ -175,7 +190,7 @@ func TestHandler_SessionOperations(t *testing.T) {
 				"clientToken":      "invalid-state-token",
 				"executionRoleArn": sessionRoleARN,
 			},
-			wantStatus: http.StatusBadRequest,
+			wantStatus: http.StatusConflict,
 			wantField:  "code",
 		},
 	}
@@ -192,6 +207,33 @@ func TestHandler_SessionOperations(t *testing.T) {
 			assert.Contains(t, out, tt.wantField)
 		})
 	}
+}
+
+// TestHandler_StartSession_AutoStartsApplication verifies that starting a
+// session on a never-started (CREATED) application implicitly starts it,
+// matching aws-sdk-go-v2's api_op_StartSession.go doc: "The application must
+// be in the STARTED state or have AutoStart enabled", and
+// types.AutoStartConfig.Enabled's documented default of true.
+func TestHandler_StartSession_AutoStartsApplication(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	appID := createApp(t, h, "session-autostart-app")
+
+	rec := doRequest(t, h, http.MethodPost, "/applications/"+appID+"/sessions", map[string]any{
+		"clientToken":      "autostart-token",
+		"executionRoleArn": sessionRoleARN,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, http.MethodGet, "/applications/"+appID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out map[string]any
+	mustUnmarshal(t, rec, &out)
+	app, ok := out["application"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "STARTED", app["state"])
 }
 
 func TestHandler_SessionIdempotencyAndTermination(t *testing.T) {

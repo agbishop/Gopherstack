@@ -51,9 +51,13 @@ func TestACMBackend_RequestCertificate(t *testing.T) {
 			wantPendingFirst: true,
 		},
 		{
+			// STRENGTHENED (gopherstack-bzyl): previously pinned ErrInvalidParameter
+			// (ValidationException), a code RequestCertificate's real deserializer
+			// never declares (deserializers.go, acm@v1.43.4) -- only
+			// InvalidParameterException. The old assertion was pinning the bug.
 			name:    "empty_domain",
 			domain:  "",
-			wantErr: acm.ErrInvalidParameter,
+			wantErr: acm.ErrRequestCertInvalidParameter,
 		},
 	}
 
@@ -678,6 +682,84 @@ func TestACMBackend_ImportCertificate_KeyUsageParsed(t *testing.T) {
 	assert.Contains(t, described.KeyUsage, "DIGITAL_SIGNATURE")
 	assert.NotEmpty(t, described.ExtendedKeyUsage, "imported cert should have extended key usages parsed")
 	assert.Contains(t, described.ExtendedKeyUsage, "TLS_WEB_SERVER_AUTHENTICATION")
+}
+
+// generateTestCertWithKeyAlgorithm requests a certificate with the given
+// KeyAlgorithm and returns its PEM body/key, for feeding into ImportCertificate
+// to test that the imported cert's real key type is reflected, not assumed.
+func generateTestCertWithKeyAlgorithm(t *testing.T, keyAlgorithm string) (string, string) {
+	t.Helper()
+
+	b := acm.NewInMemoryBackend("000000000000", "us-east-1")
+	cert, err := b.RequestCertificate(
+		context.Background(), "keyalgo.example.com", "", "", "", keyAlgorithm, "", "", nil,
+	)
+	require.NoError(t, err)
+
+	described, descErr := b.DescribeCertificate(context.Background(), cert.ARN)
+	require.NoError(t, descErr)
+
+	return described.CertificateBody, described.PrivateKey
+}
+
+// TestACMBackend_ImportCertificate_KeyAlgorithmDerived verifies that
+// ImportCertificate reports the real KeyAlgorithm of the imported key
+// (CertificateDetail.KeyAlgorithm: "The algorithm that was used to generate
+// the public-private key pair") instead of always assuming EC_prime256v1,
+// on both first import and re-import.
+func TestACMBackend_ImportCertificate_KeyAlgorithmDerived(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		keyAlgorithm     string
+		wantKeyAlgorithm string
+	}{
+		{name: "rsa_2048", keyAlgorithm: "RSA_2048", wantKeyAlgorithm: "RSA_2048"},
+		{name: "rsa_4096", keyAlgorithm: "RSA_4096", wantKeyAlgorithm: "RSA_4096"},
+		{name: "ec_secp384r1", keyAlgorithm: "EC_secp384r1", wantKeyAlgorithm: "EC_secp384r1"},
+		{name: "ec_prime256v1", keyAlgorithm: "EC_prime256v1", wantKeyAlgorithm: "EC_prime256v1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			certPEM, keyPEM := generateTestCertWithKeyAlgorithm(t, tt.keyAlgorithm)
+
+			b := acm.NewInMemoryBackend("000000000000", "us-east-1")
+			cert, err := b.ImportCertificate(context.Background(), certPEM, keyPEM, "", "")
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantKeyAlgorithm, cert.KeyAlgorithm)
+
+			described, descErr := b.DescribeCertificate(context.Background(), cert.ARN)
+			require.NoError(t, descErr)
+			assert.Equal(t, tt.wantKeyAlgorithm, described.KeyAlgorithm)
+		})
+	}
+}
+
+// TestACMBackend_ImportCertificate_ReImport_KeyAlgorithmUpdated verifies that
+// re-importing a certificate (CertificateArn set) with a different key type
+// updates the stored KeyAlgorithm rather than leaving the prior value stale.
+func TestACMBackend_ImportCertificate_ReImport_KeyAlgorithmUpdated(t *testing.T) {
+	t.Parallel()
+
+	ecPEM, ecKeyPEM := generateTestCertWithKeyAlgorithm(t, "EC_prime256v1")
+	rsaPEM, rsaKeyPEM := generateTestCertWithKeyAlgorithm(t, "RSA_2048")
+
+	b := acm.NewInMemoryBackend("000000000000", "us-east-1")
+	original, err := b.ImportCertificate(context.Background(), ecPEM, ecKeyPEM, "", "")
+	require.NoError(t, err)
+	require.Equal(t, "EC_prime256v1", original.KeyAlgorithm)
+
+	updated, err := b.ImportCertificate(context.Background(), rsaPEM, rsaKeyPEM, "", original.ARN)
+	require.NoError(t, err)
+	assert.Equal(t, "RSA_2048", updated.KeyAlgorithm)
+
+	described, descErr := b.DescribeCertificate(context.Background(), original.ARN)
+	require.NoError(t, descErr)
+	assert.Equal(t, "RSA_2048", described.KeyAlgorithm)
 }
 
 // TestACMBackend_ValidityAndEligibility verifies that NotBefore, NotAfter, and

@@ -434,6 +434,58 @@ func TestSettings_Validation(t *testing.T) {
 		require.ErrorIs(t, err, transcribe.ErrValidation)
 	})
 
+	t.Run("show_speaker_labels_without_max_speaker_labels_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.StartTranscriptionJob(&transcribe.TranscriptionJob{
+			JobName:      "job-speakers-no-max",
+			LanguageCode: "en-US",
+			Media:        transcribe.Media{MediaFileURI: "s3://b/f"},
+			Settings:     &transcribe.TranscriptionSettings{ShowSpeakerLabels: true},
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
+	t.Run("max_speaker_labels_without_show_speaker_labels_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.StartTranscriptionJob(&transcribe.TranscriptionJob{
+			JobName:      "job-max-speakers-no-show",
+			LanguageCode: "en-US",
+			Media:        transcribe.Media{MediaFileURI: "s3://b/f"},
+			Settings:     &transcribe.TranscriptionSettings{MaxSpeakerLabels: 4},
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
+	t.Run("show_alternatives_without_max_alternatives_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.StartTranscriptionJob(&transcribe.TranscriptionJob{
+			JobName:      "job-alts-no-max",
+			LanguageCode: "en-US",
+			Media:        transcribe.Media{MediaFileURI: "s3://b/f"},
+			Settings:     &transcribe.TranscriptionSettings{ShowAlternatives: true},
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
+	t.Run("max_alternatives_without_show_alternatives_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.StartTranscriptionJob(&transcribe.TranscriptionJob{
+			JobName:      "job-max-alts-no-show",
+			LanguageCode: "en-US",
+			Media:        transcribe.Media{MediaFileURI: "s3://b/f"},
+			Settings:     &transcribe.TranscriptionSettings{MaxAlternatives: 3},
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
 	t.Run("invalid_vocabulary_filter_method_rejected", func(t *testing.T) {
 		t.Parallel()
 
@@ -492,6 +544,21 @@ func TestContentRedaction_Validation(t *testing.T) {
 			Media:        transcribe.Media{MediaFileURI: "s3://b/f"},
 			ContentRedaction: &transcribe.ContentRedaction{
 				RedactionType: "NOTPII",
+			},
+		})
+		require.ErrorIs(t, err, transcribe.ErrValidation)
+	})
+
+	t.Run("missing_redaction_output_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := transcribe.NewInMemoryBackend()
+		_, err := b.StartTranscriptionJob(&transcribe.TranscriptionJob{
+			JobName:      "job-redact-no-output",
+			LanguageCode: "en-US",
+			Media:        transcribe.Media{MediaFileURI: "s3://b/f"},
+			ContentRedaction: &transcribe.ContentRedaction{
+				RedactionType: "PII",
 			},
 		})
 		require.ErrorIs(t, err, transcribe.ErrValidation)
@@ -675,7 +742,8 @@ func TestHTTP_StartTranscriptionJob_FullInput(t *testing.T) {
 			"MaxSpeakerLabels":  3,
 		},
 		"ContentRedaction": map[string]any{
-			"RedactionType": "PII",
+			"RedactionType":   "PII",
+			"RedactionOutput": "redacted",
 		},
 		"JobExecutionSettings": map[string]any{
 			"AllowDeferredExecution": true,
@@ -910,7 +978,7 @@ func TestGetTranscriptionJob_FullFieldEcho(t *testing.T) {
 			"ShowSpeakerLabels": true,
 			"MaxSpeakerLabels":  3,
 		},
-		"ContentRedaction": map[string]any{"RedactionType": "PII"},
+		"ContentRedaction": map[string]any{"RedactionType": "PII", "RedactionOutput": "redacted"},
 		"Subtitles":        map[string]any{"Formats": []string{"vtt"}},
 	})
 	require.Equal(t, http.StatusOK, rec.Code)

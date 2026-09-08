@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	wssdk "github.com/aws/aws-sdk-go-v2/service/workspaces"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -179,4 +180,47 @@ func TestDescribeIpGroups_Pagination(t *testing.T) {
 	}
 
 	require.Len(t, seen, len(names))
+}
+
+// TestDeleteIpGroup_RejectedWhileAssociatedWithDirectory locks real AWS's
+// DeleteIpGroup doc comment: "You cannot delete an IP access control group
+// that is associated with a directory".
+func TestDeleteIpGroup_RejectedWhileAssociatedWithDirectory(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandlerWithBackend(t)
+
+	createRec := doTargetRequest(t, h, "CreateIpGroup", map[string]any{
+		"GroupName": "assoc-group",
+	})
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	var created struct {
+		GroupID string `json:"GroupId"`
+	}
+	decodeJSON(t, createRec.Body.Bytes(), &created)
+	require.NotEmpty(t, created.GroupID)
+
+	assocRec := doTargetRequest(t, h, "AssociateIpGroups", map[string]any{
+		"DirectoryId": "d-123",
+		"GroupIds":    []string{created.GroupID},
+	})
+	require.Equal(t, http.StatusOK, assocRec.Code)
+
+	delRec := doTargetRequest(t, h, "DeleteIpGroup", map[string]any{
+		"GroupId": created.GroupID,
+	})
+	assert.Equal(t, http.StatusBadRequest, delRec.Code)
+	assert.Contains(t, delRec.Body.String(), "InvalidResourceStateException")
+
+	disassocRec := doTargetRequest(t, h, "DisassociateIpGroups", map[string]any{
+		"DirectoryId": "d-123",
+		"GroupIds":    []string{created.GroupID},
+	})
+	require.Equal(t, http.StatusOK, disassocRec.Code)
+
+	delRec2 := doTargetRequest(t, h, "DeleteIpGroup", map[string]any{
+		"GroupId": created.GroupID,
+	})
+	assert.Equal(t, http.StatusOK, delRec2.Code)
 }

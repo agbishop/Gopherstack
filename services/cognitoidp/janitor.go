@@ -52,6 +52,11 @@ func (j *Janitor) SweepOnce(ctx context.Context) {
 		telemetry.RecordWorkerItems("cognitoidp", "UserImportJobAdvancer", n)
 		logger.Load(ctx).InfoContext(ctx, "cognitoidp janitor: advanced user import job statuses", "count", n)
 	}
+
+	if n := j.Backend.EvictExpiredAttrVerificationCodes(); n > 0 {
+		telemetry.RecordWorkerItems("cognitoidp", "AttrVerificationCodeSweeper", n)
+		logger.Load(ctx).InfoContext(ctx, "cognitoidp janitor: evicted attr verification codes", "count", n)
+	}
 }
 
 // sweepExpiredRefreshTokens removes refresh tokens whose ExpiresAt is in the past.

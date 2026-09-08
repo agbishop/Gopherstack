@@ -30,7 +30,7 @@ type StorageBackend interface {
 	UpdateService(id, description string, dnsConfig *DNSConfig, hcc *HealthCheckConfig) (string, error)
 	GetServiceAttributes(serviceID string) (string, map[string]string, error)
 	UpdateServiceAttributes(serviceARN string, attributes map[string]string) error
-	DeleteServiceAttributes(serviceID string) error
+	DeleteServiceAttributes(serviceID string, keys []string) error
 
 	// Instance operations.
 	RegisterInstance(serviceID, instanceID string, attrs map[string]string) (string, error)

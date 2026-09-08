@@ -6,13 +6,19 @@ import (
 	"strings"
 )
 
-// PutConfigurationRecorder creates or updates a configuration recorder.
-// When updating an existing recorder, the Status is preserved; RoleARN and RecordingGroup are updated.
-// A new recorder starts in PENDING state. An empty/blank name errors
-// InvalidConfigurationRecorderNameException and an empty roleARN errors
-// InvalidRoleException, matching real AWS Config's declared error model
-// (verified against aws-sdk-go-v2/service/configservice's
+// PutConfigurationRecorder creates or updates the customer managed configuration
+// recorder. When updating an existing recorder, the Status is preserved; RoleARN
+// and RecordingGroup are updated. A new recorder starts in PENDING state. An
+// empty/blank name errors InvalidConfigurationRecorderNameException and an
+// empty roleARN errors InvalidRoleException, matching real AWS Config's
+// declared error model (verified against aws-sdk-go-v2/service/configservice's
 // PutConfigurationRecorder deserializer).
+//
+// "You can create only one customer managed configuration recorder for each
+// account for each Amazon Web Services Region" (api_op_PutConfigurationRecorder.go
+// doc comment). Creating a second one under a different name errors
+// MaxNumberOfConfigurationRecordersExceededException; service-linked recorders
+// (ServicePrincipal/ConnectorArn set) don't count against this limit.
 func (b *InMemoryBackend) PutConfigurationRecorder(name, roleARN string, recordingGroup *RecordingGroup) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("%w: ConfigurationRecorder name is required", ErrInvalidConfigurationRecorderName)
@@ -32,6 +38,10 @@ func (b *InMemoryBackend) PutConfigurationRecorder(name, roleARN string, recordi
 		return nil
 	}
 
+	if b.hasCustomerManagedRecorderLocked() {
+		return fmt.Errorf("%w: account already has a customer managed configuration recorder", ErrAlreadyExists)
+	}
+
 	b.recorders.Put(&ConfigurationRecorder{
 		Name:           name,
 		RoleARN:        roleARN,
@@ -40,6 +50,34 @@ func (b *InMemoryBackend) PutConfigurationRecorder(name, roleARN string, recordi
 	})
 
 	return nil
+}
+
+// hasCustomerManagedRecorderLocked reports whether any customer-managed
+// configuration recorder already exists. Third-party service-linked recorders
+// (ServicePrincipal/ConnectorArn set directly on the record) and AWS-native
+// service-linked recorders (tracked only via the serviceLinkedRecorders link
+// table, since PutServiceLinkedConfigurationRecorder leaves ConfigurationRecorder's
+// own ServicePrincipal field unset) are both AWS-managed and don't count
+// against the one-per-account limit. Caller must already hold b.mu.
+func (b *InMemoryBackend) hasCustomerManagedRecorderLocked() bool {
+	linked := make(map[string]struct{}, b.serviceLinkedRecorders.Len())
+	for _, link := range b.serviceLinkedRecorders.All() {
+		linked[link.RecorderName] = struct{}{}
+	}
+
+	for _, r := range b.recorders.All() {
+		if r.ServicePrincipal != "" || r.ConnectorArn != "" {
+			continue
+		}
+
+		if _, ok := linked[r.Name]; ok {
+			continue
+		}
+
+		return true
+	}
+
+	return false
 }
 
 // recorderArn builds the ARN for a configuration recorder owned by this backend,
@@ -91,6 +129,9 @@ func (b *InMemoryBackend) DescribeConfigurationRecorders(names []string) []Confi
 // StartConfigurationRecorder starts a configuration recorder.
 func (b *InMemoryBackend) StartConfigurationRecorder(name string) error {
 	if name == "" {
+		// Declared set is NoAvailableDeliveryChannelException/
+		// NoSuchConfigurationRecorderException/UnmodifiableEntityException -- no
+		// validation-shaped code fits an empty name (configservice@v1.68.4 deserializers.go).
 		return fmt.Errorf("%w: ConfigurationRecorderName is required", ErrValidation)
 	}
 
@@ -114,6 +155,8 @@ func (b *InMemoryBackend) StartConfigurationRecorder(name string) error {
 // StopConfigurationRecorder stops an active configuration recorder.
 func (b *InMemoryBackend) StopConfigurationRecorder(name string) error {
 	if name == "" {
+		// Declared set is NoSuchConfigurationRecorderException/UnmodifiableEntityException --
+		// no validation-shaped code fits an empty name (configservice@v1.68.4 deserializers.go).
 		return fmt.Errorf("%w: ConfigurationRecorderName is required", ErrValidation)
 	}
 
@@ -133,6 +176,8 @@ func (b *InMemoryBackend) StopConfigurationRecorder(name string) error {
 // DeleteConfigurationRecorder removes a configuration recorder by name.
 func (b *InMemoryBackend) DeleteConfigurationRecorder(name string) error {
 	if name == "" {
+		// Same declared set as StopConfigurationRecorder -- no validation-shaped code
+		// fits an empty name.
 		return fmt.Errorf("%w: ConfigurationRecorderName is required", ErrValidation)
 	}
 

@@ -510,15 +510,22 @@ func applyMetricsExportConfigUpdate(sp *SecurityProfile, input *UpdateSecurityPr
 // stale prior attachments; ListTargetsForSecurityProfile/
 // ListSecurityProfilesForTarget could leak attachment data for a profile
 // that DescribeSecurityProfile reports as ResourceNotFoundException).
-func (b *InMemoryBackend) DeleteSecurityProfile(name string) error {
+func (b *InMemoryBackend) DeleteSecurityProfile(name string, expectedVersion int64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if !b.securityProfiles.Has(name) {
+	sp, ok := b.securityProfiles.Get(name)
+	if !ok {
 		return fmt.Errorf("security profile %q not found: %w", name, ErrResourceNotFound)
+	}
+
+	if expectedVersion != 0 && expectedVersion != sp.Version {
+		return fmt.Errorf("%w: expected version %d, current version %d",
+			ErrVersionConflict, expectedVersion, sp.Version)
 	}
 	b.securityProfiles.Delete(name)
 	delete(b.securityProfileTargets, name)
+	delete(b.resourceTags, sp.SecurityProfileARN)
 
 	return nil
 }

@@ -121,6 +121,7 @@ func (b *InMemoryBackend) DeleteWirelessGateway(accountID, region, id string) er
 	delete(b.resourceTags, gw.ARN)
 	delete(b.wirelessGatewayThings, id)
 	delete(b.wirelessGatewayCerts, id)
+	delete(b.positions, id)
 	b.gatewayTasks.Delete(id)
 	b.gateways.Delete(key)
 

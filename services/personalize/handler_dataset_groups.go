@@ -60,8 +60,13 @@ func (h *Handler) listDatasetGroups(input map[string]any) (map[string]any, error
 	return result, nil
 }
 
+// datasetGroupToMap builds the types.DatasetGroup Describe shape
+// (types.go, DatasetGroup). failureReason is included conditionally, same
+// as datasetGroupSummaryToMap below -- gopherstack-7z3p: this converter used
+// to omit it unconditionally even though the deserializer reads it
+// (deserializers.go:11024, awsAwsjson11_deserializeDocumentDatasetGroup).
 func datasetGroupToMap(dg *DatasetGroup) map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		keyDatasetGroupArn:     dg.DatasetGroupArn,
 		keyName:                dg.Name,
 		keyDomain:              dg.Domain,
@@ -71,6 +76,11 @@ func datasetGroupToMap(dg *DatasetGroup) map[string]any {
 		keyCreationDateTime:    awstime.Epoch(dg.CreationDateTime),
 		keyLastUpdatedDateTime: awstime.Epoch(dg.LastUpdatedDateTime),
 	}
+	if dg.FailureReason != "" {
+		m["failureReason"] = dg.FailureReason
+	}
+
+	return m
 }
 
 // datasetGroupSummaryToMap builds the types.DatasetGroupSummary shape

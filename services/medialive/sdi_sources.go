@@ -89,7 +89,11 @@ func (b *InMemoryBackend) UpdateSdiSource(
 	return s.toSdiSource(), nil
 }
 
-// DeleteSdiSource deletes an SDI source.
+// DeleteSdiSource deletes an SDI source. api_op_DeleteSdiSource.go's doc
+// comment ("The SdiSource must not be part of any SidSourceMapping and must
+// not be attached to any input.") requires the attachment check below; the
+// SidSourceMapping half is not enforced -- gopherstack's Node model has no
+// SdiSourceMappings field to check against (structural gap, not this bug).
 func (b *InMemoryBackend) DeleteSdiSource(sdiSourceID string) (*SdiSource, error) {
 	b.mu.Lock("DeleteSdiSource")
 	defer b.mu.Unlock()
@@ -97,6 +101,10 @@ func (b *InMemoryBackend) DeleteSdiSource(sdiSourceID string) (*SdiSource, error
 	s, ok := b.sdiSources.Get(sdiSourceID)
 	if !ok {
 		return nil, fmt.Errorf("%w: sdiSource %s not found", ErrNotFound, sdiSourceID)
+	}
+
+	if len(s.Inputs) > 0 {
+		return nil, fmt.Errorf("%w: sdiSource %s is attached to an input", ErrConflict, sdiSourceID)
 	}
 
 	s.State = sdiSourceStateDeleted

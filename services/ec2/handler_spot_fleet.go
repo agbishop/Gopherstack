@@ -74,14 +74,14 @@ func parseSpotFleetTagSpecification(vals url.Values) map[string]string {
 
 // handleRequestSpotFleet parses and dispatches a RequestSpotFleet call.
 func (h *Handler) handleRequestSpotFleet(vals url.Values, reqID string) (any, error) {
-	config := SpotFleetRequestConfig{}
-	config.SpotPrice = vals.Get("SpotFleetRequestConfig.SpotPrice")
-	config.AllocationStrategy = vals.Get("SpotFleetRequestConfig.AllocationStrategy")
-	config.ExcessCapacityTerminationPolicy = vals.Get(
-		"SpotFleetRequestConfig.ExcessCapacityTerminationPolicy",
-	)
-	config.IamFleetRole = vals.Get("SpotFleetRequestConfig.IamFleetRole")
-	config.Type = vals.Get("SpotFleetRequestConfig.Type")
+	config := SpotFleetRequestConfig{
+		SpotPrice:          vals.Get("SpotFleetRequestConfig.SpotPrice"),
+		AllocationStrategy: vals.Get("SpotFleetRequestConfig.AllocationStrategy"),
+		ExcessCapacityTerminationPolicy: vals.Get(
+			"SpotFleetRequestConfig.ExcessCapacityTerminationPolicy",
+		),
+		IamFleetRole: vals.Get("SpotFleetRequestConfig.IamFleetRole"),
+		Type:         vals.Get("SpotFleetRequestConfig.Type")}
 
 	if tcStr := vals.Get("SpotFleetRequestConfig.TargetCapacity"); tcStr != "" {
 		tc, err := strconv.Atoi(tcStr)

@@ -1065,3 +1065,35 @@ func TestAddHandshakeInternal_SetsExpiry(t *testing.T) {
 		})
 	}
 }
+
+// TestLeaveOrganization_AlwaysFailsForManagementAccount verifies AWS
+// behaviour: LeaveOrganization's doc comment says "You can only call from
+// operation from a member account." This backend's caller identity is
+// always the management account (organization.go's CreateOrganization sets
+// b.accountID as MasterAccountID), so the call must always fail with
+// MasterCannotLeaveOrganizationException rather than succeeding as a no-op.
+func TestLeaveOrganization_AlwaysFailsForManagementAccount(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+	}{
+		{name: "management_account_cannot_leave"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestBackend()
+			createOrgOn(t, b)
+
+			err := b.LeaveOrganization()
+			require.ErrorIs(t, err, organizations.ErrMasterCannotLeaveOrganization)
+
+			org, describeErr := b.DescribeOrganization()
+			require.NoError(t, describeErr)
+			require.NotNil(t, org, "organization must still exist after a failed LeaveOrganization")
+		})
+	}
+}

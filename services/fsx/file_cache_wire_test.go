@@ -12,6 +12,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testFileCacheLustreConfig builds a minimal valid CreateFileCache
+// LustreConfiguration block for the typed SDK client (fsx@v1.68.4
+// types/types.go:574 -- DeploymentType/MetadataConfiguration/
+// PerUnitStorageThroughput required).
+func testFileCacheLustreConfig() *types.CreateFileCacheLustreConfiguration {
+	return &types.CreateFileCacheLustreConfiguration{
+		DeploymentType:           types.FileCacheLustreDeploymentTypeCache1,
+		MetadataConfiguration:    &types.FileCacheLustreMetadataConfiguration{StorageCapacity: aws.Int32(2400)},
+		PerUnitStorageThroughput: aws.Int32(1000),
+	}
+}
+
 // TestFileCache_TagsWireShape proves gopherstack's FileCache wire shape follows the
 // real SDK's split between two distinct types for the same resource
 // (fsx@v1.68.4 types/types.go:2264 FileCache vs types/types.go:2349
@@ -38,6 +50,7 @@ func TestFileCache_TagsWireShape(t *testing.T) {
 			StorageCapacity:      aws.Int32(1200),
 			SubnetIds:            []string{"subnet-0123abcd"},
 			Tags:                 []types.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+			LustreConfiguration:  testFileCacheLustreConfig(),
 		})
 		require.NoError(t, err)
 		require.Len(t, out.FileCache.Tags, 1)
@@ -56,6 +69,7 @@ func TestFileCache_TagsWireShape(t *testing.T) {
 			"SubnetIds":            []string{"subnet-1"},
 			"StorageCapacity":      1200,
 			"Tags":                 []map[string]string{{"Key": "env", "Value": "prod"}},
+			"LustreConfiguration":  fileCacheLustreConfigBody(),
 		})
 		require.Equal(t, http.StatusOK, createRec.Code)
 
@@ -94,6 +108,7 @@ func TestFileCache_TagsWireShape(t *testing.T) {
 			"SubnetIds":            []string{"subnet-1"},
 			"StorageCapacity":      1200,
 			"Tags":                 []map[string]string{{"Key": "env", "Value": "prod"}},
+			"LustreConfiguration":  fileCacheLustreConfigBody(),
 		})
 		require.Equal(t, http.StatusOK, createRec.Code)
 

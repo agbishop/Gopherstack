@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/blackbirdworks/gopherstack/services/guardduty"
+	organizationsbackend "github.com/blackbirdworks/gopherstack/services/organizations"
 )
 
 func TestMembers(t *testing.T) {
@@ -237,6 +238,129 @@ func TestMemberBatchOps_UnknownDetector_NotFound(t *testing.T) {
 			h := newTestHandler(t)
 			rec := doRequest(t, h, tt.method, tt.path, tt.body)
 			assert.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+		})
+	}
+}
+
+// TestMemberOps_AutoEnableOrganizationMembersAll_Rejected proves
+// DeleteMembers/DisassociateMembers/StopMonitoringMembers each reject with
+// BadRequestException when the detector's autoEnableOrganizationMembers is
+// ALL and the requested account is still in the AWS Organization, matching
+// the AWS doc text for all three operations ("With
+// autoEnableOrganizationMembers configuration for your organization set to
+// ALL, you'll receive an error..."). Previously all three ignored this org
+// setting entirely and always returned 200 (gopherstack-krb1).
+//
+// Updated for gopherstack-uu0n: the ALL guard used to reject unconditionally
+// regardless of the account's actual org membership, which over-rejected an
+// account that had already left the organization (see
+// TestMemberOps_AutoEnableOrganizationMembersAll_AllowedAfterAccountLeavesOrg
+// in cross_service_test.go for that case). This test now wires a real
+// Organizations backend and keeps the account in it, so it continues to
+// prove the case the AWS doc text actually describes -- rejection while
+// still a member -- instead of a case the fix now correctly allows.
+func TestMemberOps_AutoEnableOrganizationMembersAll_Rejected(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "delete_members", path: "/member/delete"},
+		{name: "disassociate_members", path: "/member/disassociate"},
+		{name: "stop_monitoring_members", path: "/member/stop"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			orgBk := organizationsbackend.NewInMemoryBackend("123456789012", "us-east-1")
+			orgHandler := organizationsbackend.NewHandler(orgBk)
+
+			_, _, err := orgBk.CreateOrganization("ALL")
+			require.NoError(t, err)
+
+			status, err := orgBk.CreateAccount(
+				"member", "member@example.com", "OrganizationAccountAccessRole", "ALLOW", nil,
+			)
+			require.NoError(t, err)
+			accountID := status.AccountID
+
+			backend := guardduty.NewInMemoryBackend("123456789012", "us-east-1")
+			backend.SetAppConfig(&fakeSiblingServices{orgHandler: orgHandler})
+			h := guardduty.NewHandler(backend)
+
+			id := createTestDetector(t, h)
+
+			doRequest(t, h, http.MethodPost, "/detector/"+id+"/member", map[string]any{
+				"accountDetails": []map[string]any{
+					{"accountId": accountID, "email": "a@example.com"},
+				},
+			})
+
+			rec := doRequest(t, h, http.MethodPost, "/detector/"+id+"/admin", map[string]any{
+				"autoEnableOrganizationMembers": "ALL",
+			})
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+			rec = doRequest(t, h, http.MethodPost, "/detector/"+id+tt.path, map[string]any{
+				"accountIds": []string{accountID},
+			})
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+
+			var errOut map[string]string
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errOut))
+			assert.Equal(t, "BadRequestException", errOut["__type"])
+		})
+	}
+}
+
+// TestMemberOps_AutoEnableOrganizationMembers_NonALL_Allowed proves the
+// autoEnableOrganizationMembers guard only fires for ALL: unset, NEW, and
+// NONE must all still let DeleteMembers/DisassociateMembers/
+// StopMonitoringMembers succeed, so the fix for gopherstack-krb1 does not
+// reject more than the real API does.
+func TestMemberOps_AutoEnableOrganizationMembers_NonALL_Allowed(t *testing.T) {
+	t.Parallel()
+
+	opPaths := []string{"/member/delete", "/member/disassociate", "/member/stop"}
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "unset", value: ""},
+		{name: "new", value: "NEW"},
+		{name: "none", value: "NONE"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			for _, path := range opPaths {
+				h := newTestHandler(t)
+				id := createTestDetector(t, h)
+
+				doRequest(t, h, http.MethodPost, "/detector/"+id+"/member", map[string]any{
+					"accountDetails": []map[string]any{
+						{"accountId": "111111111111", "email": "a@example.com"},
+					},
+				})
+
+				if tt.value != "" {
+					rec := doRequest(t, h, http.MethodPost, "/detector/"+id+"/admin", map[string]any{
+						"autoEnableOrganizationMembers": tt.value,
+					})
+					require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+				}
+
+				rec := doRequest(t, h, http.MethodPost, "/detector/"+id+path, map[string]any{
+					"accountIds": []string{"111111111111"},
+				})
+				assert.Equal(t, http.StatusOK, rec.Code, "path=%s value=%q body=%s", path, tt.value, rec.Body.String())
+			}
 		})
 	}
 }

@@ -542,3 +542,50 @@ func TestStage_DocumentationVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2.0.0", updated.DocumentationVersion)
 }
+
+// TestCreateStage_RejectsNonexistentDeploymentID pins the existing guard
+// (stages.go) that CreateStage rejects a deploymentId with no matching
+// Deployment, matching real AWS's NotFoundException for a bogus deploymentId.
+func TestCreateStage_RejectsNonexistentDeploymentID(t *testing.T) {
+	t.Parallel()
+
+	b := apigateway.NewInMemoryBackend()
+	api, err := b.CreateRestAPI(apigateway.CreateRestAPIInput{Name: "stage-bogus-deploy-api"})
+	require.NoError(t, err)
+
+	_, err = b.CreateStage(apigateway.CreateStageInput{
+		RestAPIID:    api.ID,
+		StageName:    "prod",
+		DeploymentID: "does-not-exist",
+	})
+	require.Error(t, err, "CreateStage must reject a deploymentId that names no real deployment")
+	require.ErrorIs(t, err, apigateway.ErrDeploymentNotFound)
+}
+
+// TestUpdateStage_RejectsNonexistentDeploymentID verifies that UpdateStage
+// rejects repointing a stage's deploymentId at a Deployment that doesn't
+// exist, mirroring CreateStage's existing guard.
+func TestUpdateStage_RejectsNonexistentDeploymentID(t *testing.T) {
+	t.Parallel()
+
+	b := apigateway.NewInMemoryBackend()
+	api, err := b.CreateRestAPI(apigateway.CreateRestAPIInput{Name: "update-stage-bogus-deploy-api"})
+	require.NoError(t, err)
+	_, err = b.CreateDeployment(api.ID, "prod", "v1")
+	require.NoError(t, err)
+
+	_, err = b.UpdateStage(api.ID, "prod", apigateway.UpdateStageInput{
+		DeploymentID: "does-not-exist",
+	})
+	require.Error(t, err, "UpdateStage must reject repointing deploymentId at a nonexistent deployment")
+	require.ErrorIs(t, err, apigateway.ErrDeploymentNotFound)
+
+	// A real deployment ID must still be accepted.
+	depl2, err := b.CreateDeployment(api.ID, "", "v2")
+	require.NoError(t, err)
+	updated, err := b.UpdateStage(api.ID, "prod", apigateway.UpdateStageInput{
+		DeploymentID: depl2.ID,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, depl2.ID, updated.DeploymentID)
+}

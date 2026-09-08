@@ -75,3 +75,29 @@ func TestBackend_ListNamespaces_PaginationAndPrefix(t *testing.T) {
 	require.Len(t, pg.Data, 1)
 	assert.Equal(t, []string{"alpha"}, pg.Data[0].Namespace)
 }
+
+// TestBackend_DeleteNamespace_NotEmpty proves DeleteNamespace rejects
+// deleting a namespace that still contains a table, per AWS docs
+// (s3-tables-namespace-delete.html): "Before you delete a table namespace
+// ... you must delete all tables within the namespace, or move them under
+// another namespace." Once the table is gone, the same namespace deletes
+// cleanly.
+func TestBackend_DeleteNamespace_NotEmpty(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+	tb, err := b.CreateTableBucket("del-ns-nonempty-bucket", s3tables.CreateTableBucketOptions{})
+	require.NoError(t, err)
+
+	_, err = b.CreateNamespace(tb.ARN, []string{"ns1"})
+	require.NoError(t, err)
+
+	_, err = b.CreateTable(tb.ARN, []string{"ns1"}, "t1", "ICEBERG", s3tables.CreateTableOptions{})
+	require.NoError(t, err)
+
+	err = b.DeleteNamespace(tb.ARN, []string{"ns1"})
+	require.ErrorIs(t, err, s3tables.ErrNamespaceNotEmpty)
+
+	require.NoError(t, b.DeleteTable(tb.ARN, []string{"ns1"}, "t1", ""))
+	require.NoError(t, b.DeleteNamespace(tb.ARN, []string{"ns1"}))
+}

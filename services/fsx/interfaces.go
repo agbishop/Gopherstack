@@ -307,29 +307,52 @@ type DataRepositoryTask struct {
 // CreationTime uses epochTime: the real FSx deserializer requires a JSON
 // number of epoch seconds here, not an RFC3339 string.
 type FileCache struct {
-	CreationTime         epochTime `json:"CreationTime"`
-	FileCacheID          string    `json:"FileCacheId"`
-	FileCacheType        string    `json:"FileCacheType"`
-	FileCacheTypeVersion string    `json:"FileCacheTypeVersion,omitempty"`
-	Lifecycle            string    `json:"Lifecycle"`
-	ResourceARN          string    `json:"ResourceARN"`
-	SubnetIDs            []string  `json:"SubnetIds,omitempty"`
-	StorageCapacityGiB   int32     `json:"StorageCapacity,omitempty"`
+	CreationTime         epochTime                     `json:"CreationTime"`
+	LustreConfiguration  *FileCacheLustreConfiguration `json:"LustreConfiguration,omitempty"`
+	FileCacheID          string                        `json:"FileCacheId"`
+	FileCacheType        string                        `json:"FileCacheType"`
+	FileCacheTypeVersion string                        `json:"FileCacheTypeVersion,omitempty"`
+	Lifecycle            string                        `json:"Lifecycle"`
+	ResourceARN          string                        `json:"ResourceARN"`
+	SubnetIDs            []string                      `json:"SubnetIds,omitempty"`
+	StorageCapacityGiB   int32                         `json:"StorageCapacity,omitempty"`
+}
+
+// FileCacheLustreConfiguration describes the Lustre-specific configuration
+// of an FSx file cache. Real AWS always returns this block
+// (types.FileCacheLustreConfiguration, types/types.go:2514) for a LUSTRE
+// cache, with at least DeploymentType, MetadataConfiguration, and
+// PerUnitStorageThroughput populated. LogConfiguration is not modeled here
+// (no logging destination is configurable on this backend).
+type FileCacheLustreConfiguration struct {
+	MetadataConfiguration      *FileCacheLustreMetadataConfiguration `json:"MetadataConfiguration,omitempty"`
+	DeploymentType             string                                `json:"DeploymentType,omitempty"`
+	MountName                  string                                `json:"MountName,omitempty"`
+	WeeklyMaintenanceStartTime string                                `json:"WeeklyMaintenanceStartTime,omitempty"`
+	PerUnitStorageThroughput   int32                                 `json:"PerUnitStorageThroughput,omitempty"`
+}
+
+// FileCacheLustreMetadataConfiguration describes the Lustre MDT (Metadata
+// Target) storage volume for a file cache
+// (types.FileCacheLustreMetadataConfiguration, types/types.go:2550).
+type FileCacheLustreMetadataConfiguration struct {
+	StorageCapacity int32 `json:"StorageCapacity,omitempty"`
 }
 
 // FileCacheCreating represents the CreateFileCache response shape
 // (types.FileCacheCreating, types/types.go:2349) which, unlike FileCache
 // above, DOES include Tags (deserializers.go:9984, case "Tags").
 type FileCacheCreating struct {
-	CreationTime         epochTime `json:"CreationTime"`
-	FileCacheID          string    `json:"FileCacheId"`
-	FileCacheType        string    `json:"FileCacheType"`
-	FileCacheTypeVersion string    `json:"FileCacheTypeVersion,omitempty"`
-	Lifecycle            string    `json:"Lifecycle"`
-	ResourceARN          string    `json:"ResourceARN"`
-	SubnetIDs            []string  `json:"SubnetIds,omitempty"`
-	Tags                 []Tag     `json:"Tags,omitempty"`
-	StorageCapacityGiB   int32     `json:"StorageCapacity,omitempty"`
+	CreationTime         epochTime                     `json:"CreationTime"`
+	LustreConfiguration  *FileCacheLustreConfiguration `json:"LustreConfiguration,omitempty"`
+	FileCacheID          string                        `json:"FileCacheId"`
+	FileCacheType        string                        `json:"FileCacheType"`
+	FileCacheTypeVersion string                        `json:"FileCacheTypeVersion,omitempty"`
+	Lifecycle            string                        `json:"Lifecycle"`
+	ResourceARN          string                        `json:"ResourceARN"`
+	SubnetIDs            []string                      `json:"SubnetIds,omitempty"`
+	Tags                 []Tag                         `json:"Tags,omitempty"`
+	StorageCapacityGiB   int32                         `json:"StorageCapacity,omitempty"`
 }
 
 // Snapshot represents an FSx ONTAP or OpenZFS snapshot.

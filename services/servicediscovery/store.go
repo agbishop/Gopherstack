@@ -38,6 +38,12 @@ const (
 	// key documented for seeding a custom health check's initial status.
 	instanceAttrInitHealthStatus = "AWS_INIT_HEALTH_STATUS"
 
+	// instanceAttrIPv4/IPv6/CNAME are the well-known RegisterInstance attribute
+	// keys that carry the resolvable DNS record values (api_op_RegisterInstance.go).
+	instanceAttrIPv4  = "AWS_INSTANCE_IPV4"
+	instanceAttrIPv6  = "AWS_INSTANCE_IPV6"
+	instanceAttrCNAME = "AWS_INSTANCE_CNAME"
+
 	healthStatusFilterAll              = "ALL"
 	healthStatusFilterHealthyOrElseAll = "HEALTHY_OR_ELSE_ALL"
 
@@ -72,6 +78,9 @@ type InMemoryBackend struct {
 	serviceAttributes      map[string]map[string]string
 	instanceHealthStatuses map[string]string
 
+	dns         DNSRegistrar
+	hostedZones HostedZoneCreator
+
 	accountID string
 	region    string
 
@@ -97,6 +106,22 @@ func NewInMemoryBackend(accountID, region string) *InMemoryBackend {
 	registerAllTables(b)
 
 	return b
+}
+
+// SetDNSRegistrar wires a DNS server so DNS-namespace service hostnames are
+// auto-registered from their instances' AWS_INSTANCE_* attributes.
+func (b *InMemoryBackend) SetDNSRegistrar(dns DNSRegistrar) {
+	b.mu.Lock("SetDNSRegistrar")
+	b.dns = dns
+	b.mu.Unlock()
+}
+
+// SetHostedZoneCreator wires the Route 53 backend so DNS namespaces get a real hosted
+// zone (see hostedZoneID) instead of a synthetic HostedZoneId matching no real zone.
+func (b *InMemoryBackend) SetHostedZoneCreator(hz HostedZoneCreator) {
+	b.mu.Lock("SetHostedZoneCreator")
+	b.hostedZones = hz
+	b.mu.Unlock()
 }
 
 // Region returns the AWS region this backend is configured for.
@@ -155,8 +180,27 @@ func randAlnum(n int) string {
 }
 
 // syntheticHostedZoneID generates a synthetic Route53 hosted zone ID for DNS namespaces.
+// Used as a fallback by hostedZoneID when Route 53 hasn't been wired in.
 func syntheticHostedZoneID() string {
 	return "Z" + strings.ToUpper(randAlnum(idOperationSuffixLen))
+}
+
+// hostedZoneID returns the Route 53 hosted zone ID for a new DNS namespace: a real zone
+// created via the wired Route53 backend (see SetHostedZoneCreator) when one is available,
+// falling back to a synthetic ID otherwise so namespace creation still succeeds when Route
+// 53 isn't wired in (most test/service constructions never wire it -- gopherstack-chmx).
+// Must be called with the write lock held.
+func (b *InMemoryBackend) hostedZoneID(nsID, name string, private bool, vpc string) string {
+	if b.hostedZones == nil {
+		return syntheticHostedZoneID()
+	}
+
+	id, err := b.hostedZones.CreateHostedZone(name, "cloudmap-"+nsID, "", private, vpc, b.region)
+	if err != nil || id == "" {
+		return syntheticHostedZoneID()
+	}
+
+	return id
 }
 
 // instanceKey creates a unique key for storing instances.

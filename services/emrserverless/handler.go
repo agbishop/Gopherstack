@@ -480,7 +480,10 @@ func (h *Handler) handleError(c *echo.Context, err error) error {
 		return c.JSON(http.StatusBadRequest, errResp("ValidationException", err.Error()))
 	case errors.Is(err, ErrInvalidState):
 
-		return c.JSON(http.StatusBadRequest, errResp("RequestFailedException", err.Error()))
+		return c.JSON(http.StatusBadRequest, errResp("ValidationException", err.Error()))
+	case errors.Is(err, ErrConflict):
+
+		return c.JSON(http.StatusConflict, errResp("ConflictException", err.Error()))
 	default:
 
 		return c.JSON(http.StatusInternalServerError, errResp("InternalFailure", err.Error()))
@@ -720,8 +723,13 @@ func (h *Handler) handleCreateApplication(c *echo.Context, body []byte) error {
 		}
 	}
 
+	extra := in.toMap()
+	if err := validateAutoStopConfig(extra); err != nil {
+		return h.handleError(c, err)
+	}
+
 	app, err := h.Backend.CreateApplication(in.Name, in.Type, in.ReleaseLabel, in.Architecture, in.Tags,
-		CreateApplicationOptions{ClientToken: in.ClientToken, ExtraConfig: in.toMap()})
+		CreateApplicationOptions{ClientToken: in.ClientToken, ExtraConfig: extra})
 	if err != nil {
 		return h.handleError(c, err)
 	}
@@ -797,12 +805,17 @@ func (h *Handler) handleUpdateApplication(c *echo.Context, applicationID string,
 		}
 	}
 
+	extra := in.toMap()
+	if err := validateAutoStopConfig(extra); err != nil {
+		return h.handleError(c, err)
+	}
+
 	app, err := h.Backend.UpdateApplication(applicationID, func(a *Application) {
 		if in.ReleaseLabel != "" {
 			a.ReleaseLabel = in.ReleaseLabel
 		}
 
-		if extra := in.toMap(); len(extra) > 0 {
+		if len(extra) > 0 {
 			if a.ExtraConfig == nil {
 				a.ExtraConfig = make(map[string]any, len(extra))
 			}

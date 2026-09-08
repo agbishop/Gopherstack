@@ -20,6 +20,10 @@ func (b *InMemoryBackend) PutDeliveryChannel(
 	}
 
 	if s3Bucket == "" {
+		// PutDeliveryChannel's declared set has no code for a missing s3BucketName:
+		// NoSuchBucketException is "the specified bucket does not exist", not "required"
+		// (configservice@v1.68.4 types/errors.go), and ValidationException/
+		// InvalidParameterValueException aren't declared for this op either.
 		return fmt.Errorf("%w: DeliveryChannel s3BucketName is required", ErrValidation)
 	}
 
@@ -72,9 +76,14 @@ func (b *InMemoryBackend) DescribeDeliveryChannels(names []string) []DeliveryCha
 	return out
 }
 
-// DeleteDeliveryChannel removes a delivery channel by name.
+// DeleteDeliveryChannel removes a delivery channel by name. Real AWS:
+// "Before you can delete the delivery channel, you must stop the customer
+// managed configuration recorder".
 func (b *InMemoryBackend) DeleteDeliveryChannel(name string) error {
 	if name == "" {
+		// Declared set is LastDeliveryChannelDeleteFailedException/
+		// NoSuchDeliveryChannelException only -- no validation-shaped code fits an
+		// empty name (configservice@v1.68.4 deserializers.go).
 		return fmt.Errorf("%w: DeliveryChannelName is required", ErrValidation)
 	}
 
@@ -83,6 +92,15 @@ func (b *InMemoryBackend) DeleteDeliveryChannel(name string) error {
 
 	if !b.channels.Has(name) {
 		return fmt.Errorf("%w: %s", ErrNoSuchDeliveryChannel, name)
+	}
+
+	for _, r := range b.recorders.All() {
+		if r.Status == recorderStatusActive {
+			return fmt.Errorf(
+				"%w: configuration recorder %s is still recording",
+				ErrLastDeliveryChannelDeleteFailed, r.Name,
+			)
+		}
 	}
 
 	b.channels.Delete(name)

@@ -28,7 +28,6 @@ var (
 	ErrReceiptRuleSetActive        = errors.New("CannotDelete")
 	ErrReceiptRuleNotFound         = errors.New("RuleDoesNotExist")
 	ErrReceiptRuleExists           = errors.New("AlreadyExists")
-	ErrReceiptFilterNotFound       = errors.New("FilterDoesNotExist")
 	ErrReceiptFilterExists         = errors.New("AlreadyExists")
 	ErrEventDestinationNotFound    = errors.New("EventDestinationDoesNotExist")
 	ErrEventDestinationExists      = errors.New("EventDestinationAlreadyExists")

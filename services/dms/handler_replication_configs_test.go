@@ -64,6 +64,49 @@ func TestReplicationConfigLifecycle(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, delRec2.Code)
 }
 
+// TestDeleteReplicationConfig_RejectedWhileRunning locks real AWS's
+// DeleteReplicationConfig doc comment: "You can't delete the configuration
+// for an DMS Serverless replication that is ongoing. You can delete the
+// configuration when the replication is in a non-RUNNING and non-STARTING
+// state".
+func TestDeleteReplicationConfig_RejectedWhileRunning(t *testing.T) {
+	t.Parallel()
+
+	h := newTestDMSHandler()
+
+	createRec := doDMS(t, h, "CreateReplicationConfig", map[string]any{
+		"ReplicationConfigIdentifier": "rc-running",
+		"ReplicationType":             "full-load",
+		"SourceEndpointArn":           "arn:src",
+		"TargetEndpointArn":           "arn:tgt",
+		"TableMappings":               "{}",
+		"ComputeConfig":               map[string]any{},
+	})
+	require.Equal(t, http.StatusOK, createRec.Code)
+	rcArn := parseJSON(t, createRec)["ReplicationConfig"].(map[string]any)["ReplicationConfigArn"].(string)
+
+	startRec := doDMS(t, h, "StartReplication", map[string]any{
+		"ReplicationConfigArn": rcArn,
+		"StartReplicationType": "start-replication",
+	})
+	require.Equal(t, http.StatusOK, startRec.Code)
+
+	delRec := doDMS(t, h, "DeleteReplicationConfig", map[string]any{
+		"ReplicationConfigArn": rcArn,
+	})
+	assert.Equal(t, http.StatusBadRequest, delRec.Code)
+
+	stopRec := doDMS(t, h, "StopReplication", map[string]any{
+		"ReplicationConfigArn": rcArn,
+	})
+	require.Equal(t, http.StatusOK, stopRec.Code)
+
+	delRec2 := doDMS(t, h, "DeleteReplicationConfig", map[string]any{
+		"ReplicationConfigArn": rcArn,
+	})
+	assert.Equal(t, http.StatusOK, delRec2.Code)
+}
+
 func TestModifyReplicationConfig_UpdatesReplicationType(t *testing.T) {
 	t.Parallel()
 

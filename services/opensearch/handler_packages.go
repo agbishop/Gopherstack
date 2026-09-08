@@ -406,7 +406,12 @@ func (h *Handler) handlePackageIDRoutes(w http.ResponseWriter, r *http.Request, 
 	case http.MethodDelete:
 		pkg, err := h.Backend.DeletePackage(pkgID)
 		if err != nil {
-			h.writeError(r, w, http.StatusNotFound, "ResourceNotFoundException", err.Error())
+			switch {
+			case errors.Is(err, ErrPackageAssociated):
+				h.writeError(r, w, http.StatusConflict, "ConflictException", err.Error())
+			default:
+				h.writeError(r, w, http.StatusNotFound, "ResourceNotFoundException", err.Error())
+			}
 
 			return
 		}

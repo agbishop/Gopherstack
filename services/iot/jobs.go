@@ -589,6 +589,7 @@ func (b *InMemoryBackend) DeleteJob(jobID string) error {
 		return fmt.Errorf("job %q not found: %w", jobID, ErrResourceNotFound)
 	}
 	b.jobs.Delete(jobID)
+	delete(b.resourceTags, b.jobARN(jobID))
 	// Remove executions. Preserves the original key-prefix check (including
 	// its edge case: a JobExecution with an empty ThingName is NOT deleted,
 	// since its key jobID+"|" has length exactly len(jobID)+1) byte-for-byte.
@@ -913,6 +914,7 @@ func (b *InMemoryBackend) DeleteJobTemplate(id string) error {
 		return fmt.Errorf("job template %q not found: %w", id, ErrResourceNotFound)
 	}
 	b.jobTemplates.Delete(id)
+	delete(b.resourceTags, b.jobTemplateARN(id))
 
 	return nil
 }

@@ -325,8 +325,10 @@ var acmErrorCodeTable = []struct {
 	{ErrLimitExceeded, "LimitExceededException"},
 	{ErrTooManyTags, "TooManyTagsException"},
 	{ErrInvalidTag, "InvalidTagException"},
+	{ErrServiceQuotaExceeded, "ServiceQuotaExceededException"},
 	{ErrInvalidDomainValidationOptions, "InvalidDomainValidationOptionsException"},
 	{ErrInvalidArgs, "InvalidArgsException"},
+	{ErrRequestCertInvalidParameter, "InvalidParameterException"},
 }
 
 func (h *Handler) handleOpError(c *echo.Context, action string, opErr error) error {

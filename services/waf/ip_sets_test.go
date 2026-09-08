@@ -160,6 +160,53 @@ func TestWAF_MultipleIPSets_List(t *testing.T) {
 	assert.Len(t, sets, 2)
 }
 
+func TestWAF_IPSet_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	descriptor := map[string]any{"Type": "IPV4", "Value": "203.0.113.0/24"}
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateIPSet(t, h, "noop-insert-ipset")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateIPSet", map[string]any{
+			"ChangeToken": token,
+			"IPSetId":     id,
+			"Updates":     []map[string]any{{"Action": "INSERT", "IPSetDescriptor": descriptor}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateIPSet", map[string]any{
+			"ChangeToken": token,
+			"IPSetId":     id,
+			"Updates":     []map[string]any{{"Action": "INSERT", "IPSetDescriptor": descriptor}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateIPSet(t, h, "noop-delete-ipset")
+
+		// The IPSet never contained this descriptor, so this DELETE is itself a no-op.
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateIPSet", map[string]any{
+			"ChangeToken": token,
+			"IPSetId":     id,
+			"Updates":     []map[string]any{{"Action": "DELETE", "IPSetDescriptor": descriptor}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestIPSet_NotFound(t *testing.T) {
 	t.Parallel()
 

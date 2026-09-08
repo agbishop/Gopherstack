@@ -9,6 +9,7 @@ package lightsail
 // DetachCertificateFromDistribution).
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
@@ -72,7 +73,8 @@ func (b *InMemoryBackend) CreateCertificate(
 	), nil
 }
 
-// DeleteCertificate deletes the named certificate.
+// DeleteCertificate deletes the named certificate. Real AWS: "Certificates
+// that are currently attached to a distribution cannot be deleted".
 func (b *InMemoryBackend) DeleteCertificate(name string) ([]Operation, error) {
 	b.mu.Lock("DeleteCertificate")
 	defer b.mu.Unlock()
@@ -80,6 +82,14 @@ func (b *InMemoryBackend) DeleteCertificate(name string) ([]Operation, error) {
 	cert, ok := b.certificates.Get(name)
 	if !ok {
 		return nil, notFoundError("Certificate", name)
+	}
+
+	for _, d := range b.distributions.All() {
+		if d.CertificateName == name {
+			return nil, validationError(
+				fmt.Sprintf("certificate %s is attached to distribution %s", name, d.Name),
+			)
+		}
 	}
 
 	if cert.Tags != nil {
@@ -304,6 +314,7 @@ func (b *InMemoryBackend) DeleteDistribution(name string) (*Operation, error) {
 
 	b.distributions.Delete(name)
 	b.unregisterNameLocked(name)
+	delete(b.distributionCacheResets, name)
 
 	ops := b.newOperationsLocked(opTypeDeleteDistribution, ResourceTypeDistribution, []string{name})
 

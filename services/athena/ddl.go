@@ -58,7 +58,9 @@ func stmtFail(errType int32, format string, args ...any) statementOutcome {
 //
 // executeStatement must be called without holding b.mu; the DDL/DML helpers take
 // the write lock themselves, and the SELECT path takes its own read lock.
-func (b *InMemoryBackend) executeStatement(query string, ctx QueryExecutionContext) (*sqlResult, statementOutcome) {
+func (b *InMemoryBackend) executeStatement(
+	query, workGroup string, ctx QueryExecutionContext,
+) (*sqlResult, statementOutcome) {
 	trimmed := strings.TrimSpace(query)
 	upper := strings.ToUpper(trimmed)
 
@@ -77,6 +79,8 @@ func (b *InMemoryBackend) executeStatement(query string, ctx QueryExecutionConte
 		return &sqlResult{}, b.execDropTable(trimmed, ctx)
 	case hasKeyword(upper, "INSERT INTO"):
 		return b.execInsert(trimmed, ctx)
+	case hasKeyword(upper, "EXECUTE"):
+		return b.execExecute(trimmed, workGroup, ctx)
 	case isRecognisedNoOp(upper):
 		// Valid Athena statement types we accept but do not fully emulate. AWS
 		// runs them successfully; returning an empty result set is the closest
@@ -142,7 +146,7 @@ func isRecognisedNoOp(upper string) bool {
 	prefixes := []string{
 		"ALTER", "MSCK", "SHOW", "DESCRIBE", "DESC", "EXPLAIN",
 		"USE", "SET", "RESET", "UNLOAD", "CALL", "GRANT", "REVOKE",
-		"COMMENT", "PREPARE", "EXECUTE", "DEALLOCATE", "REFRESH",
+		"COMMENT", "PREPARE", "DEALLOCATE", "REFRESH",
 	}
 
 	for _, p := range prefixes {

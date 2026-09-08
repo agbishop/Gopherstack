@@ -203,6 +203,55 @@ func (b *InMemoryBackend) CreateLBCookieStickinessPolicy(
 	return nil
 }
 
+// validatePolicyAttributes returns ErrInvalidConfiguration for any attribute name in attrs
+// that policyTypeName's schema (builtinPolicyTypes) does not declare (AWS:
+// InvalidConfigurationRequestException, one of CreateLoadBalancerPolicy's typed errors --
+// see deserializers.go's awsAwsquery_deserializeOpErrorCreateLoadBalancerPolicy). An unknown
+// policyTypeName is not handled here: handler_policies.go's knownPolicyTypes check runs
+// first and rejects those with PolicyTypeNotFound before this is ever called.
+//
+// Cardinality (ONE/ZERO_OR_ONE/ZERO_OR_MORE/ONE_OR_MORE) is deliberately not enforced: this
+// package's own tests create ProxyProtocolPolicyType -- Cardinality "ONE", DefaultValue
+// "false" -- while supplying zero PolicyAttributes, so a literal "single value required"
+// reading contradicts this backend's established default-substitution behavior.
+func validatePolicyAttributes(policyTypeName string, attrs []PolicyAttribute) error {
+	if len(attrs) == 0 {
+		return nil
+	}
+
+	var schema []PolicyAttributeTypeDescription
+
+	for _, pt := range builtinPolicyTypes() {
+		if pt.PolicyTypeName == policyTypeName {
+			schema = pt.PolicyAttributeTypeDescriptions
+
+			break
+		}
+	}
+
+	if schema == nil {
+		return nil
+	}
+
+	declared := make(map[string]bool, len(schema))
+	for _, a := range schema {
+		declared[a.AttributeName] = true
+	}
+
+	for _, a := range attrs {
+		if !declared[a.AttributeName] {
+			return fmt.Errorf(
+				"%w: %q is not a valid attribute for policy type %q",
+				ErrInvalidConfiguration,
+				a.AttributeName,
+				policyTypeName,
+			)
+		}
+	}
+
+	return nil
+}
+
 // CreateLoadBalancerPolicy creates a policy with custom attributes.
 func (b *InMemoryBackend) CreateLoadBalancerPolicy(
 	ctx context.Context,
@@ -210,6 +259,10 @@ func (b *InMemoryBackend) CreateLoadBalancerPolicy(
 	attrs []PolicyAttribute,
 ) error {
 	if err := validatePolicyName(policyName); err != nil {
+		return err
+	}
+
+	if err := validatePolicyAttributes(policyTypeName, attrs); err != nil {
 		return err
 	}
 
@@ -254,6 +307,13 @@ func (b *InMemoryBackend) DeleteLoadBalancerPolicy(ctx context.Context, name, po
 
 	k := policyTableKey(region, name, policyName)
 	if !b.policies.Has(k) {
+		// PolicyNotFound is not in DeleteLoadBalancerPolicy's declared set (only
+		// InvalidConfigurationRequest/LoadBalancerNotFound -- deserializers.go and
+		// the live AWS API reference agree). gopherstack-39ip (formerly -5gfl):
+		// verified directly that neither the pinned SDK doc comment nor the live
+		// API reference carries a DeleteLoadBalancer-style idempotent-success
+		// sentence for this op, so that fix does not carry over. Neither declared
+		// code's own doc text fits a missing policy either -- left as-is, unproven.
 		return fmt.Errorf("%w: %q", ErrPolicyNotFound, policyName)
 	}
 

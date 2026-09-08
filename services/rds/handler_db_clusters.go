@@ -71,6 +71,7 @@ func (h *Handler) handleCreateDBCluster(vals url.Values) (any, error) {
 		StorageType:                  vals.Get("StorageType"),
 		NetworkType:                  vals.Get("NetworkType"),
 		EngineLifecycleSupport:       vals.Get("EngineLifecycleSupport"),
+		ReplicationSourceIdentifier:  vals.Get("ReplicationSourceIdentifier"),
 		EnabledCloudwatchLogsExports: parseMultiValueParam(vals, "EnableCloudwatchLogsExports.member"),
 		AvailabilityZones:            parseMultiValueParam(vals, "AvailabilityZones.AvailabilityZone"),
 		BacktrackWindow:              backtrackWindow,
@@ -298,6 +299,7 @@ func toXMLCluster(c *DBCluster, roles []DBClusterRole) xmlDBCluster {
 		DeletionProtection:              c.DeletionProtection,
 		OptimizedWrites:                 c.OptimizedWrites,
 		HTTPEndpointEnabled:             c.HTTPEndpointEnabled,
+		ReplicationSourceIdentifier:     c.ReplicationSourceIdentifier,
 	}
 
 	if c.ServerlessV2ScalingConfig != nil {
@@ -345,6 +347,15 @@ func toXMLCluster(c *DBCluster, roles []DBClusterRole) xmlDBCluster {
 		}
 
 		x.AssociatedRoles = &xmlDBClusterRoleList{Members: members}
+	}
+
+	if len(c.ReadReplicaIdentifiers) > 0 {
+		members := make([]xmlClusterReplicaIdentifier, 0, len(c.ReadReplicaIdentifiers))
+		for _, rid := range c.ReadReplicaIdentifiers {
+			members = append(members, xmlClusterReplicaIdentifier{Value: rid})
+		}
+
+		x.ReadReplicaIdentifiers = &xmlClusterReplicaIdentifierList{Members: members}
 	}
 
 	return x
@@ -425,46 +436,60 @@ type xmlAvailabilityZoneList struct {
 	Members []string `xml:"AvailabilityZone"`
 }
 
+// xmlClusterReplicaIdentifierList wraps ReadReplicaIdentifiers>ReadReplicaIdentifier,
+// confirmed against deserializers.go's awsAwsquery_deserializeDocumentReadReplicaIdentifierList
+// (rds@v1.124.1) -- distinct from the instance-level
+// ReadReplicaDBInstanceIdentifiers>ReadReplicaDBInstanceIdentifier wrapping.
+type xmlClusterReplicaIdentifier struct {
+	Value string `xml:",chardata"`
+}
+
+type xmlClusterReplicaIdentifierList struct {
+	Members []xmlClusterReplicaIdentifier `xml:"ReadReplicaIdentifier"`
+}
+
 type xmlDBCluster struct {
-	ServerlessV2ScalingConfiguration *xmlServerlessV2Ref      `xml:"ServerlessV2ScalingConfiguration,omitempty"`
-	DBClusterMembers                 *xmlDBClusterMemberList  `xml:"DBClusterMembers,omitempty"`
-	EnabledCloudwatchLogsExports     *xmlLogTypeList          `xml:"EnabledCloudwatchLogsExports,omitempty"`
-	AvailabilityZones                *xmlAvailabilityZoneList `xml:"AvailabilityZones,omitempty"`
-	AssociatedRoles                  *xmlDBClusterRoleList    `xml:"AssociatedRoles,omitempty"`
-	DBClusterIdentifier              string                   `xml:"DBClusterIdentifier"`
-	DBClusterArn                     string                   `xml:"DBClusterArn,omitempty"`
-	DBClusterResourceID              string                   `xml:"DbClusterResourceId,omitempty"`
-	Engine                           string                   `xml:"Engine"`
-	EngineVersion                    string                   `xml:"EngineVersion,omitempty"`
-	Status                           string                   `xml:"Status"`
-	MasterUsername                   string                   `xml:"MasterUsername"`
-	DatabaseName                     string                   `xml:"DatabaseName,omitempty"`
-	DBClusterParameterGroupName      string                   `xml:"DBClusterParameterGroup"`
-	Endpoint                         string                   `xml:"Endpoint,omitempty"`
-	ReaderEndpoint                   string                   `xml:"ReaderEndpoint,omitempty"`
-	NetworkType                      string                   `xml:"NetworkType,omitempty"`
-	StorageType                      string                   `xml:"StorageType,omitempty"`
-	EngineLifecycleSupport           string                   `xml:"EngineLifecycleSupport,omitempty"`
-	ActivityStreamStatus             string                   `xml:"ActivityStreamStatus,omitempty"`
-	ActivityStreamMode               string                   `xml:"ActivityStreamMode,omitempty"`
-	ActivityStreamKMSKeyID           string                   `xml:"ActivityStreamKmsKeyId,omitempty"`
-	ActivityStreamKinesisStreamName  string                   `xml:"ActivityStreamKinesisStreamName,omitempty"`
-	PreferredBackupWindow            string                   `xml:"PreferredBackupWindow,omitempty"`
-	PreferredMaintenanceWindow       string                   `xml:"PreferredMaintenanceWindow,omitempty"`
-	KmsKeyID                         string                   `xml:"KmsKeyId,omitempty"`
-	MonitoringRoleArn                string                   `xml:"MonitoringRoleArn,omitempty"`
-	ClusterCreateTime                string                   `xml:"ClusterCreateTime,omitempty"`
-	Port                             int                      `xml:"Port"`
-	Capacity                         int                      `xml:"Capacity,omitempty"`
-	BackupRetentionPeriod            int                      `xml:"BackupRetentionPeriod"`
-	BacktrackWindow                  int64                    `xml:"BacktrackWindow,omitempty"`
-	MonitoringInterval               int                      `xml:"MonitoringInterval,omitempty"`
-	MultiAZ                          bool                     `xml:"MultiAZ,omitempty"`
-	StorageEncrypted                 bool                     `xml:"StorageEncrypted,omitempty"`
-	CopyTagsToSnapshot               bool                     `xml:"CopyTagsToSnapshot,omitempty"`
-	DeletionProtection               bool                     `xml:"DeletionProtection,omitempty"`
-	OptimizedWrites                  bool                     `xml:"OptimizedWritesEnabled,omitempty"`
-	HTTPEndpointEnabled              bool                     `xml:"HttpEndpointEnabled,omitempty"`
+	ServerlessV2ScalingConfiguration *xmlServerlessV2Ref              `xml:"ServerlessV2ScalingConfiguration,omitempty"`
+	DBClusterMembers                 *xmlDBClusterMemberList          `xml:"DBClusterMembers,omitempty"`
+	EnabledCloudwatchLogsExports     *xmlLogTypeList                  `xml:"EnabledCloudwatchLogsExports,omitempty"`
+	AvailabilityZones                *xmlAvailabilityZoneList         `xml:"AvailabilityZones,omitempty"`
+	AssociatedRoles                  *xmlDBClusterRoleList            `xml:"AssociatedRoles,omitempty"`
+	ReadReplicaIdentifiers           *xmlClusterReplicaIdentifierList `xml:"ReadReplicaIdentifiers,omitempty"`
+	DBClusterIdentifier              string                           `xml:"DBClusterIdentifier"`
+	DBClusterArn                     string                           `xml:"DBClusterArn,omitempty"`
+	DBClusterResourceID              string                           `xml:"DbClusterResourceId,omitempty"`
+	Engine                           string                           `xml:"Engine"`
+	EngineVersion                    string                           `xml:"EngineVersion,omitempty"`
+	Status                           string                           `xml:"Status"`
+	MasterUsername                   string                           `xml:"MasterUsername"`
+	DatabaseName                     string                           `xml:"DatabaseName,omitempty"`
+	DBClusterParameterGroupName      string                           `xml:"DBClusterParameterGroup"`
+	Endpoint                         string                           `xml:"Endpoint,omitempty"`
+	ReaderEndpoint                   string                           `xml:"ReaderEndpoint,omitempty"`
+	ReplicationSourceIdentifier      string                           `xml:"ReplicationSourceIdentifier,omitempty"`
+	NetworkType                      string                           `xml:"NetworkType,omitempty"`
+	StorageType                      string                           `xml:"StorageType,omitempty"`
+	EngineLifecycleSupport           string                           `xml:"EngineLifecycleSupport,omitempty"`
+	ActivityStreamStatus             string                           `xml:"ActivityStreamStatus,omitempty"`
+	ActivityStreamMode               string                           `xml:"ActivityStreamMode,omitempty"`
+	ActivityStreamKMSKeyID           string                           `xml:"ActivityStreamKmsKeyId,omitempty"`
+	ActivityStreamKinesisStreamName  string                           `xml:"ActivityStreamKinesisStreamName,omitempty"`
+	PreferredBackupWindow            string                           `xml:"PreferredBackupWindow,omitempty"`
+	PreferredMaintenanceWindow       string                           `xml:"PreferredMaintenanceWindow,omitempty"`
+	KmsKeyID                         string                           `xml:"KmsKeyId,omitempty"`
+	MonitoringRoleArn                string                           `xml:"MonitoringRoleArn,omitempty"`
+	ClusterCreateTime                string                           `xml:"ClusterCreateTime,omitempty"`
+	Port                             int                              `xml:"Port"`
+	Capacity                         int                              `xml:"Capacity,omitempty"`
+	BackupRetentionPeriod            int                              `xml:"BackupRetentionPeriod"`
+	BacktrackWindow                  int64                            `xml:"BacktrackWindow,omitempty"`
+	MonitoringInterval               int                              `xml:"MonitoringInterval,omitempty"`
+	MultiAZ                          bool                             `xml:"MultiAZ,omitempty"`
+	StorageEncrypted                 bool                             `xml:"StorageEncrypted,omitempty"`
+	CopyTagsToSnapshot               bool                             `xml:"CopyTagsToSnapshot,omitempty"`
+	DeletionProtection               bool                             `xml:"DeletionProtection,omitempty"`
+	OptimizedWrites                  bool                             `xml:"OptimizedWritesEnabled,omitempty"`
+	HTTPEndpointEnabled              bool                             `xml:"HttpEndpointEnabled,omitempty"`
 }
 
 type xmlDBClusterList struct {

@@ -126,7 +126,7 @@ func TestInMemoryBackend_WriteRecords_CrossTableRace(t *testing.T) {
 			rec := []timestreamwrite.Record{{
 				MeasureName:  "m",
 				MeasureValue: "1",
-				Time:         "1700000000",
+				Time:         recentTimeSeconds(),
 				TimeUnit:     "SECONDS",
 			}}
 
@@ -177,7 +177,7 @@ func TestInMemoryBackend_WriteRecords_SnapshotRace(t *testing.T) {
 			rec := []timestreamwrite.Record{{
 				MeasureName:  "m",
 				MeasureValue: "1",
-				Time:         "1700000000",
+				Time:         recentTimeSeconds(),
 				TimeUnit:     "SECONDS",
 			}}
 
@@ -220,7 +220,7 @@ func TestInMemoryBackend_WriteRecords_MeasureValues(t *testing.T) {
 		{
 			MeasureName:      "system",
 			MeasureValueType: "MULTI",
-			Time:             "1609459200000",
+			Time:             recentTimeMillis(0),
 			TimeUnit:         "MILLISECONDS",
 			MeasureValues: []timestreamwrite.MeasureValue{
 				{Name: "cpu", Value: "12.5", Type: "DOUBLE"},
@@ -250,7 +250,7 @@ func TestInMemoryBackend_WriteRecords_DimensionValueTypePassthrough(t *testing.T
 			MeasureName:      "cpu",
 			MeasureValue:     "42.5",
 			MeasureValueType: "DOUBLE",
-			Time:             "1609459200000",
+			Time:             recentTimeMillis(0),
 			TimeUnit:         "MILLISECONDS",
 			Dimensions: []timestreamwrite.Dimension{
 				{Name: "host", Value: "server-1", DimensionValueType: "VARCHAR"},
@@ -278,7 +278,7 @@ func TestInMemoryBackend_WriteRecords_VersionUpsert(t *testing.T) {
 		MeasureName:      "cpu",
 		MeasureValue:     "10.0",
 		MeasureValueType: "DOUBLE",
-		Time:             "1609459200000",
+		Time:             recentTimeMillis(0),
 		TimeUnit:         "MILLISECONDS",
 		Version:          1,
 	}
@@ -310,7 +310,7 @@ func TestInMemoryBackend_WriteRecords_VersionConflictReturnsError(t *testing.T) 
 		MeasureName:      "mem",
 		MeasureValue:     "8192",
 		MeasureValueType: "BIGINT",
-		Time:             "1609459200001",
+		Time:             recentTimeMillis(1),
 		TimeUnit:         "MILLISECONDS",
 		Version:          2,
 	}
@@ -346,7 +346,7 @@ func TestInMemoryBackend_WriteRecords_SameVersionConflict(t *testing.T) {
 		MeasureName:      "rps",
 		MeasureValue:     "500",
 		MeasureValueType: "BIGINT",
-		Time:             "1609459200002",
+		Time:             recentTimeMillis(2),
 		TimeUnit:         "MILLISECONDS",
 		Version:          3,
 	}
@@ -376,7 +376,7 @@ func TestInMemoryBackend_WriteRecords_PartialReject(t *testing.T) {
 
 	existing := timestreamwrite.Record{
 		MeasureName: "load", MeasureValue: "1.0", MeasureValueType: "DOUBLE",
-		Time: "1609459200000", TimeUnit: "MILLISECONDS", Version: 3,
+		Time: recentTimeMillis(0), TimeUnit: "MILLISECONDS", Version: 3,
 	}
 	_, err = b.WriteRecords("pr2-db", "pr2-tbl", []timestreamwrite.Record{existing})
 	require.NoError(t, err)
@@ -385,7 +385,7 @@ func TestInMemoryBackend_WriteRecords_PartialReject(t *testing.T) {
 	records := []timestreamwrite.Record{
 		{
 			MeasureName: "load2", MeasureValue: "2.0", MeasureValueType: "DOUBLE",
-			Time: "1609459200001", TimeUnit: "MILLISECONDS", Version: 1,
+			Time: recentTimeMillis(1), TimeUnit: "MILLISECONDS", Version: 1,
 		},
 		existing, // same key, same version → rejected
 	}
@@ -414,7 +414,7 @@ func TestInMemoryBackend_WriteRecords_UpsertAndNewRecord(t *testing.T) {
 
 	base := timestreamwrite.Record{
 		MeasureName: "ops", MeasureValue: "100", MeasureValueType: "BIGINT",
-		Time: "1609459200000", TimeUnit: "MILLISECONDS", Version: 1,
+		Time: recentTimeMillis(0), TimeUnit: "MILLISECONDS", Version: 1,
 	}
 
 	// First write.
@@ -452,7 +452,7 @@ func TestInMemoryBackend_WriteRecords_ErrRejectedRecordsSentinel(t *testing.T) {
 
 	rec := timestreamwrite.Record{
 		MeasureName: "x", MeasureValue: "1", MeasureValueType: "DOUBLE",
-		Time: "1609459200000", TimeUnit: "MILLISECONDS", Version: 5,
+		Time: recentTimeMillis(0), TimeUnit: "MILLISECONDS", Version: 5,
 	}
 	_, err = b.WriteRecords("sentinel-db", "sentinel-tbl", []timestreamwrite.Record{rec})
 	require.NoError(t, err)
@@ -481,7 +481,7 @@ func TestInMemoryBackend_WriteRecords_DefaultVersionIsOne(t *testing.T) {
 		MeasureName:      "metric",
 		MeasureValue:     "1",
 		MeasureValueType: "BIGINT",
-		Time:             "1609459200000",
+		Time:             recentTimeMillis(0),
 		TimeUnit:         "MILLISECONDS",
 		// No Version — defaults to 1
 	}
@@ -540,8 +540,8 @@ func TestInMemoryBackend_WriteRecords_MagneticStoreRouting(t *testing.T) {
 }
 
 // TestInMemoryBackend_WriteRecords_MemoryStoreWhenMagneticDisabled verifies
-// that when magnetic store writes are disabled, all records go to memory
-// store regardless of their timestamp age.
+// that when magnetic store writes are disabled, a record within the memory
+// retention window still goes to the memory store.
 func TestInMemoryBackend_WriteRecords_MemoryStoreWhenMagneticDisabled(t *testing.T) {
 	t.Parallel()
 
@@ -560,10 +560,47 @@ func TestInMemoryBackend_WriteRecords_MemoryStoreWhenMagneticDisabled(t *testing
 	})
 	require.NoError(t, err)
 
-	// Even a very old timestamp should go to memory store because magnetic writes are off.
-	veryOldTS := strconv.FormatInt(time.Now().UTC().Add(-72*time.Hour).UnixMilli(), 10)
+	recentTS := strconv.FormatInt(time.Now().UTC().Add(-10*time.Minute).UnixMilli(), 10)
 
 	out, err := b.WriteRecords("mag-off-db", "mag-off-tbl", []timestreamwrite.Record{
+		{
+			MeasureName:      "mem",
+			MeasureValue:     "8192",
+			MeasureValueType: "BIGINT",
+			Time:             recentTS,
+			TimeUnit:         "MILLISECONDS",
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), out.Total)
+	assert.Equal(t, int32(1), out.MemoryStore, "records should go to memory store when magnetic disabled")
+	assert.Equal(t, int32(0), out.MagneticStore)
+}
+
+// TestInMemoryBackend_WriteRecords_RejectedOutsideRetentionWhenMagneticDisabled
+// verifies that a record whose timestamp lies outside the memory-store
+// retention window is rejected via RejectedRecordsException when the table
+// has no magnetic store write path to receive it, per RejectedRecordsException
+// (types/errors.go, timestreamwrite@v1.38.4): "Records with timestamps that
+// lie outside the retention duration of the memory store".
+func TestInMemoryBackend_WriteRecords_RejectedOutsideRetentionWhenMagneticDisabled(t *testing.T) {
+	t.Parallel()
+
+	b := timestreamwrite.NewInMemoryBackend()
+	_, err := b.CreateDatabase("mag-off-rej-db", "", nil)
+	require.NoError(t, err)
+
+	_, err = b.CreateTable("mag-off-rej-db", "mag-off-rej-tbl", nil, &timestreamwrite.CreateTableInput{
+		RetentionProperties: &timestreamwrite.RetentionProperties{
+			MemoryStoreRetentionPeriodInHours:  1,
+			MagneticStoreRetentionPeriodInDays: 365,
+		},
+	})
+	require.NoError(t, err)
+
+	veryOldTS := strconv.FormatInt(time.Now().UTC().Add(-72*time.Hour).UnixMilli(), 10)
+
+	out, err := b.WriteRecords("mag-off-rej-db", "mag-off-rej-tbl", []timestreamwrite.Record{
 		{
 			MeasureName:      "mem",
 			MeasureValue:     "8192",
@@ -572,10 +609,13 @@ func TestInMemoryBackend_WriteRecords_MemoryStoreWhenMagneticDisabled(t *testing
 			TimeUnit:         "MILLISECONDS",
 		},
 	})
-	require.NoError(t, err)
-	assert.Equal(t, int32(1), out.Total)
-	assert.Equal(t, int32(1), out.MemoryStore, "records should go to memory store when magnetic disabled")
-	assert.Equal(t, int32(0), out.MagneticStore)
+	require.Nil(t, out)
+
+	var rejErr *timestreamwrite.RejectedRecordsError
+	require.ErrorAs(t, err, &rejErr)
+	require.Len(t, rejErr.RejectedRecords, 1)
+	assert.Equal(t, 0, rejErr.RejectedRecords[0].RecordIndex)
+	assert.Contains(t, rejErr.RejectedRecords[0].Reason, "retention period")
 }
 
 // TestInMemoryBackend_WriteRecords_MixedStoreRouting verifies that a batch
@@ -666,7 +706,7 @@ func TestInMemoryBackend_WriteRecordsOutput_MagneticStoreField(t *testing.T) {
 	require.NoError(t, err)
 
 	out, err := b.WriteRecords("ms-field-db", "ms-field-tbl", []timestreamwrite.Record{
-		{MeasureName: "m", MeasureValue: "1", Time: "1609459200000", TimeUnit: "MILLISECONDS"},
+		{MeasureName: "m", MeasureValue: "1", Time: recentTimeMillis(0), TimeUnit: "MILLISECONDS"},
 	})
 	require.NoError(t, err)
 	// Without magnetic store write config, MagneticStore should be 0.
@@ -764,7 +804,7 @@ func TestInMemoryBackend_ConcurrentWriteRecordsToSameTable(t *testing.T) {
 					MeasureName:      fmt.Sprintf("metric-%d", idx),
 					MeasureValue:     fmt.Sprintf("%d.0", idx),
 					MeasureValueType: "DOUBLE",
-					Time:             strconv.FormatInt(1609459200000+int64(idx)*1000, 10),
+					Time:             recentTimeMillis(int64(idx) * 1000),
 					TimeUnit:         "MILLISECONDS",
 				},
 			})
@@ -812,7 +852,7 @@ func TestInMemoryBackend_ConcurrentWriteRecordsToDifferentTables(t *testing.T) {
 						MeasureName:      fmt.Sprintf("m-%d", idx),
 						MeasureValue:     "1",
 						MeasureValueType: "BIGINT",
-						Time:             strconv.FormatInt(1609459200000+int64(idx)*1000, 10),
+						Time:             recentTimeMillis(int64(idx) * 1000),
 						TimeUnit:         "MILLISECONDS",
 					},
 				})
@@ -844,9 +884,9 @@ func TestInMemoryBackend_RecordCountExport(t *testing.T) {
 		"new table should have zero records")
 
 	_, err = b.WriteRecords("rcnt-db", "rcnt-tbl", []timestreamwrite.Record{
-		{MeasureName: "m1", MeasureValue: "1", Time: "1609459200000", TimeUnit: "MILLISECONDS"},
-		{MeasureName: "m2", MeasureValue: "2", Time: "1609459200001", TimeUnit: "MILLISECONDS"},
-		{MeasureName: "m3", MeasureValue: "3", Time: "1609459200002", TimeUnit: "MILLISECONDS"},
+		{MeasureName: "m1", MeasureValue: "1", Time: recentTimeMillis(0), TimeUnit: "MILLISECONDS"},
+		{MeasureName: "m2", MeasureValue: "2", Time: recentTimeMillis(1), TimeUnit: "MILLISECONDS"},
+		{MeasureName: "m3", MeasureValue: "3", Time: recentTimeMillis(2), TimeUnit: "MILLISECONDS"},
 	})
 	require.NoError(t, err)
 

@@ -521,6 +521,8 @@ func (b *InMemoryBackend) DeleteTargetGroup(tgArn string) error {
 	tg, _ := b.targetGroups.Get(tgArn)
 	tg.Tags.Close()
 	b.targetGroups.Delete(tgArn)
+	delete(b.targetReadyAt, tgArn)
+	delete(b.targetDrainingUntil, tgArn)
 
 	return nil
 }

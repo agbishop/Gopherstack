@@ -10,11 +10,11 @@ ops:
   UpdateApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "PATCH; labels replaced only when the JSON key is present (nil vs [] distinguished). FIXED this pass: readmeBody was silently dropped -- see Notes. FIXED 2026-08-20: top-level sourceCodeUrl leaked onto the response root -- see Notes"}
   DeleteApplication: {wire: ok, errors: ok, state: ok, persist: ok, note: "204 No Content; cascades to versions/templates/changesets/policy/dependencies"}
   ListApplications: {wire: ok, errors: ok, state: ok, persist: ok, note: "nextToken = exclusive cursor on last-seen application Name, matching Table's Name-ascending key order"}
-  CreateApplicationVersion: {wire: ok, errors: ok, state: ok, persist: ok, note: "PUT /applications/{id}/versions/{semanticVersion}, 201 Created; synthesizes templateUrl when only sourceCodeUrl/sourceCodeArchiveUrl given. FIXED this pass: templateBody was silently dropped -- see Notes"}
+  CreateApplicationVersion: {wire: ok, errors: ok, state: ok, persist: ok, note: "PUT /applications/{id}/versions/{semanticVersion}, 201 Created; synthesizes templateUrl when only sourceCodeUrl/sourceCodeArchiveUrl given. FIXED this pass: templateBody was silently dropped -- see Notes. FIXED this pass: unknown applicationId returned NotFoundException (404), but this op models no NotFoundException -- now BadRequestException (400)"}
   ListApplicationVersions: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: summaries no longer include the invented non-wire 'resourcesSupported' key -- real VersionSummary shape is exactly applicationId/creationTime/semanticVersion/sourceCodeUrl, see Notes"}
   CreateCloudFormationTemplate: {wire: ok, errors: ok, state: ok, persist: ok, note: "status ACTIVE->EXPIRED computed dynamically off ExpirationTime at read time, not stuck PREPARING"}
   GetCloudFormationTemplate: {wire: ok, errors: ok, state: ok, persist: ok}
-  CreateCloudFormationChangeSet: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED this pass: TemplateId request field was parsed but never passed to the backend, so it was accepted without ever being cross-validated against a prior CreateCloudFormationTemplate call -- now 404s (NotFoundException) on an unknown or wrong-application templateId, see Notes"}
+  CreateCloudFormationChangeSet: {wire: ok, errors: ok, state: ok, persist: ok, note: "TemplateId request field is cross-validated against a prior CreateCloudFormationTemplate call for the same application; an unknown or wrong-application applicationId/templateId is a BadRequestException (400), not NotFoundException -- this op's modelled error set has no NotFoundException, see Notes"}
   GetApplicationPolicy: {wire: ok, errors: ok, state: ok, persist: ok}
   PutApplicationPolicy: {wire: ok, errors: ok, state: ok, persist: ok, note: "action allow-list matches the real 8 documented SAR policy actions (fixed in a prior pass)"}
   ListApplicationDependencies: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -186,7 +186,16 @@ self-consistency) issues per `models.go`/handler request structs vs.
    `CreateCloudFormationChangeSetOptions`, wired it through from
    `handleCreateCloudFormationChangeSet`, and added real cross-validation in
    `CreateCloudFormationChangeSetWithOptions`: an unknown `templateId`, or one belonging to a
-   different application, now 404s (`NotFoundException`) instead of being silently accepted.
+   different application, now rejects with `BadRequestException` (400) instead of being
+   silently accepted. A later pass found the first cut of this cross-validation, and the
+   pre-existing `applicationId`-not-found check in the same function, both returned
+   `NotFoundException` (404) -- `CreateCloudFormationChangeSet`'s modelled error set
+   (`deserializers.go` `awsRestjson1_deserializeOpErrorCreateCloudFormationChangeSet`) has no
+   `NotFoundException`, only `BadRequestException`/`ForbiddenException`/
+   `InternalServerErrorException`/`TooManyRequestsException`, so 404 was an error code this op
+   can never actually emit. `CreateApplicationVersion` had the same bug for its
+   `applicationId`-not-found check (its modelled set also has no `NotFoundException`); both are
+   now `BadRequestException`.
 
 4. **`ParameterDefinition` was missing 6 of 13 real fields** (`AllowedPattern`,
    `ConstraintDescription`, `MaxLength`, `MaxValue`, `MinLength`, `MinValue` vs.

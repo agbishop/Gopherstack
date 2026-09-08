@@ -260,24 +260,60 @@ func validateTranscriptionJobInput(input *TranscriptionJob) error {
 	return nil
 }
 
-// validateSettings validates Settings fields when Settings is non-nil.
-func validateSettings(s *TranscriptionSettings) error {
-	if s == nil {
-		return nil
+// validateSpeakerLabels enforces the bidirectional requirement documented on
+// Settings: ShowSpeakerLabels and MaxSpeakerLabels must be set together.
+func validateSpeakerLabels(s *TranscriptionSettings) error {
+	if s.MaxSpeakerLabels != 0 && !s.ShowSpeakerLabels {
+		return fmt.Errorf("%w: ShowSpeakerLabels must be true when MaxSpeakerLabels is set", ErrValidation)
 	}
 
-	if s.ShowSpeakerLabels && s.MaxSpeakerLabels != 0 {
+	if s.ShowSpeakerLabels {
+		if s.MaxSpeakerLabels == 0 {
+			return fmt.Errorf("%w: MaxSpeakerLabels is required when ShowSpeakerLabels is true", ErrValidation)
+		}
+
 		if s.MaxSpeakerLabels < maxSpeakerLabelsMin || s.MaxSpeakerLabels > maxSpeakerLabelsMax {
 			return fmt.Errorf("%w: MaxSpeakerLabels must be between %d and %d",
 				ErrValidation, maxSpeakerLabelsMin, maxSpeakerLabelsMax)
 		}
 	}
 
-	if s.ShowAlternatives && s.MaxAlternatives != 0 {
+	return nil
+}
+
+// validateAlternatives enforces the bidirectional requirement documented on
+// Settings: ShowAlternatives and MaxAlternatives must be set together.
+func validateAlternatives(s *TranscriptionSettings) error {
+	if s.MaxAlternatives != 0 && !s.ShowAlternatives {
+		return fmt.Errorf("%w: ShowAlternatives must be true when MaxAlternatives is set", ErrValidation)
+	}
+
+	if s.ShowAlternatives {
+		if s.MaxAlternatives == 0 {
+			return fmt.Errorf("%w: MaxAlternatives is required when ShowAlternatives is true", ErrValidation)
+		}
+
 		if s.MaxAlternatives < maxAlternativesMin || s.MaxAlternatives > maxAlternativesMax {
 			return fmt.Errorf("%w: MaxAlternatives must be between %d and %d",
 				ErrValidation, maxAlternativesMin, maxAlternativesMax)
 		}
+	}
+
+	return nil
+}
+
+// validateSettings validates Settings fields when Settings is non-nil.
+func validateSettings(s *TranscriptionSettings) error {
+	if s == nil {
+		return nil
+	}
+
+	if err := validateSpeakerLabels(s); err != nil {
+		return err
+	}
+
+	if err := validateAlternatives(s); err != nil {
+		return err
 	}
 
 	if s.VocabularyFilterMethod != "" &&
@@ -304,7 +340,11 @@ func validateContentRedaction(cr *ContentRedaction) error {
 			ErrValidation, cr.RedactionType, supportedContentRedactionTypes())
 	}
 
-	if cr.RedactionOutput != "" && !slices.Contains(supportedRedactionOutputs(), cr.RedactionOutput) {
+	if cr.RedactionOutput == "" {
+		return fmt.Errorf("%w: ContentRedaction.RedactionOutput is required", ErrValidation)
+	}
+
+	if !slices.Contains(supportedRedactionOutputs(), cr.RedactionOutput) {
 		return fmt.Errorf("%w: ContentRedaction.RedactionOutput %q must be one of %v",
 			ErrValidation, cr.RedactionOutput, supportedRedactionOutputs())
 	}

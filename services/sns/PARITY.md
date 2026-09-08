@@ -1,6 +1,6 @@
 ---
 service: sns
-sdk_module: aws-sdk-go-v2/service/sns@v1.42.4
+sdk_module: aws-sdk-go-v2/service/sns@v1.46.0
 last_audit_commit: 3afc23468
 last_audit_date: 2026-08-10
 overall: A
@@ -54,10 +54,69 @@ gaps:
 deferred:
   - "PutDataProtectionPolicy: the policy statement grammar (DataIdentifier ARNs, Operation/Audit/De-identify/Deny shapes, Principal formats) is not validated — only the top-level document shape (JSON object, <=30,720 chars, Name/Version/Statement present). Amazon SNS message data protection is also no longer available to new customers as of 2026-04-30 per docs.aws.amazon.com/sns/latest/dg/sns-message-data-protection-availability-change.html (existing customers may continue using it); implementing the full grammar is disproportionate feature work for a frozen/legacy feature and was explicitly out of scope this pass (bd gopherstack-4wtz)."
   - "Cross-service integration (test/integration/*_parity_test.go) was not run this pass — see parity-principles.md note that unit tests are not parity proof; recommend running the SDK-driven integration suite in a follow-up"
-leaks: {status: clean, note: "fixed this pass: (1) topicMessageArchive was never persisted (Snapshot/Restore) and was never cleaned up on DeleteTopic (both leak + ARN-reuse resurrection bug); (2) smsDeliveries/emailDeliveries/applicationDeliveries observability buffers had no cap and grew unboundedly under sustained publish traffic without a Drain* call — added appendBounded with maxRecordedDeliveries=100k; (3) notificationSigner.certURL was read/written without synchronization (SetSigningCertBaseURL vs concurrent delivery reads) — added a dedicated RWMutex. HTTP delivery goroutines already had proper ctx-cancel + semaphore + deliveryWg cleanup (unchanged, verified correct)."}
+leaks: {status: clean, note: "fixed this pass: (1) topicMessageArchive was never persisted (Snapshot/Restore) and was never cleaned up on DeleteTopic (both leak + ARN-reuse resurrection bug); (2) smsDeliveries/emailDeliveries/applicationDeliveries observability buffers had no cap and grew unboundedly under sustained publish traffic without a Drain* call — added appendBounded with maxRecordedDeliveries=100k; (3) notificationSigner.certURL was read/written without synchronization (SetSigningCertBaseURL vs concurrent delivery reads) — added a dedicated RWMutex. HTTP delivery goroutines already had proper ctx-cancel + semaphore + deliveryWg cleanup (unchanged, verified correct). 2026-09-03 (gopherstack-0k0): found and fixed a genuine unsynchronized data race, same class as (3) above but in three call sites (3) missed — see Notes."}
 ---
 
 ## Notes
+
+## 2026-09-03 audit (gopherstack-0k0)
+
+Full five-dimension audit (AWS behavior compliance, LocalStack parity,
+cross-service integration, performance, resource leaks) requested against
+`3afc23468`/current HEAD `69092a108`. Given how exhaustively this service has
+already been swept (see the passes below, 2026-07-11 through 2026-08-31 —
+wire shapes, error codes, filter-policy semantics, pagination tokens, exact
+XML element casing, error-envelope error-code mapping), most of AWS behavior
+compliance re-checked clean rather than finding new gaps. One genuine bug
+found and fixed, in the resource-leak/concurrency-correctness dimension:
+
+**Data race: `b.lambdaBackend`/`b.firehoseBackend`/`b.emitter` read without
+the backend lock in the Publish delivery fan-out.** `SetLambdaBackend`/
+`SetFirehoseBackend`/`SetPublishEmitter` (store.go) all mutate these fields
+under `b.mu.Lock`, matching the pkgs-catalog coarse-lock convention — but
+`deliverToLambdaSubscriptions`/`deliverToFirehoseSubscriptions`
+(lambda_firehose_delivery.go) read `b.lambdaBackend`/`b.firehoseBackend`/
+`b.sqsSender`, and `emitPublishedEvent` (publish.go) read `b.emitter`, with
+no lock at all — an unsynchronized concurrent read/write on interface-typed
+fields, confirmed by `go test -race` (`WARNING: DATA RACE`,
+`lambda_firehose_delivery.go:128`/`179` vs `store.go:281`/`289`, and
+`publish.go:289` vs `store.go:273`). The codebase was already aware of this
+exact race class and had defended against it elsewhere — `Publish` captures
+`b.httpClient` under its RLock specifically "to avoid data races with
+concurrent SetHTTPDeliveryClient calls", and `replayMessagesToSubscription`
+(archive.go) captures `b.emitter` under RLock too — but the three call sites
+above were missed. Not client-observable in production (the `Set*` wiring
+calls in `cli.go` all run once at startup, strictly before the HTTP server
+accepts traffic, so there is a real happens-before edge there), but a real,
+reproducible race under any concurrent test or dynamic-rewiring caller, and
+a genuine Go memory-model violation on interface-typed fields (a torn
+type/data-pointer read is a crash risk, not just a stale-value risk).
+Fixed by capturing all four fields under `b.mu.RLock` before use, the same
+pattern already used for `httpClient`/`emitter`(archive.go). Regression test:
+`TestConcurrentWiringVsPublish` (concurrent_wiring_test.go), one subtest per
+affected field (`lambda_backend`/`firehose_backend`/`publish_emitter`),
+confirmed failing (`WARNING: DATA RACE`) against the unfixed code via a
+temporary revert, passing after. `go test -race -count=1 ./services/sns/...`
+passes (unchanged otherwise); `go vet`/`gofmt` clean;
+`golangci-lint run ./services/sns/...` could not be run this pass — it
+panics repo-wide (`buildir`/`nilness`/`fact_purity`/`typedness`/`SA5012` on
+package `poll`, "unexpected expr: `*ast.KeyValueExpr`" / "interface
+conversion: interface {} is nil, not `*buildir.IR`"), reproduced identically
+scoped to just the three changed files and on an unrelated package, so this
+is an environment/tool issue (honnef.co/go/tools vs. the installed Go
+toolchain), not something introduced by this change — flagging for the next
+auditor rather than silently skipping.
+
+Cross-service integration (`test/integration/sns_*_test.go`) was not
+re-run this pass — running `make build-linux`/Docker-based integration
+tests was judged too heavy/risky while another agent was concurrently
+editing `services/sqs` in the same worktree; SNS→SQS/Lambda ARN
+resolution and event-shape code was instead reviewed statically
+(`collectPublishTargets`, `buildPublishedEvent`, `pkgs/events.
+SNSPublishedEvent`, `services/sqs/sns_delivery.go` read-only) and found
+consistent. Recommend running the integration suite in a follow-up, per
+the standing note below from 2026-08-10.
+
 
 ### 2026-08-29 constraint-not-honoured sweep (gopherstack-wksw)
 

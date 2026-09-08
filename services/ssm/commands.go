@@ -2,6 +2,8 @@ package ssm
 
 import (
 	"context"
+	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -11,6 +13,57 @@ import (
 
 	"github.com/blackbirdworks/gopherstack/pkgs/store"
 )
+
+// validMaxConcurrency matches SendCommandInput.MaxConcurrency and
+// CreateAssociationInput.MaxConcurrency: an absolute node count with no
+// leading zero, or a 1-100% percentage. ssm/2014-11-06/service-2.json
+// MaxConcurrency shape: pattern "^([1-9][0-9]*|[1-9][0-9]%|[1-9]%|100%)$",
+// min 1, max 7.
+var validMaxConcurrency = regexp.MustCompile(`^([1-9][0-9]*|[1-9][0-9]%|[1-9]%|100%)$`)
+
+// validMaxErrors matches SendCommandInput.MaxErrors and
+// CreateAssociationInput.MaxErrors: like MaxConcurrency but also allows the
+// literal "0" and "0%" (AWS: "If you specify 0, then the system stops
+// sending requests after the first error"). ssm/2014-11-06/service-2.json
+// MaxErrors shape: pattern "^([1-9][0-9]*|[0]|[1-9][0-9]%|[0-9]%|100%)$",
+// min 1, max 7.
+var validMaxErrors = regexp.MustCompile(`^([1-9][0-9]*|[0]|[1-9][0-9]%|[0-9]%|100%)$`)
+
+const maxConcurrencyErrorsLen = 7
+
+// validateMaxConcurrency rejects a MaxConcurrency value that doesn't match
+// the wire model's pattern. An empty string (unset) is valid.
+func validateMaxConcurrency(v string) error {
+	if v == "" {
+		return nil
+	}
+
+	if len(v) > maxConcurrencyErrorsLen || !validMaxConcurrency.MatchString(v) {
+		return fmt.Errorf(
+			"%w: MaxConcurrency must be an absolute number (e.g. 10) or a percentage (e.g. 10%%)",
+			ErrValidationException,
+		)
+	}
+
+	return nil
+}
+
+// validateMaxErrors rejects a MaxErrors value that doesn't match the wire
+// model's pattern. An empty string (unset) is valid.
+func validateMaxErrors(v string) error {
+	if v == "" {
+		return nil
+	}
+
+	if len(v) > maxConcurrencyErrorsLen || !validMaxErrors.MatchString(v) {
+		return fmt.Errorf(
+			"%w: MaxErrors must be an absolute number (e.g. 10) or a percentage (e.g. 10%%)",
+			ErrValidationException,
+		)
+	}
+
+	return nil
+}
 
 func (b *InMemoryBackend) commandsStore(region string) *store.Table[Command] {
 	return getOrCreateTable(b, b.commands, "commands", region, commandKeyFn)
@@ -25,6 +78,14 @@ func (b *InMemoryBackend) SendCommand(
 	ctx context.Context,
 	input *SendCommandInput,
 ) (*SendCommandOutput, error) {
+	if err := validateMaxConcurrency(input.MaxConcurrency); err != nil {
+		return nil, err
+	}
+
+	if err := validateMaxErrors(input.MaxErrors); err != nil {
+		return nil, err
+	}
+
 	region := getRegion(ctx)
 	b.mu.Lock("SendCommand")
 	defer b.mu.Unlock()

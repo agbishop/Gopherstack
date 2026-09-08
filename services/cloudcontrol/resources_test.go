@@ -753,6 +753,341 @@ func TestBackend_UpdateResource_ClientToken_Idempotency(t *testing.T) {
 		"patch must only be applied once")
 }
 
+// TestBackend_UpdateResource_NestedPatchPaths verifies that PatchDocument's Path is
+// resolved as a real RFC 6901 JSON Pointer -- navigating into nested objects and
+// array elements -- rather than treated as a literal top-level map key. The real
+// UpdateResourceInput.PatchDocument is "a JSON document listing the patch operations"
+// that "adheres to the RFC 6902 ... standard" (api_op_UpdateResource.go), whose Path
+// members are routinely multi-segment for real resource shapes (e.g. Environment
+// variables, Tags arrays).
+func TestBackend_UpdateResource_NestedPatchPaths(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		initial    string
+		patch      string
+		wantResult string
+	}{
+		{
+			name:       "replace nested object field",
+			initial:    `{"Id":"r1","Nested":{"Field":"old"}}`,
+			patch:      `[{"op":"replace","path":"/Nested/Field","value":"new"}]`,
+			wantResult: `{"Id":"r1","Nested":{"Field":"new"}}`,
+		},
+		{
+			name:       "add nested object field",
+			initial:    `{"Id":"r1","Nested":{}}`,
+			patch:      `[{"op":"add","path":"/Nested/Field","value":"created"}]`,
+			wantResult: `{"Id":"r1","Nested":{"Field":"created"}}`,
+		},
+		{
+			name:       "remove nested object field",
+			initial:    `{"Id":"r1","Nested":{"Field":"gone","Keep":1}}`,
+			patch:      `[{"op":"remove","path":"/Nested/Field"}]`,
+			wantResult: `{"Id":"r1","Nested":{"Keep":1}}`,
+		},
+		{
+			name:       "replace array element by index",
+			initial:    `{"Id":"r1","Tags":[{"Key":"a","Value":"old"}]}`,
+			patch:      `[{"op":"replace","path":"/Tags/0/Value","value":"new"}]`,
+			wantResult: `{"Id":"r1","Tags":[{"Key":"a","Value":"new"}]}`,
+		},
+		{
+			name:       "add element at array end via dash",
+			initial:    `{"Id":"r1","Tags":["a"]}`,
+			patch:      `[{"op":"add","path":"/Tags/-","value":"b"}]`,
+			wantResult: `{"Id":"r1","Tags":["a","b"]}`,
+		},
+		{
+			name:       "add element at array index shifts remainder",
+			initial:    `{"Id":"r1","Tags":["a","c"]}`,
+			patch:      `[{"op":"add","path":"/Tags/1","value":"b"}]`,
+			wantResult: `{"Id":"r1","Tags":["a","b","c"]}`,
+		},
+		{
+			name:       "remove element from array",
+			initial:    `{"Id":"r1","Tags":["a","b","c"]}`,
+			patch:      `[{"op":"remove","path":"/Tags/1"}]`,
+			wantResult: `{"Id":"r1","Tags":["a","c"]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := cloudcontrol.NewInMemoryBackend("000000000000", "us-east-1")
+			_, err := b.CreateResource("AWS::Test::Resource", tt.initial, "")
+			require.NoError(t, err)
+
+			_, err = b.UpdateResource("AWS::Test::Resource", "r1", tt.patch, "")
+			require.NoError(t, err)
+
+			r, err := b.GetResource("AWS::Test::Resource", "r1")
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.wantResult, r.Properties)
+		})
+	}
+}
+
+// TestBackend_UpdateResource_MoveOp verifies RFC 6902 4.4 "move": the value at
+// From is removed, then added at Path. gopherstack-j6lv.
+func TestBackend_UpdateResource_MoveOp(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		initial    string
+		patch      string
+		wantResult string
+	}{
+		{
+			name:       "move top-level field",
+			initial:    `{"Id":"r1","Source":"v"}`,
+			patch:      `[{"op":"move","from":"/Source","path":"/Dest"}]`,
+			wantResult: `{"Id":"r1","Dest":"v"}`,
+		},
+		{
+			name:       "move into nested object",
+			initial:    `{"Id":"r1","Source":"v","Nested":{}}`,
+			patch:      `[{"op":"move","from":"/Source","path":"/Nested/Dest"}]`,
+			wantResult: `{"Id":"r1","Nested":{"Dest":"v"}}`,
+		},
+		{
+			name:       "move array element shifts index",
+			initial:    `{"Id":"r1","Tags":["a","b","c"]}`,
+			patch:      `[{"op":"move","from":"/Tags/0","path":"/Tags/2"}]`,
+			wantResult: `{"Id":"r1","Tags":["b","c","a"]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := cloudcontrol.NewInMemoryBackend("000000000000", "us-east-1")
+			_, err := b.CreateResource("AWS::Test::Resource", tt.initial, "")
+			require.NoError(t, err)
+
+			_, err = b.UpdateResource("AWS::Test::Resource", "r1", tt.patch, "")
+			require.NoError(t, err)
+
+			r, err := b.GetResource("AWS::Test::Resource", "r1")
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.wantResult, r.Properties)
+		})
+	}
+}
+
+// TestBackend_UpdateResource_MoveOp_FromIsPrefixOfPath_Rejected verifies RFC
+// 6902 4.4's "a location cannot be moved into one of its children" rule, and
+// that a rejected move leaves the resource entirely unchanged. gopherstack-j6lv.
+func TestBackend_UpdateResource_MoveOp_FromIsPrefixOfPath_Rejected(t *testing.T) {
+	t.Parallel()
+
+	b := cloudcontrol.NewInMemoryBackend("000000000000", "us-east-1")
+	initial := `{"Id":"r1","Parent":{"Child":"v"}}`
+	_, err := b.CreateResource("AWS::Test::Resource", initial, "")
+	require.NoError(t, err)
+
+	patch := `[{"op":"move","from":"/Parent","path":"/Parent/Child2"}]`
+	_, err = b.UpdateResource("AWS::Test::Resource", "r1", patch, "")
+	require.ErrorIs(t, err, cloudcontrol.ErrValidation)
+
+	r, err := b.GetResource("AWS::Test::Resource", "r1")
+	require.NoError(t, err)
+	assert.JSONEq(t, initial, r.Properties, "a rejected move must not mutate the resource")
+}
+
+// TestBackend_UpdateResource_CopyOp verifies RFC 6902 4.5 "copy": the value
+// at From is added at Path, and From is left untouched. gopherstack-j6lv.
+func TestBackend_UpdateResource_CopyOp(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		initial    string
+		patch      string
+		wantResult string
+	}{
+		{
+			name:       "copy top-level field",
+			initial:    `{"Id":"r1","Source":"v"}`,
+			patch:      `[{"op":"copy","from":"/Source","path":"/Dest"}]`,
+			wantResult: `{"Id":"r1","Source":"v","Dest":"v"}`,
+		},
+		{
+			name:       "copy nested object",
+			initial:    `{"Id":"r1","Source":{"A":1}}`,
+			patch:      `[{"op":"copy","from":"/Source","path":"/Dest"}]`,
+			wantResult: `{"Id":"r1","Source":{"A":1},"Dest":{"A":1}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := cloudcontrol.NewInMemoryBackend("000000000000", "us-east-1")
+			_, err := b.CreateResource("AWS::Test::Resource", tt.initial, "")
+			require.NoError(t, err)
+
+			_, err = b.UpdateResource("AWS::Test::Resource", "r1", tt.patch, "")
+			require.NoError(t, err)
+
+			r, err := b.GetResource("AWS::Test::Resource", "r1")
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.wantResult, r.Properties)
+		})
+	}
+}
+
+// TestBackend_UpdateResource_CopyOp_DeepCopyIndependence verifies that "copy"
+// performs a DEEP copy, not just a fresh outer map: within a SINGLE patch
+// document, a copy immediately followed by a replace that mutates a NESTED
+// path under the copy's source must not also mutate the previously copied
+// destination.
+//
+// Both the single-patch-document requirement and the nesting depth (Source
+// is two levels deep, {"Inner":{"A":1}}) are load-bearing, not incidental:
+//   - Properties is a JSON string, so every UpdateResource call starts from a
+//     fresh json.Unmarshal of it -- any aliasing from a copy is already gone
+//     by the time a SECOND UpdateResource call runs a mutation, so a
+//     two-call version of this test cannot observe aliasing at all.
+//   - A shallow copy that only allocates a fresh OUTER map (copying inner
+//     values by reference) already looks independent one level deep, since
+//     a scalar value like {"A":1}'s "A" is a Go value type -- copying the
+//     reference to it is indistinguishable from copying the value itself.
+//     The shared reference only becomes observable by replacing through a
+//     nested map (/Source/Inner/A) that only a genuinely recursive deep copy
+//     would have cloned. gopherstack-j6lv.
+func TestBackend_UpdateResource_CopyOp_DeepCopyIndependence(t *testing.T) {
+	t.Parallel()
+
+	b := cloudcontrol.NewInMemoryBackend("000000000000", "us-east-1")
+	_, err := b.CreateResource("AWS::Test::Resource", `{"Id":"r1","Source":{"Inner":{"A":1}}}`, "")
+	require.NoError(t, err)
+
+	patch := `[
+		{"op":"copy","from":"/Source","path":"/Dest"},
+		{"op":"replace","path":"/Source/Inner/A","value":2}
+	]`
+	_, err = b.UpdateResource("AWS::Test::Resource", "r1", patch, "")
+	require.NoError(t, err)
+
+	r, err := b.GetResource("AWS::Test::Resource", "r1")
+	require.NoError(t, err)
+
+	wantResult := `{"Id":"r1","Source":{"Inner":{"A":2}},"Dest":{"Inner":{"A":1}}}`
+	wantMsg := "a later op in the SAME patch mutating a nested path under the source " +
+		"must not affect the copied destination"
+	assert.JSONEq(t, wantResult, r.Properties, wantMsg)
+}
+
+// TestBackend_UpdateResource_TestOp_Passes verifies RFC 6902 4.6 "test"
+// succeeds by JSON structural equality (not Go ==): a JSON number 1 sent by
+// the caller must match a stored value that separately round-tripped as 1.0.
+// A passing test lets the rest of the patch apply. gopherstack-j6lv.
+func TestBackend_UpdateResource_TestOp_Passes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		initial string
+		patch   string
+	}{
+		{
+			name:    "matching scalar",
+			initial: `{"Id":"r1","Count":1}`,
+			patch:   `[{"op":"test","path":"/Count","value":1},{"op":"replace","path":"/Count","value":2}]`,
+		},
+		{
+			name:    "integer matches float value",
+			initial: `{"Id":"r1","Count":1}`,
+			patch:   `[{"op":"test","path":"/Count","value":1.0},{"op":"replace","path":"/Count","value":2}]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := cloudcontrol.NewInMemoryBackend("000000000000", "us-east-1")
+			_, err := b.CreateResource("AWS::Test::Resource", tt.initial, "")
+			require.NoError(t, err)
+
+			_, err = b.UpdateResource("AWS::Test::Resource", "r1", tt.patch, "")
+			require.NoError(t, err)
+
+			r, err := b.GetResource("AWS::Test::Resource", "r1")
+			require.NoError(t, err)
+			assert.JSONEq(t, `{"Id":"r1","Count":2}`, r.Properties)
+		})
+	}
+}
+
+// TestBackend_UpdateResource_TestOp_Fails verifies RFC 6902 4.6 "test"
+// rejects a mismatched value or an unresolvable path with ErrValidation
+// (InvalidRequestException on the wire -- CloudControl's UpdateResource
+// declares no more specific client error for a failed patch operation; see
+// PARITY.md for the full reasoning). gopherstack-j6lv.
+func TestBackend_UpdateResource_TestOp_Fails(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		initial string
+		patch   string
+	}{
+		{
+			name:    "value mismatch",
+			initial: `{"Id":"r1","Count":1}`,
+			patch:   `[{"op":"test","path":"/Count","value":2}]`,
+		},
+		{
+			name:    "path missing",
+			initial: `{"Id":"r1"}`,
+			patch:   `[{"op":"test","path":"/Missing","value":"x"}]`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := cloudcontrol.NewInMemoryBackend("000000000000", "us-east-1")
+			_, err := b.CreateResource("AWS::Test::Resource", tt.initial, "")
+			require.NoError(t, err)
+
+			_, err = b.UpdateResource("AWS::Test::Resource", "r1", tt.patch, "")
+			require.ErrorIs(t, err, cloudcontrol.ErrValidation)
+		})
+	}
+}
+
+// TestBackend_UpdateResource_TestOp_Fails_AbortsWholePatch verifies RFC 6902's
+// atomic-patch semantics: a "test" failure partway through a patch discards
+// EVERY op in that patch, including ops earlier in the same document that had
+// already mutated the working document before the failure. gopherstack-j6lv.
+func TestBackend_UpdateResource_TestOp_Fails_AbortsWholePatch(t *testing.T) {
+	t.Parallel()
+
+	b := cloudcontrol.NewInMemoryBackend("000000000000", "us-east-1")
+	initial := `{"Id":"r1","Count":1}`
+	_, err := b.CreateResource("AWS::Test::Resource", initial, "")
+	require.NoError(t, err)
+
+	patch := `[{"op":"replace","path":"/Count","value":99},{"op":"test","path":"/Count","value":999}]`
+	_, err = b.UpdateResource("AWS::Test::Resource", "r1", patch, "")
+	require.ErrorIs(t, err, cloudcontrol.ErrValidation)
+
+	r, err := b.GetResource("AWS::Test::Resource", "r1")
+	require.NoError(t, err)
+	assert.JSONEq(t, initial, r.Properties,
+		"a later op's failure must discard an earlier op's mutation in the same patch")
+}
+
 // TestHandler_DeleteResource_ClientToken verifies that DeleteResourceInput.ClientToken --
 // a real field on the SDK's DeleteResourceInput, previously silently dropped by
 // gopherstack's deleteResourceInput -- provides idempotent-replay behavior: a

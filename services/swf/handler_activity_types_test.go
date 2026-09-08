@@ -173,6 +173,7 @@ func TestHandler_RegisterActivityType(t *testing.T) {
 			t.Parallel()
 
 			h := newTestSWFHandler(t)
+			doSWFRequest(t, h, "RegisterDomain", map[string]any{"name": "d1"})
 			rec := doSWFRequest(t, h, "RegisterActivityType", tt.body)
 			assert.Equal(t, tt.wantCode, rec.Code)
 		})
@@ -183,6 +184,7 @@ func TestHandler_RegisterActivityType_Duplicate(t *testing.T) {
 	t.Parallel()
 
 	h := newTestSWFHandler(t)
+	doSWFRequest(t, h, "RegisterDomain", map[string]any{"name": "d1"})
 
 	rec1 := doSWFRequest(t, h, "RegisterActivityType", map[string]any{
 		"domain": "d1", "name": "act1", "version": "1.0",
@@ -237,6 +239,7 @@ func TestHandler_ListActivityTypes(t *testing.T) {
 			t.Parallel()
 
 			h := newTestSWFHandler(t)
+			doSWFRequest(t, h, "RegisterDomain", map[string]any{"name": "d1"})
 			for _, s := range tt.setupOps {
 				doSWFRequest(t, h, s.action, s.body)
 			}

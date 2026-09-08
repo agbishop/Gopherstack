@@ -17,6 +17,8 @@ func TestHandler_TransformJobLifecycle(t *testing.T) {
 
 	h := newTestHandler(t)
 
+	doSageMakerRequest(t, h, "CreateModel", map[string]any{"ModelName": "my-model"})
+
 	// Create
 	rec := doSageMakerRequest(t, h, "CreateTransformJob", map[string]any{
 		"TransformJobName": "my-transform",
@@ -93,6 +95,8 @@ func TestHandler_TransformJob_Duplicate(t *testing.T) {
 
 	h := newTestHandler(t)
 
+	doSageMakerRequest(t, h, "CreateModel", map[string]any{"ModelName": "my-model"})
+
 	createBody := map[string]any{
 		"TransformJobName": "dup-transform",
 		"ModelName":        "my-model",
@@ -112,10 +116,45 @@ func TestHandler_TransformJob_Duplicate(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// TestHandler_CreateTransformJob_ModelNotFound proves CreateTransformJob
+// rejects a ModelName that does not name an existing model with the
+// ResourceNotFound wire error api_op_CreateTransformJob.go's deserializer
+// models for this op (gopherstack-tauw). Real AWS: "ModelName must be the
+// name of an existing Amazon SageMaker model" (api_op_CreateTransformJob.go).
+func TestHandler_CreateTransformJob_ModelNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doSageMakerRequest(t, h, "CreateTransformJob", map[string]any{
+		"TransformJobName": "orphan-transform",
+		"ModelName":        "does-not-exist",
+		"TransformInput": map[string]any{
+			"DataSource": map[string]any{
+				"S3DataSource": map[string]any{"S3Uri": "s3://bucket/input"},
+			},
+		},
+		"TransformOutput":    map[string]any{"S3OutputPath": "s3://bucket/output"},
+		"TransformResources": map[string]any{"InstanceType": "ml.m5.large", "InstanceCount": 1},
+	})
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp map[string]string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "ResourceNotFound", errResp["__type"])
+
+	rec = doSageMakerRequest(t, h, "DescribeTransformJob", map[string]any{
+		"TransformJobName": "orphan-transform",
+	})
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "job must not have been created")
+}
+
 func TestHandler_StopTransformJob(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
+
+	doSageMakerRequest(t, h, "CreateModel", map[string]any{"ModelName": "my-model"})
 
 	doSageMakerRequest(t, h, "CreateTransformJob", map[string]any{
 		"TransformJobName": "stop-me",
@@ -147,6 +186,8 @@ func TestHandler_ListTransformJobs_StatusFilter(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
+
+	doSageMakerRequest(t, h, "CreateModel", map[string]any{"ModelName": "model"})
 
 	for i, name := range []string{"tj-1", "tj-2"} {
 		doSageMakerRequest(t, h, "CreateTransformJob", map[string]any{
@@ -181,6 +222,8 @@ func TestHandler_ListTransformJobs_SortByName(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
+
+	doSageMakerRequest(t, h, "CreateModel", map[string]any{"ModelName": "model"})
 
 	for _, name := range []string{"tj-alpha", "tj-beta"} {
 		doSageMakerRequest(t, h, "CreateTransformJob", map[string]any{
@@ -249,6 +292,7 @@ func TestHandler_CreateTransformJob_RequiredFields(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler(t)
+			doSageMakerRequest(t, h, "CreateModel", map[string]any{"ModelName": "model"})
 			body := base()
 			tt.mutate(body)
 
@@ -267,6 +311,8 @@ func TestHandler_CreateTransformJob_RoleArnNotPartOfWireShape(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
+
+	doSageMakerRequest(t, h, "CreateModel", map[string]any{"ModelName": "model"})
 
 	rec := doSageMakerRequest(t, h, "CreateTransformJob", map[string]any{
 		"TransformJobName": "no-role-arn",
@@ -302,6 +348,8 @@ func TestHandler_Persistence_TransformJob(t *testing.T) {
 
 	h := newTestHandler(t)
 
+	doSageMakerRequest(t, h, "CreateModel", map[string]any{"ModelName": "snap-model"})
+
 	doSageMakerRequest(t, h, "CreateTransformJob", map[string]any{
 		"TransformJobName": "snap-transform",
 		"ModelName":        "snap-model",
@@ -334,6 +382,8 @@ func TestHandler_Tags_TransformJob(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
+
+	doSageMakerRequest(t, h, "CreateModel", map[string]any{"ModelName": "m1"})
 
 	rec := doSageMakerRequest(t, h, "CreateTransformJob", map[string]any{
 		"TransformJobName": "tagged-transform",

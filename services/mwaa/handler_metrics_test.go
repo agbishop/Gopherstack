@@ -2,6 +2,7 @@ package mwaa_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,7 +50,7 @@ func TestHandler_PublishMetrics(t *testing.T) {
 			body: map[string]any{
 				"MetricData": []map[string]any{},
 			},
-			wantStatus: http.StatusNotFound,
+			wantStatus: http.StatusBadRequest,
 		},
 		{
 			name:       "invalid_json",
@@ -94,6 +95,31 @@ func TestHandler_PublishMetrics(t *testing.T) {
 			assert.Equal(t, tt.wantStatus, rec.Code)
 		})
 	}
+}
+
+// TestHandler_PublishMetrics_NotFound_ErrorType verifies the wire __type for an
+// unknown environment is ValidationException, not ResourceNotFoundException:
+// PublishMetrics's own awsRestjson1_deserializeOpErrorPublishMetrics switch
+// (aws-sdk-go-v2/service/mwaa@v1.43.4/deserializers.go) recognizes only
+// InternalServerException and ValidationException, unlike every other
+// not-found-capable MWAA op.
+func TestHandler_PublishMetrics_NotFound_ErrorType(t *testing.T) {
+	t.Parallel()
+
+	h := newHandlerForTest(t)
+
+	rec := doMWAARequest(t, h, http.MethodPost, "/metrics/environments/nonexistent-metrics-env", map[string]any{
+		"MetricData": []map[string]any{},
+	})
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var body struct {
+		Message string `json:"message"`
+		Type    string `json:"__type"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "ValidationException", body.Type)
 }
 
 // TestHandler_PublishMetrics_BackendState verifies PublishMetrics actually

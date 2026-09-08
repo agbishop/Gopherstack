@@ -71,6 +71,27 @@ func (b *InMemoryBackend) StartTagSyncTask(
 // no CANCELLED status. So, unlike an in-place status transition, a cancelled
 // task is removed outright: subsequent GetTagSyncTask/ListTagSyncTasks calls
 // no longer find it.
+//
+// gopherstack-m4k0 (errtargetaudit): the guard below emits NotFoundException
+// on an unknown TaskArn, a code confirmed NOT in this op's modeled error set
+// (deserializeOpErrorCancelTagSyncTask, resourcegroups@v1.36.4
+// deserializers.go: BadRequestException/ForbiddenException/
+// InternalServerErrorException/MethodNotAllowedException/
+// TooManyRequestsException/UnauthorizedException only; the live
+// docs.aws.amazon.com/ARG/latest/APIReference/API_CancelTagSyncTask.html
+// Errors section agrees, and botocore's service-2.json documentation string
+// carries no idempotency language either). Left unfixed: two candidate
+// remedies were weighed and neither is confirmed. (1) Idempotent success --
+// the only evidence offered was the doc's "HTTP 200 response with an empty
+// HTTP body" sentence, but that sentence is generic Response-shape
+// boilerplate, not idempotency evidence (same trap that got codepipeline's
+// DeletePipeline/DeleteCustomActionType reverted under gopherstack-3djp: the
+// identical sentence appears verbatim on this service's own GetGroup/
+// DeleteGroup, which DO error on not-found). (2) BadRequestException, which
+// this op does declare and which an unmatched TaskArn could plausibly map
+// to -- but no doc or sibling behavior confirms AWS actually does this
+// rather than something else entirely; it is inference, not a confirmed
+// replacement. No declared code is an obvious substitute.
 func (b *InMemoryBackend) CancelTagSyncTask(ctx context.Context, taskARN string) error {
 	b.mu.Lock("CancelTagSyncTask")
 	defer b.mu.Unlock()

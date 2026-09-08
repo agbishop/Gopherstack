@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/blackbirdworks/gopherstack/pkgs/ctxval"
 	"github.com/blackbirdworks/gopherstack/pkgs/logger"
 	"github.com/blackbirdworks/gopherstack/pkgs/store"
 )
@@ -80,6 +81,21 @@ type DeliveryTargets struct {
 	StepFunctions   StepFunctionsExecutor
 	CloudWatchLogs  CloudWatchLogsPublisher
 	APIDestinations APIDestinationResolver
+	EventBusRouter  EventBusRouter
+}
+
+// EventBusRouter routes a matched event to another event bus, implementing
+// real AWS's support for a PutTargets Target ARN that names an event bus
+// (see api_op_PutTargets.go's doc comment in aws-sdk-go-v2/service/eventbridge:
+// "Set that account's event bus as a target of the rules in your account. To
+// send the matched events to the other account, specify that account's event
+// bus as the Arn value when you run PutTargets"). It is implemented by the
+// backend itself so same-account routing works without external wiring (see
+// SetDeliveryTargets' APIDestinations self-registration).
+type EventBusRouter interface {
+	// RouteEventToBus delivers the event carried by envelope to the event bus
+	// identified by targetARN, and returns true if delivery failed.
+	RouteEventToBus(ctx context.Context, targetARN string, envelope map[string]any) bool
 }
 
 // APIDestinationResolver resolves an API-destination ARN to its concrete
@@ -145,6 +161,7 @@ func (b *InMemoryBackend) deliverScheduledRule(
 		accountID string
 		dt        DeliveryTargets
 		timeout   time.Duration
+		busDLQ    *DeadLetterConfig
 	)
 
 	func() {
@@ -159,6 +176,9 @@ func (b *InMemoryBackend) deliverScheduledRule(
 		accountID = b.accountID
 		dt = *b.deliveryTargets
 		timeout = b.deliveryTimeout
+		if bus, exists := b.busesTable(region).Get(ebBusKey(busName)); exists {
+			busDLQ = bus.DeadLetterConfig
+		}
 		// Log the event so diagnostic callers (GetEventLog) can observe it.
 		eventID := uuid.NewString()
 		b.eventLog = append(b.eventLog, EventLogEntry{
@@ -190,7 +210,7 @@ func (b *InMemoryBackend) deliverScheduledRule(
 	for _, t := range snapped {
 		target := t
 		wg.Go(func() {
-			deliverToTargetBounded(ctx, target, envelope, dt, timeout)
+			deliverToTargetBounded(ctx, target, envelope, dt, timeout, busDLQ)
 		})
 	}
 	wg.Wait()
@@ -219,17 +239,19 @@ func (b *InMemoryBackend) deliverEvents(
 			target := t
 			envelope := g.envelope
 			wg.Go(func() {
-				deliverToTargetBounded(ctx, target, envelope, targets, timeout)
+				deliverToTargetBounded(ctx, target, envelope, targets, timeout, g.busDLQ)
 			})
 		}
 		wg.Wait()
 	}
 }
 
-// deliveryGroup is one matched rule's delivery work: a shared event envelope and
-// the snapshot of targets to deliver it to.
+// deliveryGroup is one matched rule's delivery work: a shared event envelope,
+// the snapshot of targets to deliver it to, and the bus-level DeadLetterConfig
+// a target falls back to when it has none of its own (see sendToDLQ).
 type deliveryGroup struct {
 	envelope map[string]any
+	busDLQ   *DeadLetterConfig
 	targets  []*Target
 }
 
@@ -288,6 +310,11 @@ func (b *InMemoryBackend) matchedDeliveryGroupsForEntry(
 	busKey := ebBusKey(busName)
 	eventEnvelope := buildEventEnvelope(entry)
 
+	var busDLQ *DeadLetterConfig
+	if bus, exists := b.busesTable(region).Get(busKey); exists {
+		busDLQ = bus.DeadLetterConfig
+	}
+
 	var groups []deliveryGroup
 	for _, rule := range indexedRulesForEvent(ruleIndex[busKey], entry.Source, entry.DetailType) {
 		if !ruleMatchesForDelivery(rule, eventEnvelope, filterRuleARNs) {
@@ -303,6 +330,7 @@ func (b *InMemoryBackend) matchedDeliveryGroupsForEntry(
 		// for this rule share the same event id, matching AWS behaviour.
 		groups = append(groups, deliveryGroup{
 			envelope: buildDeliveryEnvelope(entry, accountID, region),
+			busDLQ:   busDLQ,
 			targets:  snapshotTargets(storedTargets),
 		})
 	}
@@ -356,6 +384,7 @@ func deliverToTargetBounded(
 	envelope map[string]any,
 	dt DeliveryTargets,
 	timeout time.Duration,
+	busDLQ *DeadLetterConfig,
 ) {
 	maxAttempts := defaultMaxRetryAttempts
 	maxAgeSeconds := defaultMaxEventAgeSeconds
@@ -373,7 +402,7 @@ func deliverToTargetBounded(
 
 	for attempt := 0; attempt <= maxAttempts; attempt++ {
 		if int(eventAge.Seconds()) > maxAgeSeconds {
-			sendToDLQ(ctx, target, envelope, dt, "MaximumEventAgeExceeded")
+			sendToDLQ(ctx, target, envelope, dt, busDLQ, "MaximumEventAgeExceeded")
 
 			return
 		}
@@ -392,7 +421,7 @@ func deliverToTargetBounded(
 		}
 
 		if attempt == maxAttempts {
-			sendToDLQ(ctx, target, envelope, dt, "DeliveryFailure")
+			sendToDLQ(ctx, target, envelope, dt, busDLQ, "DeliveryFailure")
 
 			return
 		}
@@ -425,9 +454,17 @@ func sendToDLQ(
 	target *Target,
 	envelope map[string]any,
 	dt DeliveryTargets,
+	busDLQ *DeadLetterConfig,
 	reason string,
 ) {
-	if target.DeadLetterConfig == nil || target.DeadLetterConfig.Arn == "" {
+	dlq := target.DeadLetterConfig
+	if dlq == nil || dlq.Arn == "" {
+		// A target with no DLQ of its own falls back to the bus's, matching
+		// real EventBridge: DeadLetterConfig can be set at the target or the
+		// bus, and the bus's applies when the target has none.
+		dlq = busDLQ
+	}
+	if dlq == nil || dlq.Arn == "" {
 		return
 	}
 	if dt.SQS == nil {
@@ -436,7 +473,7 @@ func sendToDLQ(
 
 	log := logger.Load(ctx)
 	payload, _ := json.Marshal(envelope)
-	dlqARN := target.DeadLetterConfig.Arn
+	dlqARN := dlq.Arn
 
 	if err := dt.SQS.SendMessageToQueue(ctx, dlqARN, string(payload)); err != nil {
 		log.WarnContext(ctx, "EventBridge: failed to send event to DLQ",
@@ -537,6 +574,13 @@ func deliverToTarget(
 		return deliverToCloudWatchLogs(ctx, dt.CloudWatchLogs, targetARN, payload)
 	case isAPIDestinationARN(targetARN):
 		return deliverToAPIDestination(ctx, dt.APIDestinations, target, payload)
+	case isEventBusARN(targetARN):
+		// Routes the raw event, not payload: Input/InputPath/InputTransformer
+		// are target-invocation overrides and don't apply when the "target"
+		// is itself an event bus that will run its own rule matching on the
+		// real event (api_op_PutTargets.go: these overrides are documented as
+		// unavailable when the target is a cross-account event bus).
+		return deliverToEventBus(ctx, dt.EventBusRouter, targetARN, envelope)
 	default:
 		logger.Load(ctx).
 			WarnContext(ctx, "EventBridge: unsupported target ARN type", "arn", targetARN)
@@ -767,6 +811,19 @@ func isAPIDestinationARN(arn string) bool {
 	return strings.HasPrefix(arn, "arn:aws:events:") && strings.Contains(arn, ":api-destination/")
 }
 
+// isEventBusARN returns true if the ARN identifies an EventBridge event bus.
+func isEventBusARN(arn string) bool {
+	return strings.HasPrefix(arn, "arn:aws:events:") && strings.Contains(arn, ":event-bus/")
+}
+
+func deliverToEventBus(ctx context.Context, router EventBusRouter, arn string, envelope map[string]any) bool {
+	if router == nil {
+		return false
+	}
+
+	return router.RouteEventToBus(ctx, arn, envelope)
+}
+
 func deliverToCloudWatchLogs(ctx context.Context, svc CloudWatchLogsPublisher, arn, payload string) bool {
 	if svc == nil {
 		return false
@@ -780,4 +837,104 @@ func deliverToCloudWatchLogs(ctx context.Context, svc CloudWatchLogsPublisher, a
 	err := svc.PutLogEvents(ctx, logGroupName, "EventBridge", []any{payload})
 
 	return err != nil
+}
+
+// maxEventBusRoutingHops bounds a chain of event-bus targets (a rule on bus A
+// targets bus B, whose own rule targets bus C, ...) so a misconfigured cycle
+// (a rule targeting its own bus, directly or transitively) cannot recurse
+// RouteEventToBus's synchronous call chain forever. Real AWS has no such
+// limit -- each hop there is an independent service call -- but this backend
+// runs every hop in-process on the same goroutine.
+const maxEventBusRoutingHops = 5
+
+//nolint:gochecknoglobals // ctxval.Key is a singleton by design (see pkgs/ctxval).
+var eventBusHopsKey = ctxval.NewKey[int]("eventbridge-bus-routing-hops")
+
+// arnSegments is the number of colon-separated fields in a well-formed ARN:
+// arn:{partition}:{service}:{region}:{account}:{resource}.
+const arnSegments = 6
+
+// parseEventBusARN extracts the region, account ID, and bus name from an
+// event-bus ARN (arn:{partition}:events:{region}:{account}:event-bus/{name},
+// see accessors.go's busARN). The last return is false if arn does not have
+// this shape.
+func parseEventBusARN(arn string) (string, string, string, bool) {
+	parts := strings.SplitN(arn, ":", arnSegments)
+	if len(parts) != arnSegments || parts[0] != "arn" || parts[2] != "events" {
+		return "", "", "", false
+	}
+
+	name, found := strings.CutPrefix(parts[5], "event-bus/")
+	if !found || name == "" {
+		return "", "", "", false
+	}
+
+	return parts[3], parts[4], name, true
+}
+
+// entryFromEnvelope rebuilds an EventEntry from a delivery envelope (see
+// buildDeliveryEnvelope) for re-entry into PutEvents against another bus.
+// Time is intentionally left unset: the receiving bus treats this as a fresh
+// incoming event, matching how a real cross-bus PutTargets delivery is a new
+// service call against the target bus.
+func entryFromEnvelope(envelope map[string]any, busName string) EventEntry {
+	entry := EventEntry{EventBusName: busName}
+
+	if src, ok := envelope["source"].(string); ok {
+		entry.Source = src
+	}
+
+	if dt, ok := envelope["detail-type"].(string); ok {
+		entry.DetailType = dt
+	}
+
+	if detail, ok := envelope["detail"]; ok {
+		if b, err := json.Marshal(detail); err == nil {
+			entry.Detail = string(b)
+		}
+	}
+
+	if resources, ok := envelope["resources"].([]string); ok {
+		entry.Resources = resources
+	}
+
+	return entry
+}
+
+// RouteEventToBus implements EventBusRouter by re-entering PutEvents for the
+// target bus, so an event-bus ARN target gets the same logging, archive
+// capture, and rule-matching/delivery fan-out a direct PutEvents call to that
+// bus would receive. Cross-account ARNs are structurally out of scope -- this
+// backend models a single AWS account, so a target whose account segment
+// differs from b.accountID cannot be resolved -- and are dropped like any
+// other target ARN this backend does not implement delivery for (see
+// deliverToTarget's default case).
+func (b *InMemoryBackend) RouteEventToBus(ctx context.Context, targetARN string, envelope map[string]any) bool {
+	region, accountID, busName, ok := parseEventBusARN(targetARN)
+	if !ok || accountID != b.accountID {
+		return false
+	}
+
+	hops, _ := eventBusHopsKey.Get(ctx)
+	if hops >= maxEventBusRoutingHops {
+		logger.Load(ctx).WarnContext(ctx,
+			"EventBridge: dropping cross-bus event, max routing hops exceeded",
+			"targetBusArn", targetARN)
+
+		return false
+	}
+
+	routeCtx := context.WithValue(ctx, regionContextKey{}, region)
+	routeCtx = eventBusHopsKey.Set(routeCtx, hops+1)
+
+	entry := entryFromEnvelope(envelope, busName)
+
+	if _, err := b.PutEvents(routeCtx, []EventEntry{entry}); err != nil {
+		logger.Load(ctx).WarnContext(ctx, "EventBridge: failed to route event to target bus",
+			"targetBusArn", targetARN, "error", err)
+
+		return true
+	}
+
+	return false
 }

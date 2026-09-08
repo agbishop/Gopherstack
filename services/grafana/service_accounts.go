@@ -15,8 +15,15 @@ func (b *InMemoryBackend) CreateWorkspaceServiceAccount(
 	b.mu.Lock("CreateWorkspaceServiceAccount")
 	defer b.mu.Unlock()
 
-	if _, ok := b.workspaces.Get(workspaceID); !ok {
+	w, ok := b.workspaces.Get(workspaceID)
+	if !ok {
 		return nil, notFoundError(resourceTypeWorkspace, workspaceID)
+	}
+
+	if !supportsServiceAccounts(w.GrafanaVersion) {
+		return nil, conflictError(resourceTypeWorkspace, workspaceID,
+			"service accounts require a workspace compatible with Grafana version 9 or above, this workspace is on "+
+				w.GrafanaVersion)
 	}
 
 	for _, sa := range b.serviceAccountsByWorkspace.Get(workspaceID) {

@@ -1,5 +1,5 @@
 service: quicksight
-sdk_module: aws-sdk-go-v2/service/quicksight@v1.123.1
+sdk_module: aws-sdk-go-v2/service/quicksight@v1.129.0
 last_audit_commit: 73f133771
 last_audit_date: 2026-08-13 # gopherstack-wl0s: CreateOAuthClientApplication's ClientId,
                       # ClientSecret, OAuthClientAuthenticationType, and OAuthTokenEndpointUrl
@@ -125,18 +125,18 @@ ops:
   DescribeIngestion: {wire: ok, errors: ok, state: ok, persist: ok}
   CancelIngestion: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: now rejects cancelling an ingestion already in a terminal state (COMPLETED/FAILED/CANCELLED) with ErrIngestionNotCancellable (ConflictException, 409) instead of silently overwriting its status; the SDK doc comment gives no explicit error name for this case, so ConflictException was chosen to match this backend's existing errConflictException convention (see ErrIngestionAlreadyExists). See TestQuickSight_CancelIngestion_CompletedAutoIngestion"}
   ListIngestions: {wire: ok, errors: ok, state: ok, persist: ok}
-  CreateDashboard: {wire: ok, errors: ok, state: ok, persist: ok, note: "Status/CreationStatus was the invalid ResourceStatus literal \"CREATED\"; fixed to CREATION_SUCCESSFUL (the only enum value SDK clients round-trip through types.ResourceStatus)"}
-  DescribeDashboard: {wire: ok, errors: ok, state: ok, persist: ok, note: "dashboardToMap's PublishedVersionNumber was reading d.VersionNumber, not d.PublishedVersionNumber -- so calling UpdateDashboardPublishedVersion never showed up in Describe/List; fixed"}
-  UpdateDashboard: {wire: ok, errors: ok, state: ok, persist: ok, note: "response was missing CreationStatus entirely (UpdateDashboardOutput has one) and the backend never transitioned Status on update; fixed both"}
-  DeleteDashboard: {wire: ok, errors: ok, state: ok, persist: ok}
-  ListDashboards: {wire: ok, errors: ok, state: ok, persist: ok}
-  ListDashboardVersions: {wire: ok, errors: ok, state: ok, persist: ok, note: "synthesized version Status also carried the invalid \"CREATED\" literal; fixed alongside CreateDashboard"}
-  SearchDashboards: {wire: ok, errors: ok, state: ok, persist: ok}
+  CreateDashboard: {wire: ok, errors: ok, state: ok, persist: ok, note: "Status/CreationStatus was the invalid ResourceStatus literal \"CREATED\"; fixed to CREATION_SUCCESSFUL (the only enum value SDK clients round-trip through types.ResourceStatus). FIXED (gopherstack-86y, partial-update-clobbering/version-semantics sweep): CreateDashboardInput.ThemeArn/VersionDescription (real, caller-supplied, optional *string fields) were read nowhere -- same bug class already fixed for Analysis (see CreateAnalysis note) but missed here. Dashboard gained ThemeArn/VersionDescription/LastPublishedTime fields."}
+  DescribeDashboard: {wire: fixed, errors: ok, state: ok, persist: ok, note: "dashboardToMap's PublishedVersionNumber was reading d.VersionNumber, not d.PublishedVersionNumber -- so calling UpdateDashboardPublishedVersion never showed up in Describe/List; fixed. FIXED (gopherstack-86y): a much bigger wire-shape bug in the same function -- DescribeDashboardOutput.Dashboard is types.Dashboard, whose version-specific members (Status/ThemeArn/VersionNumber/Description) live under a nested \"Version\" object (confirmed against deserializers.go's awsRestjson1_deserializeDocumentDashboard, which has a \"Version\" case, and types.DashboardVersion). dashboardToMap never built one at all -- a real SDK client's output.Dashboard.Version was always nil, hiding Status/VersionNumber/ThemeArn/Description entirely -- while also emitting a spurious top-level \"PublishedVersionNumber\" that types.Dashboard doesn't have (that member exists only on types.DashboardSummary, the List/Search shape). Also missing: top-level \"LinkEntities\" (a real types.Dashboard field this backend already tracks via UpdateDashboardLinks but never surfaced on Describe) and \"LastPublishedTime\" (real on both types.Dashboard and types.DashboardSummary, not tracked at all before this fix). Fixed by splitting dashboardToMap (now the true types.Dashboard shape: Arn/CreatedTime/DashboardId/LastUpdatedTime/LastPublishedTime/LinkEntities/Name/Version) from a new dashboardSummaryToMap (types.DashboardSummary shape for List/Search: adds LastPublishedTime, keeps PublishedVersionNumber, no Version/LinkEntities). CAVEAT, disclosed not fixed: this backend has no real per-version history (Definition/Status/ThemeArn/VersionDescription are single mutable fields overwritten on every UpdateDashboard, matching Template's storedTemplateVersion map or DescribeDashboardInput's own VersionNumber query param -- unlike Template, which does keep one; see DescribeTemplate). So Version.VersionNumber/ThemeArn/Description report the latest in-memory state (consistent with DescribeDashboardDefinition's pre-existing, same-shaped simplification), not the specific historical version DescribeDashboardInput.VersionNumber names, and can show an unpublished draft's theme before an explicit UpdateDashboardPublishedVersion call. A full fix requires the same per-version-map architecture Template already uses -- a genuine refactor across Create/Update/Describe/ListDashboardVersions/persistence with a blast radius large enough to be its own change; declined here as a deliberate-simplification-scale item, not silently accepted. See TestSDKRoundTrip_DashboardVersion (handler_sdk_roundtrip_test.go)."}
+  UpdateDashboard: {wire: ok, errors: ok, state: ok, persist: ok, note: "response was missing CreationStatus entirely (UpdateDashboardOutput has one) and the backend never transitioned Status on update; fixed both. FIXED (gopherstack-86y): ThemeArn/VersionDescription dropped on update too -- see CreateDashboard note; both now conditionally set (caller omitting either leaves the stored value unchanged, matching this op's existing Name/Definition idiom -- no clobbering introduced)."}
+  DeleteDashboard: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "FIXED (gopherstack-86y, deferred-delete/restore-pattern sweep): DeleteDashboardInput.VersionNumber's own doc comment (api_op_DeleteDashboard.go) says \"If the version number property is provided, only the specified version of the dashboard is deleted\" -- a real, query-bound (\"version-number\", confirmed against serializers.go's awsRestjson1_serializeOpHttpBindingsDeleteDashboardInput), optional field. handleDeleteDashboard never read it (unlike DeleteTemplate's handler, which already uses the shared versionNumberParam helper for the identical param) -- so a client asking to delete one old dashboard version instead had the ENTIRE dashboard deleted every time, silently. Severity: high (destructive/data-loss on documented partial-delete intent). Fixed: DeleteDashboard now takes versionNumber; when nonzero it validates the version exists ([1, VersionNumber], mirroring UpdateDashboardPublishedVersion's existing check) and leaves the dashboard untouched (success, no-op) rather than either fabricating true per-version removal (this backend has no per-version storage, see DescribeDashboard note) or deleting everything. See TestSDKRoundTrip_DeleteDashboardVersionNumber. CORRECTION to this campaign's own audit brief: DeleteDashboard does NOT model a recovery window/ForceDeleteWithoutRecovery/RestoreDashboard the way DeleteAnalysis does -- confirmed against api_op_DeleteDashboard.go (only AwsAccountId/DashboardId/VersionNumber) and api_op_DeleteAnalysis.go (RecoveryWindowInDays/ForceDeleteWithoutRecovery/DeletionTime; RestoreAnalysis exists, no RestoreDashboard op exists in the SDK at all) -- an immediate, permanent hard delete is correct AWS behavior for this op, not a gap. FOLLOW-UP FIXED (gopherstack-5oop, 2026-09-07): the validate-and-no-op behavior above left an observable gap even without full version content history -- a deleted version number kept showing up live in ListDashboardVersions, and a repeat delete of the same version silently re-succeeded instead of 404ing, unlike DeleteTemplate (templates.go), which really removes the entry from t.Versions so a second delete of the same version already 404s there. Fixed with a minimal, non-speculative addition: storedDashboard gained DeletedVersions map[int64]bool (models.go), set by DeleteDashboard and checked there (repeat delete of an already-deleted or out-of-range version -> ErrDashboardVersionNotFound) and by ListDashboardVersions (skips deleted version numbers when synthesizing the range) and UpdateDashboardPublishedVersion (can no longer publish a deleted version). This does NOT add per-version content storage -- Definition/ThemeArn/VersionDescription/Status remain single mutable fields, so DescribeDashboard still cannot honor a historical VersionNumber; that structural gap is unchanged, see DescribeDashboard note. See TestQuickSight_DeleteDashboard_SpecificVersion (handler_dashboard_test.go), which fails against pre-fix code with 'Should not be: 1' (a deleted version still listed) and 'expected: 404 / actual: 200' (repeat delete silently succeeding)."}
+  ListDashboards: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED (gopherstack-86y): switched to dashboardSummaryToMap (types.DashboardSummary shape) and added the real, previously-untracked LastPublishedTime field -- see DescribeDashboard note."}
+  ListDashboardVersions: {wire: ok, errors: ok, state: fixed, persist: ok, note: "synthesized version Status also carried the invalid \"CREATED\" literal; fixed alongside CreateDashboard. FIXED (gopherstack-5oop): now skips version numbers recorded in storedDashboard.DeletedVersions -- see DeleteDashboard note."}
+  SearchDashboards: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED (gopherstack-86y): same dashboardSummaryToMap/LastPublishedTime fix as ListDashboards."}
   DescribeDashboardPermissions: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateDashboardPermissions: {wire: ok, errors: ok, state: ok, persist: ok}
-  UpdateDashboardPublishedVersion: {wire: ok, errors: ok, state: ok, persist: ok}
+  UpdateDashboardPublishedVersion: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (gopherstack-86y): now also sets the new LastPublishedTime field."}
   UpdateDashboardLinks: {wire: ok, errors: ok, state: ok, persist: ok}
-  DescribeDashboardDefinition: {wire: ok, errors: ok, state: ok, persist: ok, note: "ResourceStatus field reuses Dashboard.Status, fixed by the same CREATED->CREATION_SUCCESSFUL change"}
+  DescribeDashboardDefinition: {wire: ok, errors: ok, state: ok, persist: ok, note: "ResourceStatus field reuses Dashboard.Status, fixed by the same CREATED->CREATION_SUCCESSFUL change. FIXED (gopherstack-86y): DescribeDashboardDefinitionOutput's top-level ThemeArn (api_op_DescribeDashboardDefinition.go, real, same family as Analysis's DescribeAnalysisDefinitionOutput.ThemeArn) was missing; added."}
   CreateAnalysis: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (2026-08-23, low-client-coverage audit pass): CreateAnalysisInput.ThemeArn (api_op_CreateAnalysis.go, real, caller-supplied *string, optional) was read nowhere -- handleCreateAnalysis never extracted it from the body and Analysis (types.go) had no field to hold it, so it was silently dropped. Class (a), zero fabrication (caller-supplied). Fixed: Analysis gained a ThemeArn field, threaded through CreateAnalysis/UpdateAnalysis and echoed on DescribeAnalysis/DescribeAnalysisDefinition (both of which carry a real ThemeArn per types.Analysis and DescribeAnalysisDefinitionOutput). See TestSDKRoundTrip_AnalysisThemeArn (handler_sdk_roundtrip_test.go), a real aws-sdk-go-v2 client round trip. DataSetArns/Sheets/TopicArns/Errors on types.Analysis remain honestly absent -- they require parsing the opaque Definition blob this backend never interprets (same precedent as Template's Sheets/DataSetConfigurations), not a caller-supplied scalar like ThemeArn."}
   DescribeAnalysis: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (2026-08-23): now returns ThemeArn -- see CreateAnalysis note."}
   UpdateAnalysis: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED (2026-08-23): UpdateAnalysisInput.ThemeArn had the same dropped-on-the-wire bug as CreateAnalysisInput.ThemeArn -- see CreateAnalysis note, same fix."}
@@ -1474,3 +1474,237 @@ diffed against HEAD.
 `cmd/reqfieldscan`: byte-identical across all 5 old runs and HEAD.
 `cmd/reqfielddiff`: 794 findings in every one of the 5 old runs and at
 HEAD, op.field key sets identical. ZERO DAMAGE.
+
+## User.CustomPermissionsName write-only fix (2026-09-06, gopherstack-rt14)
+
+Filed title-only ("UpdateUserCustomPermission writes to userCustomPermissions
+which DescribeUser and ListUsers never read"), no description. Re-derived
+and confirmed real: `UpdateUserCustomPermission` (`custompermissions.go:315`)
+writes `b.userCustomPermissions[userCustomPermissionKey(...)]`, but
+`DescribeUser` (`user.go:63`) and `ListUsers` (`user.go:147`) built their
+response from `storedUser.toUser()` alone, which never consulted that map --
+a client could set a user's custom permissions profile and never observe it
+back.
+
+Deciding SDK quote: `types/types.go:23202` (aws-sdk-go-v2/service/quicksight
+v1.123.1) -- `types.User` carries `CustomPermissionsName *string // The
+custom permissions profile associated with this user.` Both
+`DescribeUserOutput.User` and `ListUsersOutput.UserList` (`api_op_DescribeUser.go:59`,
+`api_op_ListUsers.go:65`) are `types.User`, so the SDK models this field on
+exactly the two read paths the issue named. `serializers.go:1360-1362` omits
+the JSON key entirely when the pointer is nil (no empty-string emission).
+No dedicated `DescribeUserCustomPermission` op exists in the SDK's op list
+(unlike `DescribeAccountCustomPermission`/`DescribeRoleCustomPermission`,
+which do) -- `DescribeUser`/`ListUsers` are the only read path for this
+value, so the write was genuinely unobservable before this fix.
+
+Verdict: real bug, write path correct, read path wrong. Fix: added
+`CustomPermissionsName string` to the domain `User` struct (`types.go`),
+populated it in `DescribeUser` and `ListUsers` from `b.userCustomPermissions`,
+and emitted it from `userToMap` (`handler_user.go`) only when non-empty,
+matching the SDK's omit-when-unset semantics (existing precedent:
+`handler_agents.go`'s `agentToMap`).
+
+Adjacent fix in the same map: `DeleteUser`/`DeleteUserByPrincipalID`
+(`user.go`) previously cleaned up group memberships on delete
+(`removeUserFromAllGroups`) but not `userCustomPermissions`, so a deleted
+and re-registered user with the same name would have silently inherited a
+stale custom-permissions assignment -- invisible before this fix since
+nothing read the map, but a live bug once `DescribeUser`/`ListUsers` do.
+Added the matching `delete(b.userCustomPermissions, ...)` call to both.
+
+Not changed: `RegisterUser` and `UpdateUser` also return `*User` via the
+same `toUser()` path but were left alone -- the issue named only
+`DescribeUser`/`ListUsers`, and a freshly-registered user has no
+custom-permissions entry yet by construction. `UpdateUser` returning a
+stale/absent value when a custom permission was set earlier via a separate
+call is a real, smaller version of the same gap; flagging it here rather
+than fixing it to keep this change scoped to the named issue.
+
+Regression test: `TestQuickSight_UserCustomPermission_ReflectedInReads`
+(`handler_custompermissions_test.go`) -- registers a user, asserts
+`CustomPermissionsName` absent from `DescribeUser`, calls
+`UpdateUserCustomPermission`, asserts it now appears in both `DescribeUser`
+and `ListUsers`, deletes it, asserts absent again. Proved against
+unmodified code by reverting only the `DescribeUser`/`ListUsers` population
+lines (keeping the struct field so it still compiles): the two
+"surfaces it" subtests failed with `expected: string("cp1") / actual:
+<nil>(<nil>)`; restored and reconfirmed green.
+
+Also fixed as a side effect: `ListUsers`'s `//nolint:dupl` and
+`ListIngestions`'s (`dataset.go:388`) `//nolint:dupl` both went from
+matched-and-suppressed to genuinely non-duplicate once `ListUsers`'s body
+changed shape (dupl's clustering had paired these two `List*` functions;
+the new lines in `ListUsers` broke that pairing, same mechanism as the
+2026-08-31 `ListThemes`/`UpdateTheme` note above). `nolintlint` flagged both
+as unused; removed both now-dead directives.
+
+Gates (`services/quicksight/` only): `go build`, `go vet`,
+`go test -race ./services/quicksight/...` all clean.
+`golangci-lint run services/quicksight/...` -- `0 issues.`
+`go test ./pkgs/persistence/ -run TestSnapshotVersionGuard` -- PASS
+(read-only; no persisted struct field was added -- `CustomPermissionsName`
+lives on the domain `User` type, not `storedUser` or the snapshot).
+
+## Dashboard per-version history re-audit (2026-09-07, gopherstack-5oop)
+
+Filed title-only ("dashboards have no per-version history unlike the
+Template family, so DeleteDashboard with a VersionNumber can only validate
+and no-op"), empty description. Re-derived and verdict: **mostly already
+true and already disclosed** (the exact validate-and-no-op behavior the
+title names is the gopherstack-86y fix above, filed the same day as this
+issue as its own deliberate, disclosed follow-up) -- but re-deriving from
+scratch surfaced one genuinely fixable gap the title didn't call out:
+deleting a version left no trace at all, so `ListDashboardVersions` still
+listed it and a second delete of the same version kept silently
+succeeding. Fixed that; declined the full per-version-content refactor as
+out of reach for this pass, per this issue's own scope guidance and
+gopherstack-86y's prior assessment.
+
+**Crux quote**, `api_op_DeleteDashboard.go:39-40` (aws-sdk-go-v2/service/quicksight
+v1.129.0): `// The version number of the dashboard. If the version number
+property is provided, only the specified version of the dashboard is
+deleted.` Confirmed against the wire model too --
+`service-2.json`'s `DeleteDashboardRequest.VersionNumber` documentation is
+character-for-character the same sentence, bound `"location": "querystring",
+"locationName": "version-number"`. So real AWS's `DeleteDashboard` with a
+`VersionNumber` deletes *that one version's* stored content and leaves the
+dashboard and its other versions intact -- it is not a whole-dashboard
+delete filtered by a parameter, and it is not a no-op.
+
+**What Template does differently** (the reference implementation): `storedTemplate`
+(`templates.go:25`) carries `Versions map[int64]*storedTemplateVersion` plus
+`LatestVersion int64`. `DeleteTemplate` (`templates.go:190`) with a nonzero
+`versionNumber` does `delete(t.Versions, versionNumber)` for real, 404s
+(`ErrTemplateNotFound`) if that key is already absent, and reassigns
+`LatestVersion` if the deleted version was the latest. `storedDashboard`
+(`models.go:140`, before this fix) has no such map -- `Definition`,
+`ThemeArn`, `VersionDescription`, `Status` are single mutable fields
+clobbered by every `UpdateDashboard`, so there is no per-version *content*
+to delete. This was already correctly diagnosed in the `DescribeDashboard`
+row above (gopherstack-86y) and in `DeleteDashboard`'s own doc comment
+(`dashboard.go:103-111`, pre-fix): "This backend has no real per-version
+history ... validates the version exists ... and leaves the dashboard
+untouched (success, no-op) rather than either fabricating true per-version
+removal ... or deleting everything."
+
+**Confirmed via `bd show`**: gopherstack-5oop (created 2026-09-04) and
+gopherstack-86y (the audit epic task that produced the validate-and-no-op
+fix, closed the same day) share a creation date -- consistent with 5oop
+being 86y's own disclosed-follow-up ticket for the item its PARITY.md note
+explicitly declined: "A full fix requires the same per-version-map
+architecture Template already uses -- a genuine refactor across
+Create/Update/Describe/ListDashboardVersions/persistence with a blast
+radius large enough to be its own change." Re-reading the current code
+confirmed that fix is present and working as documented (`dashboard.go`'s
+`DeleteDashboard`, pre-this-pass): a nonzero `versionNumber` outside
+`[1, VersionNumber]` already returned `ErrDashboardVersionNotFound`
+(`ResourceNotFoundException`), and an in-range one already left the
+dashboard untouched rather than deleting it -- so the specific defect this
+issue's own scope guidance called out ("if DeleteDashboard accepts a
+VersionNumber and silently no-ops... if [real AWS] returns an error and
+gopherstack returns success, that is a real bug") does not exist for a
+*first* delete of a genuinely nonexistent version; it was already fixed.
+
+**What was still wrong** (found by re-deriving rather than trusting the
+title): a *repeat* delete of the same, already-"deleted" version kept
+returning success instead of `ErrDashboardVersionNotFound` -- the no-op
+left no record that the version had been touched, so from the caller's
+perspective delete had no effect at all: `ListDashboardVersions` (which
+synthesizes `DashboardVersion` entries for `1..VersionNumber`, see its
+`gopherstack-86y` note above) kept listing the "deleted" version forever,
+and nothing stopped `UpdateDashboardPublishedVersion` from publishing a
+version the caller had just deleted. That is a real, narrow, fixable
+defect distinct from the full-history structural gap: it doesn't require
+storing per-version content, only remembering which version numbers have
+been deleted.
+
+**Fix** (verdict (a) for this narrow piece, verdict (b) confirmed for the
+rest): added `storedDashboard.DeletedVersions map[int64]bool`
+(`models.go`, `json:"deletedVersions,omitempty"`, purely additive -- see
+gate below). `DeleteDashboard` (`dashboard.go`) now checks and sets it;
+`ListDashboardVersions` skips deleted version numbers when synthesizing its
+range; `UpdateDashboardPublishedVersion` now also rejects a deleted version
+number. `DescribeDashboard` is unchanged -- it still doesn't read
+`DescribeDashboardInput.VersionNumber` at all (a separate, already-disclosed
+gap in the same `DescribeDashboard` PARITY row: "Version.VersionNumber/
+ThemeArn/Description report the latest in-memory state... not the specific
+historical version"), and fixing that would require exactly the
+per-version-content storage this pass declines to build speculatively.
+
+**Regression test**: `TestQuickSight_DeleteDashboard_SpecificVersion`
+(`handler_dashboard_test.go`), modeled directly on
+`TestQuickSight_DeleteTemplate_SpecificVersion`
+(`handler_templates_test.go:354`). Confirmed failing against unmodified
+code:
+
+```
+handler_dashboard_test.go:288: Error: Should not be: 1
+    Messages: deleted version 1 must not be listed
+handler_dashboard_test.go:294: Error: Not equal:
+    expected: 404
+    actual  : 200
+```
+
+Passes after the fix. No pre-existing test was modified.
+
+**Gates** (`services/quicksight/` only): `go build`, `go vet`,
+`go test -race -count=1 ./services/quicksight/...` all clean.
+`golangci-lint run ./services/quicksight/...` -- `0 issues` (one
+`govet: shadow` finding in the new test's first draft, fixed by renaming
+the inner-scope `ok`).
+`go test ./pkgs/persistence/ -run TestSnapshotVersionGuard` -- failed
+before `-update` with "quicksight: backendSnapshot fields changed without a
+version bump; ... this is bookkeeping, not a version-bump case: every old
+field is still present unchanged, so the diff is additive only and needs
+no bump", exactly matching `storedDashboard.DeletedVersions` being a new
+`omitempty` map field. Ran `go test ./pkgs/persistence/ -run
+TestSnapshotVersionGuard -update` to refresh
+`pkgs/persistence/testdata/snapshot_inventory.json` (one line added, no
+`quicksightSnapshotVersion` bump -- correct, since `encoding/json` decodes
+an older snapshot missing this field fine); re-ran read-only and it passes.
+
+**Confidence**: high on the SDK-behavior read (doc comment and wire model
+agree verbatim) and on the current-code read (all claims verified by
+reading `dashboard.go`/`templates.go`/`models.go` directly, not from
+memory). Not independently verified: whether real AWS also blocks deleting
+the *currently published* version of a dashboard (`ConflictException` is a
+possible error on `DeleteDashboard`, but its shape doc
+-- `service-2.json`'s `ConflictException.documentation`: "Updating or
+deleting a resource can cause an inconsistent state." -- is generic and
+gives no version-specific detail, and no AWS example/doc text found in
+`botocore`'s `examples-1.json` covers this case either); left unimplemented
+rather than guessed.
+
+## 2026-09-08: writeJSON/writeError/httpErr nil-on-write fall-through audit (gopherstack-246v) -- clean
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `writeJSON`
+(`handler_paths.go:1029`) writes headers/body and returns `json.Encode`'s result -- nil on
+the success path, which includes every rejection write (encoding a small error map never
+fails). `writeError` wraps it directly; `httpErr` classifies a backend sentinel error and
+either calls `writeError` per case or falls through to a default. Any helper that rejects
+via one of these and is called by code storing and checking the result would get a silent
+nil and fall through past the rejection.
+
+**Method (mechanical).** quicksight is the largest of the six services in this sweep (42k
+lines, 108 non-test files, no subdirectories). A `go/parser`/`go/ast` script computed the
+fixed-point closure seeded with `{writeJSON, writeError, httpErr}`: find every function with
+a bare `return <sink>(...)`, add it to the sink set, repeat to convergence. This closure
+folds the dispatch-vs-non-dispatch cross-reference into the same pass -- `Handler()`
+(`handler.go:1111`, registered directly with echo) is `return h.dispatch(c)`, so `dispatch`
+and, transitively, all ~40 `dispatchXxx` sub-routers and ~275 `handleXxx` op handlers they
+call are pulled into the closure wherever their own body ends in a direct-return default
+case, meaning their call sites got checked along with everything else -- no separate
+partition was needed.
+
+The closure converged at 318 functions. Every call site of every one of those 318 was then
+re-walked and classified: 1032 total call sites in the package (production and test files).
+1029 are `return <fn>(...)` (direct-return, safe). The remaining 3 are all
+`h.Handler()` -- a *different* symbol (the exported method returning `echo.HandlerFunc`,
+called from three test files to obtain the handler) that only collides by name with the
+discovered `Handler` closure-body match; not a call to any response-writer helper and not a
+stored-then-checked error.
+
+**No instance of the broken shape exists in quicksight.** No code changed. Gates:
+`GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/quicksight/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/quicksight/...` ok.

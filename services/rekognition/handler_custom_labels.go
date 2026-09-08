@@ -29,7 +29,11 @@ type detectCustomLabelsResp struct {
 }
 
 func (h *Handler) handleDetectCustomLabels(
-	_ context.Context, _ *detectCustomLabelsReq,
+	ctx context.Context, req *detectCustomLabelsReq,
 ) (*detectCustomLabelsResp, error) {
+	if err := h.checkImageRef(ctx, req.Image); err != nil {
+		return nil, err
+	}
+
 	return &detectCustomLabelsResp{CustomLabels: []customLabelEntry{}}, nil
 }

@@ -112,6 +112,28 @@ func TestUpdateSchedule_NotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestUpdateSchedule_OmittedJobNamesPreservesExisting verifies a caller
+// updating only CronExpression does not have JobNames clobbered:
+// UpdateScheduleInput's JobNames member has no "This member is required"
+// marker (only CronExpression and Name do), so omitting it must leave the
+// schedule's existing job list intact.
+func TestUpdateSchedule_OmittedJobNamesPreservesExisting(t *testing.T) {
+	t.Parallel()
+	b := newTestBackend()
+	ctx := context.Background()
+	_, err := b.CreateSchedule(ctx, "upd-sc-nojobs", []string{"j1"}, "cron(0 8 * * ? *)", nil)
+	require.NoError(t, err)
+
+	err = b.UpdateSchedule(ctx, "upd-sc-nojobs", nil, "cron(0 12 * * ? *)")
+	require.NoError(t, err)
+
+	sc, err := b.DescribeSchedule(ctx, "upd-sc-nojobs")
+	require.NoError(t, err)
+	assert.Equal(t, "cron(0 12 * * ? *)", sc.CronExpression)
+	require.Len(t, sc.JobNames, 1, "omitting JobNames must not clobber the existing job list")
+	assert.Equal(t, "j1", sc.JobNames[0])
+}
+
 func TestDeleteSchedule_Success(t *testing.T) {
 	t.Parallel()
 	b := newTestBackend()

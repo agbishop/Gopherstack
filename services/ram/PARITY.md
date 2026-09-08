@@ -107,8 +107,163 @@ deferred:
   - PromoteResourceShareCreatedFromPolicy's featureSet state machine (CREATED_FROM_POLICY -> PROMOTING_TO_STANDARD -> STANDARD) is not modeled; every share created here is already STANDARD so this hasn't caused observed drift, but if CREATED_FROM_POLICY share creation is ever added, this needs revisiting.
   - "CLOSED 2026-08-13: permissionSummaryObject/permissionDetailObject emitted a resourceRegionScope field that does not exist on the real ResourceSharePermissionSummary/ResourceSharePermissionDetail SDK types. Evidence: aws-sdk-go-v2/service/ram@v1.39.4, types/types.go:492-(Summary)/403-(Detail), checked 2026-08-13 -- exhaustive field lists are Arn/CreationTime/DefaultVersion/FeatureSet/IsResourceTypeDefault/LastUpdatedTime/Name/PermissionType/ResourceType/Status/Tags/Version (Summary, plus Permission on Detail), no ResourceRegionScope on either. That field exists only on types.Resource and types.ServiceNameAndResourceType (see handler_resources.go's legitimate use, TestResourceRegionScope_InListResources). Deleted the field from both wire structs; the internal Permission.ResourceRegionScope domain field (models.go) is untouched -- it backs real filtering logic, just was never a real member of these two wire shapes. Raw-body regression test: TestPermissionResponses_NoResourceRegionScopeField."
   - "DISCLOSED not fixed (2026-08-19 sweep, out of scope per sweep charter -- Layer 3 never-emitted members are only fixed if incidental): ResourceShare never emits resourceShareConfiguration (deserializers.go:8642+, types.ResourceShareConfiguration); Resource never emits resourceGroupArn (deserializers.go's awsRestjson1_deserializeDocumentResource); ResourceShareInvitation never emits receiverArn or resourceShareAssociations (deserializers.go's awsRestjson1_deserializeDocumentResourceShareInvitation). None of these surfaced incidentally while fixing the 3 genuine bugs this session, so left alone per the sweep's Layer-3-out-of-scope rule."
+  - "gopherstack-9ojs (2026-09-07): ResourceShareStatus never reaches PENDING/FAILED/DELETING (only ACTIVE and DELETED are ever written -- store.go's statusActive/statusDeleted are the only two status consts declared) and ResourceShareAssociationStatus never reaches ASSOCIATING/FAILED/DISASSOCIATING/SUSPENDED/SUSPENDING/RESTORING (only associationStatusAssociated/associationStatusDisassociated exist). Both are modelling gaps, not defects: every real-AWS trigger for these values is either async backend processing (share-level PENDING while RAM processes the initial associations, FAILED for backend-side processing failures) or requires cross-account/organizational state this backend cannot represent (SUSPENDED/SUSPENDING/RESTORING are Organizations-service-control-policy-driven per AWS RAM docs). Critically, the one client-observable failure mode that could plausibly reach an association's FAILED status -- an invalid or unshareable resource ARN passed to AssociateResourceShare/CreateResourceShare -- is NOT how real AWS reports it: AssociateResourceShare's and CreateResourceShare's own error models (ram@v1.39.4 deserializers.go, awsRestjson1_deserializeOpErrorAssociateResourceShare:326-327 and awsRestjson1_deserializeOpErrorCreateResourceShare:1076-1077) both declare MalformedArnException as a synchronous API error, not an async association status. So there is no reachable client path to FAILED for either enum; recommend no action on the enums themselves. See the validation fix below for the adjacent defect this investigation did find (unfixed until this session)."
 leaks: {status: clean, note: "no goroutines/janitors in this backend; all state is plain maps/slices (plus the new replaceWorks store.Table) behind the single lockmetrics.RWMutex, snapshotted/restored atomically under that lock. DisassociateResourceSharePermission now prunes an empty sharePermissions[shareARN] map entry when its last permission is removed, closing a minor unbounded-empty-map-entry accumulation path. DisassociateResourceShare/AssociateResourceShare no longer produce duplicate association rows for repeated disassociate/re-associate cycles on the same entity (see AssociateResourceShare note) -- previously this was bounded (hard-delete kept the slice from growing) but the status-aware reactivation is now also memory-neutral, reusing the existing row instead of allocating a new one."}
 ---
+
+## gopherstack-q91e (2026-09-06): a resource share genuinely has no effect anywhere outside services/ram/ -- structural, not a code bug
+
+**Premise confirmed.** `grep -rn "services/ram" --include=*.go .` outside `services/ram/`
+turns up exactly three call sites, none of them an authorization check:
+`cli.go`/`dashboard/ui.go`/`internal/teststack/teststack.go` construct the backend (registration
+boilerplate), and `cli.go:11087` (`wireTaggingRAM`) wires RAM into the Resource Groups Tagging
+API purely so a share's tags show up in `GetResources` -- it reads `ResourceShare.Tags`, never
+`b.associations`, and grants nothing. No other service consults a `ResourceShareAssociation`,
+a `SharePermissionAssociation`, or any RAM state before deciding whether to grant access to
+anything. The title's claim is accurate as filed.
+
+**Why a real fix is not achievable at this scope.** Every AWS RAM use case that actually *does*
+something -- the reason `AssociateResourceShare`'s own doc says "Principals that already have
+access to this resource share immediately receive access to the added resources"
+(`ram@v1.39.4` `api_op_AssociateResourceShare.go:12-14`) -- is a **cross-account** grant: an
+owning account shares a resource so a *different* account can use it. This backend cannot
+represent that state, structurally, not by omission:
+
+- `CreateResourceShare` unconditionally sets `OwningAccountID: b.accountID`
+  (`resource_shares.go:53`); no operation in this backend's entire public surface can ever
+  create a resource share owned by any account other than the caller's own.
+- `listSharedWithMe` (`resource_shares.go:158-189`, backing `ListResourceShares` with
+  `resourceOwner=OTHER-ACCOUNTS`) is consequently dead code by construction: it filters for
+  `rs.OwningAccountID != b.accountID`, a condition nothing can ever satisfy.
+- This is not a gap unique to RAM. `services/mq/models.go:70-74` and
+  `services/mq/brokers.go:1031-1037` independently document the identical conclusion for MQ's
+  own real RAM-consuming SDK operation (`DescribeSharedResources`): "This backend does not
+  model RAM resource sharing, so it never fabricates a shared resource entry." Every resource
+  type this backend's own `ListResourceTypes` advertises as RAM-shareable (`ec2:Subnet/VPC/
+  TransitGateway/LocalGateway/PrefixList`, `route53resolver:ResolverRule/FirewallRuleGroup`,
+  `license-manager:LicenseConfiguration`, `codebuild:Project/ReportGroup`,
+  `glue:Catalog/Database/Table`, `handler_resources.go:164-`) is, in real AWS, shared
+  specifically to grant a *different* account access -- none of those consuming services in
+  this repo model more than one account either, so there is no "other account's request" for
+  any of them to gate in the first place. `services/managedblockchain/members.go:201` and
+  `services/ce/handler_savings_plans.go:180` record the same standing, repo-wide limitation
+  independently.
+- The one RAM principal kind that *is* structurally same-account -- an IAM role/user ARN
+  (`AssociateResourceShareInput.Principals` doc: "An ARN of an IAM role... An ARN of an IAM
+  user", always addressed within the resource share's own account) -- would require gating
+  through this repo's single existing cross-service authorization chokepoint,
+  `iam.EnforcementMiddleware` (see `services/ram/iam_enforcement_test.go`), which is wired
+  uniformly in front of every one of ~150 services. Special-casing RAM into that shared
+  chokepoint is exactly the "RAM check bolted into many services" shape this task rules out,
+  just centralized into one call site instead of many -- it would still make RAM authoritative
+  over every other service's authorization decision, which is out of scope here and belongs to
+  a repo-wide design decision, not a P2 RAM fix.
+
+**No hook was wired into any consuming service.** Nothing outside `services/ram/` was touched.
+
+**One genuine defect found and fixed while investigating principal validation**
+(`resource_shares.go`'s `isExternalPrincipal`): it treated *every* non-12-digit-account-ID
+principal as external, including a same-account IAM role/user ARN
+(`arn:aws:iam::<this account>:role/...`). Real AWS's `AllowExternalPrincipals` gates "principals
+outside your organization" (`api_op_CreateResourceShare.go:45-49`) -- an account concept, not an
+IAM-identity one -- and IAM role/user principals are always scoped to the resource share's own
+account per `AssociateResourceShareInput.Principals`' own doc list. The bug had two observable
+effects: (1) `CreateResourceShare`/`AssociateResourceShare` with `AllowExternalPrincipals=false`
+incorrectly rejected a same-account IAM role/user principal with `ErrValidation`, and (2) even
+when allowed, it fabricated a spurious pending invitation to the caller's own account (external
+handling always calls `createInvitationLocked`). Fixed by extracting the ARN's account segment
+for `iam`-service ARNs specifically and comparing it to `b.accountID`, same as the existing
+bare-account-ID case; organization/OU ARNs are deliberately left external unconditionally even
+when their account segment (the org's management account) matches the caller, since an org/OU
+principal can admit arbitrary other member accounts regardless of whose account authored it.
+
+Regression tests (fail on unmodified code, confirmed by hand-revert):
+`TestAllowExternalPrincipals_FalseAllowsSameAccountIAMPrincipal` (`resource_shares_test.go`) and
+two new subtests of `TestAssociateResourceShare_External` (`share_associations_test.go`):
+`iam_role_ARN_same_account_-_not_external` and `iam_user_ARN_same_account_-_not_external`. A
+third new subtest, `organization_ARN_same_account_segment_-_still_external`, guards against a
+naive fix that would also stop treating same-account-segment org/OU ARNs as external.
+
+Gates: `go build ./services/ram/...` clean; `go test -race -count=1 ./services/ram/...` passes;
+`golangci-lint run services/ram/... ./` reports `0 issues.`. No `cli.go` or other-service files
+touched, so the repo-wide blast-radius gates were not required.
+
+## gopherstack-9ojs (2026-09-07): status enums are async modelling gaps, not defects -- but AssociateResourceShare/CreateResourceShare accepted any string as a resourceArns entry with zero validation
+
+**Filed title-only, empty description.** Re-derived both claims.
+
+**Claim 1 -- `ResourceShareStatus` can never reach FAILED: confirmed unreachable, and it is a
+modelling gap, not a defect.** SDK enum (`ram@v1.39.4 types/enums.go:272-278`):
+`PENDING`/`ACTIVE`/`FAILED`/`DELETING`/`DELETED`. gopherstack (`store.go:11-14`) declares only
+two status consts, `statusActive = "ACTIVE"` and `statusDeleted = "DELETED"`; grep for every
+`rs.Status =` write site (`resource_shares.go:79` sets `statusActive` on create,
+`resource_shares.go:273` sets `statusDeleted` on delete) confirms these are the only two values
+ever written -- PENDING, FAILED and DELETING are all unreachable, not just FAILED. Both the Go
+SDK doc comment (`types/types.go:285-286`, "The current status of the resource share") and the
+botocore wire model (`ram/2018-01-04/service-2.json.gz`, `ResourceShare.status` ->
+`"<p>The current status of the resource share.</p>"`) are silent on what drives FAILED
+specifically; there is no richer botocore documentation string for this field the way there was
+for some other services' enums today. PENDING/DELETING are self-evidently async (a share
+mid-creation/mid-deletion) that a synchronous emulator has no window to observe. FAILED is the
+same shape: `CreateResourceShare`'s own declared error set already contains
+`MalformedArnException`/`UnknownResourceException`/`InvalidParameterException` for bad input
+(`botocore` `service-2.json.gz` operations.CreateResourceShare.errors), so a bad request is
+rejected synchronously by the API call itself -- it never gets far enough to become a share that
+exists in a FAILED state. Nothing about a client-callable path in this backend produces the kind
+of backend-side processing failure FAILED would represent.
+
+**Claim 2 -- `ResourceShareAssociationStatus` only ever produces ASSOCIATED/DISASSOCIATED:
+confirmed, also a modelling gap.** SDK enum (`enums.go:173-181`):
+`ASSOCIATING`/`ASSOCIATED`/`FAILED`/`DISASSOCIATING`/`DISASSOCIATED`/`SUSPENDED`/`SUSPENDING`/`RESTORING`.
+gopherstack (`store.go:15-18`) declares only `associationStatusAssociated`/
+`associationStatusDisassociated`; every `a.Status =` write site (`share_associations.go:160`
+sets Associated on reactivation, `:173` Associated on new association, `:226` Disassociated on
+disassociate; `resource_shares.go:266` Disassociated on share deletion;
+`share_invitations.go:91` Disassociated on invitation expiry/rejection) confirms no other value
+is ever written. This issue specifically called out that FAILED deserved a harder look, since a
+malformed/unshareable ARN is a genuinely client-observable condition -- unlike the amplify/
+networkmonitor/support/detective enum issues resolved earlier today, this one isn't obviously
+async-only on its face. But the SDK's own error model settles it: `AssociateResourceShare`'s
+declared errors (`deserializers.go:326-327`, `awsRestjson1_deserializeOpErrorAssociateResourceShare`)
+include `MalformedArnException` and `UnknownResourceException` as synchronous HTTP 400s, exactly
+mirroring `CreateResourceShare`. Real AWS does not surface "you gave me a bad ARN" via an
+async-FAILED association row -- it rejects the call outright. ASSOCIATING/DISASSOCIATING are
+transient async states; SUSPENDED/SUSPENDING/RESTORING are Organizations-service-control-policy
+suspension states this backend has no SCP/Organizations model to drive. FAILED has no remaining
+client-callable trigger once the synchronous-rejection path is accounted for. All eight values
+beyond the two written are correctly unreachable; none is a defect.
+
+**The adjacent defect this investigation did find: no ARN validation at all.**
+`AssociateResourceShare`'s and `CreateResourceShare`'s declared error sets both promise
+`MalformedArnException` for exactly the case gopherstack was silently accepting: neither
+`share_associations.go`'s `AssociateResourceShare` nor `resource_shares.go`'s
+`CreateResourceShare` checked `resourceArns` entries for ARN shape before writing an ASSOCIATED
+row for them -- `AssociateResourceShare(shareARN, nil, []string{"not-an-arn"})` associated the
+garbage string outright. This is exactly the "accepted-but-unvalidated field where the wire
+model declares a constraint" shape, independent of the enum question. Fixed by adding
+`isValidResourceARN`/`validateResourceARNs` (`resource_shares.go`, matching the existing
+`strings.HasPrefix(s, "arn:") && strings.Count(s, ":") >= 5` convention already used by
+`services/resourcegroups/handler_resources.go:24-27`) and calling it before any state mutation
+in both `CreateResourceShare` and `AssociateResourceShare` (same "validate everything before
+mutating" pattern the existing external-principal check already follows, to avoid orphaned
+partial state on rejection). New sentinel `ErrMalformedArn` maps to the real
+`MalformedArnException` code in `handler.go`'s `errCodeLookup`. Principal-string validation
+(service principal names, org/OU ARN shape, etc.) was left alone -- principals have a much wider
+legitimate non-ARN shape space (bare 12-digit account IDs, `service-id.amazonaws.com` names) and
+were out of scope for this pass; only `resourceArns`, which has no valid non-ARN form, was
+tightened.
+
+Regression tests (fail on unmodified code -- confirmed by running before the fix,
+`An error is expected but got nil` for both): `TestAssociateResourceShare_MalformedResourceArn`
+and `TestCreateResourceShare_MalformedResourceArn` (`error_codes_test.go`), driving a real ram
+SDK client and asserting `errors.As` against `ramtypes.MalformedArnException`, matching this
+file's existing error-code-test convention.
+
+No pre-existing test was modified.
+
+Gates: `go build ./services/ram/...` clean; `golangci-lint run ./services/ram/...` reports
+`0 issues.`; `go test -race ./services/ram/...` passes (all pre-existing tests plus the two new
+ones).
 
 ## Notes
 

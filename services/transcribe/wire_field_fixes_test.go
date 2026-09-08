@@ -162,6 +162,8 @@ func TestMedicalScribeSettings_ClinicalNoteGenerationSettings_RealClient(t *test
 			ClinicalNoteGenerationSettings: &sdktypes.ClinicalNoteGenerationSettings{
 				NoteTemplate: sdktypes.MedicalScribeNoteTemplateBirp,
 			},
+			ShowSpeakerLabels: aws.Bool(true),
+			MaxSpeakerLabels:  aws.Int32(2),
 		},
 	})
 	require.NoError(t, err)

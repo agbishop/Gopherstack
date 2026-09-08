@@ -280,13 +280,18 @@ func (b *InMemoryBackend) buildPublishedEvent(
 }
 
 // emitPublishedEvent broadcasts ev to the publish emitter (e.g. to SQS). It is
-// a no-op when no emitter has been registered.
+// a no-op when no emitter has been registered. b.emitter is captured under the
+// read lock since SetPublishEmitter mutates it under the write lock.
 func (b *InMemoryBackend) emitPublishedEvent(ev *events.SNSPublishedEvent) {
-	if b.emitter == nil {
+	b.mu.RLock("emitPublishedEvent")
+	emitter := b.emitter
+	b.mu.RUnlock()
+
+	if emitter == nil {
 		return
 	}
 
-	_ = b.emitter.Emit(b.svcCtx, ev)
+	_ = emitter.Emit(b.svcCtx, ev)
 }
 
 // Publish delivers a message to all subscriptions of topicArn. HTTP/HTTPS

@@ -2,6 +2,7 @@ package dynamodb_test
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -233,4 +234,48 @@ func TestDynamoDB_ScheduleReplicationPauseCleanup_MissingEntry_Continue(t *testi
 	// Call cleanup with a table that was never added to the map.
 	// Should hit the !ok continue branch without panicking.
 	db.ScheduleReplicationPauseCleanupForTest(ctx, []string{"never-added-table"}, time.Millisecond)
+}
+
+// TestDynamoDB_FISPauseReplication_BlocksCrossRegionWrite verifies that an
+// active aws:dynamodb:global-table-pause-replication fault stops item writes
+// from propagating to sibling regions of a global table -- mirroring
+// TestGlobalTable_CrossRegionWritePropagation in global_tables_test.go, but
+// with the fault active on the source table.
+func TestDynamoDB_FISPauseReplication_BlocksCrossRegionWrite(t *testing.T) {
+	t.Parallel()
+
+	backend := dynamodb.NewInMemoryDB()
+	handler := dynamodb.NewHandler(backend)
+
+	code, _ := invokeOp(t, handler, "CreateGlobalTable", map[string]any{
+		"GlobalTableName": "FISPausedTable",
+		"ReplicationGroup": []map[string]any{
+			{"RegionName": "us-east-1"},
+			{"RegionName": "eu-west-1"},
+		},
+	})
+	require.Equal(t, http.StatusOK, code)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	err := handler.ExecuteFISAction(ctx, service.FISActionExecution{
+		ActionID: "aws:dynamodb:global-table-pause-replication",
+		Targets:  []string{"FISPausedTable"},
+	})
+	require.NoError(t, err)
+	require.True(t, backend.IsReplicationPaused("FISPausedTable"))
+
+	putCode, _ := invokeOp(t, handler, "PutItem", map[string]any{
+		"TableName": "FISPausedTable",
+		"Item": map[string]any{
+			"pk":   map[string]any{"S": "item-1"},
+			"data": map[string]any{"S": "hello"},
+		},
+	})
+	require.Equal(t, http.StatusOK, putCode)
+
+	euTable, euOK := backend.GetTableInRegion("FISPausedTable", "eu-west-1")
+	require.True(t, euOK, "eu-west-1 table should exist")
+	assert.Empty(t, euTable.GetItems(), "write should not propagate while replication is paused")
 }

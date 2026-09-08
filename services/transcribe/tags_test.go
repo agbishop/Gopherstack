@@ -67,7 +67,10 @@ func TestCreationTags_SyncToResourceARN(t *testing.T) {
 					Media:                transcribe.Media{MediaFileURI: "s3://b/f"},
 					DataAccessRoleArn:    "arn:aws:iam::123456789012:role/Scribe",
 					OutputBucketName:     "scribe-out",
-					Tags:                 map[string]string{"team": "scribe"},
+					Settings: &transcribe.MedicalScribeSettings{
+						ShowSpeakerLabels: true, MaxSpeakerLabels: 2,
+					},
+					Tags: map[string]string{"team": "scribe"},
 				})
 
 				return err
@@ -136,7 +139,11 @@ func TestCreationTags_SyncToResourceARN(t *testing.T) {
 					ModelName:     "tagged-model",
 					BaseModelName: "WideBand",
 					LanguageCode:  "en-US",
-					Tags:          map[string]string{"team": "model"},
+					InputDataConfig: &transcribe.InputDataConfig{
+						S3Uri:             "s3://bucket/training/",
+						DataAccessRoleArn: "arn:aws:iam::123456789012:role/TranscribeRole",
+					},
+					Tags: map[string]string{"team": "model"},
 				})
 
 				return err
@@ -149,7 +156,10 @@ func TestCreationTags_SyncToResourceARN(t *testing.T) {
 				_, err := b.CreateCallAnalyticsCategory(&transcribe.CallAnalyticsCategory{
 					CategoryName: "tagged-category",
 					InputType:    "POST_CALL",
-					Tags:         map[string]string{"team": "category"},
+					Rules: []transcribe.CallAnalyticsRule{
+						{NonTalkTimeFilter: &transcribe.NonTalkTimeFilter{Threshold: 30000}},
+					},
+					Tags: map[string]string{"team": "category"},
 				})
 
 				return err

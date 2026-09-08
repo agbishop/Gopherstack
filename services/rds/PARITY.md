@@ -222,6 +222,8 @@ families:
   db_security_groups: {status: ok, note: "re-verified this pass (EC2-Classic legacy) — CreateDBSecurityGroupOutput/AuthorizeDBSecurityGroupIngressOutput/RevokeDBSecurityGroupIngressOutput all nest under <DBSecurityGroup> in the real SDK, matches gopherstack; no bug found, ledger's prior 'spot-checked only' caveat is now resolved to ok"}
   activity_streams: {status: ok, note: "de-deferred this pass: field-diffed Start/Stop/ModifyActivityStream against aws-sdk-go-v2's StartActivityStreamOutput/StopActivityStreamOutput/ModifyActivityStreamOutput. Start/Stop already matched (flat KinesisStreamName/KmsKeyId/Status/Mode/ApplyImmediately fields, correct — these ops were never affected by the shard-group/integration nesting bug class since their outputs were always flat in gopherstack). ModifyActivityStream had a real disguised-stub bug: it emitted an invented <AuditPolicy> element that does not exist on the real output (the real field is PolicyStatus, of type ActivityStreamPolicyStatus) and omitted the real KinesisStreamName/Mode members — FIXED, see Notes. Also fixed: cluster-not-found on all three ops returned InvalidParameterValue instead of the correct DBClusterNotFoundFault. Test coverage was previously zero for this family; added activity_stream_test.go (lifecycle, not-found, and backend-error-path tests)."}
 gaps:
+  - "FIXED 2026-09-07 (gopherstack-1cjz, closes a gap the gopherstack-uao2 entry below opened and flagged in its own text: PromoteReadReplicaDBCluster left the promoted cluster still claiming ReplicationSourceIdentifier and left its former source still listing it in ReadReplicaIdentifiers, since uao2 wired that linkage through Create/Delete but not Promote. Mirrors the instance-level PromoteReadReplica (db_instances.go), which already cleared both sides: promote now strips the promoted cluster's ID from its source's ReadReplicaIdentifiers (idEqual-compared against the canonical DBClusterIdentifier, matching Delete's own comparison) and clears the promoted cluster's own ReplicationSourceIdentifier. Guards for a source that no longer exists (uao2 established deleting a source orphans its replicas rather than refusing or cascading, so a promoted replica may have no live source -- promote must not error in that case, and does not). Regression coverage: TestPromoteReadReplicaDBCluster_ClearsLinkage (two replicas, positively asserts the survivor stays in the source's ReadReplicaIdentifiers while the promoted one is gone, avoiding the omitempty-hides-empty-either-way hollow-test trap uao2's own first delete-cascade test fell into) and TestPromoteReadReplicaDBCluster_OrphanedSource (db_clusters_operations_test.go) -- both confirmed to fail against unmodified code."
+  - "FIXED 2026-09-07 (gopherstack-uao2, the fix for the 2026-09-07 gopherstack-z1sd triage entry recorded below verbatim). DBCluster now carries ReplicationSourceIdentifier and ReadReplicaIdentifiers (models.go), CreateDBCluster parses ReplicationSourceIdentifier (via DBClusterOptions, mirroring how AvailabilityZones/BacktrackWindow are already create-only fields threaded through that shared options struct) and requires the named source cluster to already exist (DBClusterNotFoundFault otherwise -- CreateDBCluster's own deserializeOpError declares that fault, confirmed by grep), and both directions are now on the wire (ReplicationSourceIdentifier flat, ReadReplicaIdentifiers wrapped -- wire shape and element names confirmed against deserializers.go's awsAwsquery_deserializeDocumentDBCluster/awsAwsquery_deserializeDocumentReadReplicaIdentifierList, which differ from the instance-level ReadReplicaDBInstanceIdentifiers>ReadReplicaDBInstanceIdentifier wrapping -- clusters use ReadReplicaIdentifiers>ReadReplicaIdentifier instead). Mirrors db_instances.go's CreateDBInstanceReadReplica pattern exactly, including its delete-time behavior: deleting a replica cluster removes it from its source's ReadReplicaIdentifiers (DeleteDBClusterWithOptions); deleting a source cluster while replicas exist is NOT refused and does NOT cascade-clear the replicas' ReplicationSourceIdentifier -- they orphan, matching CreateDBInstanceReadReplica's own instance-level precedent exactly (no doc evidence for either a refusal or a cascade exists at either level, and this repo declines to invent either without it). Two things deliberately NOT touched this pass, scope-fenced to the linkage itself: (1) PromoteReadReplicaDBCluster (already existed pre-fix) does not clear ReplicationSourceIdentifier or remove the promoted cluster from its former source's ReadReplicaIdentifiers, unlike the instance-level PromoteReadReplica which does both -- so promoting a replica cluster now leaves stale/incorrect linkage data instead of the previously-inert no-op it was; flagged, not fixed, needs its own bd issue. (2) DBInstance's cluster-crossing fields (ReadReplicaSourceDBClusterIdentifier/ReadReplicaDBClusterIdentifiers, types.go:2308/2298, needed only when an instance's replication source/target is a cluster rather than another instance) remain unmodeled -- out of scope for this pass, which was cluster-to-cluster linkage only. The docdb twin of this exact gap (services/docdb/PARITY.md) was left unfixed on purpose -- a separate service, separate bd issue territory, not touched here. Regression coverage: TestRDSHandler_FormActions_Clusters/CreateDBCluster_ReplicationSourceIdentifier(_NotFound), .../DescribeDBClusters_ReadReplicaIdentifiers, .../DeleteDBCluster_ReplicaRemovedFromSourceReadReplicaIdentifiers, .../DeleteDBCluster_SourceDeletionOrphansReplica (form_actions_cluster_test.go) -- all four confirmed to fail against the pre-fix source. Prior OPEN entry, kept verbatim for history: 'OPEN 2026-09-07 (gopherstack-z1sd triage): DBCluster has no ReplicationSourceIdentifier or ReadReplicaIdentifiers field at all (real SDK: aws-sdk-go-v2/service/rds@v1.124.1 types/types.go:1123 DBCluster.ReplicationSourceIdentifier *string \"The identifier of the source DB cluster if this DB cluster is a read replica\"; types.go:1107 DBCluster.ReadReplicaIdentifiers []string [corrected from the triage note's :1103 -- re-verified this pass]), and CreateDBClusterInput never parses the real ReplicationSourceIdentifier form field (api_op_CreateDBCluster.go:812) -- grepped handler_db_clusters.go's handleCreateDBCluster, no such vals.Get call exists. So an Aurora cluster that is itself a cross-region/binlog read replica of another Aurora cluster (the CreateDBCluster ReplicationSourceIdentifier path) is entirely unmodeled at the cluster level -- only instance-to-instance replication is (see the read_replicas: family note below, and CreateDBInstanceReadReplica/PromoteReadReplica). DBInstance is also missing the cluster-crossing fields ReadReplicaSourceDBClusterIdentifier/ReadReplicaDBClusterIdentifiers (types.go:2308/2298, needed when a DB instance's replication source or target is a cluster rather than another instance). This is the identical gap already disclosed for the docdb service (services/docdb/PARITY.md gaps: \"ReadReplicaIdentifiers is declared on the DBCluster model ... but CreateDBCluster has no ReplicationSourceIdentifier/create-as-replica code path at all ... dead scaffolding for an unbuilt feature\") -- rds has the identical situation but had not previously disclosed it. Fix is local to this service and has a working precedent to mirror: db_instances.go's CreateDBInstanceReadReplica already threads ReplicaSourceDBInstanceIdentifier/ReadReplicaIdentifiers bidirectionally between two DBInstance records; the same pattern (add the fields, parse ReplicationSourceIdentifier in handleCreateDBCluster, link source<->replica DBCluster records) would close this at the cluster level. Not attempted this pass (triage only, no .go writes).'"
   - "NEW since v1.123.0 (found by gopherstack-u8my's pin-correction pass, not fixed): DBInstance/DBInstanceAutomatedBackup gained StorageOperationPercentProgress/StorageOperationStatus (Initializing/Optimizing progress reporting for an in-progress storage scaling op). Not modeled -- but the real fields only appear at all while a storage operation is actively in progress, and this backend applies storage modifications synchronously (no async storage-scaling state machine exists), so there is never a real in-progress state to report; same structural category as other transient-progress fields this file already treats as correctly omittable rather than a stub. (needs bd issue if a future pass wants a cosmetic 'briefly show Optimizing' simulation)"
   - GetPerformanceInsightsMetrics does not correspond to a real operation name/shape on
     either the RDS SDK client or the Performance Insights ("pi") SDK client (real op:
@@ -1051,3 +1053,307 @@ Gates: `go build ./services/rds/...`, `go vet ./...` (repo-wide, clean),
 `go test -race -count=1 ./services/rds/...` (pass), `golangci-lint run
 ./services/rds/...` (0 issues). No `nolint` directives in either file
 touched this pass (handler_reference_data.go, wire_field_fixes_test.go).
+
+## errtargetaudit class A sweep (2026-09-07, gopherstack-33jc)
+
+`cmd/errtargetaudit` flagged 12 class-A findings (an emitted error code not
+in the op's SDK-declared set), all "sentinel reference" mechanism -- a
+handler/backend line returning a shared error sentinel whose mapped wire
+code isn't in that op's declared set. Verified each against
+`aws-sdk-go-v2/service/rds@v1.124.1/deserializers.go`'s
+`awsAwsquery_deserializeOpError<Op>` functions (`awk
+"/deserializeOpError<Op>\(/,/^}/" deserializers.go | grep -oE
+'"[A-Za-z0-9]+"'`; the digit in the class matters, though no rds op's
+declared set happened to contain a digit). No adjustment to the extraction
+pattern was needed for this query/XML-protocol service -- the same
+per-op-function-name/quoted-literal shape used for other protocols held
+here too.
+
+**Error-response shape** (confirmed in `handler_dispatch.go`'s
+`writeError`/`rdsErrorResponse`, matching `TestRDSErrorCodes_FaultSuffix`'s
+comment and `awsxml.GetErrorResponseComponents(errorBody, false)` in the SDK):
+every RDS error is HTTP 400 with body
+`<ErrorResponse><Error><Code>...</Code><Message>...</Message><Type>Sender</Type></Error></ErrorResponse>`.
+A separate translation layer, `rdsErrorCode()` in handler_dispatch.go, maps
+each Go sentinel error to its wire `<Code>` string (independent of the
+sentinel's own `awserr.New` msg argument) -- the actual bug surface, since a
+call site can reference the *wrong* sentinel while that sentinel's own
+mapping entry is itself correct for the ops that do use it correctly.
+
+**Verdict table** (12 findings -> 5 root causes):
+
+| Op | Emitted code | Verdict | Root cause | Fix |
+|---|---|---|---|---|
+| ApplyPendingMaintenanceAction | DBInstanceNotFound | CONFIRMED | RC1 | ErrInstanceNotFound -> new ErrResourceNotFound |
+| EnableHttpEndpoint (Handler) | DBClusterNotFoundFault | CONFIRMED | RC2 | ErrClusterNotFound -> ErrResourceNotFound |
+| EnableHttpEndpoint (InMemoryBackend) | DBClusterNotFoundFault | CONFIRMED | RC2 | same line as above |
+| DisableHttpEndpoint (Handler) | DBClusterNotFoundFault | CONFIRMED | RC2 | ErrClusterNotFound -> ErrResourceNotFound |
+| DisableHttpEndpoint (InMemoryBackend) | DBClusterNotFoundFault | CONFIRMED | RC2 | same line as above |
+| ModifyActivityStream | DBClusterNotFoundFault | CONFIRMED, NOT FIXED | RC2-adjacent | declared set is {DBInstanceNotFound, InvalidDBInstanceState, ResourceNotFoundFault} -- two plausible replacements, ambiguous, left for filing |
+| DeleteCustomDBEngineVersion | DBInstanceNotFound | CONFIRMED | RC3 | ErrInstanceNotFound -> new ErrCustomDBEngineVersionNotFound |
+| ModifyCustomDBEngineVersion | DBInstanceNotFound | CONFIRMED | RC3 | ErrInstanceNotFound -> new ErrCustomDBEngineVersionNotFound |
+| CreateCustomDBEngineVersion | DBInstanceAlreadyExists | CONFIRMED | RC3 | ErrInstanceAlreadyExists -> new ErrCustomDBEngineVersionAlreadyExists |
+| DescribeDBClusterSnapshotAttributes | DBSnapshotNotFound | CONFIRMED | RC4 | ErrSnapshotNotFound -> ErrClusterSnapshotNotFound |
+| ModifyDBClusterSnapshotAttribute | DBSnapshotNotFound | CONFIRMED | RC4 | ErrSnapshotNotFound -> ErrClusterSnapshotNotFound |
+| DescribeDBClusterEndpoints | DBClusterEndpointNotFoundFault | CONFIRMED | RC5 | declared set is {DBClusterNotFoundFault} only -- DBClusterEndpointIdentifier is a filter param per the real SDK input doc, not an existence check; removed the not-found branch entirely, made it filter like DBClusterIdentifier |
+
+11 of 12 fixed; 1 (ModifyActivityStream) confirmed but left, described
+above and in-line, for filing as its own issue -- two declared codes both
+plausibly fit and disambiguating needs a real-AWS behavioral test this
+session didn't have access to run.
+
+**Root causes**:
+- RC1: ApplyPendingMaintenanceAction's ARN can name an instance or a
+  cluster; its declared set has no resource-type-specific code, only the
+  generic ResourceNotFoundFault (new sentinel, `errors.go`).
+- RC2: EnableHttpEndpoint/DisableHttpEndpoint's ResourceArn is likewise
+  generic; declared set is {InvalidResourceStateFault, ResourceNotFoundFault}
+  -- no DBClusterNotFoundFault at all, despite the sibling
+  StartActivityStream/StopActivityStream ops legitimately declaring it.
+  Reused the same new ErrResourceNotFound sentinel as RC1.
+- RC3: CreateCustomDBEngineVersion's not-found and already-exists sentinels
+  were copy-pasted from the DB-instance sentinels (ErrInstanceNotFound/
+  ErrInstanceAlreadyExists) instead of engine-version-specific ones; no
+  CustomDBEngineVersion*Fault sentinels previously existed. Added both.
+- RC4: DescribeDBClusterSnapshotAttributes/ModifyDBClusterSnapshotAttribute
+  used ErrSnapshotNotFound (DBSnapshotNotFound, correct for the sibling
+  *instance*-snapshot ops DescribeDBSnapshotAttributes/
+  ModifyDBSnapshotAttribute) instead of the already-existing
+  ErrClusterSnapshotNotFound (DBClusterSnapshotNotFoundFault) -- an
+  instance/cluster sentinel mixup, same shape as RC3.
+- RC5: DescribeDBClusterEndpoints treated its optional
+  DBClusterEndpointIdentifier as a must-exist lookup key instead of a
+  filter; real AWS's declared error set for the op has no endpoint-specific
+  not-found code at all (confirmed against
+  `api_op_DescribeDBClusterEndpoints.go`'s doc comment: "The identifier of
+  the endpoint to describe," no not-found language, unlike
+  DeleteDBClusterEndpoint/ModifyDBClusterEndpoint, which correctly declare
+  and correctly emit DBClusterEndpointNotFoundFault for their own mandatory
+  identifiers).
+
+**Gap noted, not fixed** (out of this audit's scope -- a missing declared
+code, not a class-A wrong-emitted-code finding): DescribeDBClusterEndpoints
+never validates that a non-empty DBClusterIdentifier filter names a real
+cluster, so it silently returns an empty list instead of the
+DBClusterNotFoundFault real AWS declares for that case. Left as a lead for
+the next pass.
+
+Fixed the same day as a follow-up, see "DescribeDBClusterEndpoints
+DBClusterIdentifier not-found fix" below (gopherstack-l20u) -- the mirror
+image of RC5 above, in the same function.
+
+**Shared-helper check**: grepped `services/docdb` and `services/neptune` for
+any import of `github.com/blackbirdworks/gopherstack/services/rds` --
+zero hits. Both packages have their own independent
+ApplyPendingMaintenanceAction/pending-maintenance implementations (own
+files, own InMemoryBackend); neither imports or calls into rds's package.
+No shared-helper risk for any of the 5 fixed sites.
+
+**Files changed**: `errors.go` (3 new sentinels: ErrResourceNotFound,
+ErrCustomDBEngineVersionNotFound, ErrCustomDBEngineVersionAlreadyExists),
+`handler_dispatch.go` (3 new `rdsErrorCode()` mapping entries),
+`maintenance.go`, `engine_versions.go`, `cluster_snapshots.go`,
+`data_api.go`, `cluster_endpoints.go` (behavioral fix, not just a sentinel
+swap -- see RC5).
+
+**Pre-existing tests corrected** (each was pinning the wrong code -- passed
+against the unfixed handler, so each is hollow proof until now):
+- `maintenance_test.go` `TestRDSBackend_ApplyPendingMaintenanceAction/resource_not_found`:
+  `wantErrIs: rds.ErrInstanceNotFound` -> `rds.ErrResourceNotFound`.
+- `data_api_test.go` `TestEnableDisableHttpEndpoint/not_found_enable`:
+  `wantErrIs: rds.ErrClusterNotFound` -> `rds.ErrResourceNotFound`.
+- `cluster_snapshots_test.go` `TestDescribeDBClusterSnapshotAttributes/not_found`
+  and `TestModifyDBClusterSnapshotAttribute/not_found`: both
+  `wantErrIs: rds.ErrSnapshotNotFound` -> `rds.ErrClusterSnapshotNotFound`.
+- `form_actions_cluster_test.go` "DescribeDBClusterEndpoints_NotFound":
+  renamed `..._NoMatch`, `wantCode` 400+"DBClusterEndpointNotFound" ->
+  200 OK + `wantNotContains: "DBClusterEndpointNotFound"` (RC5's behavior
+  change, not just a code swap).
+- `cluster_endpoints_test.go` `TestDeleteDBCluster_CascadeDeletesClusterEndpoints`:
+  post-delete assertions on the two leaked endpoints changed from
+  `require.ErrorIs(t, err, rds.ErrClusterEndpointNotFound)` to
+  `require.NoError` + `assert.Empty`, matching RC5.
+- `dispatch_test.go` `TestRDSHandler_NewOperations2/ApplyPendingMaintenanceAction_not_found`:
+  `wantContains: "DBInstanceNotFound"` -> `"ResourceNotFoundFault"`.
+
+6 pre-existing tests corrected across 5 files. New coverage:
+`error_codes_test.go`'s new `TestRDSErrorCodes_ClassASweep` (8 subtests, one
+per fixed call site except the merged Enable/Disable-by-domain pair, each
+asserting the correct wire `<Code>` present AND the old wrong code absent).
+Legitimate uses of the sentinels these fixes stopped misusing are already
+covered by pre-existing, unmodified tests and were re-verified to still
+pass: `DBInstanceNotFound` by `DownloadDBLogFilePortion_NotFound` and
+`DescribeValidDBInstanceModifications_NotFound`
+(form_actions_cluster_test.go); `DBClusterNotFoundFault` by "DeleteDBCluster
+not found" (error_codes_test.go); `DBInstanceAlreadyExists` by
+`CreateDBInstance_Duplicate` (form_actions_test.go); `DBSnapshotNotFound` by
+`TestDescribeDBSnapshotAttributes/not_found` (db_snapshots_test.go);
+`DBClusterEndpointNotFoundFault` by `DeleteDBClusterEndpoint_NotFound`
+(form_actions_cluster_test.go).
+
+**Neuter pass**: each of the 8 changed lines/blocks (RC1 x1, RC2 x2, RC3
+x3, RC4 x2, RC5 x1 behavioral) was individually reverted, confirmed to
+still `go build`, confirmed to fail exactly the expected test(s)
+(`TestRDSErrorCodes_ClassASweep` subtests plus
+`TestRDSBackend_ApplyPendingMaintenanceAction`,
+`TestEnableDisableHttpEndpoint`,
+`TestDeleteDBCluster_CascadeDeletesClusterEndpoints`,
+`TestRDSHandler_FormActions_Clusters/DescribeDBClusterEndpoints_NoMatch`,
+`TestRDSHandler_NewOperations2/ApplyPendingMaintenanceAction_not_found`),
+then restored. Final `git diff --stat` on the 7 non-test source files
+matched the intended fix exactly, confirming no stray change survived the
+revert/restore cycles.
+
+**No persisted struct fields were added** -- all changes are to error
+sentinels and one filter-vs-lookup behavior change, so the
+`pkgs/persistence` guard does not apply this pass.
+
+Gates: `go build ./services/rds/...` (clean), `go vet ./services/rds/...`
+(clean), `go test -race -count=1 ./services/rds/...` (pass, 0 failures),
+`golangci-lint run services/rds/...` (0 issues).
+`cmd/errtargetaudit` rds class-A findings: 12 -> 1.
+
+## DescribeDBClusterEndpoints DBClusterIdentifier not-found fix (2026-09-07, gopherstack-l20u)
+
+Follow-up to RC5 above (gopherstack-33jc), same function, opposite param.
+33jc fixed the case where `DBClusterEndpointIdentifier` was wrongly treated
+as a must-exist key (it's a filter; declared set has no endpoint-specific
+not-found code). This pass fixes the mirror-image gap `errtargetaudit`
+can't see, because it's a *missing* check, not a wrong emitted code:
+`DBClusterIdentifier` is the op's one declared error,
+`DBClusterNotFoundFault` (confirmed: `awk
+"/deserializeOpErrorDescribeDBClusterEndpoints\(/,/^}/"
+aws-sdk-go-v2/service/rds@v1.124.1/deserializers.go | grep -oE
+'"[A-Za-z0-9]+"'` returns only `DescribeDBClusterEndpointsResult`,
+`UnknownError`, and `DBClusterNotFoundFault`), and a supplied-but-unknown
+cluster was silently returning an empty list instead.
+
+Both `DBClusterIdentifier` and `DBClusterEndpointIdentifier` are optional
+pointer fields on `DescribeDBClusterEndpointsInput` (confirmed against
+`api_op_DescribeDBClusterEndpoints.go`) -- so omitting `DBClusterIdentifier`
+must still list all endpoints; only a non-empty, unmatched value should
+fault. In-service control: `DescribeDBClusters`/`DescribeDBInstances`
+already follow exactly this shape -- non-empty id not found -> the op's
+not-found sentinel; empty id -> list all
+(db_clusters.go:109-121, db_instances.go:352-372).
+
+**Fix**: `InMemoryBackend.DescribeDBClusterEndpoints` (cluster_endpoints.go)
+now checks, when `clusterID != ""`, that the cluster exists before
+filtering, returning `ErrClusterNotFound` (wire: `DBClusterNotFoundFault`,
+already mapped in `handler_dispatch.go`'s `rdsErrorCode()` table -- no new
+sentinel or mapping entry needed) otherwise. The endpoint-filter loop below
+is unchanged.
+
+**Pre-existing test corrected** (was pinning the bug):
+`cluster_endpoints_test.go`'s `TestDeleteDBCluster_CascadeDeletesClusterEndpoints`
+asserted, for the deleted (now-unknown) `"leak-cluster"` identifier itself:
+```go
+after, err := b.DescribeDBClusterEndpoints("leak-cluster", "")
+require.NoError(t, err)
+assert.Empty(t, after)
+```
+changed to:
+```go
+_, err = b.DescribeDBClusterEndpoints("leak-cluster", "")
+require.ErrorIs(t, err, rds.ErrClusterNotFound)
+```
+(The two endpoint-identifier-filter assertions in the same test, `got1`/
+`got2`, are unaffected -- that's the 33jc half, still correctly empty.)
+
+**New coverage**: `TestDescribeDBClusterEndpoints_IdentifierVsFilter`
+(cluster_endpoints_test.go), driven through the HTTP handler and asserting
+the wire `<Code>`, pins both halves in one place plus the non-broad-guard
+case: unknown `DBClusterIdentifier` -> `DBClusterNotFoundFault` (400);
+unknown `DBClusterEndpointIdentifier` -> 200 empty; valid cluster + valid
+endpoint filter -> 200 with the endpoint present.
+
+**Neuter pass**: commented out the new existence check (the 5-line `if
+clusterID != ""` block in cluster_endpoints.go); confirmed `go build
+./services/rds/...` still succeeded; confirmed exactly the expected two
+failures --
+`TestDeleteDBCluster_CascadeDeletesClusterEndpoints` (cluster_endpoints_test.go:56)
+and
+`TestDescribeDBClusterEndpoints_IdentifierVsFilter/unknown_cluster_identifier_faults`
+(cluster_endpoints_test.go:108, HTTP 200 instead of 400) -- then restored
+and reran the full package, 0 failures.
+
+**No persisted struct fields added** -- `pkgs/persistence` guard not
+applicable.
+
+`cmd/errtargetaudit` rds class-A findings: unchanged at 1 (this was a
+missing-check gap, not a wrong-emitted-code finding, so the tool doesn't
+and didn't flag it either before or after).
+
+Gates: `go test -race -count=1 ./services/rds/...` (pass, 0 failures),
+`golangci-lint run services/rds/...` (0 issues).
+
+## ModifyActivityStream not-found code fix (2026-09-07, gopherstack-fm1e)
+
+Follow-up to the 33jc verdict table above, which left this one confirmed
+but unfixed: `ModifyActivityStream` emitted `DBClusterNotFoundFault`, not
+in its declared set `{DBInstanceNotFound, InvalidDBInstanceState,
+ResourceNotFoundFault}` (re-confirmed via `awk
+"/deserializeOpErrorModifyActivityStream\(/,/^}/"
+aws-sdk-go-v2/service/rds@v1.124.1/deserializers.go | grep -oE
+'"[A-Za-z0-9]+"'`). Two declared codes plausibly fit by name
+(`DBInstanceNotFound`, `ResourceNotFoundFault`); the issue asked to pick
+deliberately by checking what real AWS resolves and what this backend
+looks up, not by analogy to the sibling fix (`ApplyPendingMaintenanceAction`
+-> `ResourceNotFoundFault`).
+
+**What real AWS does**: unlike `Start`/`StopActivityStream` (Aurora
+cluster-scoped, ARN doc "the DB cluster", and their own declared sets
+include `DBClusterNotFoundFault`), `ModifyActivityStream`'s own doc
+comment reads "This operation is supported for RDS for Oracle and
+Microsoft SQL Server" and its `ResourceArn` field doc reads "The Amazon
+Resource Name (ARN) of the RDS for Oracle or Microsoft SQL Server DB
+instance" (`api_op_ModifyActivityStream.go`) -- confirmed by the absence
+of `DBClusterNotFoundFault` from its declared set entirely, unlike
+`StartActivityStream`'s (which declares both `DBClusterNotFoundFault` and
+`DBInstanceNotFound`, since it's genuinely dual-scoped). So real
+`ModifyActivityStream` never receives a cluster ARN; the identifier is
+always a DB instance identifier by contract, not ambiguous the way
+`ApplyPendingMaintenanceAction`'s ARN genuinely is.
+
+**What gopherstack looks up**: `InMemoryBackend.ModifyActivityStream`
+(activity_stream.go) resolves the ARN's trailing segment
+(`arnToClusterID`, shared verbatim with Start/Stop) against `b.clusters`
+only -- it has no DB-instance-scoped activity-stream modeling at all, an
+implementation-storage detail shared with Start/Stop rather than a
+faithful model of the real op's instance-only scope. That gap is
+unfixed here (out of scope: a modeling gap, not a wrong-emitted-code
+finding) and not previously disclosed; noted for a future pass.
+
+**Fix**: the not-found branch now returns `ErrInstanceNotFound` (wire
+`DBInstanceNotFound`, already mapped in `handler_dispatch.go`'s
+`rdsErrorCode()` table -- no new sentinel needed), justified by
+`DBInstanceNotFoundFault`'s own doc comment, "DBInstanceIdentifier
+doesn't refer to an existing DB instance" (`types/errors.go`), a
+word-for-word fit for "the identifier this instance-scoped op received
+does not resolve." `ResourceNotFoundFault` (generic, "The specified
+resource ID was not found") was rejected as the wrong choice here
+specifically because the op is *not* ambiguous the way
+`ApplyPendingMaintenanceAction`'s is -- a more specific declared code
+with matching doc text is available. Single call site
+(`handler_activity_stream.go`'s `handleModifyActivityStream` is the only
+caller of `Backend.ModifyActivityStream`); Start/Stop untouched, both
+still correctly cluster-scoped.
+
+**Pre-existing test corrected** (was pinning the wrong behavior):
+`activity_stream_test.go`'s `TestActivityStream_ClusterNotFound` asserted
+`DBClusterNotFound` for all three of Start/Stop/Modify against a missing
+cluster ARN. Split into a per-case table asserting `DBClusterNotFound` for
+Start/Stop (unchanged, still correct) and `DBInstanceNotFound` (absence of
+`DBClusterNotFound`) for Modify. Pre-fix run of the Modify subtest failed:
+```
+activity_stream_test.go:171: ... does not contain "DBInstanceNotFound"
+activity_stream_test.go:173: ... should not contain "DBClusterNotFound"
+```
+confirming the emitted code was `DBClusterNotFoundFault` before the fix.
+
+**No persisted struct fields added.**
+
+`cmd/errtargetaudit` rds class-A findings: 1 -> 0.
+
+Gates: `go test -race -count=1 ./services/rds/...` (pass, 0 failures),
+`golangci-lint run ./services/rds/...` (0 issues).

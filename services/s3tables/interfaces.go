@@ -59,7 +59,7 @@ type StorageBackend interface {
 	GetTable(tableBucketARN string, namespace []string, name string) (*Table, error)
 	GetTableByARN(tableArn string) (*Table, error)
 	GetTableEncryption(tableBucketARN string, namespace []string, name string) (map[string]any, error)
-	DeleteTable(tableBucketARN string, namespace []string, name string) error
+	DeleteTable(tableBucketARN string, namespace []string, name, versionToken string) error
 	ListTables(tableBucketARN, namespace string, p ListTablesParams) (page.Page[*Table], error)
 	RenameTable(tableBucketARN string, namespace []string, name, newNamespace, newName, versionToken string) error
 	UpdateTableMetadataLocation(

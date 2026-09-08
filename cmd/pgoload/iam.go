@@ -36,8 +36,7 @@ func ensureIAMRole(ctx context.Context, cl *iam.Client, log *slog.Logger) (strin
 		return aws.ToString(out.Role.Arn), nil
 	}
 
-	var exists *iamtypes.EntityAlreadyExistsException
-	if !errors.As(err, &exists) {
+	if _, ok := errors.AsType[*iamtypes.EntityAlreadyExistsException](err); !ok {
 		return "", fmt.Errorf("create role %s: %w", iamRoleName, err)
 	}
 
@@ -76,8 +75,7 @@ func iamCreateUserOp(ctx context.Context, cl *iam.Client, workerID, i int) error
 		return nil
 	}
 
-	var exists *iamtypes.EntityAlreadyExistsException
-	if errors.As(err, &exists) {
+	if _, ok := errors.AsType[*iamtypes.EntityAlreadyExistsException](err); ok {
 		return nil
 	}
 
@@ -118,8 +116,7 @@ func iamDeleteUserOp(ctx context.Context, cl *iam.Client, workerID, i int) error
 		return nil
 	}
 
-	var notFound *iamtypes.NoSuchEntityException
-	if errors.As(err, &notFound) {
+	if _, ok := errors.AsType[*iamtypes.NoSuchEntityException](err); ok {
 		return nil
 	}
 

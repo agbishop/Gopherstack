@@ -93,7 +93,9 @@ func (b *InMemoryBackend) ListMulticastGroups(accountID, region string) []*Multi
 
 // DeleteMulticastGroup deletes a multicast group by ID, cascading the
 // cleanup to its wireless-device association set so no ghost entry survives
-// the group's deletion.
+// the group's deletion. Real AWS refuses this while the group is in use by
+// a FUOTA task (api_op_DeleteMulticastGroup.go: "Deletes a multicast group
+// if it is not in use by a FUOTA task").
 func (b *InMemoryBackend) DeleteMulticastGroup(accountID, region, id string) error {
 	b.mu.Lock("DeleteMulticastGroup")
 	defer b.mu.Unlock()
@@ -105,13 +107,14 @@ func (b *InMemoryBackend) DeleteMulticastGroup(accountID, region, id string) err
 		return ErrMulticastGroupNotFound
 	}
 
-	delete(b.resourceTags, mg.ARN)
-	delete(b.multicastGroupDevices, id)
-
 	for _, members := range b.fuotaTaskMulticast {
-		delete(members, id)
+		if members[id] {
+			return ErrMulticastGroupInUse
+		}
 	}
 
+	delete(b.resourceTags, mg.ARN)
+	delete(b.multicastGroupDevices, id)
 	b.multicastGroups.Delete(key)
 
 	return nil

@@ -84,7 +84,7 @@ func (s *stubBackend) DescribeRepositories(_ context.Context, names []string) ([
 	return out, nil
 }
 
-func (s *stubBackend) DeleteRepository(_ context.Context, name string) (*ecr.Repository, error) {
+func (s *stubBackend) DeleteRepository(_ context.Context, name string, _ bool) (*ecr.Repository, error) {
 	r, ok := s.repos[name]
 	if !ok {
 		return nil, ecr.ErrRepositoryNotFound

@@ -118,6 +118,38 @@ func TestLayer(t *testing.T) {
 				assert.Empty(t, resp["Layers"].([]any))
 			},
 		},
+		{
+			// api_op_DeleteLayer.go: "You must first stop and then delete
+			// all associated instances or unassign registered instances."
+			name:      "DeleteLayer with an associated instance returns ValidationException",
+			operation: "DeleteLayer",
+			check: func(t *testing.T, h *opsworks.Handler, stackID string) {
+				t.Helper()
+				rec := doTarget(t, h, "CreateLayer", map[string]any{
+					"StackId":   stackID,
+					"Type":      "custom",
+					"Name":      "occupied",
+					"Shortname": "oc",
+				})
+				require.Equal(t, http.StatusOK, rec.Code)
+				layerID := parseJSON(t, rec.Body.Bytes())["LayerId"].(string)
+
+				rec = doTarget(t, h, "CreateInstance", map[string]any{
+					"StackId":      stackID,
+					"LayerIds":     []string{layerID},
+					"InstanceType": "t2.micro",
+				})
+				require.Equal(t, http.StatusOK, rec.Code)
+
+				rec = doTarget(t, h, "DeleteLayer", map[string]any{"LayerId": layerID})
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+
+				rec = doTarget(t, h, "DescribeLayers", map[string]any{"StackId": stackID})
+				resp := parseJSON(t, rec.Body.Bytes())
+				assert.Len(t, resp["Layers"].([]any), 1)
+			},
+		},
 	}
 
 	for _, tt := range tests {

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/blackbirdworks/gopherstack/pkgs/config"
 	"github.com/blackbirdworks/gopherstack/services/dms"
 )
 
@@ -351,6 +352,65 @@ func TestDescribeSchemas(t *testing.T) {
 	require.True(t, ok)
 	assert.NotEmpty(t, schemas, "postgres endpoint should have schemas after refresh")
 	assert.Contains(t, schemas, "public")
+}
+
+// TestDescribeSchemas_UnknownEndpoint covers gopherstack-m9uv: DescribeSchemas
+// consulted only the endpointSchemas side map, never b.endpointsByARN, so an
+// unknown or mistyped ARN returned 200+[] instead of ResourceNotFoundFault.
+func TestDescribeSchemas_UnknownEndpoint(t *testing.T) {
+	t.Parallel()
+
+	h := newTestDMSHandler()
+
+	rec := doDMS(t, h, "DescribeSchemas", map[string]any{
+		"EndpointArn": "arn:aws:dms:us-east-1:123456789012:endpoint:does-not-exist",
+	})
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, "ResourceNotFoundFault", parseJSON(t, rec)["__type"])
+}
+
+// TestDeleteEndpoint_ClearsSchemas verifies that DeleteEndpoint removes the
+// deleted endpoint's entry from the backend's endpointSchemas side map (keyed
+// by EndpointArn) -- guarding commit 6806b0f10's ghost-row fix directly via
+// HasEndpointSchemas, independent of DescribeSchemas' own behavior -- and
+// that DescribeSchemas now checks the live endpoint table (gopherstack-m9uv)
+// -- so a deleted endpoint's ARN gets ResourceNotFoundFault rather than a
+// stale 200+[] from the orphaned side-map entry.
+func TestDeleteEndpoint_ClearsSchemas(t *testing.T) {
+	t.Parallel()
+
+	backend := dms.NewInMemoryBackend("123456789012", config.DefaultRegion)
+	h := dms.NewHandler(backend)
+
+	rec := doDMS(t, h, "CreateEndpoint", map[string]any{
+		"EndpointIdentifier": "pg-src",
+		"EndpointType":       "source",
+		"EngineName":         "postgres",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	epARN := parseJSON(t, rec)["Endpoint"].(map[string]any)["EndpointArn"].(string)
+
+	rec = doDMS(t, h, "RefreshSchemas", map[string]any{
+		"EndpointArn":            epARN,
+		"ReplicationInstanceArn": "arn:fake",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doDMS(t, h, "DescribeSchemas", map[string]any{"EndpointArn": epARN})
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotEmpty(t, parseJSON(t, rec)["Schemas"])
+	require.True(t, backend.HasEndpointSchemas(config.DefaultRegion, epARN))
+
+	rec = doDMS(t, h, "DeleteEndpoint", map[string]any{"EndpointArn": epARN})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	assert.False(t, backend.HasEndpointSchemas(config.DefaultRegion, epARN),
+		"DeleteEndpoint must clear the schema entry for the deleted endpoint's ARN")
+
+	rec = doDMS(t, h, "DescribeSchemas", map[string]any{"EndpointArn": epARN})
+	require.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, "ResourceNotFoundFault", parseJSON(t, rec)["__type"],
+		"DescribeSchemas on a deleted endpoint's ARN must 404, not serve a stale schema list")
 }
 
 // TestRefreshSchemas_ReplicationInstanceArnRequired covers gopherstack-4shm's

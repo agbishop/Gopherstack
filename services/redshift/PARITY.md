@@ -53,12 +53,12 @@ families:
   ClusterParameterGroup: {status: ok, note: "no changes needed. CHECKED 2026-08-30 (wire-key-read sweep): DescribeClusterParameterGroupsInput.TagKeys/TagValues are declared and unread, but ClusterParameterGroup (param_groups.go) has no Tags field at all -- this backend never models tags on parameter groups (unlike UsageLimit/HsmClientCertificate/HsmConfiguration, fixed this pass). Left unread deliberately: implementing the filter would have nothing real to filter against, and DescribeTags itself already documents (see its own handler comment) that only cluster resources are tag-tracked here. Not re-flagged as a gap since it's the same documented single-resource-type-tagging limitation, just newly confirmed against this specific op."}
   ClusterSubnetGroup: {status: ok, note: "FIXED 2026-08-08 (bd gopherstack-emho): CreateClusterSubnetGroup previously accepted a fabricated 'VpcId' request param not present in the real CreateClusterSubnetGroupInput (confirmed against awsAwsquery_serializeOpDocumentCreateClusterSubnetGroupInput in aws-sdk-go-v2/service/redshift@v1.65.4/serializers.go -- real fields are only ClusterSubnetGroupName/Description/SubnetIds/Tags). Handler no longer reads it. The response's VpcId field IS real on ClusterSubnetGroup (types.ClusterSubnetGroup.VpcId), normally derived by AWS from the subnets' own VPC, but this backend has no EC2 cross-reference to derive it from (Provider.Init does not wire an EC2 backend into Redshift, and Subnet only tracks SubnetIdentifier/SubnetStatus, no VPC linkage) -- left honestly empty rather than fabricated, matching the EndpointAccess precedent below. AddSubnetGroupInternal (test-seeding only, not wire-reachable) can still set it directly. CHECKED 2026-08-30 (wire-key-read sweep): DescribeClusterSubnetGroupsInput.TagKeys/TagValues are also declared and unread, same missing-Tags-field situation as ClusterParameterGroup above -- left unread for the same reason."}
   ClusterSecurityGroup: {status: ok, note: "FIXED 2026-08-23 (third pass, closing the prior continued pass's follow-up): RevokeClusterSecurityGroupIngress now returns AuthorizationNotFound when nothing matched the given CIDRIP/EC2SecurityGroupName, closing the follow-up left open by the prior continued pass -- see dated entry above. SECOND FIND (same pass, sibling check per this campaign's own rule): AuthorizeClusterSecurityGroupIngress had the inverse gap -- re-authorizing a CIDR/EC2 group already on the security group silently appended a duplicate entry instead of returning AuthorizationAlreadyExists (declared in this op's own error switch, and already enforced by the sibling AuthorizeEndpointAccess family's own duplicate-rejection test). Fixed both; see dated entry above. CHECKED 2026-08-30 (wire-key-read sweep): DescribeClusterSecurityGroupsInput.TagKeys/TagValues are also declared and unread, same missing-Tags-field situation as ClusterParameterGroup/ClusterSubnetGroup above -- left unread for the same reason."}
-  Snapshot/ClusterSnapshot: {status: ok, note: "FIXED 2026-08-23 (third pass): AuthorizeSnapshotAccess had the same missing-duplicate-check gap as AuthorizeClusterSecurityGroupIngress (re-authorizing an already-authorized account silently added a second AccountsWithRestoreAccess entry instead of returning AuthorizationAlreadyExists, declared in this op's own error switch) -- see dated entry above. A pre-existing test asserted the buggy behavior outright (\"AWS allows multiple accounts\"); corrected to assert the real error instead. FIXED 2026-08-23 (continued pass): ModifyClusterSnapshot/BatchModifyClusterSnapshots omitted-vs-explicit-(-1) retention clobber, RevokeSnapshotAccess wrong error code (InvalidParameterValue -> AuthorizationNotFound) -- see dated entry above. FIXED 2026-08-14 (gopherstack-7185, mutating-response sweep, broken in both directions): BatchDeleteClusterSnapshots' Identifiers is a list of DeleteClusterSnapshotMessage structs, not a flat string list -- the real serialized wire key is Identifiers.DeleteClusterSnapshotMessage.N.SnapshotIdentifier (confirmed against aws-sdk-go-v2/service/redshift@v1.65.4/serializers.go: awsAwsquery_serializeDocumentDeleteClusterSnapshotMessageList wraps the array in DeleteClusterSnapshotMessage, and the nested object serializer emits SnapshotIdentifier as a child field, not a value at the array index itself). The handler instead read 'Identifiers.DeleteClusterSnapshotMessage.N' directly and, failing that, fell back to 'Identifiers.SnapshotIdentifier.N' -- neither is a key any real SDK client ever sends, so a real BatchDeleteClusterSnapshots call always deleted nothing while still returning 200 OK with an empty Resources list. Three pre-existing tests all posted the second (also wrong) fallback shape, so tests and handler agreed on the fabricated request format -- same entrenching pattern as ssm's AddedLabels and ec2's ModifyVpcEndpointServicePermissions. Fixed to read the real nested key; BatchModifyClusterSnapshots' SnapshotIdentifierList (a genuine flat string list, serializeDocumentSnapshotIdentifierList wraps it in 'String') was re-verified and is correct as-is, so this is NOT a copy-paste bug across both batch ops, just the one whose real Input shape is structs. FIXED 2026-08-30 (wire-key-read sweep): DescribeClusterSnapshots read only SnapshotIdentifier/ClusterIdentifier/SnapshotType/Marker/MaxRecords -- StartTime/EndTime (real DescribeClusterSnapshotsInput fields, api_op_DescribeClusterSnapshots.go) were declared and never read at all, so a real client's time-window filter silently returned every snapshot regardless. Fixed via new filterSnapshotsByTimeRange, applied before the existing marker-pagination cut (filter-before-paginate). ClusterExists/OwnerAccount/TagKeys/TagValues/SortingEntities/SnapshotArn remain unread -- Snapshot (models.go) has no Tags or OwnerAccount field at all (this backend's snapshots are single-account and untagged), so those would be fabricated filter semantics; left honestly absent rather than invented, not re-flagged as a gap."}
+  Snapshot/ClusterSnapshot: {status: ok, note: "FIXED 2026-08-23 (third pass): AuthorizeSnapshotAccess had the same missing-duplicate-check gap as AuthorizeClusterSecurityGroupIngress (re-authorizing an already-authorized account silently added a second AccountsWithRestoreAccess entry instead of returning AuthorizationAlreadyExists, declared in this op's own error switch) -- see dated entry above. A pre-existing test asserted the buggy behavior outright (\"AWS allows multiple accounts\"); corrected to assert the real error instead. FIXED 2026-08-23 (continued pass): ModifyClusterSnapshot/BatchModifyClusterSnapshots omitted-vs-explicit-(-1) retention clobber, RevokeSnapshotAccess wrong error code (InvalidParameterValue -> AuthorizationNotFound) -- see dated entry above. FIXED 2026-08-14 (gopherstack-7185, mutating-response sweep, broken in both directions): BatchDeleteClusterSnapshots' Identifiers is a list of DeleteClusterSnapshotMessage structs, not a flat string list -- the real serialized wire key is Identifiers.DeleteClusterSnapshotMessage.N.SnapshotIdentifier (confirmed against aws-sdk-go-v2/service/redshift@v1.65.4/serializers.go: awsAwsquery_serializeDocumentDeleteClusterSnapshotMessageList wraps the array in DeleteClusterSnapshotMessage, and the nested object serializer emits SnapshotIdentifier as a child field, not a value at the array index itself). The handler instead read 'Identifiers.DeleteClusterSnapshotMessage.N' directly and, failing that, fell back to 'Identifiers.SnapshotIdentifier.N' -- neither is a key any real SDK client ever sends, so a real BatchDeleteClusterSnapshots call always deleted nothing while still returning 200 OK with an empty Resources list. Three pre-existing tests all posted the second (also wrong) fallback shape, so tests and handler agreed on the fabricated request format -- same entrenching pattern as ssm's AddedLabels and ec2's ModifyVpcEndpointServicePermissions. Fixed to read the real nested key; BatchModifyClusterSnapshots' SnapshotIdentifierList (a genuine flat string list, serializeDocumentSnapshotIdentifierList wraps it in 'String') was re-verified and is correct as-is, so this is NOT a copy-paste bug across both batch ops, just the one whose real Input shape is structs. FIXED 2026-08-30 (wire-key-read sweep): DescribeClusterSnapshots read only SnapshotIdentifier/ClusterIdentifier/SnapshotType/Marker/MaxRecords -- StartTime/EndTime (real DescribeClusterSnapshotsInput fields, api_op_DescribeClusterSnapshots.go) were declared and never read at all, so a real client's time-window filter silently returned every snapshot regardless. Fixed via new filterSnapshotsByTimeRange, applied before the existing marker-pagination cut (filter-before-paginate). OwnerAccount/TagKeys/TagValues/SnapshotArn remain unread -- Snapshot (models.go) has no Tags or OwnerAccount field at all (this backend's snapshots are single-account and untagged), so those would be fabricated filter semantics; left honestly absent rather than invented, not re-flagged as a gap. FIXED 2026-09-07 (gopherstack-do4v, correction to gopherstack-igsa's grouping): ClusterExists does NOT need the cross-account ownership model OwnerAccount does -- confirmed against DescribeClusterSnapshotsInput.ClusterExists doc, api_op_DescribeClusterSnapshots.go: true selects snapshots of a cluster that still exists (and requires ClusterIdentifier), false selects snapshots whose cluster no longer exists (every orphaned snapshot when ClusterIdentifier is omitted, or that one deleted cluster's snapshots when given) -- a single-account existence check b.clusters.Get(id) already answers, nothing to do with who owns the snapshot. Implemented in DescribeClusterSnapshots/handleDescribeClusterSnapshots; true with no ClusterIdentifier returns InvalidParameterValue, matching the doc's stated requirement. OwnerAccount stays unimplemented."}
   ClusterCredentials: {status: ok}
   Resize: {status: ok, note: "FIXED THIS PASS, see ResizeCluster op row"}
   DataShare: {status: ok, note: "Associate/Authorize/Deauthorize/Reject/Disassociate/DescribeDataShares* field-diffed against types.DataShare. FIXED: DataShareType was completely absent from the model/wire (real Cluster... err DataShare.DataShareType, defaults to INTERNAL, the only enum value); now serialized. All mutation ops confirmed to mutate the store.Table-returned pointer in place (not stubs)."}
   EventSubscription/Events: {status: ok, note: "field-diffed against types.EventSubscription/Event. FIXED: EventSubscription.SubscriptionCreationTime was computed (SubscriptionCreated) but never serialized into any response; now emitted as RFC3339. DescribeEventCategories/DescribeEvents verified against SDK shapes, no other gaps found. CHECKED 2026-08-30 (wire-key-read sweep): DescribeEventsInput.StartTime/EndTime/Duration are declared and unread by handleDescribeEvents (only SourceIdentifier/SourceType are read) -- but this is inert, not a bug: nothing in this package ever writes to the b.events store (grepped every call site; no AddEvent/internal seed method exists, not even test-only), so DescribeEvents unconditionally returns an empty list regardless of any filter. Left as-is rather than adding dead filtering code for a store nothing populates."}
-  Logging: {status: ok, note: "NEW FAMILY ROW 2026-08-23 (continued pass) -- EnableLogging/DisableLogging/DescribeLoggingStatus had no families: row at all before this pass, despite real per-cluster state (events.go's loggingStatuses map). EnableLogging/DisableLogging held up clean. FIXED: DescribeLoggingStatus was a static stub (hardcoded LoggingEnabled=false, ignored ClusterIdentifier, never consulted loggingStatuses) -- see dated entry above."}
+  Logging: {status: ok, note: "NEW FAMILY ROW 2026-08-23 (continued pass) -- EnableLogging/DisableLogging/DescribeLoggingStatus had no families: row at all before this pass, despite real per-cluster state (events.go's loggingStatuses map). EnableLogging/DisableLogging held up clean. FIXED: DescribeLoggingStatus was a static stub (hardcoded LoggingEnabled=false, ignored ClusterIdentifier, never consulted loggingStatuses) -- see dated entry above. gopherstack-ok46 (2026-09-06): EnableLogging accepted any S3KeyPrefix unchecked; api_op_EnableLogging.go documents an explicit valid-character set for it (letters/whitespace/numerics plus _ . : / = + \\ - @), now enforced and rejected with InvalidS3KeyPrefixFault (the fault EnableLogging itself declares, types/errors.go). BucketName has no documented format/length rule beyond \"must be an existing bucket in the same region with read/put permissions\" -- none of which is a request-shape rule -- so no new BucketName format check was added; its pre-existing presence check is untouched. InsufficientS3BucketPolicyFault (real policy evaluation against services/s3) is out of scope, left open."}
   ScheduledAction: {status: ok, note: "FIXED THIS PASS (major): TargetAction was parsed as a single flat top-level string param and never serialized in ANY response -- real CreateScheduledActionInput.TargetAction is a nested ScheduledActionType{PauseCluster|ResumeCluster|ResizeCluster} struct sent as TargetAction.ResizeCluster.ClusterIdentifier=... etc (query-protocol nested member convention), and the object is meaningless without it. Rebuilt as a real tagged-union type (ScheduledActionTarget) with correct nested request parsing (parseTargetAction) and response serialization (targetActionToXML), verified symmetric against both serializers.go and deserializers.go. Also fixed: Enable request param was completely ignored (State was hardcoded ACTIVE forever); now a real tri-state *bool driving ACTIVE/DISABLED. FIXED 2026-08-08 (bd gopherstack-emho): NextInvocations was previously unmodeled; this backend's Schedule field already carries a real at()/cron() expression, so a real evaluator (schedule.go) now computes it instead of leaving it fabricated or perpetually empty -- unparseable/unsupported expressions (e.g. rate(), which real Redshift does not accept here) still yield an honest empty list. StartTime/EndTime remain unmodeled -- see items_still_open. FIXED 2026-08-30 (wire-key-read sweep): DescribeScheduledActions read only ScheduledActionName -- Active (real DescribeScheduledActionsInput field) was declared and never read, so a real client's Active=true/false filter silently returned both enabled and disabled actions. Fixed by comparing against ScheduledAction.State (real backend data, already set correctly by scheduledActionState). New named constant scheduledActionStateActiveValue introduced deliberately instead of reusing the pre-existing dataShareStatusActive constant, which happens to share the same \"ACTIVE\" string by coincidence -- this campaign has already found bugs from exactly that kind of borrowed-constant coupling (see the ReservedNodeExchangeStatus fix in wire_field_fixes_test.go). TargetActionType/Filters/StartTime/EndTime remain unread: TargetActionType and the iam-role/cluster-identifier Filters names are real, cheap, and backed by existing data (IamRole, TargetAction's populated union member) but were left for a follow-up pass to keep this fix's blast radius small; StartTime/EndTime filter on computed next-invocation times, not stored data, and are a materially larger addition (see NextInvocations note above)."}
   UsageLimit: {status: ok, note: "Create/Delete/Describe/Modify field-diffed, real state mutation confirmed. FIXED 2026-08-08 (bd gopherstack-emho): Tags were accepted and stored on create but never echoed on the wire -- xmlUsageLimit now includes Tags>Tag via the existing tagMapToKVList/parseRedshiftTags shared helpers (same convention as Integration/Qev2IdcApplication), verified against awsAwsquery_deserializeDocumentUsageLimit's Tags case in deserializers.go. FIXED 2026-08-30 (wire-key-read sweep): DescribeUsageLimits read only ClusterIdentifier/FeatureType -- TagKeys/TagValues (real DescribeUsageLimitsInput fields) were declared and never read at all, even though UsageLimit.Tags is real, populated backend data (the fix immediately above this one). Fixed using the same anyTagMatchesFilter helper introduced for the Tags family fix."}
   SnapshotCopyGrant: {status: ok, note: "Create/Delete/Describe field-diffed, real state mutation confirmed. FIXED 2026-08-08 (bd gopherstack-emho): Tags now echoed on the wire (Tags>Tag), same fix pattern and SDK verification as UsageLimit above (awsAwsquery_deserializeDocumentSnapshotCopyGrant)."}
@@ -1781,3 +1781,129 @@ and the remaining IDC-application/lakehouse/advisor families).
 Gates: `go build ./services/redshift/...`, `go vet ./...` (repo-wide, clean),
 `go test -race -count=1 ./services/redshift/...` (pass, no test changes needed
 since no code changed), `golangci-lint run ./services/redshift/...` (0 issues).
+
+## 2026-09-08 delete/modify precondition sweep (gopherstack-d1xc, partial)
+
+Scope per gopherstack-d1xc: delete/modify preconditions beyond
+DeleteClusterSnapshot (subnet/security/parameter-group in-use checks on
+delete, cluster-state preconditions on Modify ops), ghost rows after delete,
+performance, resource leaks. This pass did NOT finish the list -- see NOT
+COVERED below.
+
+**nil-on-write fall-through (elasticache-class bug) checked first, NOT
+PRESENT here.** `writeError`/`handleOpError` (`handler.go:882-903`) return a
+value the caller returns directly (`return h.handleOpError(c, action, opErr)`
+at `handler.go:547`, `dispatch`'s only caller), and are used in only 8 call
+sites total across the whole package, all direct-return. Individual op
+handlers (`handleModifyCluster` etc.) never touch `echo.Context` at all --
+they return `(any, error)` to `dispatch`, which is the sole place an error is
+turned into a wire response. There is no intermediate site where a rejection
+write's return value is stored and re-checked, so the bug class this campaign
+keeps finding elsewhere cannot occur in this package's current shape.
+
+**In-use preconditions on delete (priority 1):**
+- `DeleteClusterSecurityGroup` (`security_groups.go:44`) and
+  `DeleteClusterParameterGroup` (`param_groups.go:138`) ALREADY had correct
+  in-use checks (loop over `b.clusters.All()`, reject with
+  `ErrSecurityGroupInvalidState`/`ErrParameterGroupInvalidState` if any
+  cluster references the group) with existing tests
+  (`handler_security_groups_test.go`/`handler_param_groups_test.go`,
+  `associated_with_cluster_rejected` cases) asserting the 400 + wire code. Not
+  modified this pass; not a defect.
+- `DeleteClusterSubnetGroup` (`subnet_groups.go:60`) has NO in-use check at
+  all, and real `DeleteClusterSubnetGroup` declares
+  `InvalidClusterSubnetGroupStateFault` ("The cluster subnet group cannot be
+  deleted because it is in use", confirmed against botocore
+  redshift/2012-12-01/service-2.json). **This is structurally blocked, not a
+  quick fix**: `Cluster` (`models.go:346`) has no `ClusterSubnetGroupName`
+  field at all -- `CreateCluster` (`handler.go:553`,`store.go:211`) never
+  reads or stores a subnet group reference, so there is nothing to check
+  in-use against. This gap was already flagged (not fixed) in the
+  2026-08-29 PARITY.md entry above ("missing-feature gap, not a wrong-key
+  bug"). Fixing it for real means adding the field to `Cluster` (persisted
+  type change), parsing `ClusterSubnetGroupName` in `handleCreateCluster`,
+  validating it against `ClusterSubnetGroupNotFoundFault` (also declared on
+  `CreateClusterInput`), and only then adding the in-use check -- and
+  `Backend.CreateCluster`'s signature is called at 84 sites across this
+  package's test files alone, so a signature change ripples everywhere. Left
+  unfixed this pass as out of budget for a P3 sweep; flagging it explicitly
+  rather than leaving it silently unaudited.
+
+**Cluster-state preconditions on Modify ops (priority 3) -- two fixed, rest
+surveyed but not fixed:**
+
+1. **`ModifyCluster` accepted modification of a non-`available` cluster.**
+   Real `ModifyCluster` declares `InvalidClusterStateFault` ("The specified
+   cluster is not in the available state", confirmed against
+   `InvalidClusterStateFault`'s botocore doc and its presence in
+   `awsAwsquery_deserializeOpErrorModifyCluster`,
+   aws-sdk-go-v2/service/redshift@v1.65.4/deserializers.go). `PauseCluster`
+   (`cluster_mgmt.go`) sets `Status="paused"` with no reconciler transition
+   back, so a paused cluster is a real, reachable, indefinite non-available
+   state (no activation-delay config needed). Before the fix, `ModifyCluster`
+   on a paused cluster silently applied the change and left the cluster
+   `paused` with a mutated `NodeType` -- a real client would see 200 OK and a
+   changed cluster where AWS would 400. Regression test
+   `TestModifyCluster_RejectsWhenClusterNotAvailable`
+   (`handler_cluster_mgmt_test.go`) confirmed failing pre-fix (asserted 400,
+   got 200 with `NodeType` changed to `ra3.xlplus`); fix adds the same
+   available-state guard `namespace_registration.go:132` already uses for
+   `RegisterNamespace`, via a new sentinel `ErrClusterInvalidState`
+   (`errors.go`, wired into `errCodeSentinels`). Test asserts the emitted
+   wire code AND that a follow-up `DescribeClusters` shows the original
+   `NodeType`/status unchanged (not just that some error occurred).
+2. **`ModifyClusterIamRoles` had the same gap** -- its declared error set is
+   `[InvalidClusterStateFault, ClusterNotFoundFault]` only (botocore), i.e.
+   the state check is essentially the entire precondition surface this op
+   has beyond existence. Regression test
+   `TestModifyClusterIamRoles_RejectsWhenClusterNotAvailable` confirmed
+   failing pre-fix (200, role silently added to a paused cluster); fixed
+   with the same `ErrClusterInvalidState` guard in
+   `ModifyClusterIamRoles` (`cluster_mgmt.go:302`).
+
+Both new tests run under `-race -count=10` (10/10 pass); neither touches
+global/shared state (each spins up its own `InMemoryBackend`/`Handler`), so
+no `synctest` or parallelism-flake concern applies.
+
+**NOT COVERED this pass** (confirmed missing the same class of guard by
+reading each function body, not fixed -- flagging honestly rather than
+silently skipping): `ModifyClusterMaintenance` (`cluster_mgmt.go:343`),
+`ModifyClusterDBRevision`, `ModifyAquaConfiguration`,
+`ModifyLakehouseConfiguration`, `RebootCluster`, `PauseCluster` itself (can a
+non-`available` cluster be paused?), `ResumeCluster` (must the cluster be
+`paused`, not just non-available, to resume?), `ResizeCluster` -- all declare
+`InvalidClusterStateFault` per botocore (`ModifyClusterDbRevision` additionally
+`ClusterOnLatestRevisionFault`) but none were checked against the backend
+code in this pass. Also not covered: `DeleteCluster`'s own state precondition
+(can you delete a cluster mid-resize/reboot?), and the ~130 remaining ops in
+this package's Delete/Modify surface not named above.
+
+**Ghost rows after delete:** spot-checked `DescribeClusters` (lazily calls
+`advanceClusterStates` before reading, `store.go:337-343`, so a
+reconciler-pending delete is never stale-visible) and `DeleteEndpointAccess`
+(`endpoint_access.go:70`, deletes from the map before returning, ephemeral
+"deleting" status only on the returned copy, not stored) -- both clean, no
+defect. The other ~27 `Delete*`/`Deregister*` backend methods in this package
+(listed by `grep -n "^func (b \*InMemoryBackend) Delete"`) were NOT
+individually re-verified for ghost-row correctness this pass.
+
+**Resource leaks:** the package has exactly one ticker/background goroutine
+(`reconciler.go`'s `reconcileLoop`, via `time.NewTicker`). Read in full:
+`StartReconciler`/`StopReconciler` are wired to `service.BackgroundWorker`/
+`service.Shutdowner` (`handler.go:74-86`) with the framework's real ctx (not
+`context.Background()`), the loop selects on both `ctx.Done()` and an
+explicit stop channel, `ticker.Stop()` is deferred, and `StopReconciler`
+blocks on a `WaitGroup` until the goroutine actually exits. No leak found --
+confirmed by reading the full lifecycle, not by grep absence.
+
+**Performance:** not audited this pass beyond what the above reading surfaced
+(no O(n^2) or obviously pathological pattern noticed in the functions read,
+but no dedicated pass was made).
+
+No persisted-type field was added (only a new error sentinel and status
+checks), so `pkgs/persistence` golden data needed no `-update`; ran
+`go test ./pkgs/persistence/...` anyway to confirm (pass).
+
+Gates this pass: `golangci-lint run ./services/redshift/...` (0 issues),
+`go test -race ./services/redshift/...` (pass), plus the two new tests
+individually under `-race -count=10` (10/10 pass each).

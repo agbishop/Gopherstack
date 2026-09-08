@@ -339,9 +339,9 @@ func TestHandler_UnknownOperation(t *testing.T) {
 	}
 }
 
-// TestParsePageParams_InvalidMaxResults verifies a non-numeric maxResults
+// TestParsePageParams_InvalidPageSize verifies a non-numeric pageSize
 // query param yields a ValidationException rather than silently coercing to 0.
-func TestParsePageParams_InvalidMaxResults(t *testing.T) {
+func TestParsePageParams_InvalidPageSize(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -349,10 +349,10 @@ func TestParsePageParams_InvalidMaxResults(t *testing.T) {
 		query      string
 		wantStatus int
 	}{
-		{name: "valid_numeric", query: "?maxResults=2", wantStatus: http.StatusOK},
-		{name: "non_numeric", query: "?maxResults=abc", wantStatus: http.StatusBadRequest},
-		{name: "mixed", query: "?maxResults=1a2", wantStatus: http.StatusBadRequest},
-		{name: "empty_ignored", query: "?maxResults=", wantStatus: http.StatusOK},
+		{name: "valid_numeric", query: "?pageSize=2", wantStatus: http.StatusOK},
+		{name: "non_numeric", query: "?pageSize=abc", wantStatus: http.StatusBadRequest},
+		{name: "mixed", query: "?pageSize=1a2", wantStatus: http.StatusBadRequest},
+		{name: "empty_ignored", query: "?pageSize=", wantStatus: http.StatusOK},
 	}
 
 	for _, tt := range tests {

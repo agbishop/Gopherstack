@@ -87,6 +87,8 @@ func (b *InMemoryBackend) DeleteEventDataStore(edsIDOrARN string) error {
 
 	eds.Tags.Close()
 	b.eventDataStores.Delete(eds.EventDataStoreID)
+	delete(b.eventConfigs, eds.EventDataStoreARN)
+	b.resourcePolicies.Delete(eds.EventDataStoreARN)
 
 	return nil
 }

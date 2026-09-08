@@ -14,7 +14,9 @@ import (
 const DefaultAnomalyTTL = 30 * 24 * time.Hour
 
 const (
+	granularityDaily        = "DAILY"
 	granularityMonthly      = "MONTHLY"
+	granularityHourly       = "HOURLY"
 	metricUnitUSD           = "USD"
 	metricUnitNA            = "N/A"
 	timePeriodKeyEnd        = "End"

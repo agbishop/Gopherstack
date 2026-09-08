@@ -180,7 +180,7 @@ func (h *Handler) handleCancelImportTask(
 }
 
 func (h *Handler) handleCreateExportTask(
-	ctx context.Context, //nolint:revive // existing issue.
+	ctx context.Context,
 	b []byte,
 ) (any, error) {
 	var input createExportTaskInput
@@ -189,6 +189,7 @@ func (h *Handler) handleCreateExportTask(
 	}
 
 	taskID, err := h.Backend.CreateExportTask(
+		ctx,
 		input.TaskName, input.LogGroupName, input.LogStreamNamePrefix,
 		input.Destination, input.DestinationPrefix, input.From, input.To,
 	)
@@ -200,7 +201,7 @@ func (h *Handler) handleCreateExportTask(
 }
 
 func (h *Handler) handleCreateImportTask(
-	ctx context.Context, //nolint:revive // existing issue.
+	ctx context.Context,
 	b []byte,
 ) (any, error) {
 	var input createImportTaskInput
@@ -208,7 +209,7 @@ func (h *Handler) handleCreateImportTask(
 		return nil, err
 	}
 
-	task, err := h.Backend.CreateImportTask(input.ImportRoleArn, input.ImportSourceArn)
+	task, err := h.Backend.CreateImportTask(ctx, input.ImportRoleArn, input.ImportSourceArn)
 	if err != nil {
 		return nil, err
 	}

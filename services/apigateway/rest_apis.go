@@ -73,8 +73,9 @@ func (b *InMemoryBackend) DeleteRestAPI(restAPIID string) error {
 
 // deleteAPIChildrenLocked removes every resource-family entry scoped to
 // restAPIID (resources, deployments, stages, authorizers, requestValidators,
-// documentationParts, documentationVersions, models) via each table's "byAPI"
-// index. Callers must hold b.mu.
+// documentationParts, documentationVersions, models, gatewayResponses) via
+// each table's "byAPI" index (gatewayResponses has none, so it's scanned
+// directly). Callers must hold b.mu.
 func (b *InMemoryBackend) deleteAPIChildrenLocked(restAPIID string) {
 	for _, r := range append([]*Resource{}, b.resourcesByAPI.Get(restAPIID)...) {
 		b.resources.Delete(resourceKeyFn(r))
@@ -100,6 +101,7 @@ func (b *InMemoryBackend) deleteAPIChildrenLocked(restAPIID string) {
 	for _, m := range append([]*Model{}, b.modelsByAPI.Get(restAPIID)...) {
 		b.models.Delete(modelKeyFn(m))
 	}
+	b.deleteGatewayResponsesForAPILocked(restAPIID)
 	delete(b.resourceVersions, restAPIID)
 }
 

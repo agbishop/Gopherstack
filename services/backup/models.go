@@ -241,11 +241,18 @@ type ReportPlan struct {
 }
 
 // RestoreAccessVault represents an AWS Backup restore access backup vault.
+//
+// The Tags field is backend-owned. Callers must treat the returned pointer
+// as read-only; mutate tags only via TagResource / CreateRestoreAccessBackupVault.
+// It may be nil for a vault restored from a snapshot taken before this field
+// existed (an additive change, not a version bump) -- callers must nil-check
+// rather than assume it is always set.
 type RestoreAccessVault struct {
-	CreationDate                 time.Time `json:"creationDate"`
-	RestoreAccessBackupVaultName string    `json:"restoreAccessBackupVaultName"`
-	RestoreAccessBackupVaultArn  string    `json:"restoreAccessBackupVaultArn"`
-	SourceBackupVaultArn         string    `json:"sourceBackupVaultArn"`
+	CreationDate                 time.Time  `json:"creationDate"`
+	Tags                         *tags.Tags `json:"tags,omitempty"`
+	RestoreAccessBackupVaultName string     `json:"restoreAccessBackupVaultName"`
+	RestoreAccessBackupVaultArn  string     `json:"restoreAccessBackupVaultArn"`
+	SourceBackupVaultArn         string     `json:"sourceBackupVaultArn"`
 	// SourceBackupVaultName is not on the AWS wire shape; it is resolved from
 	// SourceBackupVaultArn at creation time so ListRestoreAccessBackupVaults /
 	// RevokeRestoreAccessBackupVault -- which AWS addresses by source vault
@@ -253,7 +260,12 @@ type RestoreAccessVault struct {
 	// /logically-air-gapped-backup-vaults/{BackupVaultName}/...) -- can filter
 	// without re-parsing the ARN on every call.
 	SourceBackupVaultName string `json:"sourceBackupVaultName"`
-	VaultState            string `json:"vaultState"`
+	// CreatorRequestID is not on the AWS wire shape (no Describe/List op for a
+	// restore access vault ever returns it); it exists purely to make repeated
+	// CreateRestoreAccessBackupVault calls with the same token idempotent,
+	// mirroring CreateBackupVault's CreatorRequestID convention.
+	CreatorRequestID string `json:"creatorRequestId,omitempty"`
+	VaultState       string `json:"vaultState"`
 }
 
 // RestoreTestingRecoveryPointSelection selects which recovery points a
@@ -412,6 +424,7 @@ type VaultNotificationConfig struct {
 // store_setup.go. A handful of maps remain plain map[string]string because
 // their values are not *T (mirroring services/ses's "policies" precedent).
 type InMemoryBackend struct {
+	s3                             S3Backend
 	regionSettings                 *RegionSettings
 	mu                             *lockmetrics.RWMutex
 	registry                       *store.Registry
@@ -435,6 +448,7 @@ type InMemoryBackend struct {
 	vaultNotifications             *store.Table[VaultNotificationConfig]
 	mpaApprovals                   map[string]string // vaultName → mpaApprovalTeamArn
 	vaultARNIndex                  map[string]string // ARN → vault name
+	restoreAccessVaultARNIndex     map[string]string // ARN → restore access vault name
 	planARNIndex                   map[string]string // ARN → plan name
 	planIDIndex                    map[string]string // plan ID → plan name
 	frameworkARNIndex              map[string]string // ARN → framework name

@@ -105,7 +105,7 @@ func (h *Handler) handleUpdateSubscription(body []byte) error {
 		return fmt.Errorf("%w: %w", errInvalidRequest, err)
 	}
 
-	if req.AutoRenew != AutoRenewEnabled && req.AutoRenew != AutoRenewDisabled {
+	if req.AutoRenew != "" && req.AutoRenew != AutoRenewEnabled && req.AutoRenew != AutoRenewDisabled {
 		return fmt.Errorf("%w: AutoRenew must be ENABLED or DISABLED", errInvalidRequest)
 	}
 

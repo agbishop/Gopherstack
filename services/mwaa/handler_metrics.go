@@ -24,8 +24,11 @@ func (h *Handler) handlePublishMetrics(c *echo.Context, name string) error {
 	}
 
 	if pubErr := h.Backend.PublishMetrics(h.contextWithRegion(c), name, &req); pubErr != nil {
+		// PublishMetrics's deserializer switch recognizes only
+		// InternalServerException and ValidationException -- alone among the
+		// not-found-capable ops here, it has no ResourceNotFoundException.
 		if errors.Is(pubErr, awserr.ErrNotFound) {
-			return writeErrorResponse(c, http.StatusNotFound, "ResourceNotFoundException", pubErr.Error())
+			return writeErrorResponse(c, http.StatusBadRequest, "ValidationException", pubErr.Error())
 		}
 
 		return writeErrorResponse(c, http.StatusInternalServerError, "InternalServerException", pubErr.Error())

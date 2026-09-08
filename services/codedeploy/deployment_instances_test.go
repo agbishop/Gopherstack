@@ -288,6 +288,111 @@ func TestHandler_ListDeploymentTargets_ListDeploymentInstances_RealTargets(t *te
 	assert.ElementsMatch(t, []any{matched[0], matched[1]}, instances)
 }
 
+// TestHandler_ListDeploymentInstances_StatusAndTypeFilter proves
+// instanceStatusFilter/instanceTypeFilter are actually applied instead of
+// being silently ignored (ListDeploymentInstancesInput models both --
+// aws-sdk-go-v2/service/codedeploy/api_op_ListDeploymentInstances.go).
+func TestHandler_ListDeploymentInstances_StatusAndTypeFilter(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	deployID, _ := serverDeployWithMatchedInstances(t, h)
+
+	tests := []struct {
+		body    map[string]any
+		name    string
+		wantLen int
+	}{
+		{name: "no_filter", body: map[string]any{"deploymentId": deployID}, wantLen: 2},
+		{
+			name:    "matching_status",
+			body:    map[string]any{"deploymentId": deployID, "instanceStatusFilter": []string{"Succeeded"}},
+			wantLen: 2,
+		},
+		{
+			name:    "non_matching_status",
+			body:    map[string]any{"deploymentId": deployID, "instanceStatusFilter": []string{"Failed"}},
+			wantLen: 0,
+		},
+		{
+			name:    "matching_type",
+			body:    map[string]any{"deploymentId": deployID, "instanceTypeFilter": []string{"Blue"}},
+			wantLen: 2,
+		},
+		{
+			name:    "non_matching_type",
+			body:    map[string]any{"deploymentId": deployID, "instanceTypeFilter": []string{"Green"}},
+			wantLen: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := doRequest(t, h, "ListDeploymentInstances", tt.body)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			instances, ok := resp["instancesList"].([]any)
+			require.True(t, ok)
+			assert.Len(t, instances, tt.wantLen)
+		})
+	}
+}
+
+// TestHandler_ListDeploymentTargets_Filters proves targetFilters
+// (TargetStatus/ServerInstanceLabel) are actually applied instead of being
+// silently ignored (ListDeploymentTargetsInput models targetFilters --
+// aws-sdk-go-v2/service/codedeploy/api_op_ListDeploymentTargets.go).
+func TestHandler_ListDeploymentTargets_Filters(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	deployID, _ := serverDeployWithMatchedInstances(t, h)
+
+	tests := []struct {
+		targetFilters map[string][]string
+		name          string
+		wantLen       int
+	}{
+		{name: "no_filter", wantLen: 2},
+		{name: "matching_status", targetFilters: map[string][]string{"TargetStatus": {"Succeeded"}}, wantLen: 2},
+		{name: "non_matching_status", targetFilters: map[string][]string{"TargetStatus": {"Failed"}}, wantLen: 0},
+		{
+			name:          "matching_label",
+			targetFilters: map[string][]string{"ServerInstanceLabel": {"Blue"}},
+			wantLen:       2,
+		},
+		{
+			name:          "non_matching_label",
+			targetFilters: map[string][]string{"ServerInstanceLabel": {"Green"}},
+			wantLen:       0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := map[string]any{"deploymentId": deployID}
+			if tt.targetFilters != nil {
+				body["targetFilters"] = tt.targetFilters
+			}
+
+			rec := doRequest(t, h, "ListDeploymentTargets", body)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+			targetIDs, ok := resp["targetIds"].([]any)
+			require.True(t, ok)
+			assert.Len(t, targetIDs, tt.wantLen)
+		})
+	}
+}
+
 // TestHandler_ListDeploymentInstances_ECSIsEmpty proves ListDeploymentInstances
 // resolves to an empty list for an ECS-platform deployment (it has no
 // per-instance concept), rather than fabricating instance IDs.

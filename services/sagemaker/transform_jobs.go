@@ -21,6 +21,12 @@ var (
 	ErrTransformJobNotFound = awserr.New("ResourceNotFound", ErrResourceNotFound)
 	// ErrTransformJobAlreadyExists is returned when a transform job already exists.
 	ErrTransformJobAlreadyExists = awserr.New("ResourceInUse", awserr.ErrConflict)
+	// ErrTransformJobModelNotFound is returned when CreateTransformJob's ModelName
+	// does not name an existing model. api_op_CreateTransformJob.go: "ModelName
+	// must be the name of an existing Amazon SageMaker model"; ResourceNotFound is
+	// modeled for CreateTransformJob (unlike CreateEndpointConfig, which has no
+	// such error and is not checked here -- gopherstack-tauw).
+	ErrTransformJobModelNotFound = awserr.New("ResourceNotFound", ErrResourceNotFound)
 )
 
 const (
@@ -120,6 +126,10 @@ func (b *InMemoryBackend) CreateTransformJob(ctx context.Context, opts Transform
 
 	b.mu.Lock("CreateTransformJob")
 	defer b.mu.Unlock()
+
+	if _, ok := b.modelsStore(region).Get(opts.ModelName); !ok {
+		return nil, fmt.Errorf("%w: model %q does not exist", ErrTransformJobModelNotFound, opts.ModelName)
+	}
 
 	if _, ok := b.transformJobsStore(region).Get(opts.TransformJobName); ok {
 		return nil, fmt.Errorf(

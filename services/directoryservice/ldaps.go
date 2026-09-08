@@ -19,7 +19,10 @@ func (b *InMemoryBackend) EnableLDAPS(ctx context.Context, directoryID, ldapsTyp
 
 	now := time.Now().UTC()
 	if existing, ok := b.ldapsSettingGet(region, directoryID, ldapsType); ok {
-		existing.State = "Enabled" //nolint:goconst // existing issue.
+		if existing.State == "Enabled" { //nolint:goconst // existing issue.
+			return ErrInvalidLDAPSStatus
+		}
+		existing.State = "Enabled"
 		existing.LastUpdatedDateTime = now
 	} else {
 		b.ldapsSettingPut(&storedLDAPSSetting{
@@ -46,10 +49,13 @@ func (b *InMemoryBackend) DisableLDAPS(ctx context.Context, directoryID, ldapsTy
 		return ErrDirectoryNotFoundDDNE
 	}
 
-	if setting, ok := b.ldapsSettingGet(region, directoryID, ldapsType); ok {
-		setting.State = "Disabled" //nolint:goconst // existing issue.
-		setting.LastUpdatedDateTime = time.Now().UTC()
+	setting, ok := b.ldapsSettingGet(region, directoryID, ldapsType)
+	if !ok || setting.State == "Disabled" { //nolint:goconst // existing issue.
+		return ErrInvalidLDAPSStatus
 	}
+
+	setting.State = "Disabled"
+	setting.LastUpdatedDateTime = time.Now().UTC()
 
 	return nil
 }

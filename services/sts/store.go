@@ -328,14 +328,23 @@ func (b *InMemoryBackend) LookupSession(accessKeyID, sessionToken string) *Sessi
 	if !ok {
 		return nil
 	}
-	if sessionToken != "" && session.SessionToken != "" && sessionToken != session.SessionToken {
+	// A session minted with a token requires that same token on every lookup:
+	// an absent/wrong X-Amz-Security-Token must not be treated as a match,
+	// or the ASIA access key ID alone would impersonate the session.
+	if session.SessionToken != "" && sessionToken != session.SessionToken {
 		return nil
 	}
 
 	return session
 }
 
-// ResolvePrincipal resolves an access key ID and session token to an awsmeta.Principal for an assumed role.
+// ResolvePrincipal resolves an access key ID and session token to an awsmeta.Principal.
+// Kind is AssumedRole only for sessions minted by an actual role assumption
+// (AssumeRole/AssumeRoleWithSAML/AssumeRoleWithWebIdentity/AssumeRoot); other
+// STS-issued sessions (GetSessionToken/GetFederationToken/GetDelegatedAccessToken)
+// keep the caller's own identity and report Kind=User instead, so IAM's
+// cross-service enforcement middleware does not mistake them for a role and
+// look up a nonexistent "role" by a mangled user/root/federated-user ARN.
 func (b *InMemoryBackend) ResolvePrincipal(
 	_ context.Context,
 	accessKeyID, sessionToken string,
@@ -345,8 +354,13 @@ func (b *InMemoryBackend) ResolvePrincipal(
 		return nil, false
 	}
 
+	kind := awsmeta.PrincipalKindUser
+	if s.IsAssumedRole {
+		kind = awsmeta.PrincipalKindAssumedRole
+	}
+
 	return &awsmeta.Principal{
-		Kind:           awsmeta.PrincipalKindAssumedRole,
+		Kind:           kind,
 		Arn:            s.AssumedRoleArn,
 		AccountID:      s.AccountID,
 		SessionName:    s.SessionName,

@@ -84,6 +84,7 @@ func (b *InMemoryBackend) DeleteWorkflow(workflowID string) error {
 	}
 
 	b.workflows.Delete(workflowID)
+	delete(b.tagsStore, workflowARN(b.accountID, b.region, workflowID))
 
 	return nil
 }

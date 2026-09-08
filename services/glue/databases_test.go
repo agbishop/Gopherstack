@@ -99,6 +99,38 @@ func TestSortedGetDatabases(t *testing.T) {
 	assert.Equal(t, "gamma", dbs[2].Name)
 }
 
+// TestDeleteDatabase_CascadesUDFsAndTableChildren proves DeleteDatabase makes
+// the database's user-defined functions and every table's column statistics/
+// table optimizers unreachable too, matching the real DeleteDatabase's
+// documented contract (aws-sdk-go-v2/service/glue@v1.152.0
+// api_op_DeleteDatabase.go: "you no longer have access to the tables ... and
+// the user-defined functions in the deleted database").
+func TestDeleteDatabase_CascadesUDFsAndTableChildren(t *testing.T) {
+	t.Parallel()
+
+	b := glue.NewInMemoryBackend("000000000000", "us-east-1")
+	_, err := b.CreateDatabase(glue.DatabaseInput{Name: "db"}, nil)
+	require.NoError(t, err)
+	_, err = b.CreateTable("db", glue.TableInput{Name: "tbl"})
+	require.NoError(t, err)
+	_, err = b.CreateUserDefinedFunction("db", glue.UserDefinedFunction{FunctionName: "fn"}, nil)
+	require.NoError(t, err)
+	require.NoError(t, b.UpdateColumnStatisticsForTable(
+		"db", "tbl", []*glue.ColumnStatistics{{ColumnName: "col", ColumnType: "string"}},
+	))
+
+	require.Equal(t, 1, glue.UDFCount(b))
+	require.Equal(t, 1, glue.TableColumnStatsCount(b))
+
+	require.NoError(t, b.DeleteDatabase("db"))
+
+	assert.Zero(t, glue.UDFCount(b))
+	assert.Zero(t, glue.TableColumnStatsCount(b))
+
+	_, err = b.GetUserDefinedFunction("db", "fn")
+	assert.ErrorIs(t, err, glue.ErrNotFound)
+}
+
 func TestHandlerSnapshotRestore(t *testing.T) {
 	t.Parallel()
 

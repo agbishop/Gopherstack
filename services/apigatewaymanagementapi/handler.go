@@ -221,8 +221,7 @@ func (h *Handler) handlePostToConnection(c *echo.Context, connectionID string) e
 
 	body, readErr := io.ReadAll(c.Request().Body)
 	if readErr != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(readErr, &maxBytesErr) {
+		if _, ok := errors.AsType[*http.MaxBytesError](readErr); ok {
 			return writePayloadTooLargeException(c, connectionID)
 		}
 

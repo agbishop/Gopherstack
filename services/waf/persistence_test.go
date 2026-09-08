@@ -84,7 +84,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	original.MarkChangeTokenUsed(staleToken)
 
 	token := original.GetChangeToken()
-	_ = original.GetChangeToken() // a second, still-PROVISIONED token
+	_ = original.GetChangeToken() // same outstanding token, still PROVISIONED, until consumed below
 
 	acl, err := original.CreateWebACL(
 		"acl1", "aclMetric", waf.WafAction{Type: "ALLOW"}, token, map[string]string{"env": "prod"},

@@ -32,7 +32,7 @@ func (b *InMemoryBackend) ouARN(orgID, ouID string) string {
 	return arn.Build("organizations", "", b.accountID, fmt.Sprintf("ou/%s/%s", orgID, ouID))
 }
 
-// policyARN builds an ARN for a policy.
+// policyARN builds an ARN for a customer-owned policy.
 func (b *InMemoryBackend) policyARN(orgID, policyType, policyID string) string {
 	return fmt.Sprintf(
 		"arn:aws:organizations::%s:policy/%s/%s/%s",
@@ -41,6 +41,15 @@ func (b *InMemoryBackend) policyARN(orgID, policyType, policyID string) string {
 		policyType,
 		policyID,
 	)
+}
+
+// awsManagedPolicyARN builds an ARN for an AWS-owned policy (e.g. the default
+// FullAWSAccess SCP): "aws" authority, no account or org segment. Verified
+// against botocore's PolicyArn pattern (organizations api-2.json), which
+// offers exactly two alternatives -- the customer-owned shape policyARN
+// builds, and this one.
+func (b *InMemoryBackend) awsManagedPolicyARN(policyType, policyID string) string {
+	return fmt.Sprintf("arn:aws:organizations::aws:policy/%s/%s", policyType, policyID)
 }
 
 // resourcePolicyARN builds an ARN for the organization resource policy.

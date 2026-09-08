@@ -115,6 +115,38 @@ func TestHandler_TrialComponent_Lifecycle(t *testing.T) {
 	assert.Equal(t, http.StatusOK, recDelete.Code)
 }
 
+// TestHandler_DeleteTrialComponent_Associated asserts DeleteTrialComponent
+// rejects a trial component that is still associated with a trial
+// (api_op_DeleteTrialComponent.go: "A trial component must be disassociated
+// from all trials before the trial component can be deleted.").
+func TestHandler_DeleteTrialComponent_Associated(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doSageMakerRequest(t, h, "CreateExperiment", map[string]any{"ExperimentName": "exp-tc"})
+	doSageMakerRequest(t, h, "CreateTrial", map[string]any{"TrialName": "trial-tc", "ExperimentName": "exp-tc"})
+	doSageMakerRequest(t, h, "CreateTrialComponent", map[string]any{"TrialComponentName": "tc-assoc"})
+	doSageMakerRequest(t, h, "AssociateTrialComponent", map[string]any{
+		"TrialName": "trial-tc", "TrialComponentName": "tc-assoc",
+	})
+
+	recEarly := doSageMakerRequest(t, h, "DeleteTrialComponent", map[string]any{
+		"TrialComponentName": "tc-assoc",
+	})
+	assert.Equal(t, http.StatusBadRequest, recEarly.Code)
+
+	recDisassociate := doSageMakerRequest(t, h, "DisassociateTrialComponent", map[string]any{
+		"TrialName": "trial-tc", "TrialComponentName": "tc-assoc",
+	})
+	require.Equal(t, http.StatusOK, recDisassociate.Code)
+
+	recDelete := doSageMakerRequest(t, h, "DeleteTrialComponent", map[string]any{
+		"TrialComponentName": "tc-assoc",
+	})
+	assert.Equal(t, http.StatusOK, recDelete.Code)
+}
+
 func TestHandler_UpdateTrialComponent(t *testing.T) {
 	t.Parallel()
 

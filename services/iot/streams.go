@@ -131,6 +131,7 @@ func (b *InMemoryBackend) DeleteStream(id string) error {
 		return fmt.Errorf("stream %q not found: %w", id, ErrResourceNotFound)
 	}
 	b.streams.Delete(id)
+	delete(b.resourceTags, b.streamARN(id))
 
 	return nil
 }

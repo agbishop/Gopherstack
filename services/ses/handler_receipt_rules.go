@@ -4,6 +4,7 @@ import (
 	"encoding/xml"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 func (h *Handler) handleCreateReceiptRule(vals url.Values, reqID string) (any, error) {
@@ -102,6 +103,23 @@ func (h *Handler) handleDeleteReceiptRule(vals url.Values, reqID string) (any, e
 	return &deleteReceiptRuleResponse{Xmlns: sesXMLNS, RequestID: reqID}, nil
 }
 
+// hasPrefixedKey reports whether any key in vals starts with prefix. Used by
+// parseReceiptActions to detect which action type was submitted for a given
+// Rule.Actions.member.N slot: detection must not key off a single "known"
+// subfield (e.g. S3Action.BucketName), because a submission that names the
+// action type but omits that field (a required member with an empty value)
+// would otherwise look identical to "no action at this index" and be
+// silently dropped instead of reaching validateReceiptAction.
+func hasPrefixedKey(vals url.Values, prefix string) bool {
+	for k := range vals {
+		if strings.HasPrefix(k, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // parseReceiptActions parses Rule.Actions.member.N.{ActionType}Action form values.
 func parseReceiptActions(vals url.Values, prefix string) []ReceiptAction {
 	var actions []ReceiptAction
@@ -113,37 +131,31 @@ func parseReceiptActions(vals url.Values, prefix string) []ReceiptAction {
 		var action ReceiptAction
 
 		switch {
-		case vals.Get(idx+".S3Action.BucketName") != "":
+		case hasPrefixedKey(vals, idx+".S3Action."):
 			action = ReceiptAction{
 				Type:         ReceiptActionTypeS3,
 				S3BucketName: vals.Get(idx + ".S3Action.BucketName"),
 				S3KeyPrefix:  vals.Get(idx + ".S3Action.ObjectKeyPrefix"),
 				S3TopicARN:   vals.Get(idx + ".S3Action.TopicArn"),
 			}
-		case vals.Get(idx+".SNSAction.TopicArn") != "":
+		case hasPrefixedKey(vals, idx+".SNSAction."):
 			action = ReceiptAction{
 				Type:        ReceiptActionTypeSNS,
 				SNSTopicARN: vals.Get(idx + ".SNSAction.TopicArn"),
 			}
-		case vals.Get(idx+".LambdaAction.FunctionArn") != "":
+		case hasPrefixedKey(vals, idx+".LambdaAction."):
 			action = ReceiptAction{
 				Type:              ReceiptActionTypeLambda,
 				LambdaFunctionARN: vals.Get(idx + ".LambdaAction.FunctionArn"),
 				LambdaTopicARN:    vals.Get(idx + ".LambdaAction.TopicArn"),
 			}
-		case vals.Get(idx+".SqsAction.QueueArn") != "":
-			action = ReceiptAction{
-				Type:        ReceiptActionTypeSQS,
-				SQSQueueARN: vals.Get(idx + ".SqsAction.QueueArn"),
-				SQSTopicARN: vals.Get(idx + ".SqsAction.TopicArn"),
-			}
-		case vals.Get(idx+".AddHeaderAction.HeaderName") != "":
+		case hasPrefixedKey(vals, idx+".AddHeaderAction."):
 			action = ReceiptAction{
 				Type:        ReceiptActionTypeAddHeader,
 				HeaderName:  vals.Get(idx + ".AddHeaderAction.HeaderName"),
 				HeaderValue: vals.Get(idx + ".AddHeaderAction.HeaderValue"),
 			}
-		case vals.Get(idx+".BounceAction.SmtpReplyCode") != "":
+		case hasPrefixedKey(vals, idx+".BounceAction."):
 			action = ReceiptAction{
 				Type:           ReceiptActionTypeBounce,
 				SMTPReplyCode:  vals.Get(idx + ".BounceAction.SmtpReplyCode"),
@@ -152,7 +164,7 @@ func parseReceiptActions(vals url.Values, prefix string) []ReceiptAction {
 				Sender:         vals.Get(idx + ".BounceAction.Sender"),
 				BounceTopicARN: vals.Get(idx + ".BounceAction.TopicArn"),
 			}
-		case vals.Get(idx+".StopAction.Scope") != "":
+		case hasPrefixedKey(vals, idx+".StopAction."):
 			action = ReceiptAction{
 				Type:           ReceiptActionTypeStop,
 				BounceTopicARN: vals.Get(idx + ".StopAction.TopicArn"),
@@ -204,8 +216,6 @@ func receiptActionToXML(a ReceiptAction) xmlReceiptAction {
 		x.SNSAction = &xmlSNSAction{TopicARN: a.SNSTopicARN}
 	case ReceiptActionTypeLambda:
 		x.LambdaAction = &xmlLambdaAction{FunctionARN: a.LambdaFunctionARN, TopicARN: a.LambdaTopicARN}
-	case ReceiptActionTypeSQS:
-		x.SqsAction = &xmlSQSAction{QueueARN: a.SQSQueueARN, TopicARN: a.SQSTopicARN}
 	case ReceiptActionTypeAddHeader:
 		x.AddHeaderAction = &xmlAddHeaderAction{HeaderName: a.HeaderName, HeaderValue: a.HeaderValue}
 	case ReceiptActionTypeBounce:
@@ -268,11 +278,6 @@ type xmlLambdaAction struct {
 	TopicARN    string `xml:"TopicArn,omitempty"`
 }
 
-type xmlSQSAction struct {
-	QueueARN string `xml:"QueueArn"`
-	TopicARN string `xml:"TopicArn,omitempty"`
-}
-
 type xmlAddHeaderAction struct {
 	HeaderName  string `xml:"HeaderName"`
 	HeaderValue string `xml:"HeaderValue"`
@@ -295,7 +300,6 @@ type xmlReceiptAction struct {
 	S3Action        *xmlS3Action        `xml:"S3Action,omitempty"`
 	SNSAction       *xmlSNSAction       `xml:"SNSAction,omitempty"`
 	LambdaAction    *xmlLambdaAction    `xml:"LambdaAction,omitempty"`
-	SqsAction       *xmlSQSAction       `xml:"SqsAction,omitempty"`
 	AddHeaderAction *xmlAddHeaderAction `xml:"AddHeaderAction,omitempty"`
 	BounceAction    *xmlBounceAction    `xml:"BounceAction,omitempty"`
 	StopAction      *xmlStopAction      `xml:"StopAction,omitempty"`

@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	iotanalyticssdk "github.com/aws/aws-sdk-go-v2/service/iotanalytics" //nolint:staticcheck // AWS has deprecated this service; gopherstack still supports it
 	iotanalyticstypes "github.com/aws/aws-sdk-go-v2/service/iotanalytics/types"
+	"github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -147,4 +148,92 @@ func TestUpdateDatastore_RawPartitionsFieldIgnored(t *testing.T) {
 	require.Equal(t, http.StatusOK, descRec.Code)
 	assert.NotContains(t, descRec.Body.String(), "shouldNotApply",
 		"UpdateDatastore must not accept a partitions field; real UpdateDatastoreInput has none")
+}
+
+// TestCreatePipeline_RequiresChannelAndDatastoreActivity proves gopherstack-2wb:
+// CreatePipelineInput.PipelineActivities is documented as "The list can be
+// 2-25 PipelineActivity objects and must contain both a channel and a
+// datastore activity. Each entry in the list must contain only one activity"
+// (api_op_CreatePipeline.go), but the real SDK's client-side validator
+// (validatePipelineActivity in validators.go) only checks each activity's own
+// required sub-fields, not this aggregate shape -- so a real typed client can
+// send a request missing the datastore activity entirely, and gopherstack
+// accepted it silently before this fix. Before the fix, all three subtests
+// below returned 200 instead of InvalidRequestException.
+//
+//nolint:staticcheck // iotanalytics is AWS-deprecated; gopherstack still emulates it
+func TestCreatePipeline_RequiresChannelAndDatastoreActivity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		activities []iotanalyticstypes.PipelineActivity
+	}{
+		{
+			name: "channel_only_missing_datastore",
+			activities: []iotanalyticstypes.PipelineActivity{
+				{Channel: &iotanalyticstypes.ChannelActivity{
+					Name: aws.String("ch_act"), ChannelName: aws.String("src"),
+				}},
+			},
+		},
+		{
+			name: "datastore_only_missing_channel",
+			activities: []iotanalyticstypes.PipelineActivity{
+				{Datastore: &iotanalyticstypes.DatastoreActivity{
+					Name: aws.String("ds_act"), DatastoreName: aws.String("sink"),
+				}},
+			},
+		},
+		{
+			name:       "empty_activities",
+			activities: []iotanalyticstypes.PipelineActivity{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := iotanalytics.NewHandler(iotanalytics.NewInMemoryBackend())
+			client := newTestIoTAnalyticsClient(t, h)
+
+			_, err := client.CreatePipeline(t.Context(), &iotanalyticssdk.CreatePipelineInput{
+				PipelineName:       aws.String("bad_pipe_" + tt.name),
+				PipelineActivities: tt.activities,
+			})
+			require.Error(t, err)
+
+			var apiErr smithy.APIError
+			require.ErrorAs(t, err, &apiErr)
+			assert.Equal(t, "InvalidRequestException", apiErr.ErrorCode())
+		})
+	}
+}
+
+// TestCreatePipeline_ChannelAndDatastoreActivity_Succeeds is the pass-after
+// companion to TestCreatePipeline_RequiresChannelAndDatastoreActivity: a
+// pipeline with exactly one channel and one datastore activity (the minimal
+// valid shape) must still succeed.
+//
+//nolint:staticcheck // iotanalytics is AWS-deprecated; gopherstack still emulates it
+func TestCreatePipeline_ChannelAndDatastoreActivity_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	h := iotanalytics.NewHandler(iotanalytics.NewInMemoryBackend())
+	client := newTestIoTAnalyticsClient(t, h)
+
+	out, err := client.CreatePipeline(t.Context(), &iotanalyticssdk.CreatePipelineInput{
+		PipelineName: aws.String("good_pipe"),
+		PipelineActivities: []iotanalyticstypes.PipelineActivity{
+			{Channel: &iotanalyticstypes.ChannelActivity{
+				Name: aws.String("ch_act"), ChannelName: aws.String("src"),
+			}},
+			{Datastore: &iotanalyticstypes.DatastoreActivity{
+				Name: aws.String("ds_act"), DatastoreName: aws.String("sink"),
+			}},
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "good_pipe", aws.ToString(out.PipelineName))
 }

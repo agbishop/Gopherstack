@@ -105,6 +105,55 @@ func TestDeleteCampaign_ReleasesVersionHistory(t *testing.T) {
 		"version entry must be removed after delete")
 }
 
+// TestDeleteCampaign_ReleasesActivities verifies that deleting a campaign
+// removes its campaignActivities entry (created unconditionally by
+// CreateCampaign) so the map does not grow without bound as campaigns churn.
+func TestDeleteCampaign_ReleasesActivities(t *testing.T) {
+	t.Parallel()
+
+	b := pinpoint.NewInMemoryBackend(leakRegion, leakAccountID)
+	app, err := b.CreateApp(leakRegion, leakAccountID, "campaign-activity-leak-app", nil)
+	require.NoError(t, err)
+
+	campaignID, err := pinpoint.CreateCampaignIDForTest(b, leakRegion, leakAccountID, app.ID)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, pinpoint.CampaignActivityCount(b, app.ID, campaignID),
+		"activity entry must exist after create")
+
+	_, err = b.DeleteCampaign(app.ID, campaignID)
+	require.NoError(t, err)
+
+	require.Equal(t, 0, pinpoint.CampaignActivityCount(b, app.ID, campaignID),
+		"activity entry must be removed after delete")
+}
+
+// TestDeleteJourney_ReleasesRuns verifies that deleting a journey removes its
+// journeyRuns entry (created when the journey is transitioned to ACTIVE) so
+// the map does not grow without bound as journeys churn.
+func TestDeleteJourney_ReleasesRuns(t *testing.T) {
+	t.Parallel()
+
+	b := pinpoint.NewInMemoryBackend(leakRegion, leakAccountID)
+	app, err := b.CreateApp(leakRegion, leakAccountID, "journey-run-leak-app", nil)
+	require.NoError(t, err)
+
+	journeyID, err := pinpoint.CreateJourneyIDForTest(b, leakRegion, leakAccountID, app.ID)
+	require.NoError(t, err)
+
+	_, err = b.UpdateJourneyState(app.ID, journeyID, "ACTIVE")
+	require.NoError(t, err)
+
+	require.Equal(t, 1, pinpoint.JourneyRunCount(b, app.ID, journeyID),
+		"run entry must exist after activation")
+
+	_, err = b.DeleteJourney(app.ID, journeyID)
+	require.NoError(t, err)
+
+	require.Equal(t, 0, pinpoint.JourneyRunCount(b, app.ID, journeyID),
+		"run entry must be removed after delete")
+}
+
 // TestDeleteSegment_ReleasesVersionHistory verifies that deleting a segment
 // removes its version history entry so the segmentVersions map returns to baseline.
 func TestDeleteSegment_ReleasesVersionHistory(t *testing.T) {

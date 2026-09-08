@@ -102,6 +102,13 @@ func (b *InMemoryBackend) DeleteGlobalCluster(_ context.Context, id string) (*Gl
 		)
 	}
 
+	if len(gc.GlobalClusterMembers) > 0 {
+		return nil, fmt.Errorf(
+			"%w: global cluster %s still has %d member cluster(s) attached, detach or delete them first",
+			ErrInvalidGlobalClusterState, id, len(gc.GlobalClusterMembers),
+		)
+	}
+
 	cp := copyGlobalCluster(gc)
 	b.globalClusters.Delete(id)
 

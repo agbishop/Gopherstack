@@ -273,6 +273,10 @@ func (b *InMemoryBackend) UpdateAcmeEndpoint(
 // ARNs are literally nested under the endpoint's), so leaving them behind as
 // orphans after the parent endpoint disappears would misrepresent gopherstack's
 // own resource-ownership model, not just the real API's.
+//
+// Unlike Describe/List/Update, Delete's deserializer declares no
+// ResourceNotFoundException -- a missing ARN is ErrInvalidParameter
+// (ValidationException), not ErrAcmeResourceNotFound -- gopherstack-ftkd.
 func (b *InMemoryBackend) DeleteAcmeEndpoint(ctx context.Context, epARN string) error {
 	region := getRegion(ctx, b.region)
 
@@ -281,15 +285,19 @@ func (b *InMemoryBackend) DeleteAcmeEndpoint(ctx context.Context, epARN string) 
 
 	ep, ok := b.endpoints.Get(epARN)
 	if !ok || ep.Region != region {
-		return fmt.Errorf("%w: ACME endpoint %s not found", ErrAcmeResourceNotFound, epARN)
+		return fmt.Errorf("%w: ACME endpoint %s not found", ErrInvalidParameter, epARN)
 	}
 
+	deletedEABs := make(map[string]struct{})
 	for _, eab := range b.eabsByEndpoint.Get(epARN) {
 		b.eabs.Delete(eab.ARN)
+		deletedEABs[eab.ARN] = struct{}{}
 	}
 
+	deletedDVs := make(map[string]struct{})
 	for _, dv := range b.domainValidationsByEndpoint.Get(epARN) {
 		b.domainValidations.Delete(dv.ARN)
+		deletedDVs[dv.ARN] = struct{}{}
 	}
 
 	for _, acct := range b.acmeAccountsByEndpoint.Get(epARN) {
@@ -298,9 +306,26 @@ func (b *InMemoryBackend) DeleteAcmeEndpoint(ctx context.Context, epARN string) 
 
 	b.endpoints.Delete(epARN)
 
+	// Drop idempotency-token entries for the endpoint itself and every
+	// EAB/domain-validation it just cascade-deleted, so those tokens do not
+	// sit orphaned (pointing at ARNs that no longer exist) until the
+	// janitor's next TTL sweep -- same reasoning as DeleteCertificate's own
+	// idempotency-entry cleanup.
 	for tok, entry := range b.endpointIdempotencyStore(region) {
 		if entry.ARN == epARN {
 			delete(b.endpointIdempotency[region], tok)
+		}
+	}
+
+	for tok, entry := range b.eabIdempotencyStore(region) {
+		if _, deleted := deletedEABs[entry.ARN]; deleted {
+			delete(b.eabIdempotency[region], tok)
+		}
+	}
+
+	for tok, entry := range b.domainValidationIdempotencyStore(region) {
+		if _, deleted := deletedDVs[entry.ARN]; deleted {
+			delete(b.domainValidationIdempotency[region], tok)
 		}
 	}
 

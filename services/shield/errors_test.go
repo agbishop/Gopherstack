@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/blackbirdworks/gopherstack/services/shield"
 )
 
 // wireErrorType decodes the __type field from an error response body.
@@ -97,4 +99,125 @@ func TestHandler_ErrorWireType_NoAssociatedRole(t *testing.T) {
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Equal(t, "NoAssociatedRoleException", wireErrorType(t, rec.Body.Bytes()))
+}
+
+// TestHandler_ErrorWireType_CreateProtectionGroupSubscriptionRequired verifies that, unlike
+// CreateProtection, CreateProtectionGroup without an active subscription reports the real Shield
+// "ResourceNotFoundException" __type, not "InvalidOperationException" -- CreateProtectionGroup's
+// error catalog (deserializers.go's deserializeOpErrorCreateProtectionGroup) declares
+// ResourceAlreadyExistsException/ResourceNotFoundException/LimitsExceededException/
+// OptimisticLockException/InvalidParameterException, but no InvalidOperationException at all
+// (gopherstack-g2l5).
+func TestHandler_ErrorWireType_CreateProtectionGroupSubscriptionRequired(t *testing.T) {
+	t.Parallel()
+
+	b := shield.NewInMemoryBackend(testAccountID, testRegion)
+	h := shield.NewHandler(b)
+
+	rec := doShieldRequest(t, h, "CreateProtectionGroup", map[string]any{
+		"ProtectionGroupId": "grp-1",
+		"Aggregation":       "SUM",
+		"Pattern":           "ALL",
+	})
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	wireType := wireErrorType(t, rec.Body.Bytes())
+	assert.Equal(t, "ResourceNotFoundException", wireType)
+	assert.NotEqual(t, "InvalidOperationException", wireType)
+	assert.Equal(t, 0, shield.ProtectionGroupCount(b), "no protection group should be created")
+}
+
+// TestHandler_ErrorWireType_TagResourceSubscriptionRequired verifies that, unlike CreateProtection,
+// TagResource without an active subscription reports the real Shield "ResourceNotFoundException"
+// __type, not "InvalidOperationException" -- TagResource's error catalog (deserializers.go's
+// deserializeOpErrorTagResource) declares InvalidResourceException/InvalidParameterException/
+// ResourceNotFoundException, but no InvalidOperationException at all (gopherstack-g2l5). Also
+// verifies the target protection's tags are left unmutated by the rejected request.
+func TestHandler_ErrorWireType_TagResourceSubscriptionRequired(t *testing.T) {
+	t.Parallel()
+
+	b := shield.NewInMemoryBackend(testAccountID, testRegion)
+	h := shield.NewHandler(b)
+	p := b.AddProtectionInternal("prot", eipARN("1"))
+
+	rec := doShieldRequest(t, h, "TagResource", map[string]any{
+		"ResourceARN": p.ProtectionArn,
+		"Tags":        []map[string]string{{"Key": "k", "Value": "v"}},
+	})
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	wireType := wireErrorType(t, rec.Body.Bytes())
+	assert.Equal(t, "ResourceNotFoundException", wireType)
+	assert.NotEqual(t, "InvalidOperationException", wireType)
+
+	got, err := b.DescribeProtection(p.ID, "")
+	require.NoError(t, err)
+	assert.Empty(t, got.Tags, "tags should not be applied when the request is rejected")
+}
+
+// TestHandler_ErrorWireType_ListAttacksInvalidPaginationToken verifies that, unlike ListProtections,
+// a malformed NextToken on ListAttacks reports the real Shield "InvalidParameterException" __type,
+// not "InvalidPaginationTokenException" -- ListAttacks's error catalog (deserializers.go's
+// deserializeOpErrorListAttacks) declares InvalidOperationException/InvalidParameterException, but
+// no InvalidPaginationTokenException at all, unlike ListProtections/ListProtectionGroups/
+// ListResourcesInProtectionGroup which do declare it (gopherstack-g2l5).
+func TestHandler_ErrorWireType_ListAttacksInvalidPaginationToken(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	require.NoError(t, h.Backend.CreateSubscription())
+
+	rec := doShieldRequest(t, h, "ListAttacks", map[string]any{
+		"NextToken": "not-valid-base64url!!!",
+	})
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	wireType := wireErrorType(t, rec.Body.Bytes())
+	assert.Equal(t, "InvalidParameterException", wireType)
+	assert.NotEqual(t, "InvalidPaginationTokenException", wireType)
+}
+
+// TestHandler_ErrorWireType_UpdateProtectionGroupMembersLimit verifies that, unlike
+// CreateProtectionGroup, exceeding the ARBITRARY-pattern member cap on UpdateProtectionGroup
+// reports the real Shield "InvalidParameterException" __type, not "LimitsExceededException" --
+// UpdateProtectionGroup's error catalog (deserializers.go's
+// deserializeOpErrorUpdateProtectionGroup) declares InvalidParameterException/
+// OptimisticLockException/ResourceNotFoundException, but no LimitsExceededException at all
+// (gopherstack-g2l5). Also verifies the group's members are left unmutated by the rejected update.
+func TestHandler_ErrorWireType_UpdateProtectionGroupMembersLimit(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	require.NoError(t, h.Backend.CreateSubscription())
+
+	rec := doShieldRequest(t, h, "CreateProtectionGroup", map[string]any{
+		"ProtectionGroupId": "grp-1",
+		"Aggregation":       "SUM",
+		"Pattern":           "ARBITRARY",
+		"Members":           []string{eipARN("1")},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	const maxMembers = 10000
+
+	members := make([]string, maxMembers+1)
+	for i := range members {
+		members[i] = eipARN(strconv.Itoa(i))
+	}
+
+	rec = doShieldRequest(t, h, "UpdateProtectionGroup", map[string]any{
+		"ProtectionGroupId": "grp-1",
+		"Aggregation":       "SUM",
+		"Pattern":           "ARBITRARY",
+		"Members":           members,
+	})
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	wireType := wireErrorType(t, rec.Body.Bytes())
+	assert.Equal(t, "InvalidParameterException", wireType)
+	assert.NotEqual(t, "LimitsExceededException", wireType)
+
+	pg, err := h.Backend.DescribeProtectionGroup("grp-1")
+	require.NoError(t, err)
+	assert.Equal(t, []string{eipARN("1")}, pg.Members, "members should not be updated when the request is rejected")
 }

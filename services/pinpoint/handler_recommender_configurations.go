@@ -90,6 +90,10 @@ func (h *Handler) handleCreateRecommenderConfiguration(c *echo.Context) error {
 		)
 	}
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	var req createRecommenderConfigRequest
 	if jsonErr := json.Unmarshal(body, &req); jsonErr != nil {
 		return writeErrorResponse(
@@ -220,6 +224,10 @@ func (h *Handler) handleUpdateRecommenderConfiguration(
 			"BadRequestException",
 			"failed to read request body",
 		)
+	}
+
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
 	}
 
 	var req createRecommenderConfigRequest

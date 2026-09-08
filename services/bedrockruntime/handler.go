@@ -102,8 +102,11 @@ func (h *Handler) StartWorker(ctx context.Context) error {
 
 	go func() {
 		defer close(done)
-		// Run janitor every hour.
-		h.Backend.RunJanitor(runCtx, time.Hour)
+		// Interval matches defaultAsyncInvokeCompletionDelay (janitor.go) so
+		// InProgress invocations advance to Completed close to that delay,
+		// not up to a full tick late -- the sibling services/bedrock janitor
+		// follows the same interval-matches-completion-delay pattern.
+		h.Backend.RunJanitor(runCtx, defaultAsyncInvokeCompletionDelay)
 	}()
 
 	return nil

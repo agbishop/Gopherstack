@@ -10,6 +10,54 @@ import (
 	"github.com/blackbirdworks/gopherstack/services/emrserverless"
 )
 
+// --- StartJobRun auto-start ---
+
+// TestStartJobRun_AutoStartsApplication verifies the documented default
+// behavior of aws-sdk-go-v2's types.AutoStartConfig.Enabled: "Enables the
+// application to automatically start on job submission. Defaults to true."
+// A job run submitted to a CREATED (never-started) application must leave
+// the application observably STARTED, not silently stale.
+func TestStartJobRun_AutoStartsApplication(t *testing.T) {
+	t.Parallel()
+
+	b := emrserverless.NewInMemoryBackend("111111111111", "us-east-1")
+	app, err := b.CreateApplication("autostart-app", "SPARK", "emr-6.9.0", "", nil)
+	require.NoError(t, err)
+	require.Equal(t, emrserverless.ApplicationStateCreated, app.State)
+
+	_, err = b.StartJobRun(app.ApplicationID, "arn:aws:iam::111111111111:role/exec", "job", "", nil)
+	require.NoError(t, err)
+
+	got, err := b.GetApplication(app.ApplicationID)
+	require.NoError(t, err)
+	assert.Equal(t, emrserverless.ApplicationStateStarted, got.State,
+		"StartJobRun must auto-start a non-STARTED application when autoStartConfiguration is not explicitly disabled")
+}
+
+// TestStartJobRun_RejectsWhenAutoStartDisabled verifies that explicitly
+// disabling autoStartConfiguration ("enabled": false) makes StartJobRun
+// reject a job run on a non-STARTED application instead of silently
+// starting it.
+func TestStartJobRun_RejectsWhenAutoStartDisabled(t *testing.T) {
+	t.Parallel()
+
+	b := emrserverless.NewInMemoryBackend("111111111111", "us-east-1")
+	opts := emrserverless.CreateApplicationOptions{
+		ExtraConfig: map[string]any{"autoStartConfiguration": map[string]any{"enabled": false}},
+	}
+	app, err := b.CreateApplication("no-autostart-app", "SPARK", "emr-6.9.0", "", nil, opts)
+	require.NoError(t, err)
+	require.Equal(t, emrserverless.ApplicationStateCreated, app.State)
+
+	_, err = b.StartJobRun(app.ApplicationID, "arn:aws:iam::111111111111:role/exec", "job", "", nil)
+	require.Error(t, err)
+
+	got, err := b.GetApplication(app.ApplicationID)
+	require.NoError(t, err)
+	assert.Equal(t, emrserverless.ApplicationStateCreated, got.State,
+		"a rejected StartJobRun must not mutate application state")
+}
+
 // --- StartJobRun client-token idempotency ---
 
 func TestStartJobRun_ClientTokenIdempotency(t *testing.T) {

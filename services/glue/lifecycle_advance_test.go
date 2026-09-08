@@ -214,3 +214,43 @@ func TestJobRunLiveState_RespectsLifecycleAdvance(t *testing.T) {
 		})
 	})
 }
+
+// TestBatchStopJobRun_AdvancesToStopped proves a stopped run reaches the real
+// terminal STOPPED state (glue@v1.152.0 types/enums.go JobRunStateStopped) on
+// its own, rather than sitting in STOPPING forever. AWS's StartJobRun/
+// BatchStopJobRun contract only ever transitions a run into STOPPING; the
+// backend itself is responsible for winding it down to STOPPED, the same way
+// it winds STARTING down to RUNNING and RUNNING down to SUCCEEDED.
+func TestBatchStopJobRun_AdvancesToStopped(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		b := glue.NewInMemoryBackend("000000000000", "us-east-1")
+		t.Cleanup(b.Close)
+
+		_, err := b.CreateJob(glue.Job{
+			Name:    "j",
+			Role:    "arn:aws:iam::000000000000:role/glue",
+			Command: glue.JobCommand{Name: "glueetl"},
+		})
+		require.NoError(t, err)
+
+		run, err := b.StartJobRun("j", nil)
+		require.NoError(t, err)
+
+		successes, errs := b.BatchStopJobRun("j", []string{run.ID})
+		require.Empty(t, errs)
+		require.Len(t, successes, 1)
+
+		got, err := b.GetJobRun("j", run.ID)
+		require.NoError(t, err)
+		require.Equal(t, "STOPPING", got.JobRunState)
+
+		time.Sleep(500 * time.Millisecond)
+
+		got, err = b.GetJobRun("j", run.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "STOPPED", got.JobRunState)
+		assert.NotZero(t, got.CompletedOn)
+	})
+}

@@ -163,6 +163,47 @@ func TestUpdateFindings(t *testing.T) {
 	})
 }
 
+// TestUpdateFindings_ByResourceArn verifies UpdateFindingsInput's resourceArn
+// (a real, independently optional wire field -- serializers.go:3312-3315 in
+// aws-sdk-go-v2/service/accessanalyzer@v1.51.4, guarded by its own `!= nil`
+// check, distinct from ids) selects findings when ids is omitted. The
+// handler previously never decoded "resourceArn" from the request body at
+// all, so a client that identified findings by resourceArn alone silently
+// updated nothing.
+func TestUpdateFindings_ByResourceArn(t *testing.T) {
+	t.Parallel()
+
+	b := accessanalyzer.NewInMemoryBackend("000000000000", "us-east-1")
+	h := accessanalyzer.NewHandler(b)
+
+	analyzerArn := mustAnalyzer(t, b, "update-findings-by-resource-analyzer")
+
+	target, err := b.AddFinding("update-findings-by-resource-analyzer",
+		"AWS::S3::Bucket", "arn:aws:s3:::target-bucket", nil, nil, nil)
+	require.NoError(t, err)
+
+	other, err := b.AddFinding("update-findings-by-resource-analyzer",
+		"AWS::S3::Bucket", "arn:aws:s3:::other-bucket", nil, nil, nil)
+	require.NoError(t, err)
+
+	rec := doRequest(t, h, http.MethodPut, "/finding", map[string]any{
+		"analyzerArn": analyzerArn,
+		"resourceArn": "arn:aws:s3:::target-bucket",
+		"status":      "ARCHIVED",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	got, err := b.GetFinding("update-findings-by-resource-analyzer", target.ID)
+	require.NoError(t, err)
+	assert.Equal(t, accessanalyzer.FindingStatusArchived, got.Status,
+		"resourceArn-only UpdateFindings must archive the matching finding")
+
+	untouched, err := b.GetFinding("update-findings-by-resource-analyzer", other.ID)
+	require.NoError(t, err)
+	assert.Equal(t, accessanalyzer.FindingStatusActive, untouched.Status,
+		"a finding for a different resource must be left alone")
+}
+
 // TestFindingV2Lifecycle verifies GetFindingV2 and ListFindingsV2.
 func TestFindingV2Lifecycle(t *testing.T) {
 	t.Parallel()

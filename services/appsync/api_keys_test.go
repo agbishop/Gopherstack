@@ -21,23 +21,22 @@ func TestCreateAPIKey_ExpiryDefaulted_WhenZero(t *testing.T) {
 	api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	// expires=0 → backend assigns default expiry (365 days from now).
+	// expires=0 → backend assigns default expiry (7 days from now).
 	key, err := b.CreateAPIKey(api.APIID, "test key", 0)
 	require.NoError(t, err)
 	assert.Positive(t, key.Expires, "expiry should be defaulted to a future timestamp")
 }
 
-func TestCreateAPIKey_ExpiryClampedToMax(t *testing.T) {
+func TestCreateAPIKey_ExpiryOutOfBounds_TooFarInFuture(t *testing.T) {
 	t.Parallel()
 
 	b := newTestBackend()
 	api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	// expires far in the future → clamped to max (365 days).
-	key, err := b.CreateAPIKey(api.APIID, "test key", 9999999999)
-	require.NoError(t, err)
-	assert.Positive(t, key.Expires, "expiry should be clamped to max")
+	// expires far in the future (> 365 days) → ApiKeyValidityOutOfBoundsException.
+	_, err = b.CreateAPIKey(api.APIID, "test key", 9999999999)
+	require.ErrorIs(t, err, appsync.ErrAPIKeyValidityOutOfBounds)
 }
 
 func TestUpdateAPIKey_ExpiryRoundTrip(t *testing.T) {
@@ -47,13 +46,15 @@ func TestUpdateAPIKey_ExpiryRoundTrip(t *testing.T) {
 	api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	key, err := b.CreateAPIKey(api.APIID, "initial desc", 1000)
+	initial := time.Now().AddDate(0, 0, 30).Unix()
+	key, err := b.CreateAPIKey(api.APIID, "initial desc", initial)
 	require.NoError(t, err)
 
-	updated, err := b.UpdateAPIKey(api.APIID, key.ID, "updated desc", 2000)
+	updatedExpiry := time.Now().AddDate(0, 0, 60).Unix()
+	updated, err := b.UpdateAPIKey(api.APIID, key.ID, "updated desc", updatedExpiry)
 	require.NoError(t, err)
 	assert.Equal(t, "updated desc", updated.Description)
-	assert.Equal(t, int64(2000), updated.Expires)
+	assert.Equal(t, updatedExpiry, updated.Expires)
 }
 
 func TestInMemoryBackend_CreateAPIKey_DefaultExpiry(t *testing.T) {
@@ -165,26 +166,36 @@ func TestInMemoryBackend_CreateAPIKey_MaxKeysLimit(t *testing.T) {
 		require.NoError(t, err, "key %d should succeed", i+1)
 	}
 
-	// 51st key should fail.
+	// 51st key should fail with the real ApiKeyLimitExceededException, not a
+	// generic BadRequestException.
 	_, err = b.CreateAPIKey(api.APIID, "key51", 0)
-	require.Error(t, err)
+	require.ErrorIs(t, err, appsync.ErrAPIKeyLimitExceeded)
 }
 
-func TestInMemoryBackend_CreateAPIKey_ExpiresCapToMaxDays(t *testing.T) {
+func TestInMemoryBackend_CreateAPIKey_ExpiresOutOfBounds_TooFarInFuture(t *testing.T) {
 	t.Parallel()
 
 	b := newTestBackend()
 	api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	// Set expires to 2 years from now (> 365 days).
+	// Set expires to 2 years from now (> 365 days) -> ApiKeyValidityOutOfBoundsException.
 	farFuture := time.Now().AddDate(2, 0, 0).Unix()
-	key, err := b.CreateAPIKey(api.APIID, "key1", farFuture)
+	_, err = b.CreateAPIKey(api.APIID, "key1", farFuture)
+	require.ErrorIs(t, err, appsync.ErrAPIKeyValidityOutOfBounds)
+}
+
+func TestInMemoryBackend_CreateAPIKey_ExpiresOutOfBounds_TooSoon(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	// Expires should be capped at 365 days.
-	maxExpires := time.Now().AddDate(0, 0, 365).Unix()
-	assert.LessOrEqual(t, key.Expires, maxExpires+60) // +60s tolerance
+	// Less than 1 day from now -> ApiKeyValidityOutOfBoundsException.
+	tooSoon := time.Now().Add(1 * time.Hour).Unix()
+	_, err = b.CreateAPIKey(api.APIID, "key1", tooSoon)
+	require.ErrorIs(t, err, appsync.ErrAPIKeyValidityOutOfBounds)
 }
 
 func TestInMemoryBackend_ListAPIKeys_FilterExpired(t *testing.T) {
@@ -194,10 +205,12 @@ func TestInMemoryBackend_ListAPIKeys_FilterExpired(t *testing.T) {
 	api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 	require.NoError(t, err)
 
-	// Create a key that expired in the past.
-	pastExpiry := time.Now().Add(-24 * time.Hour).Unix()
-	_, err = b.CreateAPIKey(api.APIID, "expired", pastExpiry)
+	// Real AWS's ApiKeyValidityOutOfBoundsException makes it impossible to
+	// create an already-expired key through the public API; simulate a key
+	// that has since aged past its expiry via the test-only setter.
+	expired, err := b.CreateAPIKey(api.APIID, "expired", 0)
 	require.NoError(t, err)
+	b.SetAPIKeyExpiry(api.APIID, expired.ID, time.Now().Add(-24*time.Hour).Unix())
 
 	// Create a valid key.
 	_, err = b.CreateAPIKey(api.APIID, "valid", 0)
@@ -210,7 +223,7 @@ func TestInMemoryBackend_ListAPIKeys_FilterExpired(t *testing.T) {
 	assert.Equal(t, "valid", keys[0].Description)
 }
 
-func TestInMemoryBackend_UpdateAPIKey_ExpiryCapEnforced(t *testing.T) {
+func TestInMemoryBackend_UpdateAPIKey_ExpiryOutOfBounds(t *testing.T) {
 	t.Parallel()
 
 	b := newTestBackend()
@@ -222,13 +235,8 @@ func TestInMemoryBackend_UpdateAPIKey_ExpiryCapEnforced(t *testing.T) {
 
 	// Attempt to update with an expiry far in the future (10 years).
 	farFuture := time.Now().AddDate(10, 0, 0).Unix()
-	updated, err := b.UpdateAPIKey(api.APIID, key.ID, "", farFuture)
-	require.NoError(t, err)
-
-	// Should be capped at 365 days from now.
-	maxAllowed := time.Now().AddDate(0, 0, 365).Unix()
-	assert.LessOrEqual(t, updated.Expires, maxAllowed+60, "expiry should be capped at 365 days")
-	assert.Greater(t, updated.Expires, maxAllowed-60, "expiry should be close to 365 days")
+	_, err = b.UpdateAPIKey(api.APIID, key.ID, "", farFuture)
+	require.ErrorIs(t, err, appsync.ErrAPIKeyValidityOutOfBounds)
 }
 
 func TestInMemoryBackend_UpdateAPIKey_ValidExpiryUnchanged(t *testing.T) {
@@ -269,13 +277,18 @@ func TestBackend_SweepExpiredAPIKeys(t *testing.T) {
 			wantKeyExists: false,
 		},
 		{
+			// A key can organically age past its expiry after creation, even
+			// though real AWS's ApiKeyValidityOutOfBoundsException makes it
+			// impossible to create one already expired via the public API --
+			// SetAPIKeyExpiry simulates that aging without waiting.
 			name: "expired_key_is_swept",
 			setup: func(b *appsync.InMemoryBackend) string {
 				api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 				require.NoError(t, err)
-				// Create a key that expires in the past.
-				_, err = b.CreateAPIKey(api.APIID, "expired", time.Now().Add(-1*time.Hour).Unix())
+
+				key, err := b.CreateAPIKey(api.APIID, "expired", 0)
 				require.NoError(t, err)
+				b.SetAPIKeyExpiry(api.APIID, key.ID, time.Now().Add(-1*time.Hour).Unix())
 
 				return api.APIID
 			},
@@ -288,7 +301,7 @@ func TestBackend_SweepExpiredAPIKeys(t *testing.T) {
 				api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 				require.NoError(t, err)
 				// Create a key that expires far in the future.
-				_, err = b.CreateAPIKey(api.APIID, "valid", time.Now().Add(24*time.Hour).Unix())
+				_, err = b.CreateAPIKey(api.APIID, "valid", time.Now().AddDate(0, 0, 2).Unix())
 				require.NoError(t, err)
 
 				return api.APIID
@@ -301,9 +314,12 @@ func TestBackend_SweepExpiredAPIKeys(t *testing.T) {
 			setup: func(b *appsync.InMemoryBackend) string {
 				api, err := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 				require.NoError(t, err)
-				_, err = b.CreateAPIKey(api.APIID, "expired", time.Now().Add(-1*time.Hour).Unix())
+
+				expired, err := b.CreateAPIKey(api.APIID, "expired", 0)
 				require.NoError(t, err)
-				_, err = b.CreateAPIKey(api.APIID, "valid", time.Now().Add(24*time.Hour).Unix())
+				b.SetAPIKeyExpiry(api.APIID, expired.ID, time.Now().Add(-1*time.Hour).Unix())
+
+				_, err = b.CreateAPIKey(api.APIID, "valid", time.Now().AddDate(0, 0, 2).Unix())
 				require.NoError(t, err)
 
 				return api.APIID

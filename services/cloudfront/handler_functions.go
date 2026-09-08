@@ -47,7 +47,7 @@ func (h *Handler) handleCreateFunction(c *echo.Context) error {
 		return xmlResp(c, http.StatusBadRequest, cfErrorXML("MalformedXML", "failed to read body"))
 	}
 
-	if qErr := validateQuantities(body); qErr != nil {
+	if qErr := validateFunctionConfigQuantities(body); qErr != nil {
 		return h.handleError(c, qErr)
 	}
 
@@ -207,7 +207,7 @@ func (h *Handler) handleUpdateFunction(c *echo.Context, name string) error {
 		return xmlResp(c, http.StatusBadRequest, cfErrorXML("MalformedXML", "failed to read body"))
 	}
 
-	if qErr := validateQuantities(body); qErr != nil {
+	if qErr := validateFunctionConfigQuantities(body); qErr != nil {
 		return h.handleError(c, qErr)
 	}
 

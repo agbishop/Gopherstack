@@ -6,7 +6,6 @@ import "context"
 
 type createScheduleGroupInput struct {
 	Name        string        `json:"Name"`
-	Description string        `json:"Description"`
 	ClientToken string        `json:"ClientToken,omitempty"`
 	Tags        []resourceTag `json:"Tags"`
 }
@@ -24,7 +23,7 @@ func (h *Handler) handleCreateScheduleGroup(
 		return &createScheduleGroupOutput{ScheduleGroupArn: arn}, nil
 	}
 
-	g, err := h.Backend.CreateScheduleGroup(ctx, in.Name, in.Description, tagsFromWire(in.Tags))
+	g, err := h.Backend.CreateScheduleGroup(ctx, in.Name, tagsFromWire(in.Tags))
 	if err != nil {
 		return nil, err
 	}
@@ -52,10 +51,10 @@ func (h *Handler) handleDeleteScheduleGroup(
 }
 
 // getScheduleGroupOutput mirrors real AWS's GetScheduleGroupOutput, which has no
-// Tags field (schedule group tags are only ever fetched via ListTagsForResource).
+// Tags or Description field (schedule group tags are only ever fetched via
+// ListTagsForResource; GetScheduleGroupOutput carries no Description member at all).
 type getScheduleGroupOutput struct {
 	Arn                  string  `json:"Arn"`
-	Description          string  `json:"Description,omitempty"`
 	Name                 string  `json:"Name"`
 	State                string  `json:"State"`
 	CreationDate         float64 `json:"CreationDate"`
@@ -75,7 +74,6 @@ func (h *Handler) handleGetScheduleGroup(
 		Arn:                  g.ARN,
 		CreationDate:         float64(g.CreationDate.Unix()),
 		LastModificationDate: float64(g.LastModificationDate.Unix()),
-		Description:          g.Description,
 		Name:                 g.Name,
 		State:                g.State,
 	}, nil

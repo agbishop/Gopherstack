@@ -259,10 +259,18 @@ func (b *InMemoryBackend) ListRegionalBuckets() []*OutpostsBucket {
 
 // ---- Bucket Replication ----
 
-// GetBucketReplication retrieves the replication configuration for an Outposts bucket.
+// GetBucketReplication retrieves the replication configuration for an
+// Outposts bucket. Requires the bucket to exist, like every other bucket
+// sub-resource Get in this file (GetBucketLifecycleConfiguration,
+// GetBucketPolicy, GetBucketTagging, GetBucketVersioning) -- this trio was
+// previously the only bucket sub-resource ops that skipped the check.
 func (b *InMemoryBackend) GetBucketReplication(bucketName string) (string, error) {
 	b.mu.RLock("GetBucketReplication")
 	defer b.mu.RUnlock()
+
+	if !b.outpostsBuckets.Has(bucketName) {
+		return "", fmt.Errorf("%w: %s", errBucketNotFound, bucketName)
+	}
 
 	cfg, ok := b.bucketReplication[bucketName]
 	if !ok {
@@ -272,20 +280,34 @@ func (b *InMemoryBackend) GetBucketReplication(bucketName string) (string, error
 	return cfg, nil
 }
 
-// PutBucketReplication stores a replication configuration for an Outposts bucket.
+// PutBucketReplication stores a replication configuration for an Outposts
+// bucket. Requires the bucket to exist, like PutBucketLifecycleConfiguration/
+// PutBucketPolicy/PutBucketTagging/PutBucketVersioning.
 func (b *InMemoryBackend) PutBucketReplication(bucketName, config string) error {
 	b.mu.Lock("PutBucketReplication")
 	defer b.mu.Unlock()
+
+	if !b.outpostsBuckets.Has(bucketName) {
+		return fmt.Errorf("%w: %s", errBucketNotFound, bucketName)
+	}
 
 	b.bucketReplication[bucketName] = config
 
 	return nil
 }
 
-// DeleteBucketReplication removes the replication configuration for an Outposts bucket.
+// DeleteBucketReplication removes the replication configuration for an
+// Outposts bucket. Requires the bucket to exist, like
+// DeleteBucketLifecycleConfiguration/DeleteBucketPolicy/DeleteBucketTagging;
+// idempotent when the bucket exists but never had a replication config set,
+// matching those same siblings.
 func (b *InMemoryBackend) DeleteBucketReplication(bucketName string) error {
 	b.mu.Lock("DeleteBucketReplication")
 	defer b.mu.Unlock()
+
+	if !b.outpostsBuckets.Has(bucketName) {
+		return fmt.Errorf("%w: %s", errBucketNotFound, bucketName)
+	}
 
 	delete(b.bucketReplication, bucketName)
 

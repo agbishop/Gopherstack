@@ -41,3 +41,17 @@ func PendingFlushCount(b *InMemoryBackend) int {
 
 	return total
 }
+
+// PollerCount returns the number of tracked Kinesis source poller cancel funcs across all
+// regions (for white-box testing that Reset/DeleteDeliveryStream do not leak pollers).
+func PollerCount(b *InMemoryBackend) int {
+	b.mu.RLock("PollerCount")
+	defer b.mu.RUnlock()
+
+	total := 0
+	for _, pollers := range b.pollerCancel {
+		total += len(pollers)
+	}
+
+	return total
+}

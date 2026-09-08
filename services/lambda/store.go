@@ -56,6 +56,15 @@ type QualifierDeleter interface {
 	DeleteFunctionVersion(name, qualifier string) error
 }
 
+// ImageURIResolver is an optional extension of StorageBackend that validates
+// a Code.ImageUri against a real ECR backend for Image package-type
+// functions (see ECRResolver in crossservice.go). InMemoryBackend always
+// implements this; ResolveImageURI returns true (accept) when cli.go has
+// not wired an ECRResolver in.
+type ImageURIResolver interface {
+	ResolveImageURI(imageURI string) bool
+}
+
 // S3CodeFetcher can retrieve zip bytes from an S3-compatible store.
 // It is used by InMemoryBackend to pull Zip Lambda code from S3.
 type S3CodeFetcher interface {
@@ -78,6 +87,7 @@ type DNSRegistrar interface {
 type InMemoryBackend struct {
 	cwLogs             CWLogsBackend
 	s3Fetcher          S3CodeFetcher
+	ecrResolver        ECRResolver
 	docker             container.Runtime
 	dnsRegistrar       DNSRegistrar
 	ctx                context.Context
@@ -331,6 +341,29 @@ func (b *InMemoryBackend) SetCWLogsBackend(cwl CWLogsBackend) {
 	b.mu.Lock("SetCWLogsBackend")
 	defer b.mu.Unlock()
 	b.cwLogs = cwl
+}
+
+// SetECRResolver wires the backend to validate Code.ImageUri against the
+// real services/ecr backend -- see ECRResolver's doc comment. Called by
+// cli.go's wireLambdaECR; nil (the default) skips validation.
+func (b *InMemoryBackend) SetECRResolver(r ECRResolver) {
+	b.mu.Lock("SetECRResolver")
+	defer b.mu.Unlock()
+	b.ecrResolver = r
+}
+
+// ResolveImageURI implements ImageURIResolver. It returns true (accept)
+// when no ECRResolver has been wired in.
+func (b *InMemoryBackend) ResolveImageURI(imageURI string) bool {
+	b.mu.RLock("ResolveImageURI")
+	resolver := b.ecrResolver
+	b.mu.RUnlock()
+
+	if resolver == nil {
+		return true
+	}
+
+	return resolver.ResolveImage(imageURI)
 }
 
 // SetKinesisPoller sets the event source poller for Kinesis stream polling.

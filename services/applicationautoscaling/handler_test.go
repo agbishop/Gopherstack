@@ -24,6 +24,11 @@ func newTestHandler(t *testing.T) *applicationautoscaling.Handler {
 	return applicationautoscaling.NewHandler(applicationautoscaling.NewInMemoryBackend("000000000000", "us-east-1"))
 }
 
+// int32p is a test helper for RegisterScalableTarget's *int32
+// MinCapacity/MaxCapacity parameters, which distinguish "not specified" (nil,
+// leaves the existing value unchanged on update) from an explicit value.
+func int32p(v int32) *int32 { return new(v) }
+
 func doRequest(t *testing.T, h *applicationautoscaling.Handler, action string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 
@@ -441,7 +446,7 @@ func TestHandler_Backend_Purge(t *testing.T) {
 
 	b := applicationautoscaling.NewInMemoryBackend("123456789012", "us-east-1")
 	_, err := b.RegisterScalableTarget(
-		"ecs", "service/default/my-svc", "ecs:service:DesiredCount", 1, 5, nil, "", nil,
+		"ecs", "service/default/my-svc", "ecs:service:DesiredCount", int32p(1), int32p(5), nil, "", nil,
 	)
 	require.NoError(t, err)
 

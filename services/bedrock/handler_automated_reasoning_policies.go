@@ -3,6 +3,7 @@ package bedrock
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v5"
@@ -777,7 +778,9 @@ func (h *Handler) handleUpdateAutomatedReasoningPolicy(c *echo.Context, policyAR
 }
 
 func (h *Handler) handleDeleteAutomatedReasoningPolicy(c *echo.Context, policyARN string) error {
-	if err := h.Backend.DeleteAutomatedReasoningPolicy(policyARN); err != nil {
+	force, _ := strconv.ParseBool(c.QueryParam("force"))
+
+	if err := h.Backend.DeleteAutomatedReasoningPolicy(policyARN, force); err != nil {
 		return h.writeError(c, err)
 	}
 

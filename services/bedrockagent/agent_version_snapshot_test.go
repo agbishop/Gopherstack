@@ -129,7 +129,10 @@ func TestDeleteAgentVersion_CascadesSubResources(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, agBefore, 1, "precondition: snapshot must exist before delete")
 
-	require.NoError(t, b.DeleteAgentVersion(ctx, agent.AgentID, version))
+	// skipResourceInUseCheck=true: alias still routes to version, and this
+	// test's concern is sub-resource cascade cleanup, not the in-use guard
+	// (see TestDeleteAgentVersion_BlockedWhileAliasReferencesIt for that).
+	require.NoError(t, b.DeleteAgentVersion(ctx, agent.AgentID, version, true))
 
 	agAfter, _, err := b.ListAgentActionGroups(ctx, agent.AgentID, version, 10, "")
 	require.NoError(t, err)

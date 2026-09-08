@@ -35,6 +35,29 @@ type FindingCriteria struct {
 	Criterion map[string]Condition `json:"criterion,omitempty"`
 }
 
+// conditionsFromRaw converts a Filter's stored raw findingCriteria (kept as
+// map[string]any for echo-back fidelity) into the typed map[string]Condition
+// matchesFindingCriteria expects, by round-tripping it through the same
+// {"criterion": {...}} wire shape ListFindings' typed FindingCriteria parses
+// directly.
+func conditionsFromRaw(raw map[string]any) map[string]Condition {
+	if len(raw) == 0 {
+		return nil
+	}
+
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+
+	var fc FindingCriteria
+	if unmarshalErr := json.Unmarshal(data, &fc); unmarshalErr != nil {
+		return nil
+	}
+
+	return fc.Criterion
+}
+
 // SortCriteria represents the sort ordering for ListFindings, matching
 // types.SortCriteria.
 type SortCriteria struct {

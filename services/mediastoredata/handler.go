@@ -556,7 +556,8 @@ func (h *Handler) writeError(c *echo.Context, err error) error {
 		return writeErrorJSON(c, http.StatusNotFound, "ObjectNotFoundException", err.Error())
 	case errors.Is(err, ErrInvalidPath),
 		errors.Is(err, ErrInvalidStorageClass),
-		errors.Is(err, ErrInvalidUploadAvailability):
+		errors.Is(err, ErrInvalidUploadAvailability),
+		errors.Is(err, ErrObjectTooLarge):
 		return writeErrorJSON(c, http.StatusBadRequest, "ValidationException", err.Error())
 	}
 

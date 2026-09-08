@@ -186,7 +186,7 @@ ops:
   UpdateDistributionWithStagingConfig: {wire: fixed, errors: fixed, state: ok, persist: n/a, note: "FIXED 2026-08-13 (gopherstack-ob1g): routing bug found while hardening this handler's discarded xml.Unmarshal error. Real wire is PUT /2020-05-31/distribution/{Id}/promote-staging-config with StagingDistributionId as a QUERY parameter, never a body field (serializers.go: awsRestxml_serializeOpUpdateDistributionWithStagingConfig's SplitURI and awsRestxml_serializeOpHttpBindingsUpdateDistributionWithStagingConfigInput's SetQuery call). The route table matched a bare \"/staging\" suffix instead, so every real client's PUT 404'd as NoSuchOperation. Since real clients never send a body, the (now-fixed) discarded xml.Unmarshal error itself was latent rather than an active wipe for real traffic -- the route was the blocking bug. Fixed both: route corrected to the real path, and the unmarshal error is now handled instead of discarded, guarding the pre-existing body-based fallback path some callers may still use for backward compatibility."}
   ListDomainConflicts: {wire: fixed, errors: fixed, state: ok, persist: n/a, note: "FIXED 2026-08-13 (gopherstack-ob1g): routing bug found while hardening this handler's discarded xml.Unmarshal error. Real path is /2020-05-31/domain-conflicts (plural; serializers.go: awsRestxml_serializeOpListDomainConflicts's SplitURI); the route table matched the singular \"domain-conflict\", so every real client's POST 404'd as NoSuchOperation. Root/field names (ListDomainConflictsRequest>Domain) were already correct. Fixed both: route corrected to the plural path, and the unmarshal error is now handled instead of discarded. CORRECTED 2026-08-13 (gopherstack-3izo): that pass's 'Root/field names were already correct' verification only checked Domain -- it missed that ListDomainConflictsInput has a SECOND independently-required member, DomainControlValidationResource (a types.DistributionResourceId identifying the distribution or distribution tenant whose certificate validates control of the domain; api_op_ListDomainConflicts.go:73-77), which the request struct dropped entirely. Real AWS scopes the conflict check to that resource (excludes it from its own conflict list, since it legitimately holds the domain's cert); gopherstack ignored the scope and returned every conflict for the domain globally, including the resource itself when it was the one claiming the domain -- wrong, not merely incomplete. Fixed: DomainControlValidationResource now parsed (nested DistributionId/DistributionTenantId, exactly one required -> InvalidArgument otherwise), both required members validated (missing Domain or missing DomainControlValidationResource -> InvalidArgument), the referenced resource's existence checked (EntityNotFound if neither a real distribution nor tenant, matching this op's own declared error switch, not the per-resource-type NoSuchDistribution/NoSuchDistributionTenant codes other ops use), and findDomainConflicts extended to exclude that resource from the results. Two pre-existing tests (TestListDomainConflicts_RealConflicts, TestListDomainConflicts_TableDriven) never sent DomainControlValidationResource at all (one even used a nonexistent-on-the-real-wire ?Domain= query fallback) and so encoded the global-scope bug as correct; both corrected to send real bodies and now also cover the self-exclusion scoping and the new validation errors. All new/changed cases fail against the pre-fix handler by reverting by hand."}
   UpdatePublicKey: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-13 (gopherstack-o31x, filed by gopherstack-ob1g): real UpdatePublicKey PUTs to /2020-05-31/public-key/{Id}/config (serializers.go: awsRestxml_serializeOpUpdatePublicKey's SplitURI), not the bare /public-key/{Id} path -- every real client call 404'd. parseCFResourcePath's public-key call site (handler_paths.go: parseCFPublicKeyRealtimePath) had updateOp and updateConfigOp backwards (bound to the bare path, left the /config-suffixed PUT unmatched). Fixed by swapping which argument carries the real op. Existing tests asserting the wrong bare-ID path were updated to the real /config path, not preserved -- a test asserting a 404-producing route is negative value. Verified against the real aws-sdk-go-v2 client (TestUpdatePublicKey_RealClient) and confirmed to fail against the pre-fix shape by reverting by hand."}
-  UpdateFieldLevelEncryptionConfig: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-13 (gopherstack-o31x, filed by gopherstack-ob1g): same bare-vs-/config bug as UpdatePublicKey. Real path is /2020-05-31/field-level-encryption/{Id}/config (serializers.go SplitURI). Fixed the same way (parseCFFieldLevelEncryptionPath's field-level-encryption call site); existing tests updated to the real path. Verified against the real aws-sdk-go-v2 client (TestUpdateFieldLevelEncryptionConfig_RealClient) and confirmed to fail against the pre-fix shape by reverting by hand."}
+  UpdateFieldLevelEncryptionConfig: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-13 (gopherstack-o31x, filed by gopherstack-ob1g): same bare-vs-/config bug as UpdatePublicKey. Real path is /2020-05-31/field-level-encryption/{Id}/config (serializers.go SplitURI). Fixed the same way (parseCFFieldLevelEncryptionPath's field-level-encryption call site); existing tests updated to the real path. Verified against the real aws-sdk-go-v2 client (TestUpdateFieldLevelEncryptionConfig_RealClient) and confirmed to fail against the pre-fix shape by reverting by hand. ALSO FIXED (gopherstack-kpk5, see Root cause C below): the CallerReference rename-collision check was removed from UpdateFieldLevelEncryption (field_level_encryption.go) since real AWS's declared error set for this op has no FieldLevelEncryptionConfigAlreadyExists at all (Create-only), so gopherstack was rejecting requests real AWS accepts."}
   UpdateFieldLevelEncryptionProfile: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-13 (gopherstack-o31x, filed by gopherstack-ob1g): same bare-vs-/config bug as UpdatePublicKey. Real path is /2020-05-31/field-level-encryption-profile/{Id}/config (serializers.go SplitURI). Fixed the same way (parseCFFieldLevelEncryptionPath's field-level-encryption-profile call site); existing tests updated to the real path. Verified against the real aws-sdk-go-v2 client (TestUpdateFieldLevelEncryptionProfile_RealClient) and confirmed to fail against the pre-fix shape by reverting by hand."}
 families:
   list_distributions_by: {status: fixed, note: "FIXED 2026-08-13 (gopherstack-o31x): all 12 ListDistributionsBy* ops (AnycastIpListId, CachePolicyId, ConnectionFunction, ConnectionMode, KeyGroup, OriginRequestPolicyId, OwnedResource, RealtimeLogConfig, ResponseHeadersPolicyId, TrustStore, VpcOriginId, WebACLId) were routed on a hyphenated \"distributions/by-x-id/{id}\" path with no real-SDK counterpart at all -- every real client call 404'd NoSuchOperation. Real paths are a single camelCase segment with no hyphens, e.g. \"/2020-05-31/distributionsByCachePolicyId/{CachePolicyId}\" (serializers.go SplitURI, verified per-op individually, cloudfront@v1.67.4). Beyond the path shape, several ops also had the wrong ID SOURCE: ByConnectionFunction and ByTrustStore carry their identifier as a query value with no URI label at all (ConnectionFunctionIdentifier/TrustStoreIdentifier), not a path segment; ByConnectionMode and ByOwnedResource carry theirs as a URI label, not a query value (gopherstack previously had this backwards for all four); ByRealtimeLogConfig carries its ARN/Name in the XML body (POST, root ListDistributionsByRealtimeLogConfigRequest), not a query value. Fixed by rewriting parseCFDistributionsByPath (handler_paths.go) to the real per-op path shapes and dispatchStubsDistributionListBy (handler_dispatch.go) to read each op's identifier from its real source; deleted the now-fully-dead hyphenated-path fallback code in parseCFMiscPathSimple/parseCFMiscPathByDistribution that duplicated the wrong shape. Verified against the real aws-sdk-go-v2 client for ByConnectionMode (field-level round-trip, TestListDistributionsByConnectionMode_RealClient) and ByRealtimeLogConfig (TestListDistributionsByRealtimeLogConfig_RealClient); the other 10 are covered by TestExtractOperation_SDKRouteTable's exhaustive method+path diff against every real op (see 'Full route-table audit' note below) but not individually round-tripped through a real client due to this pass's time budget."}
@@ -1233,3 +1233,303 @@ Gates (`services/cloudfront/` only, plus repo-wide `go vet`): `go build ./...` c
 `golangci-lint run ./services/cloudfront/...` 0 issues. No `nolint` directives in any file
 touched this batch (`handler_connection.go`, `handler_distributions.go`,
 `handler_distributions_test.go`, `handler_sdk_route_fixes_test.go`).
+
+## 2026-09-07: errtargetaudit class A sweep, 32 findings (gopherstack-lmkr)
+
+`cmd/errtargetaudit` flagged 32 class A findings for cloudfront (real code, present
+elsewhere in the SDK, emitted by an op whose own `deserializeOpError<Op>` never declares
+it) -- the second largest block in that campaign's corpus. All 32 traced to two root
+causes; only one was a real, fixable bug.
+
+**Error-response shape** (verified before touching anything, per this campaign's own
+mandate that CloudFront's protocol needs checking, not assumed): cloudfront is REST-XML.
+`awsRestxml_deserializeOpError<Op>` (cloudfront@v1.67.4 deserializers.go) reads the HTTP
+body via `awsxml.GetErrorResponseComponents`, then switches on `errorCode` against a
+`strings.EqualFold("<Code>", errorCode)` case list that is genuinely PER-OPERATION here
+(unlike this campaign's JSON-protocol services, where a thin per-op case list was the
+norm, cloudfront's real per-op case lists run into the dozens -- e.g. `CreateDistribution`
+declares 62 codes). The extraction pattern (`awk "/deserializeOpError<Op>\(/,/^}/" |
+grep -oE '"[A-Za-z0-9]+"'`) needed no adjustment for this protocol; scripted per op via a
+bash loop over the 32 op names, pasted below per finding. This repo's own error path
+(`services/cloudfront/handler_dispatch.go`'s `handleError`) renders
+`<ErrorResponse><Error><Type>Sender</Type><Code>%s</Code><Message>%s</Code></Error></ErrorResponse>`
+via `cfErrorXML`, matched against the SDK's `awsxml.GetErrorResponseComponents` shape.
+
+**Root cause A (27 findings, FALSE POSITIVE -- new class, not one of the 3 already known
+from sqs/kms): `checkQuantityNode`'s generic Quantity/Items walker
+(`services/cloudfront/quantity_validation.go`) runs against these ops' raw request bodies,
+but their real cloudfront@v1.67.4 wire shape never contains a `<X><Quantity>..</Quantity>
+<Items>..</Items></X>` pattern anywhere -- confirmed by mechanically walking every
+`awsRestxml_serialize(Op)?Document*` function transitively reachable from each op's own
+request serializer (depth-8 BFS over `serializers.go`, script below) and finding zero
+`Local: "Quantity"` elements at all, paired or not, for all 27. `validateQuantities` is
+therefore dead code for real client traffic to these ops -- unlike
+`CreateCloudFrontOriginAccessIdentity`'s pre-existing "harmless no-op for this shape" note
+above (same mechanism, already accepted convention in this file), just not yet
+individually called out for these 27. Left unchanged; no fix possible or needed since no
+real input can reach the mismatch branch.
+
+  Ops (27): `AssociateDistributionTenantWebACL AssociateDistributionWebACL
+  CreateAnycastIpList CreateConnectionGroup CreateDistributionTenant CreateKeyGroup
+  CreateKeyValueStore CreateMonitoringSubscription CreateOriginAccessControl
+  CreatePublicKey CreateRealtimeLogConfig CreateTrustStore ListDomainConflicts
+  PutResourcePolicy TagResource TestConnectionFunction UpdateAnycastIpList
+  UpdateConnectionGroup UpdateDistributionTenant UpdateDomainAssociation UpdateKeyGroup
+  UpdateKeyValueStore UpdateOriginAccessControl UpdatePublicKey UpdateRealtimeLogConfig
+  UpdateTrustStore VerifyDnsConfiguration`. (The tool's original single-cause 31-count
+  also included `CreateFunction UpdateFunction CreateConnectionFunction
+  UpdateConnectionFunction`, reclassified into root cause B below once the reachability
+  check distinguished them; 27 + 4 = 31, the tool's pre-fix total, and 27 + 1 (root cause
+  C) = 28, its post-fix total.)
+
+**Root cause B (4 findings, CONFIRMED and FIXED):** `CreateFunction`, `UpdateFunction`,
+`CreateConnectionFunction`, `UpdateConnectionFunction` all carry a real, genuinely
+reachable Quantity/Items pair -- `FunctionConfig.KeyValueStoreAssociations`
+(cloudfront@v1.67.4 types.go/serializers.go's
+`awsRestxml_serializeDocumentKeyValueStoreAssociations`: `Quantity *int32` +
+`Items []KeyValueStoreAssociation`) -- but none of the four ops' own declared error sets
+include `InconsistentQuantities`, only `InvalidArgument` (verified per-op, raw extraction
+below). A real client sending a mismatched `KeyValueStoreAssociations` therefore got the
+wrong wire code from `validateQuantities`' unconditional `ErrInconsistentQuantities`.
+Fixed: `services/cloudfront/quantity_validation.go`'s mismatch-finding logic was split out
+of the sentinel-wrapping (`findQuantityMismatch`/`quantityMismatchError`, unchanged
+behavior for all other ~40 `validateQuantities` call sites), and a new
+`validateFunctionConfigQuantities` wraps the same mismatch with `ErrValidation`
+("InvalidArgument") instead. The 4 handlers (`handler_functions.go:50,210`,
+`handler_connection.go:84,519`) now call it instead of `validateQuantities`; no other call
+site changed.
+
+**Root cause C (1 finding, CONFIRMED, FIXED 2026-09-08, gopherstack-kpk5):**
+`UpdateFieldLevelEncryptionConfig`'s rename-collision path (`field_level_encryption.go:182`
+pre-fix, `renameInIndex` failing) returned `FieldLevelEncryptionConfigAlreadyExists`, but
+that op's own declared error set (`AccessDenied IllegalUpdate InconsistentQuantities
+InvalidArgument InvalidIfMatchVersion NoSuchFieldLevelEncryptionConfig
+NoSuchFieldLevelEncryptionProfile PreconditionFailed QueryArgProfileEmpty
+TooManyFieldLevelEncryptionContentTypeProfiles TooManyFieldLevelEncryptionQueryArgProfiles
+UnknownError`) never includes it -- only `CreateFieldLevelEncryptionConfig` does. This IS
+reachable by a legitimate client (update an FLE config's `CallerReference` to one already
+used by another FLE config), so it was not a false positive -- and gopherstack-kpk5 (filed
+title-only as "emits IllegalUpdate for a Name collision that has no real-AWS analogue")
+turned out to be wrong about *which* code was emitted -- the code path actually emitted
+`FieldLevelEncryptionConfigAlreadyExists`, never `IllegalUpdate` -- but right about the
+conclusion: real AWS has no analogue for rejecting this Update at all, under any code.
+
+The original writeup here posed two candidate fixes ("silently allow it" vs. `IllegalUpdate`,
+this file's standing code for "not allowed on update") as an unresolved judgement call. A
+decisive cross-op comparison resolves it: `CreateDistribution`/`UpdateDistribution` declare
+`DistributionAlreadyExists` on Create only, and `CreateStreamingDistribution`/
+`UpdateStreamingDistribution` declare `StreamingDistributionAlreadyExists` on Create only --
+both real AWS ops with a `CallerReference`-bearing config, both showing the same
+Create-checks/Update-doesn't split as `FieldLevelEncryptionConfig`. The contrasting case,
+`UpdateFieldLevelEncryptionProfile`, *does* declare `FieldLevelEncryptionProfileAlreadyExists`
+in its own error set (botocore `cloudfront/2020-05-31/service-2.json`), and gopherstack's
+`renameInIndex` rejection for FLE *profiles* (`field_level_encryption.go:320`) was left
+untouched -- it is a correct, declared rejection, not this bug. Four real ops line up
+consistently: the two Distribution pairs and FLE profile's Update all confirm Create-time
+`CallerReference` collision detection is real but does not carry over to Update; only FLE
+*config's* Update was checking it anyway, wrongly. Fix: `UpdateFieldLevelEncryption`
+(`field_level_encryption.go`) no longer rejects a `CallerReference` rename that collides
+with another config -- it moves the `fieldLevelEncryptionByName` index entry unconditionally
+instead of failing when the target name is taken. `IllegalUpdate` was never a fit either:
+its own doc comment ("The update contains modifications that are not allowed.",
+aws-sdk-go-v2 cloudfront@v1.67.4 `types/errors.go:795`) describes disallowed *field*
+mutations (e.g. changing an immutable public key field), not a collision with another
+resource's identity -- so neither the code gopherstack was actually emitting nor the code
+its own title alleged was the right fix; removing the rejection was.
+
+Regression: `TestUpdateFieldLevelEncryptionConfig_CallerReferenceCollisionAllowed`
+(`handler_field_level_encryption_test.go`) creates two FLE configs, renames the second's
+`CallerReference` onto the first's, and pins the actual wire response -- `200 OK` with the
+new `CallerReference` echoed back, and asserts the body contains neither
+`FieldLevelEncryptionConfigAlreadyExists` nor `IllegalUpdate` -- not merely "no error".
+Confirmed to fail with `409 FieldLevelEncryptionConfigAlreadyExists` against the pre-fix
+code before the fix landed.
+
+**Follow-up (CONFIRMED, FIXED 2026-09-08, gopherstack-lt9v):** the gopherstack-kpk5 fix above
+left `fieldLevelEncryptionByName` as a unique `map[string]string` (name -> ID) even though it
+now must represent two FLE configs sharing a `CallerReference`. Reproduced: create A
+(name="nameA") and B (name="nameB"); rename B onto "nameA" (`index["nameA"]` now points at B,
+A's entry is gone); delete A (`DeleteFieldLevelEncryption` did `delete(index, A.Name)` ==
+`delete(index, "nameA")`, wiping B's entry too); create C with name="nameA" then succeeded,
+even though B still held it and `CreateFieldLevelEncryptionConfig` does declare
+`FieldLevelEncryptionConfigAlreadyExists` (cloudfront@v1.67.4 deserializers.go:2898
+`awsRestxml_deserializeOpErrorCreateFieldLevelEncryptionConfig`), unlike Update. The index was
+also captured/restored in `persistence.go`, so a stale entry could survive a snapshot round
+trip. Fix: dropped `fieldLevelEncryptionByName` entirely (`store.go`, `persistence.go`,
+`store_setup.go`) -- `CreateFieldLevelEncryption` (`field_level_encryption.go`) now checks
+collisions with `fleNameInUse`, an O(n) scan of `fieldLevelEncryptions` for a matching `Name`;
+this table exists only for the create-time check and rename bookkeeping, and removing the
+index (rather than turning it into a `name -> []id` multimap) means there is no longer an
+index for a snapshot round trip to leave stale. `UpdateFieldLevelEncryption` and
+`DeleteFieldLevelEncryption` no longer touch any name index. Verified
+`UpdateFieldLevelEncryptionProfile`'s rejection is unaffected and correct: its declared error
+set (deserializers.go:24257 `awsRestxml_deserializeOpErrorUpdateFieldLevelEncryptionProfile`)
+does include `FieldLevelEncryptionProfileAlreadyExists`, so two profiles genuinely can never
+share a name and `renameInIndex` on `fieldLevelEncryptionProfileByName` (unchanged) is correct.
+
+Regression:
+`TestCreateFieldLevelEncryptionConfig_CallerReferenceCollisionAfterDelete` reproduces the
+exact sequence above through the HTTP handler and pins `409` with
+`FieldLevelEncryptionConfigAlreadyExists` on the wire;
+`TestFieldLevelEncryption_NameSurvivesDeleteOfOriginalOwner` covers the same collision and a
+second case (the surviving config stays `Get`-able and still protects its name) at the backend
+level via `ErrorIs(err, ErrFLEAlreadyExists)`;
+`TestPersistenceRoundTrip_FieldLevelEncryptionSharedCallerReference`
+(`persistence_test.go`) proves two configs sharing a `CallerReference` both survive a
+Snapshot/Restore round trip and the collision check still works, both before and after
+deleting the original owner. All three failed against the pre-fix code (create C succeeded
+with `err=nil` / `201`).
+
+**Verdict table** (all 32; raw extraction is `awk "/deserializeOpError<Op>\(/,/^}/"
+deserializers.go | grep -oE '"[A-Za-z0-9]+"' | sort -u`, scripted per op in a bash loop):
+
+| op | code | verdict | class |
+|---|---|---|---|
+| AssociateDistributionTenantWebACL | InconsistentQuantities | FALSE POSITIVE | A: unreachable, no Quantity/Items in real wire shape (declared: AccessDenied, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
+| AssociateDistributionWebACL | InconsistentQuantities | FALSE POSITIVE | A (same declared set as above) |
+| CreateAnycastIpList | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, InvalidArgument, InvalidTagging, UnknownError, UnsupportedOperation) |
+| CreateConnectionGroup | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidTagging, UnknownError) |
+| CreateConnectionFunction | InconsistentQuantities | CONFIRMED, FIXED | B: real KeyValueStoreAssociations pair, wrong code -> now InvalidArgument (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntitySizeLimitExceeded, InvalidArgument, InvalidTagging, UnknownError, UnsupportedOperation) |
+| CreateDistributionTenant | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, CNAMEAlreadyExists, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidAssociation, InvalidTagging, UnknownError) |
+| CreateFunction | InconsistentQuantities | CONFIRMED, FIXED | B (declared: FunctionAlreadyExists, FunctionSizeLimitExceeded, InvalidArgument, TooManyFunctions, UnsupportedOperation, UnknownError) |
+| CreateKeyGroup | InconsistentQuantities | FALSE POSITIVE | A: KeyGroupConfig has Items but no Quantity element at all (declared: InvalidArgument, KeyGroupAlreadyExists, TooManyKeyGroups, TooManyPublicKeysInKeyGroup, UnknownError) |
+| CreateKeyValueStore | InconsistentQuantities | FALSE POSITIVE | A: no Quantity/Items in shape (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntitySizeLimitExceeded, InvalidArgument, UnknownError, UnsupportedOperation) |
+| CreateMonitoringSubscription | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, MonitoringSubscriptionAlreadyExists, NoSuchDistribution, UnknownError, UnsupportedOperation) |
+| CreateOriginAccessControl | InconsistentQuantities | FALSE POSITIVE | A (declared: InvalidArgument, OriginAccessControlAlreadyExists, TooManyOriginAccessControls, UnknownError) |
+| CreatePublicKey | InconsistentQuantities | FALSE POSITIVE | A (declared: InvalidArgument, PublicKeyAlreadyExists, TooManyPublicKeys, UnknownError) |
+| CreateRealtimeLogConfig | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, InvalidArgument, RealtimeLogConfigAlreadyExists, TooManyRealtimeLogConfigs, UnknownError) |
+| CreateTrustStore | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidTagging, UnknownError) |
+| ListDomainConflicts | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, UnknownError) |
+| PutResourcePolicy | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, IllegalUpdate, InvalidArgument, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| TagResource | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, InvalidArgument, InvalidTagging, NoSuchResource, UnknownError) |
+| TestConnectionFunction | InconsistentQuantities | FALSE POSITIVE | A: request is Stage/EventObject, no FunctionConfig at all (declared: EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, TestFunctionFailed, UnknownError, UnsupportedOperation) |
+| UpdateAnycastIpList | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| UpdateConnectionFunction | InconsistentQuantities | CONFIRMED, FIXED | B (declared: AccessDenied, EntityNotFound, EntitySizeLimitExceeded, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| UpdateConnectionGroup | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, ResourceInUse, UnknownError) |
+| UpdateDistributionTenant | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, CNAMEAlreadyExists, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidAssociation, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
+| UpdateDomainAssociation | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, IllegalUpdate, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
+| UpdateFieldLevelEncryptionConfig | FieldLevelEncryptionConfigAlreadyExists | CONFIRMED, FIXED (gopherstack-kpk5) | C: reachable, rejection removed -- real AWS has no CallerReference-collision check on Update at all (declared: AccessDenied, IllegalUpdate, InconsistentQuantities, InvalidArgument, InvalidIfMatchVersion, NoSuchFieldLevelEncryptionConfig, NoSuchFieldLevelEncryptionProfile, PreconditionFailed, QueryArgProfileEmpty, TooManyFieldLevelEncryptionContentTypeProfiles, TooManyFieldLevelEncryptionQueryArgProfiles, UnknownError) |
+| UpdateFunction | InconsistentQuantities | CONFIRMED, FIXED | B (declared: FunctionSizeLimitExceeded, InvalidArgument, InvalidIfMatchVersion, NoSuchFunctionExists, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| UpdateKeyGroup | InconsistentQuantities | FALSE POSITIVE | A (declared: InvalidArgument, InvalidIfMatchVersion, KeyGroupAlreadyExists, NoSuchResource, PreconditionFailed, TooManyPublicKeysInKeyGroup, UnknownError) |
+| UpdateKeyValueStore | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError, UnsupportedOperation) |
+| UpdateOriginAccessControl | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, IllegalUpdate, InvalidArgument, InvalidIfMatchVersion, NoSuchOriginAccessControl, OriginAccessControlAlreadyExists, PreconditionFailed, UnknownError) |
+| UpdatePublicKey | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, CannotChangeImmutablePublicKeyFields, IllegalUpdate, InvalidArgument, InvalidIfMatchVersion, NoSuchPublicKey, PreconditionFailed, UnknownError) |
+| UpdateRealtimeLogConfig | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, InvalidArgument, NoSuchRealtimeLogConfig, UnknownError) |
+| UpdateTrustStore | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
+| VerifyDnsConfiguration | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, UnknownError) |
+
+**Files changed:** `services/cloudfront/quantity_validation.go` (split
+`findQuantityMismatch`/`quantityMismatchError` out of `validateQuantities`; added
+`validateFunctionConfigQuantities`), `services/cloudfront/handler_functions.go` (2 call
+sites: `handleCreateFunction`, `handleUpdateFunction`),
+`services/cloudfront/handler_connection.go` (2 call sites:
+`handleCreateConnectionFunction`, `handleUpdateConnectionFunction`), new
+`services/cloudfront/function_config_quantities_test.go`.
+
+**Tests** (`Test_FunctionConfigQuantities_WrongCode`, table-driven, 5 subtests): each
+mismatch subtest drives the real HTTP handler with a `KeyValueStoreAssociations`
+`Quantity`/`Items` mismatch, asserts the XML response `<Code>` is `InvalidArgument` (not
+`InconsistentQuantities`), and asserts the resource was neither created (`ListFunctions`/
+`ListConnectionFunctions` empty) nor mutated (`GetFunction`/`GetConnectionFunction` ETag
+and Comment unchanged); one control subtest (`create_function_match_control_created`)
+proves a consistent `Quantity`/`Items` pair still succeeds. `Test_InconsistentQuantities_
+EndToEnd` (pre-existing, unmodified) already covers the "an op that legitimately still
+emits `InconsistentQuantities`" side for this shared mechanism (`CreateDistribution`,
+`CreateCachePolicy`, `CreateInvalidation`, `CreateResponseHeadersPolicy`) -- none of those
+ops are in this fix's scope, so no pre-existing test needed correcting.
+
+**Neuter results** (each change reverted individually, confirmed to compile, confirmed a
+test then fails, then restored):
+| line | compiles reverted? | failing test |
+|---|---|---|
+| `handler_functions.go:50` (`validateFunctionConfigQuantities`->`validateQuantities`) | yes | `create_function_mismatch_invalid_argument_not_created` |
+| `handler_functions.go:210` (same swap) | yes | `update_function_mismatch_invalid_argument_not_mutated` |
+| `handler_connection.go:84` (same swap) | yes | `create_connection_function_mismatch_invalid_argument_not_created` |
+| `handler_connection.go:519` (same swap) | yes | `update_connection_function_mismatch_invalid_argument_not_mutated` |
+| `quantity_validation.go`'s `validateFunctionConfigQuantities` sentinel (`ErrValidation`->`ErrInconsistentQuantities`) | yes | all 3 mismatch subtests (control subtest still passes, as expected) |
+
+Pre-existing tests corrected: none (`Test_InconsistentQuantities_EndToEnd` was already
+driving the HTTP handler and asserting on the rendered `<Code>`, not `errors.Is`, and
+covers only ops outside this fix's scope).
+
+Gates: `go test -race -count=1 ./services/cloudfront/...` ok (1.5s); `golangci-lint run
+services/cloudfront/...` 0 issues (after renaming `quantityMismatch`->
+`quantityMismatchError` for `errname` and switching both mismatch wraps to `%w: %w` for
+`errorlint` -- `fmt.Errorf` support for multiple `%w` verbs, Go 1.20+, confirmed unchanged
+`errors.Is` behavior against `errCodeMapping` by re-running the full suite).
+`cmd/errtargetaudit`'s cloudfront count dropped from 32 to 28 after the fix (27 root-cause-A
+false positives + the 1 root-cause-C ambiguous finding remain, exactly as expected -- the 4
+root-cause-B ops no longer appear).
+
+Fragile: root cause A's "unreachable" verdict rests on the BFS script's depth-8 traversal
+of `serializers.go`'s call graph; a future SDK bump that adds a genuine Quantity/Items
+field to one of those 27 ops' request shapes would silently re-arm `validateQuantities`
+for it with the correct code already in place (harmless), but would NOT itself flip that
+op's `deserializeOpError` case list to declare `InconsistentQuantities` -- worth re-running
+this audit after any cloudfront SDK version bump, not just trusting this file's snapshot.
+
+## 2026-09-08: xmlResp nil-on-write fall-through audit (gopherstack-lk0w) -- clean
+
+Companion to the elasticache fix (gopherstack-8haq): `xmlResp` wraps `c.Blob`, which
+returns `nil` after a successful write, so a helper that rejects via
+`return xmlResp(...)` and is called by a caller doing `if err := helper(...); err !=
+nil { return err }` hands that caller a `nil`, the guard never fires, and execution
+falls through past the rejection into whatever mutation follows. Unlike elasticache,
+cloudfront has no separate `xmlError` -- `xmlResp` (`handler.go:533`) is the only
+response writer, used for both success and error bodies alike.
+
+**Method (mechanical, not by eye).** A `go/parser`/`go/ast` script over every non-test
+`.go` file in this flat package (108 files, no subdirectories) did two passes:
+
+1. Parsed every `*ast.FuncDecl`, walked its body for a `return` statement whose sole
+   result is a direct call to `xmlResp` -- i.e. every function *capable* of handing a
+   caller this nil-disguised-as-rejection value. 328 call sites of `xmlResp` exist in
+   non-test code (all of them, verified separately, are exactly `return xmlResp(...)`
+   with no multi-value-return variant to miss); they resolve to exactly 160 functions
+   containing such a return.
+2. Cross-referenced that set against `handler_dispatch.go`'s switch-case targets (every
+   `return h.handleXxx(...)` inside a `case` there: 168 distinct functions in total).
+   152 of the 160 functions from step 1 are among those 168 dispatch targets, called
+   from exactly one place -- the dispatch switch itself, which uses the
+   `errNotDispatched`-sentinel/direct-`return` idiom throughout, never a bare
+   `if err != nil` guard with more work after it. A second script pass confirmed all
+   168 dispatch targets (not just the 152 subset) are called from nowhere else in the
+   package -- no dispatch target is ever also invoked as an internal helper by another
+   handler -- 0 hits.
+
+That leaves 8 non-dispatch-target functions capable of emitting the nil-disguised value:
+`handleWebACLAssociationError` (`handler_distributions.go:18`), `handleDomainAssociationError`
+(`handler_distribution_tenants.go:19`), `handleTagAPIError` (`handler_tags.go:17`),
+`marshalDistributionIDList` (`handler_distributions.go:866`), `marshalDistributionIDOwnerList`
+(`handler_distributions.go:902`), `writeDistributionList` (`handler_distributions.go:831`) --
+the six already spot-checked before this issue was filed -- plus two more this audit
+found and checked itself: `handleError` (`handler_dispatch.go:843`, the central error-to-XML
+mapper) and `dispatchStubsTenantAndCerts` (`handler_dispatch.go:703`, a dispatch
+sub-chain leaf whose `default` case falls through to `NoSuchOperation`, not a helper in
+the risky sense).
+
+**Verification, not trust.** For each of the 8, every call site in the package was
+grepped and read individually:
+
+- `handleError`: 261 call sites, all `return h.handleError(c, err)`. 0 exceptions.
+- `handleWebACLAssociationError`: 4 sites, all `return h.handleWebACLAssociationError(...)`.
+- `handleDomainAssociationError`: 1 site, `return h.handleDomainAssociationError(...)`.
+- `handleTagAPIError`: 3 sites, all `return h.handleTagAPIError(...)`.
+- `marshalDistributionIDList`: 5 sites, all `return h.marshalDistributionIDList(...)`.
+- `marshalDistributionIDOwnerList`: 1 site, `return h.marshalDistributionIDOwnerList(...)`.
+- `writeDistributionList`: 2 sites, both `return h.writeDistributionList(...)` (one via
+  `marshalDistributionList`, itself called only as `return h.marshalDistributionList(...)`
+  from its own 5 callers -- checked transitively, same result).
+- `dispatchStubsTenantAndCerts`: 1 site, `return h.dispatchStubsTenantAndCerts(...)`,
+  inside `dispatchStubsResourcePolicyAndMisc`'s own direct-return dispatch idiom.
+
+Every call site across all 8 functions uses the direct-`return` propagation shape;
+none stores the result in a variable and guards it with `if err != nil` followed by
+further work. **No instance of the broken shape exists in cloudfront.** The elasticache
+bug's precondition -- a helper whose rejection-writing return value is captured and
+checked, then followed by code that runs regardless -- does not occur anywhere in this
+package's 328 `xmlResp` call sites.
+
+No code changed as a result (a confirmed-clean audit, not a fix). Gates run to confirm
+the baseline: `golangci-lint run ./services/cloudfront/...` 0 issues; `go test -race
+-count=1 ./services/cloudfront/...` ok (1.6s); `go build ./test/integration/...` ok.

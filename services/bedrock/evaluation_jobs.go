@@ -170,12 +170,12 @@ func (b *InMemoryBackend) ListEvaluationJobs(in *ListEvaluationJobsInput) ([]*Ev
 		return jobs[i].JobArn < jobs[k].JobArn
 	})
 
-	nextToken := ""
+	maxResults, nextToken := 0, ""
 	if in != nil {
-		jobs, nextToken = paginateBedrockSlice(jobs, in.NextToken)
+		maxResults, nextToken = int(in.MaxResults), in.NextToken
 	}
 
-	return jobs, nextToken
+	return paginate(jobs, maxResults, nextToken)
 }
 
 // matchesEvaluationJobFilter reports whether an evaluation job satisfies the

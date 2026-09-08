@@ -1,9 +1,31 @@
 package codecommit
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/blackbirdworks/gopherstack/pkgs/awsmeta"
 )
+
+// isValidPullRequestEventType reports whether v is one of the nine
+// PullRequestEventType enum values (codecommit@v1.36.4 types/enums.go).
+func isValidPullRequestEventType(v string) bool {
+	switch v {
+	case "PULL_REQUEST_CREATED",
+		"PULL_REQUEST_STATUS_CHANGED",
+		"PULL_REQUEST_SOURCE_REFERENCE_UPDATED",
+		"PULL_REQUEST_MERGE_STATE_CHANGED",
+		"PULL_REQUEST_APPROVAL_RULE_CREATED",
+		"PULL_REQUEST_APPROVAL_RULE_UPDATED",
+		"PULL_REQUEST_APPROVAL_RULE_DELETED",
+		"PULL_REQUEST_APPROVAL_RULE_OVERRIDDEN",
+		"PULL_REQUEST_APPROVAL_STATE_CHANGED":
+		return true
+	}
+
+	return false
+}
 
 type pullRequestTargetInput struct {
 	RepositoryName       string `json:"repositoryName"`
@@ -127,7 +149,7 @@ func (h *Handler) handleListPullRequests(body []byte) (any, error) {
 	if in.PullRequestStatus != "" &&
 		in.PullRequestStatus != prStatusOpen &&
 		in.PullRequestStatus != prStatusClosed {
-		return nil, fmt.Errorf("%w: pullRequestStatus must be OPEN or CLOSED", ErrValidation)
+		return nil, fmt.Errorf("%w: pullRequestStatus must be OPEN or CLOSED", ErrInvalidPullRequestStatus)
 	}
 
 	ids, err := h.Backend.ListPullRequests(in.RepositoryName, in.PullRequestStatus, in.AuthorARN)
@@ -201,7 +223,14 @@ func (h *Handler) handleGetPullRequestOverrideState(body []byte) (any, error) {
 	}, nil
 }
 
-func (h *Handler) handleOverridePullRequestApprovalRules(body []byte) (any, error) {
+// handleOverridePullRequestApprovalRules records the resolved caller identity
+// (awsmeta.CallerArn, set onto ctx by cli.go's global principalMiddleware
+// before dispatch ever runs) as the override's actor, rather than the
+// hardcoded "" used previously -- OverridePullRequestApprovalRulesInput has
+// no client-supplied ARN field at all (codecommit@v1.36.4
+// api_op_OverridePullRequestApprovalRules.go): real AWS derives "who
+// overrode" purely from caller identity, same as gopherstack must.
+func (h *Handler) handleOverridePullRequestApprovalRules(ctx context.Context, body []byte) (any, error) {
 	var req struct {
 		PullRequestID  string `json:"pullRequestId"`
 		RevisionID     string `json:"revisionId"`
@@ -218,7 +247,9 @@ func (h *Handler) handleOverridePullRequestApprovalRules(body []byte) (any, erro
 		return nil, fmt.Errorf("%w: revisionId is required", errInvalidRequest)
 	}
 
-	return map[string]any{}, h.Backend.OverridePullRequestApprovalRules(req.PullRequestID, req.OverrideStatus, "")
+	actorARN := awsmeta.CallerArn(ctx)
+
+	return map[string]any{}, h.Backend.OverridePullRequestApprovalRules(req.PullRequestID, req.OverrideStatus, actorARN)
 }
 
 func (h *Handler) handleUpdatePullRequestApprovalState(body []byte) (any, error) {
@@ -279,7 +310,7 @@ func (h *Handler) handleUpdatePullRequestStatus(body []byte) (any, error) {
 		return nil, fmt.Errorf("%w: pullRequestId is required", errInvalidRequest)
 	}
 	if req.PullRequestStatus != prStatusOpen && req.PullRequestStatus != prStatusClosed {
-		return nil, fmt.Errorf("%w: pullRequestStatus must be OPEN or CLOSED", ErrValidation)
+		return nil, fmt.Errorf("%w: pullRequestStatus must be OPEN or CLOSED", ErrInvalidPullRequestStatus)
 	}
 
 	if err := h.Backend.UpdatePullRequestStatus(req.PullRequestID, req.PullRequestStatus); err != nil {
@@ -409,7 +440,9 @@ func (h *Handler) handleUpdatePullRequestApprovalRuleContent(body []byte) (any, 
 
 func (h *Handler) handleDescribePullRequestEvents(body []byte) (any, error) {
 	var req struct {
-		PullRequestID string `json:"pullRequestId"`
+		PullRequestID        string `json:"pullRequestId"`
+		PullRequestEventType string `json:"pullRequestEventType"`
+		ActorArn             string `json:"actorArn"`
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
@@ -417,8 +450,15 @@ func (h *Handler) handleDescribePullRequestEvents(body []byte) (any, error) {
 	if req.PullRequestID == "" {
 		return nil, fmt.Errorf("%w: pullRequestId is required", errInvalidRequest)
 	}
+	if req.PullRequestEventType != "" && !isValidPullRequestEventType(req.PullRequestEventType) {
+		return nil, fmt.Errorf("%w: pullRequestEventType %q is not a valid value",
+			ErrInvalidPullRequestEventType, req.PullRequestEventType)
+	}
+	if err := validateActorArn(req.ActorArn); err != nil {
+		return nil, err
+	}
 
-	events, err := h.Backend.DescribePullRequestEvents(req.PullRequestID)
+	events, err := h.Backend.DescribePullRequestEvents(req.PullRequestID, req.PullRequestEventType, req.ActorArn)
 	if err != nil {
 		return nil, err
 	}
@@ -428,6 +468,9 @@ func (h *Handler) handleDescribePullRequestEvents(body []byte) (any, error) {
 		wireEvents[i] = map[string]any{
 			"pullRequestEventType": e.PullRequestEventType,
 			"eventDate":            e.EventDate.Unix(),
+		}
+		if e.ActorARN != "" {
+			wireEvents[i]["actorArn"] = e.ActorARN
 		}
 	}
 

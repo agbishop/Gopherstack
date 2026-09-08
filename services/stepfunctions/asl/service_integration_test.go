@@ -258,7 +258,7 @@ func TestExecutor_SQS(t *testing.T) {
 				"States": {
 					"Send": {
 						"Type": "Task",
-						"Resource": "arn:aws:states:::sqs:sendMessage.sync",
+						"Resource": "arn:aws:states:::sqs:sendMessage",
 						"Parameters": {
 							"QueueUrl": "https://sqs.us-east-1.amazonaws.com/123/myqueue.fifo",
 							"MessageBody": "fifo msg",

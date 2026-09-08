@@ -14,6 +14,7 @@ type jsonEnhancedMonitoringReq struct {
 
 type jsonEnhancedMonitoringResp struct {
 	StreamName               string   `json:"StreamName"`
+	StreamARN                string   `json:"StreamARN"`
 	CurrentShardLevelMetrics []string `json:"CurrentShardLevelMetrics"`
 	DesiredShardLevelMetrics []string `json:"DesiredShardLevelMetrics"`
 }
@@ -40,6 +41,7 @@ func (h *Handler) handleEnableEnhancedMonitoring(
 
 	return jsonEnhancedMonitoringResp{
 		StreamName:               out.StreamName,
+		StreamARN:                out.StreamARN,
 		CurrentShardLevelMetrics: out.CurrentShardLevelMetrics,
 		DesiredShardLevelMetrics: out.DesiredShardLevelMetrics,
 	}, nil
@@ -67,6 +69,7 @@ func (h *Handler) handleDisableEnhancedMonitoring(
 
 	return jsonEnhancedMonitoringResp{
 		StreamName:               out.StreamName,
+		StreamARN:                out.StreamARN,
 		CurrentShardLevelMetrics: out.CurrentShardLevelMetrics,
 		DesiredShardLevelMetrics: out.DesiredShardLevelMetrics,
 	}, nil

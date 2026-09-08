@@ -119,14 +119,14 @@ families:
   ai_recommendation_job: {status: partial, note: "parity-4, new family. Field-diffed against api_op_{Create,Describe,Delete,Stop,List}AIRecommendationJob.go + types.AIRecommendationJobStatus/AIRecommendationJobSummary. Distinct from the older InferenceRecommendationsJob family (inference_recommendations_jobs.go) — different store, different wire shape, no shared state. PARTIAL for the same json.RawMessage-passthrough reason as ai_benchmark_job (ModelSource/OutputConfig/PerformanceTarget/ComputeSpec/InferenceSpecification), plus Recommendations ([]types.AIRecommendation) is intentionally always empty rather than fabricated — see gaps:."}
   ai_workload_config: {status: partial, note: "parity-4, new family. No status/lifecycle in the real API (DescribeAIWorkloadConfigOutput has no status field) — CRUD only. WorkloadSpec (wire field name AIWorkloadConfigs, confusingly same as the resource-family name)/DatasetConfig stored as json.RawMessage passthrough for the same reason as the two job families above. FIXED parity-24 (gopherstack-oc9v) — DescribeAIWorkloadConfigOutput.Tags ([]types.Tag, a JSON array of {Key,Value} objects) was being serialized from this backend's internal map[string]string Tags field directly, which encodes as a JSON object; a real aws-sdk-go-v2 client's []types.Tag deserializer rejects that outright. AIWorkloadConfig.MarshalJSON now shadows Tags with toTagObjects(c.Tags), proven via a real-SDK-client test. The 4 anonymous request structs in handler_ai_workload_configs.go were also converted to named types this pass."}
   job_and_job_schema_version: {status: partial, note: "parity-4, new generic 'model customization job' family (CreateJob/DescribeJob/DeleteJob/StopJob/ListJobs/DescribeJobSchemaVersion/ListJobSchemaVersions). NOT the same as TrainingJob/ProcessingJob/TransformJob/AutoMLJob/CompilationJob/etc — keyed by JobName alone (matches CreateJob's doc: unique per account+region), Describe/Delete/Stop additionally scoped by JobCategory (mismatch => ResourceNotFound), own JobSecondaryStatusTransition type (does not alias training_jobs.go's SecondaryStatusTransition despite the identical shape), own store (b.jobs). DeleteJob correctly rejects a still-InProgress job with ResourceInUse per its doc comment. PARTIAL: DescribeJobSchemaVersion/ListJobSchemaVersions serve a single synthetic '1.0' schema version with a generic (not per-category, not AWS's real unpublished) JSON-schema document — AWS does not ship real per-JobCategory schema content in the SDK, so this is the most honest deterministic approximation available, not a wire-shape bug, but is disclosed as a depth limit."}
-  model_endpoint_config_crud: {status: partial, note: "CreateModel/DescribeModel/ListModels/DeleteModel and CreateEndpointConfig/DescribeEndpointConfig/ListEndpointConfigs/DeleteEndpointConfig verified op-by-op against handler.go + backend.go: correct ARN building via pkgs/arn, epoch timestamps via epochSeconds (float64 unix seconds, matches awsjson1.1 numeric timestamp), errCodeLookup-equivalent sentinel wiring (awserr.New wraps ErrNotFound/ErrConflict, handler.go handleError maps to ValidationException/ResourceInUse), persistence.go backendSnapshot wiring confirmed for both models and endpointConfigs keyed by region. CORRECTION parity-25 (gopherstack-oc9v): the 'ok' verdict above covered ARN/timestamp/error/persistence plumbing only, not full request-field completeness, and did not hold on the request side. FIXED parity-25 — CreateModelInput.ExecutionRoleArn was rejected as required (test TestCreateModel_RequiresExecutionRoleArn asserted this explicitly), but CreateModelInput (api_op_CreateModel.go:50-90) marks only ModelName 'This member is required' — ExecutionRoleArn is optional; a real client's valid model-without-role request was wrongly rejected. Validation removed, test rewritten (TestCreateModel_ExecutionRoleArnOptional) to assert the correct behavior. FIXED parity-25 — ListModelsInput's CreationTimeAfter/CreationTimeBefore/NameContains/SortBy/SortOrder (api_op_ListModels.go) and ListEndpointConfigsInput's identical five fields (api_op_ListEndpointConfigs.go) were NextToken-only, dropping the entire filter/sort surface on both ops; both now real (SortBy default CreationTime/SortOrder default Descending on each, per each op's own doc), proven by TestHandler_ListModels_FilterSort/TestHandler_ListEndpointConfigs_FilterSort. FIXED parity-25 — CreateEndpointConfigInput's ExplainerConfig/MetricsConfig (both real, optional fields) had no field for them anywhere in the request struct at all; now stored+echoed as opaque json.RawMessage passthrough (same convention as algorithms.go's TrainingSpecification), proven via a real-SDK-client round-trip test (TestHandler_CreateEndpointConfig_ExplainerAndMetricsConfig_RealClient). All 6 anonymous request structs across handler_models.go/handler_endpoint_configs.go converted to named types this pass (a single shared nameTimeListRequest/nameTimeFilter serves all three of ListModels/ListEndpointConfigs/ListAlgorithms, since their filter shape is identical)."}
+  model_endpoint_config_crud: {status: partial, note: "CreateModel/DescribeModel/ListModels/DeleteModel and CreateEndpointConfig/DescribeEndpointConfig/ListEndpointConfigs/DeleteEndpointConfig verified op-by-op against handler.go + backend.go: correct ARN building via pkgs/arn, epoch timestamps via epochSeconds (float64 unix seconds, matches awsjson1.1 numeric timestamp), errCodeLookup-equivalent sentinel wiring (awserr.New wraps ErrNotFound/ErrConflict, handler.go handleError maps to ValidationException/ResourceInUse), persistence.go backendSnapshot wiring confirmed for both models and endpointConfigs keyed by region. CORRECTION parity-25 (gopherstack-oc9v): the 'ok' verdict above covered ARN/timestamp/error/persistence plumbing only, not full request-field completeness, and did not hold on the request side. FIXED parity-25 — CreateModelInput.ExecutionRoleArn was rejected as required (test TestCreateModel_RequiresExecutionRoleArn asserted this explicitly), but CreateModelInput (api_op_CreateModel.go:50-90) marks only ModelName 'This member is required' — ExecutionRoleArn is optional; a real client's valid model-without-role request was wrongly rejected. Validation removed, test rewritten (TestCreateModel_ExecutionRoleArnOptional) to assert the correct behavior. FIXED parity-25 — ListModelsInput's CreationTimeAfter/CreationTimeBefore/NameContains/SortBy/SortOrder (api_op_ListModels.go) and ListEndpointConfigsInput's identical five fields (api_op_ListEndpointConfigs.go) were NextToken-only, dropping the entire filter/sort surface on both ops; both now real (SortBy default CreationTime/SortOrder default Descending on each, per each op's own doc), proven by TestHandler_ListModels_FilterSort/TestHandler_ListEndpointConfigs_FilterSort. FIXED parity-25 — CreateEndpointConfigInput's ExplainerConfig/MetricsConfig (both real, optional fields) had no field for them anywhere in the request struct at all; now stored+echoed as opaque json.RawMessage passthrough (same convention as algorithms.go's TrainingSpecification), proven via a real-SDK-client round-trip test (TestHandler_CreateEndpointConfig_ExplainerAndMetricsConfig_RealClient). All 6 anonymous request structs across handler_models.go/handler_endpoint_configs.go converted to named types this pass (a single shared nameTimeListRequest/nameTimeFilter serves all three of ListModels/ListEndpointConfigs/ListAlgorithms, since their filter shape is identical). VERIFIED NEGATIVE (gopherstack-tauw, 2026-09-06) — CreateEndpointConfig's ProductionVariants[].ModelName is stored without checking the named Model exists. Confirmed not a bug: awsAwsjson11_deserializeOpErrorCreateEndpointConfig only recognizes UnknownError/ResourceLimitExceeded (no ResourceNotFound), and api_op_CreateEndpointConfig.go's own doc describes model-existence-adjacent validation as happening later, at CreateEndpoint (an eventual-consistency DynamoDB check), not at CreateEndpointConfig. Left unchecked. CreateTransformJob's equivalent ModelName reference IS validated — see processing_transform_job above."}
   endpoint_lifecycle: {status: ok, note: "CreateEndpoint/UpdateEndpoint/DescribeEndpoint/DeleteEndpoint/ListEndpoints + UpdateEndpointWeightsAndCapacities audited and FIXED — see Notes. FSM-driven Creating/Updating -> InService transitions (backend_accuracy.go scheduleEndpointTransition) verified correct after fix."}
   training_job: {status: ok, note: "CreateTrainingJob(Full)/DescribeTrainingJob(Full)/ListTrainingJobs(Filtered)/StopTrainingJob(FSM)/DeleteTrainingJob verified: InProgress->Completed FSM populates ModelArtifacts, BillableTimeInSeconds, SecondaryStatusTransitions with epoch timestamps; StopTrainingJobFSM drives InProgress->Stopping->Stopped. CORRECTION parity-20: the prior 'UpdateTrainingJob verified' claim above was never true — the handler decoded no fields at all and simply re-Described the job, so every UpdateTrainingJob request silently did nothing; this was found and fixed this pass (see Notes) rather than being a pre-existing verified op. FIXED this pass — UpdateTrainingJob now applies ResourceConfig.KeepAlivePeriodInSeconds via a real backend UpdateTrainingJob method (previously did not exist at all); ProfilerConfig/ProfilerRuleConfigurations/RemoteDebugConfig remain disclosed not modeled (no such concept anywhere in this backend's TrainingJob, Create included)."}
   tags: {status: ok, note: "AddTags/ListTags/DeleteTags verified against findTagMapLocked, which indexes ~20 resource kinds by ARN. Not-found path returns ValidationException (400), matching real AWS TagKeys validation error class. CORRECTION parity-25 (gopherstack-oc9v): the 'ok' verdict above covered not-found error mapping only. FIXED parity-25 — AddTagsOutput.Tags ([]types.Tag, 'A list of tags associated with the SageMaker resource') was never emitted; the handler returned a bare `{}` on every AddTags call. Now returns the resource's full current tag set (via a ListTags call after the write), proven by a new assertion in TestHandler_Tags — a pre-existing gap in that same test's coverage (it round-tripped AddTags without ever reading its response body, so nothing caught the missing field). FIXED parity-25 — AddTagsInput.Tags and DeleteTagsInput.TagKeys (both 'This member is required') were accepted with no presence check at all; both now enforced (TestHandler_AddTags_RequiresTags/TestHandler_DeleteTags_RequiresTagKeys). FIXED parity-25 — ListTagsInput.MaxResults (api_op_ListTags.go, default 100) was decoded nowhere; ListTags paginated at a fixed sagemakerDefaultPageSize regardless of what a client requested. Now honored via paginateSlice (TestHandler_ListTags_MaxResults). All 3 anonymous request structs in handler_tags.go converted to named types this pass."}
   algorithm: {status: partial, note: "parity-25 (gopherstack-oc9v), first wire audit of this family — CreateAlgorithm/DescribeAlgorithm/DeleteAlgorithm/ListAlgorithm, field-diffed against api_op_{Create,Describe,Delete,List}Algorithm.go. FIXED — CreateAlgorithmInput.TrainingSpecification is 'This member is required' (alongside AlgorithmName), but only AlgorithmName was ever validated present; a request missing it silently succeeded with an empty spec, and DescribeAlgorithmOutput.TrainingSpecification (itself required on that output) would then be emitted as an empty/absent value. Now enforced, and describeAlgorithmResponse's TrainingSpecification json tag had its incorrect omitempty removed to match. FIXED — ListAlgorithmsInput was NextToken-only, dropping CreationTimeAfter/CreationTimeBefore/NameContains/SortBy/SortOrder entirely (SortBy default CreationTime, SortOrder default Ascending per api_op_ListAlgorithms.go — the one op in this pass's List trio whose real SortOrder default is Ascending, not Descending); all now real, proven by TestHandler_ListAlgorithms_FilterSort. AlgorithmStatusDetails/CreationTime/AlgorithmStatus (all required DescribeAlgorithmOutput fields) were already correctly emitted with no omitempty. TrainingSpecification/InferenceSpecification/ValidationSpecification remain opaque json.RawMessage passthrough (same convention as ai_benchmark_job etc., see gaps:) rather than fully-typed TrainingSpecification/InferenceSpecification/AlgorithmValidationSpecification structs — each is a deep, low-traffic nested type (ChannelSpecification/MetricDefinition/HyperParameterSpecification/...). All 3 anonymous request structs in handler_algorithms.go converted to named types this pass."}
   monitoring_alert: {status: partial, note: "parity-25 (gopherstack-oc9v), first wire audit of this family — UpdateMonitoringAlert/ListMonitoringAlerts/ListMonitoringAlertHistory, field-diffed against api_op_{Update,List}MonitoringAlert*.go. FIXED — UpdateMonitoringAlertInput.DatapointsToAlert/EvaluationPeriod are both 'This member is required', but neither was validated present (a zero/absent value looks identical for a non-pointer int32, so this follows the same == 0 convention as this campaign's other required-int-field fixes, e.g. TransformResources.InstanceCount). FIXED — ListMonitoringAlertsInput.MaxResults (api_op_ListMonitoringAlerts.go, default 100) was decoded nowhere; the backend's sagemakerListKeyPagedMap helper had no maxResults parameter at all, always paging at the fixed sagemakerDefaultPageSize. Both the handler and the helper now thread it through, proven by TestHandler_ListMonitoringAlerts_MaxResults. ListMonitoringAlertHistoryInput's CreationTimeAfter/CreationTimeBefore/MonitoringScheduleName/MonitoringAlertName/StatusEquals/SortOrder/NextToken/MaxResults were already all real — no gap found there. All 3 anonymous request structs in handler_monitoring.go converted to named types this pass (a fourth, ListMonitoringExecutions, was already a named type from an earlier pass)."}
   presigned_session: {status: ok, note: "parity-25 (gopherstack-oc9v), first wire audit of this family — CreatePresignedDomainUrl/RenderUiTemplate/StartSession, field-diffed against api_op_{CreatePresignedDomainUrl,RenderUiTemplate,StartSession}.go. FIXED — RenderUiTemplateInput.Task ('This member is required') and its own required Input field (types.RenderableTask, types/types.go:19548) were accepted with no presence check; an absent Task.Input silently rendered the template unchanged (via the existing empty-string early-return in renderUITemplateContent) rather than being rejected. Now enforced, proven by TestHandler_RenderUiTemplate_MissingTaskInput. StartSessionInput/Output already matched exactly (ResourceIdentifier in; SessionId/StreamUrl/TokenValue out). CreatePresignedDomainUrlInput's ExpiresInSeconds/LandingUri/SessionExpirationDurationInSeconds (real, optional fields) are now decoded (for tooling visibility) but are disclosed no-ops — CreatePresignedDomainUrlOutput is a bare {AuthorizedUrl}, and this backend's synthetic URL (a token appended to the domain's stored URL) carries no verified real query-parameter format to encode an expiry or landing path into, the same disclosed-no-op stance as PartnerApps' identical fields. All 3 anonymous request structs in handler_presigned_session.go converted to named types this pass. CORRECTION parity-29 — the 'now decoded... disclosed no-ops' claim above described this as commented at the code level like PartnerApps' siblings, but createPresignedDomainURLRequest's doc comment carried no such disclosure; added, no behavior change (the fields' inertness was already real, just undocumented in-code — a PARITY.md-vs-code drift, not a functional bug). Also noted for the first time: CreatePresignedDomainUrlInput additionally carries a real SpaceName field (an alternative identity to UserProfileName) not decoded at all; left unmodeled rather than guessed at, since this backend has no Studio Space + shared-space presigned-URL precedent to model it faithfully against (no bd issue filed yet)."}
-  processing_transform_job: {status: partial, note: "Wire-audited this pass: DescribeProcessingJob/DescribeTransformJob field-by-field against SDK output structs — field names, optional-field gating, and epoch-seconds timestamps all correct. No bugs found. CORRECTION parity-24 (gopherstack-oc9v): the 'No bugs found' claim above covered only the Describe response shape, not the full request surface, and did not hold there. FIXED parity-24 — CreateProcessingJobInput's VPC settings nest under NetworkConfig.VpcConfig (api_op_CreateProcessingJob.go); this handler instead decoded a top-level \"VpcConfig\" key that does not exist anywhere on the real request, so every real client's VPC-isolated processing job silently lost its network settings (and the accepted top-level key was dead code no real client would ever populate). Now ProcessingNetworkConfig nests VpcConfig/EnableInterContainerTrafficEncryption/EnableNetworkIsolation under NetworkConfig, proven via a real-SDK-client test. CreateProcessingJobInput's RoleArn/AppSpecification/ProcessingResources (all 'This member is required') were also never validated present — fixed. ExperimentConfig (ExperimentName/RunName/TrialComponentDisplayName/TrialName) and StoppingCondition (MaxRuntimeInSeconds) were both accept-and-drop, now fully modeled and round-tripped (both small flat types, no passthrough needed). ListProcessingJobs accepted only NextToken/StatusEquals/MaxResults, dropping CreationTimeAfter/CreationTimeBefore/LastModifiedTimeAfter/LastModifiedTimeBefore/NameContains/SortBy/SortOrder entirely (SortBy default CreationTime, SortOrder default Ascending per api_op_ListProcessingJobs.go) — all now real. FIXED parity-24 — CreateTransformJobInput has no RoleArn field at all (api_op_CreateTransformJob.go:55-166); this handler accepted, stored, and echoed one anyway on every Create/Describe, a fabricated field no real client ever sends. Removed entirely (TransformJob/TransformJobOptions/decode/emit), proven by a test asserting RoleArn is absent from Describe's response even when supplied on Create. ListTransformJobs gained the same CreationTimeAfter/CreationTimeBefore/LastModifiedTimeAfter/LastModifiedTimeBefore/SortBy/SortOrder surface (SortOrder default Descending per that op's doc) it was missing. CreateTransformJobInput's other four required members (ModelName already checked; TransformInput.DataSource.S3DataSource.S3Uri/TransformOutput.S3OutputPath/TransformResources.InstanceType+InstanceCount) were also never validated present — fixed. ProcessingJob's ProcessingInput.DatasetDefinition sub-fields beyond DataDistributionType/InputMode, ProcessingOutput.FeatureStoreOutput, and TransformJob's DataCaptureConfig/DataProcessing/ExperimentConfig/ModelClientConfig/LabelingJobArn/AutoMLJobArn remain accept-and-drop or unmodeled — see gaps:. All 8 anonymous request structs across handler_processing_jobs.go/handler_transform_jobs.go converted to named types this pass."}
+  processing_transform_job: {status: partial, note: "Wire-audited this pass: DescribeProcessingJob/DescribeTransformJob field-by-field against SDK output structs — field names, optional-field gating, and epoch-seconds timestamps all correct. No bugs found. CORRECTION parity-24 (gopherstack-oc9v): the 'No bugs found' claim above covered only the Describe response shape, not the full request surface, and did not hold there. FIXED parity-24 — CreateProcessingJobInput's VPC settings nest under NetworkConfig.VpcConfig (api_op_CreateProcessingJob.go); this handler instead decoded a top-level \"VpcConfig\" key that does not exist anywhere on the real request, so every real client's VPC-isolated processing job silently lost its network settings (and the accepted top-level key was dead code no real client would ever populate). Now ProcessingNetworkConfig nests VpcConfig/EnableInterContainerTrafficEncryption/EnableNetworkIsolation under NetworkConfig, proven via a real-SDK-client test. CreateProcessingJobInput's RoleArn/AppSpecification/ProcessingResources (all 'This member is required') were also never validated present — fixed. ExperimentConfig (ExperimentName/RunName/TrialComponentDisplayName/TrialName) and StoppingCondition (MaxRuntimeInSeconds) were both accept-and-drop, now fully modeled and round-tripped (both small flat types, no passthrough needed). ListProcessingJobs accepted only NextToken/StatusEquals/MaxResults, dropping CreationTimeAfter/CreationTimeBefore/LastModifiedTimeAfter/LastModifiedTimeBefore/NameContains/SortBy/SortOrder entirely (SortBy default CreationTime, SortOrder default Ascending per api_op_ListProcessingJobs.go) — all now real. FIXED parity-24 — CreateTransformJobInput has no RoleArn field at all (api_op_CreateTransformJob.go:55-166); this handler accepted, stored, and echoed one anyway on every Create/Describe, a fabricated field no real client ever sends. Removed entirely (TransformJob/TransformJobOptions/decode/emit), proven by a test asserting RoleArn is absent from Describe's response even when supplied on Create. ListTransformJobs gained the same CreationTimeAfter/CreationTimeBefore/LastModifiedTimeAfter/LastModifiedTimeBefore/SortBy/SortOrder surface (SortOrder default Descending per that op's doc) it was missing. CreateTransformJobInput's other four required members (ModelName already checked; TransformInput.DataSource.S3DataSource.S3Uri/TransformOutput.S3OutputPath/TransformResources.InstanceType+InstanceCount) were also never validated present — fixed. ProcessingJob's ProcessingInput.DatasetDefinition sub-fields beyond DataDistributionType/InputMode, ProcessingOutput.FeatureStoreOutput, and TransformJob's DataCaptureConfig/DataProcessing/ExperimentConfig/ModelClientConfig/LabelingJobArn/AutoMLJobArn remain accept-and-drop or unmodeled — see gaps:. All 8 anonymous request structs across handler_processing_jobs.go/handler_transform_jobs.go converted to named types this pass. FIXED (gopherstack-tauw, 2026-09-06) — CreateTransformJob's ModelName was stored without checking it names an existing Model. api_op_CreateTransformJob.go: 'ModelName must be the name of an existing Amazon SageMaker model'; ResourceNotFound is modeled for this op (deserializers.go: awsAwsjson11_deserializeOpErrorCreateTransformJob). Now checked against modelsStore before the job is created, returning ResourceNotFound (TestHandler_CreateTransformJob_ModelNotFound). Same issue was also raised against CreateEndpointConfig's ProductionVariants[].ModelName — NOT a bug there: CreateEndpointConfig's deserializer models only UnknownError/ResourceLimitExceeded (no ResourceNotFound), and its own doc describes only an eventual-consistency check at the later CreateEndpoint call, not model existence at CreateEndpointConfig time — so real AWS accepts a ModelName that does not exist yet on this op. Left unchecked; see model_endpoint_config_crud below."}
   notebook_instance: {status: ok, note: "Wire-audited this pass: DescribeNotebookInstanceFull field-by-field against SDK — all optional fields correctly gated, epoch-seconds timestamps correct. No bugs found."}
   hyperparameter_tuning_job: {status: partial, note: "FIXED this pass — see Notes (wire-shape bug: flat Strategy instead of nested HyperParameterTuningJobConfig, missing required ObjectiveStatusCounters/TrainingJobStatusCounters/ResourceLimits). FIXED parity-20 (gopherstack-oc9v) — all 5 inline structs converted to named types; StopHyperParameterTuningJob's Stopping-forever status bug fixed via a real FSM; CreateHyperParameterTuningJob/DescribeHyperParameterTuningJob now capture and echo the full HyperParameterTuningJobConfig (ParameterRanges/HyperParameterTuningJobObjective/RandomSeed/StrategyConfig/TrainingJobEarlyStoppingType/TuningJobCompletionCriteria) plus Autotune/WarmStartConfig/TrainingJobDefinition/TrainingJobDefinitions, all previously entirely absent; ListHyperParameterTuningJobs/ListTrainingJobsForHyperParameterTuningJob gained real filter/sort/pagination (previously NextToken-only / unpaginated). PARTIAL because BestTrainingJob/OverallBestTrainingJob/ConsumedResources/TuningJobCompletionDetails/HyperParameterTuningEndTime and the full semantic content of TrainingJobDefinition(s)/ParameterRanges/StrategyConfig remain json.RawMessage passthrough rather than modeled (this backend never launches or searches child training jobs) — every field a client sends round-trips exactly, but no real hyperparameter search ever runs."}
   domain_app_userprofile_space: {status: partial, note: "Space's Describe/List timestamp encoding FIXED parity-4 (see systemic timestamp bug in Notes). FIXED this pass (parity-7, gopherstack-oc9v) — this family was the largest concentration of anonymous inline request structs in the service (part of the 362 counted repo-wide) and had never been wire-audited; converted all 19 Create/Describe/List/Delete/Update handlers across Domain/App/Space/UserProfile to named types and found real gaps, not just a tooling blind spot. See Notes: parity-7 for the full list; highlights: CreateDomain was missing DefaultUserSettings entirely — a 'This member is required' CreateDomainInput field — so it was silently accepted-and-dropped rather than rejected; CreateApp had no way to create a Space-owned app at all (CreateAppInput.SpaceName, the real alternative to UserProfileName, didn't exist on the wire struct), so any client without a UserProfile could never launch an app even though this backend has supported Spaces since spaces.go; ListDomains/ListApps/ListSpaces/ListUserProfiles all silently ignored MaxResults and had none of ListApps'/ListSpaces'/ListUserProfiles' real SortBy/SortOrder/*Equals/*Contains filter-and-sort fields — the exact 'parsed field, silently ignored' defect class this campaign targets. All now real: MaxResults caps the page via paginateSlice, SortBy/SortOrder reorder by CreationTime/LastModifiedTime, UserProfileNameEquals/SpaceNameEquals/SpaceNameContains/UserProfileNameContains narrow the result set. DefaultSpaceSettings/DomainSettings/DomainSettingsForUpdate/UserSettings/OwnershipSettings/SpaceSettings/SpaceSharingSettings/ResourceSpec are carried as opaque json.RawMessage passthrough (established convention, see ai_workload_configs.go) rather than fully typed — these are all deeply-nested union/config shapes (UserSettings alone has ~20 app-specific sub-configs) out of this pass's budget; every field a client actually sends round-trips exactly. UpdateDomain went from a pure no-op (only bumped LastModifiedTime) to a real partial update of AppNetworkAccessType/AppSecurityGroupManagement/HomeEfsFileSystemCreation/TagPropagation/VpcId/SubnetIds/DefaultUserSettings/DefaultSpaceSettings/DomainSettingsForUpdate. See gaps: for what's still not modeled (DescribeApp/DescribeDomain's remaining server-derived/identity fields, UserSettings' internal structure)."}
@@ -151,6 +151,7 @@ families:
   pagination_sweep: {status: ok, note: "2026-08-28/29 (wrapper-key-sweep-rds-cloudwatch-sqs-sns pagination pass): audited all ~90 List ops plus Search/QueryLineage/DescribeEdgeDeploymentPlan/DescribeTrainingPlanExtensionHistory/CreateHubContentPresignedURLs (every op with a MaxResults+NextToken pair) against the pinned SDK. All correctly truncate at MaxResults (falling back to sagemakerDefaultPageSize=100, store_setup.go:43, when unspecified), consume NextToken as a resume offset, and emit NextToken only when more results remain — confirms and extends the existing gaps: entry describing this service's integer-offset-token convention as 'functionally correct'. Nearly every op routes through the shared list_helpers.go family (paginateSlice/sagemakerListPaged/sagemakerListKeyPagedN/filterSortPaginateByName*), which already handles the offset-parse/cap/emit logic once, correctly, for every caller. The few ops with no shared-helper call were individually verified: ListClusterEvents/ListResourceCatalogs are disclosed structural void-results (no event/catalog data this backend ever populates, so nothing to paginate); ListTags (sagemaker's own resource tags, not S3) applies paginateSlice directly in its handler over a deterministically name-sorted slice; ListDataQualityJobDefinitions/ListModelBiasJobDefinitions/ListModelQualityJobDefinitions/ListModelExplainabilityJobDefinitions all delegate to the shared listJobDefinitions helper, which itself calls paginateSlice. One pre-existing, unrelated (not this pass's bug class) divergence spot-checked but not fixed: ListEndpoints documents a real default MaxResults of 10 (api_op_ListEndpoints.go:49) but this service's uniform sagemakerDefaultPageSize=100 applies there too, same as every other List op — truncation/resumption/token-emission are all still correct at 100 rather than 10, so no client-visible pagination-loop failure, just a larger-than-AWS default page. Spot-verified with a real aws-sdk-go-v2/service/sagemaker client (existing coverage; no new pagination bugs found, so no new fix/test needed for this service)."}
 
 gaps:                     # known divergences NOT fixed — link bd issue ids
+  - "FIXED 2026-09-07 (gopherstack-z5hj): StartPipelineExecution and StartPipelineExecutionFull (pipelines.go) both set PipelineExecutionStatus directly to pipelineStatusSucceeded and returned -- neither went through pipelineStatusExecuting, and neither called runDelayed. StartPipelineExecutionFull is the wire-facing path (handleStartPipelineExecutionFull -> StartPipelineExecutionFull); StartPipelineExecution is the plain backend entrypoint used directly by tests. Both had the identical bug (the originally-filed triage note, gopherstack-z1sd, named only StartPipelineExecution -- StartPipelineExecutionFull was found and fixed in the same pass since it shares the same code shape and is the one real clients actually hit). Both now set pipelineStatusExecuting, then runDelayed(b.lifecycleCtx, startTransitionDelay, ...) transitions to pipelineStatusSucceeded, re-reading the execution from the store before mutating (same pattern as RetryPipelineExecution/StopPipelineExecution). startTransitionDelay is a new constant (200ms, pipeline_executions.go) -- no existing delay constant fit a start's semantics (retryTransitionDelay is for retry, stopTransitionDelay runs the opposite direction); every other async-transition family in this service (processingJobCompletionDelay, labelingJobCompletionDelay, transformJobCompletionDelay, ...) likewise defines its own named constant rather than reusing another family's. Verified against sagemaker@v1.263.2 types/enums.go:6945-6954 that Executing is the correct initial PipelineExecutionStatus (the only non-terminal value in the enum: Executing/Stopping/Stopped/Failed/Succeeded). Searched every sagemaker _test.go for a PipelineExecutionStatus/Status assertion tied to Start -- none exist, so no pre-existing test asserted the bug and none needed correction. New regression test (pipeline_execution_start_test.go, testing/synctest, no time.Sleep outside the bubble) covers both entrypoints and was proven to fail against the unfixed code before the fix was applied."
   - "Pagination across the service is a hand-rolled integer-offset NextToken (parseNextToken/strconv.Atoi) rather than pkgs/page's opaque-token helper. Functionally correct (AWS clients treat NextToken as opaque) and internally consistent, but is a pkgs-catalog convention deviation across ~15 call sites. Not fixed this pass — refactor is cross-cutting and out of budget for a single-family sweep. (no bd issue filed yet)"
   - "ProductionVariantSummary.VariantStatus is populated with a single synthetic {Status: \"Creating\"|\"InService\"} entry, not a full AWS VariantStatus enum/message model (StatusMessage is always empty, no DeployedImages/CapacityReservationConfig/ManagedInstanceScaling/RoutingConfig fields). Sufficient for status-polling clients; deeper fidelity deferred. (no bd issue filed yet)"
   - "parity-4: AIBenchmarkJob's BenchmarkTarget/OutputConfig/NetworkConfig, AIRecommendationJob's ModelSource/OutputConfig/PerformanceTarget/ComputeSpec/InferenceSpecification, and AIWorkloadConfig's AIWorkloadConfigs/DatasetConfig are all stored+echoed as opaque json.RawMessage rather than modeled as fully-typed structs (same convention as algorithms.go's TrainingSpecification/InferenceSpecification/ValidationSpecification). Every field the client sends round-trips exactly; the only thing not reproduced is AWS server-synthesized sub-fields that don't exist in the Create input at all (e.g. AIBenchmarkOutputResult.CloudWatchLogs). Not a wire-shape bug for any field a client actually populates, but real if a client depends on those server-only sub-fields appearing. (no bd issue filed yet)"
@@ -5785,3 +5786,428 @@ per request, not part of `models.go` or the persisted backend state) --
 Gates: `go build ./services/sagemaker/...`, `go vet ./...` (repo-wide,
 clean), `go test -race -count=1 ./services/sagemaker/...`, `golangci-lint
 run ./services/sagemaker/...` all clean.
+
+
+## 2026-09-07 (gopherstack-tdg0): lifecycle_test.go migrated to testing/synctest; surfaced a real Start/Stop pipeline-execution race
+
+`lifecycle_test.go`'s two async-transition waits (`assert.Eventually` in
+`TestPipelineExecutionTransitionsFire`, `time.Sleep(150ms)` in
+`TestShutdownCancelsPendingTransitions`) converted to `testing/synctest`
+(`synctest.Test` + a fake-clock `time.Sleep` + `synctest.Wait`), following
+`pipeline_execution_start_test.go`'s precedent (gopherstack-z5hj). The
+scheduler both sites wait on (`runDelayed`, `lifecycle.go:115`) is
+bubble-compatible: its goroutine is spawned via `b.wg.Go` synchronously
+from the calling goroutine, so a backend constructed and driven entirely
+inside `synctest.Test` gets a timer that lives in the same bubble --
+confirmed by a passing, deterministic migration for two of the three
+tests.
+
+The migration did not just pass cleanly -- it surfaced a genuine,
+previously-masked bug. `TestPipelineExecutionTransitionsFire/stop_transitions_to_Stopped`
+now fails deterministically (20/20 runs under `-race`, left failing and
+documented in-line rather than patched around). `StopPipelineExecution`
+(pipeline_executions.go:138) and `StartPipelineExecution`/
+`StartPipelineExecutionFull`'s delayed Executing->Succeeded callbacks
+(pipelines.go:335-339, 567-571) both schedule against the same execution
+ARN when Stop targets an execution still mid-Start. The Start callbacks
+have no guard on current status before overwriting -- unlike
+`StopProcessingJob`'s (processing_jobs.go:267-271), which checks
+`ProcessingJobStatus == notebookStatusStopping` first -- so at
+startTransitionDelay (200ms) they unconditionally clobber the execution
+back to `Succeeded`, overwriting the `Stopped` that `StopPipelineExecution`
+already landed at stopTransitionDelay (100ms). `assert.Eventually`'s
+poll-until-first-match semantics previously hid this entirely: it observed
+`Stopped` around 100ms and returned before the 200ms clobber ever ran. No
+retry, tolerance, or production fix was added to make this pass -- it is
+reported here for a follow-up bug, per this session's instructions.
+
+Not migrated: `TestShutdownRespectsContextDeadline` (no Sleep/Eventually,
+out of scope). 20 further `time.Sleep`/`assert.Eventually`/`require.Eventually`
+sites remain elsewhere in `services/sagemaker/*_test.go`
+(handler_notebook_instances_test.go, handler_labeling_test.go,
+handler_endpoints_test.go, handler_processing_jobs_test.go,
+handler_transform_jobs_test.go, handler_edge_packaging_jobs_test.go,
+handler_inference_recommendations_jobs_test.go, handler_training_jobs_test.go,
+handler_hp_tuning_jobs_test.go, handler_inference_components_test.go,
+handler_compilation_jobs_test.go) -- out of scope for this issue, which
+named `lifecycle_test.go` specifically.
+
+Gates: `gofmt -l services/sagemaker/lifecycle_test.go` clean, `go vet
+./services/sagemaker/...` clean, `golangci-lint run
+./services/sagemaker/...` 0 issues. `go test -race -count=1
+./services/sagemaker/...` fails on the one subtest above, everything else
+in the package passes. `-count=20` on just the three migrated/reviewed
+tests: the newly-failing subtest fails 20/20 identically (deterministic,
+not flaky), the other two pass 20/20. Wall time for those three tests:
+count=1 ~1.29s before (real sleeps) -> ~0.08s after; count=20 ~6.4s before
+-> ~1.3s after.
+
+
+## 2026-09-07 (gopherstack-7lrq): fixed the Start/Stop pipeline-execution clobber
+
+Fixed the bug gopherstack-tdg0's entry above surfaced and left failing.
+`StartPipelineExecution` (pipelines.go:335-341), `StartPipelineExecutionFull`
+(pipelines.go:567-573), and `RetryPipelineExecution`
+(pipeline_executions.go:106-114) each schedule a delayed
+Executing->Succeeded callback — the first two at `startTransitionDelay`
+(200ms), the last at `retryTransitionDelay` (200ms, both
+pipeline_executions.go:29). None guarded on the execution's current
+status before overwriting it, so `StopPipelineExecution`'s own delayed
+callback (pipeline_executions.go:139-146, `stopTransitionDelay` = 100ms)
+landing `Stopped` first was silently clobbered back to `Succeeded` once
+the longer 200ms delay elapsed. All three now guard on
+`exec.PipelineExecutionStatus == pipelineStatusExecuting`, matching
+`StopProcessingJob`'s established guard pattern
+(processing_jobs.go:267-271).
+
+`RetryPipelineExecution` was initially reported but deliberately left
+unfixed pending the issue filer's decision, since it mints its own new
+execution ARN (`newArn`, pipeline_executions.go:93) rather than reusing
+the ARN it was called with — folding it in required a dedicated
+regression test that stops the *retried* ARN, not the original, since
+stopping the original does not reach the vulnerable callback at all (it
+only ever writes `newArn`). The filer asked for it to be folded in, so
+it now carries the same guard and its own test,
+`TestRetryPipelineExecution_StopClobbersToSucceeded`
+(pipeline_execution_start_test.go), independently neutered before
+landing: guard removed -> compiles, test fails with `status after delay
+= "Succeeded", want "Stopped"`; guard restored -> passes.
+
+Swept every `runDelayed` call site in `services/sagemaker/` for the same
+unguarded-clobber shape. All other job-family Start/Stop pairs
+(compilation, edge-packaging, HP-tuning, inference-recommendations,
+labeling, processing, training, transform, and the generic AI-job
+family in `jobs.go`/`lifecycle.go`) already guard their Stop-side
+callback on the expected `*Stopping` status before writing `*Stopped`.
+Two other unguarded sites remain and are intentionally left unfixed —
+the issue filer is tracking them as a separate, lower-severity issue:
+
+- `scheduleEndpointTransition` (endpoints.go:430-451) and
+  `scheduleInferenceComponentTransition` (inference_components.go:216-236)
+  unconditionally overwrite status on every delayed firing. Both only
+  ever schedule `Creating/Updating -> InService` (no Stop/Delete-via-status
+  path was found; `DeleteEndpoint`/`DeleteInferenceComponent` remove the
+  record outright, so a completed delete does not get resurrected). The
+  only observed risk is a transient reordering when two transitions
+  overlap (e.g. `UpdateEndpoint` called again before a prior transition's
+  callback fires), not a permanent wrong-terminal-status clobber like the
+  pipeline-execution bug.
+
+`PipelineExecutionStatus` is set, in this package, to only four values
+(pipeline_executions.go:35-38): `Executing`, `Succeeded`, `Stopping`,
+`Stopped`. A Start callback should advance only from `Executing`:
+`StopPipelineExecution` sets `Stopping` synchronously under `b.mu` the
+moment Stop is called (pipeline_executions.go:134), before its own
+delayed callback ever runs, so by the time a Start callback's guard
+could observe `Stopping`, the status is never `Executing` -- guarding on
+`== Executing` alone is sufficient, an explicit `Stopping` exclusion
+would be redundant.
+
+Added `TestStartPipelineExecutionFull_StopClobbersToSucceeded` and
+`TestRetryPipelineExecution_StopClobbersToSucceeded`
+(pipeline_execution_start_test.go) -- the `StartPipelineExecutionFull`
+and `RetryPipelineExecution` equivalents of `lifecycle_test.go`'s
+now-passing `stop_transitions_to_Stopped` subtest; no prior test covered
+either race. The Retry test starts an execution, lets it settle, retries
+it, then stops the *retried* execution's own ARN before asserting
+`Stopped` survives past `retryTransitionDelay`. The positive path (an
+untouched execution still reaches `Succeeded`) was already covered by
+`TestStartPipelineExecution_TransitionsThroughExecuting` (Start/StartFull)
+and `lifecycle_test.go`'s `retry_transitions_to_Succeeded` subtest (Retry).
+
+Each guard was independently neutered (removed, confirmed the package
+still compiles, confirmed a test then fails) and restored:
+`StartPipelineExecution`'s guard removal fails
+`lifecycle_test.go`'s `TestPipelineExecutionTransitionsFire/stop_transitions_to_Stopped`;
+`StartPipelineExecutionFull`'s guard removal fails
+`TestStartPipelineExecutionFull_StopClobbersToSucceeded`;
+`RetryPipelineExecution`'s guard removal fails
+`TestRetryPipelineExecution_StopClobbersToSucceeded`.
+
+Gates: `go build ./services/sagemaker/...` clean, `go test -race
+-count=1 ./services/sagemaker/...` fully green (previously-failing
+subtest now passes), `go test -race -count=20 -run
+'TestPipelineExecutionTransitionsFire|TestStartPipelineExecutionFull_StopClobbersToSucceeded|TestRetryPipelineExecution_StopClobbersToSucceeded'
+./services/sagemaker/` 20/20, `golangci-lint run services/sagemaker/...`
+0 issues.
+
+## 2026-09-07 (gopherstack-rh77): guarded scheduleEndpointTransition/scheduleInferenceComponentTransition; confirmed no permanent-clobber, P3 stands
+
+Follow-up to the two sites gopherstack-7lrq's entry above named and left
+unfixed. `DeleteEndpoint` (endpoints.go:307-324) and
+`DeleteInferenceComponent` (inference_components.go:453-467) both call
+`store.Delete(name)` outright — neither ever writes a `Deleting` (or any
+other) status before removing the record — so the filer's reasoning
+that a completed delete cannot be resurrected by a stale callback was
+confirmed correct: `scheduleEndpointTransition`/
+`scheduleInferenceComponentTransition` both check `store.Get(name)` and
+no-op when the record is gone.
+
+`types.EndpointStatus` (enums.go): `OutOfService`, `Creating`,
+`Updating`, `SystemUpdating`, `RollingBack`, `InService`, `Deleting`,
+`Failed`, `UpdateRollbackFailed`. `types.InferenceComponentStatus`:
+`InService`, `Creating`, `Updating`, `Failed`, `Deleting`. This backend
+only ever *writes* three of each: `Creating`, `Updating`, `InService`
+(confirmed by grepping every `EndpointStatus =`/`InferenceComponentStatus =`
+assignment in the package) — `Failed`/`Deleting`/`RollingBack`/
+`OutOfService`/`SystemUpdating`/`UpdateRollbackFailed` are never
+simulated. That fact is what makes the guard's fromStatus a single value
+per call site rather than a set: `CreateEndpointFSM`/
+`CreateInferenceComponent` synchronously set `Creating` then schedule a
+transition guarded on `== Creating`; `UpdateEndpointFSM`,
+`UpdateEndpointWeightsAndCapacitiesFull`, `UpdateInferenceComponent`, and
+`UpdateInferenceComponentRuntimeConfig` all set `Updating` then schedule
+a transition guarded on `== Updating`. Each call site already knows,
+synchronously, which status it just set — there is never a case where
+one call site's scheduled transition legitimately needs to advance from
+either of two different statuses, so a set was unnecessary; a guard
+requiring `InService` instead of `Creating`/`Updating` would have been
+the too-narrow mistake the issue warned about, and would break the
+normal path outright (nothing would ever leave `Creating`/`Updating`).
+
+Interleaving analysis: because every scheduled transition in both files
+targets the same terminal status (`InService`) and nothing in this
+backend ever schedules a transition to `Failed`/`Deleting`/anything
+else, no interleaving of overlapping Create/Update calls can leave a
+*permanently* wrong status — every pending callback, whenever it
+eventually fires (guarded or not), either no-ops (record deleted) or
+writes the same `InService` value the record was always going to reach.
+Concrete interleaving: `CreateEndpointFSM` at t=0 sets `Creating`,
+schedules `Creating->InService` at `endpointCreatingToInService` (300ms,
+fires t=300); an immediate `UpdateEndpointFSM` at t=0 (endpoints.go has
+no precondition that an endpoint be `InService` before it can be
+updated) sets `Updating`, schedules `Updating->InService` at
+`endpointUpdatingToInService` (250ms, fires t=250). Without the guard,
+Update's callback fires at t=250 and correctly lands `InService`; then
+Create's stale callback fires at t=300 and unconditionally re-writes
+`EndpointStatus = InService` (same value, so not visibly wrong) but also
+bumps `LastModifiedTime` to t=300 and re-syncs `ProductionVariants`
+Current* from Desired* — a phantom "changed at t=300" when nothing
+actually changed since t=250. That is the real, if narrow, defect: not
+a wrong terminal status (this was correctly filed P3, not re-prioritised
+to P2 like 7lrq — 7lrq's bug replaced a legitimate, distinct terminal
+value, `Stopped`, with a different, wrong one, `Succeeded`, and nothing
+ever corrected it), but a spurious `LastModifiedTime`/variant-resync
+touch after a later, overlapping transition already finished the
+record. The `fromStatus` guard fixes exactly this: a stale callback
+that no longer finds the status it expects (because a later transition
+already advanced past it) now no-ops instead of re-touching the record.
+
+Same interleaving applies symmetrically to
+`scheduleInferenceComponentTransition` (`CreateInferenceComponent` +
+`UpdateInferenceComponent`/`UpdateInferenceComponentRuntimeConfig`,
+`inferenceComponentCreatingToInService`/`inferenceComponentUpdatingToInService`,
+both 300ms/250ms).
+
+Files changed: `endpoints.go` (`scheduleEndpointTransition` gained a
+`fromStatus` parameter and guard; its three call sites pass
+`statusCreating`/`statusUpdating`); `inference_components.go` (same
+shape for `scheduleInferenceComponentTransition` and its three call
+sites); `endpoint_inference_component_transition_test.go` (new,
+white-box, `synctest`-based); `handler_endpoints_test.go` and
+`handler_inference_components_test.go` (pre-existing `assert.Eventually`/
+`require.Eventually` polls on these exact transitions converted to
+`synctest.Test` + `synctest.Wait`, per this package's ban on
+Eventually — masked exactly this class of race in gopherstack-7lrq).
+
+New tests: `TestEndpointTransitions_ReachInService` and
+`TestInferenceComponentTransitions_ReachInService` (table-driven over
+create/update/weights-and-capacities and create/update/update-runtime-
+config respectively) pin the normal path — each still reaches
+`InService` after its own delay, so a too-narrow `fromStatus` would be
+caught here. `TestEndpointTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate`
+and `TestInferenceComponentTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate`
+pin the race — explicitly an ordering test, not a clobber test, per the
+interleaving analysis above: they assert `LastModifiedTime` is
+unchanged by Create's stale callback after Update has already settled
+the record on `InService`, not that the status differs.
+
+Three pre-existing tests were corrected because they poll these same
+transitions and would otherwise timeout-fail (or silently races-mask a
+future regression) under the ban on `Eventually`:
+
+- `TestHandler_ListEndpoints_Filters` (handler_endpoints_test.go): the
+  `require.Eventually` waiting for both endpoints to leave `Creating`
+  was replaced with `synctest.Test` around the two `CreateEndpoint`
+  calls plus `time.Sleep`/`synctest.Wait`. `future`/`past` (used by the
+  `CreationTimeAfter`/`LastModifiedTimeBefore` subtests) had to move
+  inside the same bubble and be captured into closure variables — a
+  synctest bubble's fake clock does not track the real wall clock, so
+  computing them with a real `time.Now()` after the bubble closed
+  produced nonsensical comparisons against the bubble-clock-stamped
+  `CreationTime`/`LastModifiedTime` (this was caught by the gate run,
+  not anticipated — two subtests failed with off-by-decades comparisons
+  until fixed).
+- `TestHandler_DescribeEndpoint_EventuallyInService`
+  (handler_endpoints_test.go): same `Eventually`->`synctest` conversion,
+  no other change needed (no post-bubble time comparisons).
+- `TestHandler_InferenceComponentLifecycle`
+  (handler_inference_components_test.go): same conversion, but the
+  *entire* test body had to move inside one `synctest.Test` bubble, not
+  just the Create-to-InService wait — `runDelayed`'s `b.wg.Go` call
+  panics ("WaitGroup.Add called from inside and outside synctest
+  bubble") if the same backend's WaitGroup is touched by a
+  bubble-spawned goroutine and then again by a call made outside any
+  bubble, and this test's later `UpdateInferenceComponentRuntimeConfig`/
+  `UpdateInferenceComponent` calls each schedule their own delayed
+  transition. A final `time.Sleep`+`synctest.Wait` was added at the end
+  (after Delete) to drain those two calls' still-pending timers before
+  the bubble exits — synctest fatals with "deadlock: main bubble
+  goroutine has exited but blocked goroutines remain" otherwise.
+
+Neuter results (`scheduleEndpointTransition`/
+`scheduleInferenceComponentTransition`, guard reduced to the bare
+`!ok` existence check, `// NEUTERED for gopherstack-rh77 coverage
+check`): both compile; endpoint guard removal fails
+`TestEndpointTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate`
+(`LastModifiedTime changed from ...0.25... to ...0.3...`), leaves
+`TestEndpointTransitions_ReachInService` passing (as expected — only the
+race test is sensitive to this guard); inference-component guard
+removal fails
+`TestInferenceComponentTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate`
+the same way, leaves `TestInferenceComponentTransitions_ReachInService`
+passing. Both restored and diffed byte-identical against the pre-neuter
+version.
+
+Gates: `go build ./services/sagemaker/...` clean; `go test -race
+-count=1 ./services/sagemaker/...` fully green; `go test -race
+-count=20 -run
+'TestEndpointTransitions_ReachInService|TestEndpointTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate|TestInferenceComponentTransitions_ReachInService|TestInferenceComponentTransition_StaleCreateCallbackDoesNotRetouchAfterUpdate'
+./services/sagemaker/` 20/20; `golangci-lint run services/sagemaker/...`
+0 issues.
+
+## 2026-09-07 (gopherstack-iook): ten more `Eventually` polls converted to `synctest`; one site left, confirmed unmigratable
+
+Follow-up to gopherstack-7lrq/rh77's own conversions (above): eleven
+remaining `assert.Eventually`/`require.Eventually` sites across
+`handler_compilation_jobs_test.go`, `handler_labeling_test.go`,
+`handler_edge_packaging_jobs_test.go`, `handler_hp_tuning_jobs_test.go`,
+and `handler_inference_recommendations_jobs_test.go` polled a
+`runDelayed` FSM transition the same way the 7lrq bug was hiding in.
+Before converting, each transition's guard was read directly:
+`compilation_jobs.go` (Stop and auto-complete), `labeling.go` (both
+legs of `scheduleLabelingJobCompletion`, plus `StopLabelingJob`),
+`edge_packaging_jobs.go` (`scheduleEdgePackagingJobCompletion`,
+`StopEdgePackagingJob`), `hp_tuning_jobs.go`
+(`scheduleHPTuningJobCompletion`, `StopHyperParameterTuningJob`), and
+`inference_recommendations_jobs.go` (`scheduleInferenceRecommendationsJobCompletion`,
+`StopInferenceRecommendationsJob`) — all ten callbacks already carry a
+current-status guard matching `StopProcessingJob`'s shape
+(`processing_jobs.go:264-273`), and a same-delay overlap check (e.g.
+labeling's Initializing->InProgress and Stop's own Stopping->Stopped
+both scheduled at 150ms) confirmed no callback can clobber a later
+state. No new bug found; ten sites converted clean, matching the
+`lifecycle_test.go`/`pipeline_execution_start_test.go`/
+`handler_endpoints_test.go`/`handler_inference_components_test.go`
+pattern: `synctest.Test` wrapping the whole body (every one of these
+ten schedules its `runDelayed` goroutine synchronously inside
+`Create*`, so the whole body — not just the final wait — has to share
+one bubble), a `time.Sleep(time.Second)` + `synctest.Wait()` in place
+of the poll, then a single `assert.Equal`/`require.Equal` on the same
+final condition the `Eventually` checked (every intermediate assertion
+the original body made — e.g. the `STOPPING` check before the wait —
+was kept as-is; nothing was weakened).
+
+Eleventh site,
+`TestHandler_CompilationJob_ReachesCompleted_RealClient`
+(`handler_compilation_jobs_test.go`), left unconverted:  this test
+drives the backend through `newTestSageMakerClient`'s real SDK client
+over an `httptest.NewServer` HTTP round trip
+(`handler_create_tags_test.go:25`), not the direct in-process
+`doSageMakerRequest` the other ten use. `synctest.Test` bubble
+membership follows the goroutine tree from `go` statement time: the
+server's Accept-loop goroutine (and everything it spawns per
+connection, including the goroutine that actually calls
+`CreateCompilationJob`/`runDelayed`) is a descendant of whichever
+goroutine created the `httptest.Server` — so it, and the fake clock
+governing the scheduled transition, only join the bubble if the server
+itself is constructed inside `synctest.Test`. Confirmed empirically:
+wrapping the whole test (client construction included) in
+`synctest.Test` deadlocks — 20 iterations of `-race` were not
+attempted because a single run hung with zero test output and near-zero
+CPU for 452s (manually killed; go test's own 10-minute default would
+have eventually fatal'd it). This is a `testing/synctest` /
+real-network-I/O incompatibility, not a production bug, and not fixable
+within this test file alone — `newTestSageMakerClient` is a shared
+helper used by many other `_RealClient` tests across this package, so
+giving it a synctest-safe in-process transport is a separate,
+broader change. Left as `require.Eventually` (`handler_compilation_jobs_test.go:578`
+after the other edits shifted line numbers).
+
+Files changed: `handler_compilation_jobs_test.go`,
+`handler_labeling_test.go`, `handler_edge_packaging_jobs_test.go`,
+`handler_hp_tuning_jobs_test.go`,
+`handler_inference_recommendations_jobs_test.go` (all ten
+`Eventually`->`synctest` conversions); each gained a
+`"testing/synctest"` import.
+
+Timing: the ten migrated sites, run individually against the
+pre-migration code, took 0.15-0.31s each real time (`go test -race
+-count=1 -v -run '<the ten names>' ./services/sagemaker/...` totalled
+2.361s); the same run against the migrated code reports 0.00s per site
+(1.603s total, dominated by the still-real eleventh site's 0.31s) —
+the fake clock resolves each `time.Sleep(time.Second)` instantly
+instead of waiting out the real 150-450ms transition delay.
+
+Gates: `go test -race -count=1 ./services/sagemaker/...` — 2.522s,
+fully green. `go test -race -count=20 ./services/sagemaker/...` —
+29.674s, 20/20, no flakes. `golangci-lint run services/sagemaker/...`
+0 issues. `grep -rn 'assert\.Eventually\|require\.Eventually'
+services/sagemaker/*_test.go` returns exactly two lines: the live
+eleventh site above, and `lifecycle_test.go:68`, which is prose inside
+a comment (`// ... assert.Eventually hid that by returning the ...`),
+not a call.
+
+## 2026-09-07 (gopherstack-yp2t): DeletePipeline now refuses while an execution is running
+
+`DeletePipeline`'s own doc comment (`api_op_DeletePipeline.go:12-14`,
+sagemaker@v1.263.2): "Deletes a pipeline if there are no running instances
+of the pipeline. To delete a pipeline, you must stop all running instances
+of the pipeline using the StopPipelineExecution API." Its declared error
+set (`deserializeOpErrorDeletePipeline`) is `ConflictException`,
+`ResourceNotFound`, `UnknownError` — `ConflictException`'s doc
+(`types/errors.go:9-10`, "There was a conflict when you attempted to modify
+a SageMaker entity") fits, and `errors.go`'s `ErrConflictException` base
+sentinel already lists Pipeline (`Create/Update/DeletePipeline`) among the
+resources whose real conflict error is `ConflictException` rather than
+`ResourceInUse`.
+
+Reachability: gopherstack-z5hj (closed the same day, just before this
+issue) fixed `StartPipelineExecution`/`StartPipelineExecutionFull` to
+transition `Executing -> Succeeded` via `runDelayed` instead of jumping
+straight to `Succeeded`, so a pipeline execution is now observably
+`Executing` for `startTransitionDelay` (200ms) after starting — the guard
+this issue adds is reachable, not dead code.
+
+Fix (`pipelines.go`): `DeletePipeline` now scans
+`pipelineExecutionsStoreRO(region)` for any execution whose `PipelineArn`
+matches and whose `PipelineExecutionStatus == pipelineStatusExecuting`,
+returning the new `ErrPipelineExecutionRunning` sentinel
+(`awserr.New("ConflictException", ErrConflictException)`) if found.
+Deliberately scoped to `Executing` only, not `Stopping` — the real
+`PipelineExecutionStatus` enum (`types/enums.go:6949-6953`) has both as
+distinct non-terminal values, and `Executing` is the literal "running"
+state the doc text names; `Stopping` means `StopPipelineExecution` has
+already been called, i.e. the documented remediation is already underway.
+
+Found reachable via an existing test that had been silently relying on
+the missing guard: `TestHandler_PipelineLifecycle` started an execution
+and deleted the pipeline immediately after, with no wait, and asserted
+200 OK. Pre-fix, this masked the gap; fixed to assert 400 while the
+execution is still `Executing`, then wait (`synctest`,
+`time.Sleep(time.Second)` + `synctest.Wait()`) for it to reach `Succeeded`
+before asserting the delete now succeeds. The whole test was moved inside
+one `synctest.Test` bubble so `StartPipelineExecution`'s `runDelayed`
+goroutine is bubble-owned.
+
+New regression test `TestHandler_DeletePipeline_RunningExecution`
+(`handler_pipelines_test.go`) asserts the wire `__type` through the
+handler (`"ConflictException"`, not just `errors.Is` sentinel identity —
+see gopherstack-74yw for why that distinction matters), then confirms the
+delete succeeds once the execution has transitioned to `Succeeded`.
+Proven to fail pre-fix: run against the pre-fix code, both this test and
+`TestHandler_PipelineLifecycle` failed with `expected: 400 / actual: 200`
+at the immediate-delete assertion.
+
+Gates: `go test -race -count=1 ./services/sagemaker/...` fully green;
+`golangci-lint run ./services/sagemaker/...` 0 issues.

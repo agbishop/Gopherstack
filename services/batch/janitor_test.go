@@ -276,3 +276,89 @@ func TestBatchJanitor_DefaultInterval(t *testing.T) {
 		})
 	}
 }
+
+// TestBatchJanitor_DependsOn covers SubmitJobInput.DependsOn
+// (api_op_SubmitJob.go), which was previously accepted, stored, and echoed
+// by DescribeJobs but never evaluated: a dependent job advanced straight to
+// RUNNING regardless of whether its dependency had completed.
+func TestBatchJanitor_DependsOn(t *testing.T) {
+	t.Parallel()
+
+	newBackendWithQueue := func(t *testing.T) (*batch.InMemoryBackend, *batch.JobQueue) {
+		t.Helper()
+
+		b := batch.NewInMemoryBackend("000000000000", "us-east-1")
+
+		queue, err := b.CreateJobQueue(context.Background(), "test-queue", 1, "ENABLED", nil, nil, "", nil, "", nil)
+		require.NoError(t, err)
+
+		_, err = b.RegisterJobDefinition(
+			context.Background(), "test-jd", "container",
+			nil, nil, 0, 0, nil, nil, nil, nil, nil, nil, false, nil,
+		)
+		require.NoError(t, err)
+
+		return b, queue
+	}
+
+	submit := func(
+		t *testing.T, b *batch.InMemoryBackend, q *batch.JobQueue, name string, dependsOn []batch.JobDependency,
+	) *batch.Job {
+		t.Helper()
+
+		job, err := b.SubmitJob(
+			context.Background(), name, q.JobQueueName, "test-jd:1",
+			nil, nil, dependsOn, nil, nil, nil, nil, nil, "", 0, false,
+		)
+		require.NoError(t, err)
+
+		return job
+	}
+
+	jobStatus := func(t *testing.T, b *batch.InMemoryBackend, jobID string) string {
+		t.Helper()
+
+		jobs := b.DescribeJobs(context.Background(), []string{jobID})
+		require.Len(t, jobs, 1)
+
+		return jobs[0].Status
+	}
+
+	t.Run("blocks_until_dependency_succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		b, q := newBackendWithQueue(t)
+		upstream := submit(t, b, q, "upstream", nil)
+		downstream := submit(t, b, q, "downstream", []batch.JobDependency{{JobID: upstream.JobID}})
+
+		j := batch.NewJanitor(b, time.Minute, 24*time.Hour, 24*time.Hour)
+
+		j.SweepOnce(t.Context()) // upstream: SUBMITTED -> RUNNING
+		assert.Equal(t, "RUNNING", jobStatus(t, b, upstream.JobID))
+		assert.Equal(t, "SUBMITTED", jobStatus(t, b, downstream.JobID),
+			"must not advance while its dependency is unresolved")
+
+		j.SweepOnce(t.Context()) // upstream: RUNNING -> SUCCEEDED
+		assert.Equal(t, "SUCCEEDED", jobStatus(t, b, upstream.JobID))
+		assert.Equal(t, "SUBMITTED", jobStatus(t, b, downstream.JobID),
+			"must not advance in the same sweep its dependency completes")
+
+		j.SweepOnce(t.Context()) // downstream: SUBMITTED -> RUNNING, now that upstream is SUCCEEDED
+		assert.Equal(t, "RUNNING", jobStatus(t, b, downstream.JobID))
+	})
+
+	t.Run("propagates_dependency_failure", func(t *testing.T) {
+		t.Parallel()
+
+		b, q := newBackendWithQueue(t)
+		upstream := submit(t, b, q, "upstream", nil)
+		downstream := submit(t, b, q, "downstream", []batch.JobDependency{{JobID: upstream.JobID}})
+
+		b.ForceJobStatus(upstream.JobID, "FAILED")
+
+		j := batch.NewJanitor(b, time.Minute, 24*time.Hour, 24*time.Hour)
+		j.SweepOnce(t.Context())
+
+		assert.Equal(t, "FAILED", jobStatus(t, b, downstream.JobID))
+	})
+}

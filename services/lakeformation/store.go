@@ -59,6 +59,7 @@ func (b *InMemoryBackend) Reset() {
 	b.resourceLFTags = make(map[string][]LFTagPair)
 	b.queries = make(map[string]string)
 	b.tableStorageOptimizers = make(map[string][]StorageOptimizer)
+	b.tableObjects = make(map[string][]PartitionedTableObjectsList)
 }
 
 // resetTablesLocked resets every store.Table-backed resource field to empty:

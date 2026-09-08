@@ -548,3 +548,45 @@ func TestMaintenanceWindowsForTarget_NoMatchReturnsEmpty(t *testing.T) {
 	identities := resp["WindowIdentities"].([]any)
 	assert.Empty(t, identities)
 }
+
+func TestDeleteMaintenanceWindow_CleansUpTargetsAndTasks(t *testing.T) {
+	t.Parallel()
+
+	b := newBackend(t)
+	wid := createTestWindow(t, b)
+
+	targetOut, err := b.RegisterTargetWithMaintenanceWindow(
+		context.TODO(), &ssm.RegisterTargetWithMaintenanceWindowInput{
+			WindowID:     wid,
+			ResourceType: "INSTANCE",
+			Targets:      []ssm.WindowTarget{{Key: "InstanceIds", Values: []string{"i-test"}}},
+		},
+	)
+	require.NoError(t, err)
+
+	taskOut, err := b.RegisterTaskWithMaintenanceWindow(
+		context.TODO(), &ssm.RegisterTaskWithMaintenanceWindowInput{
+			WindowID: wid,
+			TaskArn:  "AWS-RunShellScript",
+			TaskType: "RUN_COMMAND",
+		},
+	)
+	require.NoError(t, err)
+
+	_, err = b.DeleteMaintenanceWindow(context.TODO(), &ssm.DeleteMaintenanceWindowInput{WindowID: wid})
+	require.NoError(t, err)
+
+	targets, err := b.DescribeMaintenanceWindowTargets(
+		context.TODO(), &ssm.DescribeMaintenanceWindowTargetsInput{WindowID: wid},
+	)
+	require.NoError(t, err)
+	assert.Empty(t, targets.Targets,
+		"target %s must not survive DeleteMaintenanceWindow", targetOut.WindowTargetID)
+
+	tasks, err := b.DescribeMaintenanceWindowTasks(
+		context.TODO(), &ssm.DescribeMaintenanceWindowTasksInput{WindowID: wid},
+	)
+	require.NoError(t, err)
+	assert.Empty(t, tasks.Tasks,
+		"task %s must not survive DeleteMaintenanceWindow", taskOut.WindowTaskID)
+}

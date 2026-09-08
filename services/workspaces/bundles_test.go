@@ -320,6 +320,42 @@ func TestWorkspaceBundleCRUD(t *testing.T) { //nolint:paralleltest // existing i
 	}
 }
 
+// TestDeleteWorkspaceBundle_InUse verifies DeleteWorkspaceBundle rejects a
+// bundle still referenced by a WorkSpace's BundleId -- ResourceAssociatedException
+// is modelled for this operation (aws-sdk-go-v2/service/workspaces@v1.73.1
+// deserializers.go's awsAwsjson11_deserializeOpErrorDeleteWorkspaceBundle).
+func TestDeleteWorkspaceBundle_InUse(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandlerWithBackend(t)
+
+	rec := doTargetRequest(t, h, "CreateWorkspaceBundle", createBundleReq(createImage(t, h)))
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body)
+
+	var createOut struct {
+		WorkspaceBundle map[string]any `json:"WorkspaceBundle"`
+	}
+	decodeJSON(t, rec.Body.Bytes(), &createOut)
+	bundleID, _ := createOut.WorkspaceBundle["BundleId"].(string)
+	require.NotEmpty(t, bundleID)
+
+	doTargetRequest(t, h, "RegisterWorkspaceDirectory", map[string]any{
+		"DirectoryId": "d-1234567890",
+	})
+	recCreate := doTargetRequest(t, h, "CreateWorkspaces", map[string]any{
+		"Workspaces": []map[string]any{
+			{"UserName": "testuser", "DirectoryId": "d-1234567890", "BundleId": bundleID},
+		},
+	})
+	require.Equal(t, http.StatusOK, recCreate.Code, "body: %s", recCreate.Body)
+
+	recDelete := doTargetRequest(t, h, "DeleteWorkspaceBundle", map[string]any{
+		"BundleId": bundleID,
+	})
+	assert.Equal(t, http.StatusBadRequest, recDelete.Code,
+		"deleting a bundle referenced by a WorkSpace must fail: body: %s", recDelete.Body)
+}
+
 // TestUpdateWorkspaceBundle_UnknownImage verifies UpdateWorkspaceBundle
 // rejects an ImageId that doesn't reference a real image (previously
 // accepted unconditionally and silently pointed the bundle at a phantom

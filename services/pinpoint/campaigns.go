@@ -254,6 +254,7 @@ func (b *InMemoryBackend) DeleteCampaign(appID, campaignID string) (*Campaign, e
 	b.campaigns.Delete(campaignID)
 	delete(b.arnIndex, c.ARN)
 	delete(b.campaignVersions, appID+"/"+campaignID)
+	delete(b.campaignActivities, appID+"/"+campaignID)
 
 	return cloneCampaign(c), nil
 }

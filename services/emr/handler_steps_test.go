@@ -62,6 +62,53 @@ func TestEMR_AddJobFlowSteps(t *testing.T) {
 	assert.Contains(t, out.StepIDs[0], "s-")
 }
 
+func TestEMR_AddJobFlowSteps_RejectsTerminatedCluster(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	createRec := doEMRRequest(t, h, "RunJobFlow", map[string]any{"Name": "terminated-step-cluster"})
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	var createOut struct {
+		JobFlowID string `json:"JobFlowId"`
+	}
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createOut))
+
+	termRec := doEMRRequest(t, h, "TerminateJobFlows", map[string]any{
+		"JobFlowIds": []string{createOut.JobFlowID},
+	})
+	require.Equal(t, http.StatusOK, termRec.Code)
+
+	rec := doEMRRequest(t, h, "AddJobFlowSteps", map[string]any{
+		"JobFlowId": createOut.JobFlowID,
+		"Steps": []any{
+			map[string]any{
+				"Name":            "my-step",
+				"ActionOnFailure": "CONTINUE",
+				"HadoopJarStep":   map[string]any{"Jar": "command-runner.jar", "Args": []string{"spark-submit"}},
+			},
+		},
+	})
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errBody struct {
+		Type string `json:"__type"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errBody))
+	assert.Equal(t, "InvalidRequestException", errBody.Type)
+
+	listRec := doEMRRequest(t, h, "ListSteps", map[string]any{"ClusterId": createOut.JobFlowID})
+	require.Equal(t, http.StatusOK, listRec.Code)
+
+	var listOut struct {
+		Steps []any `json:"Steps"`
+	}
+	require.NoError(t, json.Unmarshal(listRec.Body.Bytes(), &listOut))
+	assert.Empty(t, listOut.Steps)
+}
+
 func TestEMR_ListBootstrapActions(t *testing.T) {
 	t.Parallel()
 

@@ -45,11 +45,19 @@ func (b *InMemoryBackend) UploadArchive(
 	b.archiveData[archiveID] = append([]byte(nil), data...)
 	v.NumberOfArchives++
 	v.SizeInBytes += size
+	v.WriteSinceLastInventory = new(true)
 
 	return a, nil
 }
 
 // DeleteArchive deletes an archive from a vault.
+//
+// Per api_op_DeleteArchive.go's doc comment, DeleteArchive is idempotent:
+// "Attempting to delete an already-deleted archive does not result in an
+// error." This emulator has no record of which archive IDs previously
+// existed, so -- like AWS's documented idempotent retry case -- deleting an
+// archiveID not currently present in an existing vault is a silent no-op
+// rather than ErrArchiveNotFound.
 func (b *InMemoryBackend) DeleteArchive(accountID, region, vaultName, archiveID string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -63,7 +71,7 @@ func (b *InMemoryBackend) DeleteArchive(accountID, region, vaultName, archiveID 
 
 	a, ok := v.Archives[archiveID]
 	if !ok {
-		return ErrArchiveNotFound
+		return nil
 	}
 
 	if err := b.checkVaultLockDelete(vArn, glacierActionDeleteArchive, a.CreationDate); err != nil {
@@ -82,6 +90,7 @@ func (b *InMemoryBackend) DeleteArchive(accountID, region, vaultName, archiveID 
 
 	delete(v.Archives, archiveID)
 	delete(b.archiveData, archiveID)
+	v.WriteSinceLastInventory = new(true)
 
 	return nil
 }

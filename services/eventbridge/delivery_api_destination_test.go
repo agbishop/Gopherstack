@@ -54,9 +54,9 @@ type recordingServer struct {
 	status   int
 }
 
-func newRecordingServer(t *testing.T, status int) *recordingServer {
+func newRecordingServer(t *testing.T) *recordingServer {
 	t.Helper()
-	rs := &recordingServer{status: status}
+	rs := &recordingServer{status: http.StatusOK}
 	rs.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		rs.mu.Lock()
@@ -212,7 +212,7 @@ func TestAPIDestinationDelivery_Auth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			server := newRecordingServer(t, http.StatusOK)
+			server := newRecordingServer(t)
 			backend := newBackend()
 			backend.SetDeliveryTargets(&eventbridge.DeliveryTargets{})
 
@@ -260,7 +260,7 @@ func TestAPIDestinationDelivery_OAuth(t *testing.T) {
 	}))
 	t.Cleanup(tokenServer.Close)
 
-	destServer := newRecordingServer(t, http.StatusOK)
+	destServer := newRecordingServer(t)
 	backend := newBackend()
 	backend.SetDeliveryTargets(&eventbridge.DeliveryTargets{})
 
@@ -301,7 +301,7 @@ func TestAPIDestinationDelivery_OAuth(t *testing.T) {
 func TestAPIDestinationDelivery_BodyMerge(t *testing.T) {
 	t.Parallel()
 
-	server := newRecordingServer(t, http.StatusOK)
+	server := newRecordingServer(t)
 	backend := newBackend()
 	backend.SetDeliveryTargets(&eventbridge.DeliveryTargets{})
 
@@ -336,6 +336,85 @@ func TestAPIDestinationDelivery_BodyMerge(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(reqs[0].body), &got))
 	assert.Equal(t, "world", got["hello"])
 	assert.Equal(t, "yes", got["injected"])
+}
+
+// TestAPIDestinationDelivery_TargetHTTPParameters verifies that a target's own
+// HttpParameters (PutTargets Target.HttpParameters, not the connection's
+// InvocationHttpParameters) are applied to the outbound request, and that on
+// a conflicting key the connection's value wins -- matching
+// aws-sdk-go-v2/service/eventbridge@v1.48.4 types.go's documented precedence
+// for Target.HttpParameters ("In case of any conflicting keys, values from
+// the Connection take precedence"). Previously deliverToAPIDestination never
+// read target.HTTPParameters at all, so it was accepted and stored by
+// PutTargets but silently dropped at delivery time.
+func TestAPIDestinationDelivery_TargetHTTPParameters(t *testing.T) {
+	t.Parallel()
+
+	server := newRecordingServer(t)
+	backend := newBackend()
+	backend.SetDeliveryTargets(&eventbridge.DeliveryTargets{})
+
+	conn, err := backend.CreateConnection(t.Context(), eventbridge.CreateConnectionInput{
+		Name:              "conn-target-http-params",
+		AuthorizationType: "API_KEY",
+		AuthParameters: &eventbridge.ConnectionAuthParameters{
+			APIKeyAuthParameters: &eventbridge.ConnectionAPIKeyAuthParameters{
+				APIKeyName:  "x-api-key",
+				APIKeyValue: "k",
+			},
+			InvocationHTTPParameters: &eventbridge.ConnectionHTTPParameters{
+				HeaderParameters: []eventbridge.ConnectionHeaderParameter{
+					{Key: "X-Conflict", Value: "from-connection"},
+				},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	dest, err := backend.CreateAPIDestination(t.Context(), eventbridge.CreateAPIDestinationInput{
+		Name:               "dest-target-http-params",
+		ConnectionArn:      conn.ConnectionArn,
+		InvocationEndpoint: server.server.URL + "/webhook",
+		HTTPMethod:         http.MethodPost,
+	})
+	require.NoError(t, err)
+
+	_, err = backend.PutRule(t.Context(), eventbridge.PutRuleInput{
+		Name:         "rule-target-http-params",
+		EventPattern: `{"source":["api.svc"]}`,
+		State:        "ENABLED",
+	})
+	require.NoError(t, err)
+
+	_, err = backend.PutTargets(t.Context(), "rule-target-http-params", "default", []eventbridge.Target{
+		{
+			ID:  "t1",
+			Arn: dest.APIDestinationArn,
+			HTTPParameters: &eventbridge.HTTPParameters{
+				HeaderParameters: map[string]string{
+					"X-From-Target": "target-value",
+					"X-Conflict":    "from-target",
+				},
+				QueryStringParameters: map[string]string{"trace": "target-trace"},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	backend.PutEvents(t.Context(), []eventbridge.EventEntry{
+		{Source: "api.svc", DetailType: "Evt", Detail: `{}`},
+	})
+
+	require.Eventually(t, func() bool {
+		return server.Count() > 0
+	}, 3*time.Second, 10*time.Millisecond)
+
+	reqs := server.Requests()
+	require.Len(t, reqs, 1)
+	assert.Equal(t, "target-value", reqs[0].header.Get("X-From-Target"), "target-only header must be forwarded")
+	assert.Contains(t, reqs[0].query, "trace=target-trace", "target-only query param must be forwarded")
+	assert.Equal(t, "from-connection", reqs[0].header.Get("X-Conflict"),
+		"on a conflicting key the connection's value must win over the target's")
 }
 
 // TestAPIDestinationDelivery_MissingDestinationGoesToDLQ verifies that an

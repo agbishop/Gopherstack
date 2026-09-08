@@ -197,6 +197,63 @@ func TestPromoteReadReplicaDBCluster(t *testing.T) {
 	}
 }
 
+// TestPromoteReadReplicaDBCluster_ClearsLinkage mirrors
+// TestPromoteReadReplicaClearsSourceList (db_instances_fields_test.go) at the
+// cluster level. Uses two replicas so the source-side assertion is positive
+// (the survivor's identifier must still be present) rather than an absence
+// check, which would pass even against unmodified code since
+// ReadReplicaIdentifiers is omitempty.
+func TestPromoteReadReplicaDBCluster_ClearsLinkage(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+	_, err := b.CreateDBCluster("src-promote", "aurora-postgresql", "admin", "", "", 0, nil, rds.DBClusterOptions{})
+	require.NoError(t, err)
+	_, err = b.CreateDBCluster(
+		"replica-promote-a", "aurora-postgresql", "admin", "", "", 0, nil,
+		rds.DBClusterOptions{ReplicationSourceIdentifier: "src-promote"},
+	)
+	require.NoError(t, err)
+	_, err = b.CreateDBCluster(
+		"replica-promote-b", "aurora-postgresql", "admin", "", "", 0, nil,
+		rds.DBClusterOptions{ReplicationSourceIdentifier: "src-promote"},
+	)
+	require.NoError(t, err)
+
+	got, err := b.PromoteReadReplicaDBCluster("replica-promote-a")
+	require.NoError(t, err)
+	assert.Empty(t, got.ReplicationSourceIdentifier)
+
+	clusters, err := b.DescribeDBClusters("src-promote")
+	require.NoError(t, err)
+	require.Len(t, clusters, 1)
+	assert.Equal(t, []string{"replica-promote-b"}, clusters[0].ReadReplicaIdentifiers)
+}
+
+// TestPromoteReadReplicaDBCluster_OrphanedSource covers the case uao2
+// established: deleting a source orphans its replicas rather than refusing
+// or cascading, so a replica's ReplicationSourceIdentifier can point at a
+// cluster that no longer exists by the time it is promoted. Promote must
+// still succeed and clear the stale linkage.
+func TestPromoteReadReplicaDBCluster_OrphanedSource(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend(t)
+	_, err := b.CreateDBCluster("src-gone", "aurora-postgresql", "admin", "", "", 0, nil, rds.DBClusterOptions{})
+	require.NoError(t, err)
+	_, err = b.CreateDBCluster(
+		"replica-orphaned", "aurora-postgresql", "admin", "", "", 0, nil,
+		rds.DBClusterOptions{ReplicationSourceIdentifier: "src-gone"},
+	)
+	require.NoError(t, err)
+	_, err = b.DeleteDBCluster("src-gone")
+	require.NoError(t, err)
+
+	got, err := b.PromoteReadReplicaDBCluster("replica-orphaned")
+	require.NoError(t, err)
+	assert.Empty(t, got.ReplicationSourceIdentifier)
+}
+
 func TestDescribeDBClusterBacktracks(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -794,3 +851,34 @@ func TestModifyDBClusterViaHandler(t *testing.T) {
 }
 
 // TestEnabledCloudwatchLogsExportsInClusterXML verifies EnabledCloudwatchLogsExports is emitted for clusters.
+
+// TestDeleteDBInstance_RemovesClusterMembership verifies that deleting a DB
+// instance that belongs to a cluster removes it from the cluster's
+// DBClusterMembers list, rather than leaving a ghost entry pointing at a
+// deleted instance forever.
+func TestDeleteDBInstance_RemovesClusterMembership(t *testing.T) {
+	t.Parallel()
+
+	b := rds.NewInMemoryBackend("123456789012", config.DefaultRegion)
+
+	_, err := b.CreateDBCluster(
+		"member-cluster", "aurora-postgresql", "admin", "mydb", "", 0, nil, rds.DBClusterOptions{},
+	)
+	require.NoError(t, err)
+
+	_, err = b.CreateDBInstance("member-inst", "aurora-postgresql", "db.r5.large", "", "", "", 20,
+		rds.DBInstanceOptions{DBClusterIdentifier: "member-cluster"})
+	require.NoError(t, err)
+
+	clusters, err := b.DescribeDBClusters("member-cluster")
+	require.NoError(t, err)
+	require.Len(t, clusters[0].DBClusterMembers, 1)
+
+	_, err = b.DeleteDBInstanceWithOptions("member-inst", true, "", true)
+	require.NoError(t, err)
+
+	clusters, err = b.DescribeDBClusters("member-cluster")
+	require.NoError(t, err)
+	assert.Empty(t, clusters[0].DBClusterMembers,
+		"deleted instance should be removed from its cluster's DBClusterMembers, not left as a ghost entry")
+}

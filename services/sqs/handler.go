@@ -17,6 +17,11 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/service"
 )
 
+// sqsJSONContentType is the media type for SQS's JSON protocol responses.
+// SQS uses the awsJson1_0 protocol (aws-sdk-go-v2/service/sqs@v1.46.4
+// serializers.go sets this same value on every request), not 1.1.
+const sqsJSONContentType = "application/x-amz-json-1.0"
+
 // Handler is the Echo HTTP handler for SQS operations.
 type Handler struct {
 	Backend       StorageBackend
@@ -305,7 +310,7 @@ func (h *Handler) Handler() echo.HandlerFunc {
 
 		return service.HandleTarget(
 			c, logger.Load(c.Request().Context()),
-			"SQS", "application/x-amz-json-1.1",
+			"SQS", sqsJSONContentType,
 			h.GetSupportedOperations(),
 			func(ctx context.Context, action string, body []byte) ([]byte, error) {
 				return h.sqsRoute(ctx, c.Request(), action, body)
@@ -369,7 +374,14 @@ func (h *Handler) sqsRoute(
 func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err error) error {
 	errType, message, status := errorDetails(err)
 
-	return c.JSON(status, jsonSQSError{Type: errType, Message: message})
+	payload, marshalErr := json.Marshal(jsonSQSError{Type: errType, Message: message})
+	if marshalErr != nil {
+		return marshalErr
+	}
+
+	c.Response().Header().Set("Content-Type", sqsJSONContentType)
+
+	return c.JSONBlob(status, payload)
 }
 
 // --- JSON request types ---
@@ -386,8 +398,7 @@ const errTypeInvalidParameterValue = "com.amazonaws.sqs#InvalidParameterValue"
 // invalidParameterValueMessage returns the AWS error message for parameter-validation
 // sentinel errors, or ("", false) if the error is not a parameter error.
 func invalidParameterValueMessage(err error) (string, bool) {
-	var ipe *InvalidParameterError
-	if errors.As(err, &ipe) {
+	if ipe, ok := errors.AsType[*InvalidParameterError](err); ok {
 		return ipe.Message, true
 	}
 
@@ -558,7 +569,6 @@ func sqsPermErrorDetails(err error) (errorEntry, bool) {
 	}
 
 	const badReq = http.StatusBadRequest
-	const conflict = "com.amazonaws.sqs#ResourceInConflict"
 	const ipv = errTypeInvalidParameterValue
 
 	rows := [...]errRow{
@@ -588,13 +598,20 @@ func sqsPermErrorDetails(err error) (errorEntry, bool) {
 			"The value for 'MaxNumberOfMessagesPerSecond' is not valid. Reason: must be >= 0.",
 			badReq,
 		}},
+		// "com.amazonaws.sqs#ResourceInConflict" doesn't name any real type in
+		// this SDK (sqs@v1.46.4 types/errors.go has no Conflict-named
+		// exception at all), so neither StartMessageMoveTask's nor
+		// CancelMessageMoveTask's own deserializeOpError could ever recognize
+		// it. ipv is the same fallback this table already uses for every
+		// other move-task condition none of these ops model as a typed
+		// exception (see ErrTaskHandleInvalid above).
 		{ErrMoveTaskAlreadyRunning, errorEntry{
-			conflict,
+			ipv,
 			"A message move task already exists for the specified source queue.",
 			badReq,
 		}},
 		{ErrMoveTaskNotRunning, errorEntry{
-			conflict,
+			ipv,
 			"A message move task with the specified task handle is not running.",
 			badReq,
 		}},

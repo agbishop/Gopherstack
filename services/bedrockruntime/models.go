@@ -38,10 +38,21 @@ type AsyncInvoke struct {
 	Status             string
 }
 
+// asyncInvokeSortOrderDescending is the ListAsyncInvokesInput.SortOrder value
+// (types.SortOrder) that reverses the default ascending-by-submit-time order.
+const asyncInvokeSortOrderDescending = "Descending"
+
 // ListAsyncInvokesFilter holds optional filter criteria for listing async invocations.
 type ListAsyncInvokesFilter struct {
+	// SubmitTimeAfter, if set, excludes invocations submitted at or before this time.
+	SubmitTimeAfter *time.Time
+	// SubmitTimeBefore, if set, excludes invocations submitted at or after this time.
+	SubmitTimeBefore *time.Time
 	// StatusEquals filters to invocations with the given status; empty means no filter.
 	StatusEquals string
+	// SortOrder reverses SubmitTime ordering when set to
+	// asyncInvokeSortOrderDescending; any other value (including empty) sorts ascending.
+	SortOrder string
 }
 
 // invocationRing is a fixed-capacity circular buffer for Invocation records.

@@ -76,7 +76,7 @@ type createBackupInput struct {
 
 // CreateBackup creates a backup of the specified file system.
 func (b *InMemoryBackend) CreateBackup(input *createBackupInput) (*Backup, error) {
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
@@ -249,7 +249,7 @@ type copyBackupInput struct {
 
 // CopyBackup creates a copy of an existing backup.
 func (b *InMemoryBackend) CopyBackup(input *copyBackupInput) (*Backup, error) {
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 

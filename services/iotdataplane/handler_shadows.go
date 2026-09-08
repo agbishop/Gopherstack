@@ -21,7 +21,7 @@ func (h *Handler) handleListThingsWithShadows(c *echo.Context) error {
 
 	q := c.Request().URL.Query()
 	nextTokenIn := q.Get("nextToken")
-	pageSize := parsePageSize(q)
+	pageSize := parsePageSize(q, defaultPageSize)
 
 	startIdx := findCursorIndex(things, nextTokenIn)
 	end := min(startIdx+pageSize, len(things))
@@ -137,7 +137,7 @@ func (h *Handler) handleListNamedShadows(c *echo.Context) error {
 
 	q := c.Request().URL.Query()
 	nextTokenIn := q.Get("nextToken")
-	pageSize := parsePageSize(q)
+	pageSize := parsePageSize(q, defaultPageSize)
 
 	startIdx := findCursorIndex(names, nextTokenIn)
 	end := min(startIdx+pageSize, len(names))

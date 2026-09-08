@@ -222,6 +222,7 @@ func (b *InMemoryBackend) buildSAMLResponse(
 		SourceIdentity:    data.SourceIdentity,
 		Tags:              data.Tags,
 		TransitiveTagKeys: data.TransitiveTagKeys,
+		IsAssumedRole:     true,
 	}
 
 	b.storeSession(session)

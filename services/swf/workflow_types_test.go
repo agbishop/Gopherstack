@@ -52,6 +52,40 @@ func TestErrValidation_RegisterWorkflowType(t *testing.T) {
 	}
 }
 
+// TestRegisterWorkflowType_DomainChecks verifies ErrNotFound (UnknownResourceFault)
+// both when the domain does not exist and when it has been deprecated -- per
+// DeprecateDomain's doc ("it cannot be used to create new workflow executions or
+// register new types"). RegisterWorkflowType's modelled error set has
+// UnknownResourceFault but no DomainDeprecatedFault.
+func TestRegisterWorkflowType_DomainChecks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		setupDeprecatedDomain bool
+	}{
+		{name: "domain_missing"},
+		{name: "domain_deprecated", setupDeprecatedDomain: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := swf.NewInMemoryBackend()
+			if tt.setupDeprecatedDomain {
+				require.NoError(t, b.RegisterDomain("dom", "", "NONE"))
+				require.NoError(t, b.DeprecateDomain("dom"))
+			}
+
+			err := b.RegisterWorkflowType("dom", "wf", "1.0", "", swf.WorkflowTypeDefaults{})
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, swf.ErrNotFound)
+		})
+	}
+}
+
 // TestRegisterWorkflowType_StoredDescription verifies description is stored.
 func TestRegisterWorkflowType_StoredDescription(t *testing.T) {
 	t.Parallel()

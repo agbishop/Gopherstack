@@ -326,6 +326,35 @@ func TestNodegroupDiskSize_Boundary_Max_OK(t *testing.T) {
 	assert.Equal(t, int32(16384), ng.DiskSize)
 }
 
+// TestCreateNodegroup_Version_MismatchRejected guards api_op_CreateNodegroup.go's
+// Version field doc: "By default, the Kubernetes version of the cluster is
+// used, and this is the only accepted specified value" for its cluster.
+func TestCreateNodegroup_Version_MismatchRejected(t *testing.T) {
+	t.Parallel()
+
+	b := eks.NewInMemoryBackend(t.Context(), "123456789012", config.DefaultRegion)
+	_, err := b.CreateCluster("c1", "1.32", "", nil, nil, nil)
+	require.NoError(t, err)
+
+	_, err = b.CreateNodegroup("c1", "ng1", "", "", "", "1.31", "", nil, 1, 1, 2, eks.NodegroupInput{}, nil)
+	require.ErrorIs(t, err, eks.ErrValidation, "a nodegroup version that does not match the cluster's must be rejected")
+}
+
+// TestCreateNodegroup_Version_DefaultsToClusterVersion guards the same doc
+// sentence's default case: an omitted version must resolve to (and be
+// echoed back as) the cluster's own Kubernetes version, not stay empty.
+func TestCreateNodegroup_Version_DefaultsToClusterVersion(t *testing.T) {
+	t.Parallel()
+
+	b := eks.NewInMemoryBackend(t.Context(), "123456789012", config.DefaultRegion)
+	_, err := b.CreateCluster("c1", "1.32", "", nil, nil, nil)
+	require.NoError(t, err)
+
+	ng, err := b.CreateNodegroup("c1", "ng1", "", "", "", "", "", nil, 1, 1, 2, eks.NodegroupInput{}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "1.32", ng.Version, "an omitted nodegroup version must default to the cluster's Kubernetes version")
+}
+
 func TestNodegroupDiskSize_Zero_Omitted(t *testing.T) {
 	t.Parallel()
 
@@ -399,7 +428,7 @@ func TestNodegroupASG_Name_DifferentPerNodegroup(t *testing.T) {
 		"each nodegroup must get a unique ASG name")
 }
 
-func TestDeleteCluster_ClearsNodegroups(t *testing.T) {
+func TestDeleteCluster_RejectedWithNodegroups(t *testing.T) {
 	t.Parallel()
 
 	b := eks.NewInMemoryBackend(t.Context(), "123456789012", config.DefaultRegion)
@@ -411,9 +440,14 @@ func TestDeleteCluster_ClearsNodegroups(t *testing.T) {
 	assert.Equal(t, 1, b.NodegroupCount())
 
 	_, err = b.DeleteCluster("c1")
+	require.ErrorIs(t, err, eks.ErrAlreadyExists, "DeleteCluster must reject a cluster with attached nodegroups")
+	assert.Equal(t, 1, b.NodegroupCount())
+
+	_, err = b.DeleteNodegroup("c1", "ng1")
 	require.NoError(t, err)
 
-	assert.Equal(t, 0, b.NodegroupCount(), "DeleteCluster must clear all nodegroups")
+	_, err = b.DeleteCluster("c1")
+	require.NoError(t, err, "DeleteCluster must succeed once nodegroups are removed")
 }
 
 func TestNodegroup_AllOptionalFields_RoundTrip(t *testing.T) {
@@ -591,7 +625,7 @@ func TestDescribeNodegroup_ARN_Present(t *testing.T) {
 	assert.Contains(t, arn, "ng-arn-cluster")
 }
 
-func TestDeleteCluster_Cascades_Nodegroup_Cleanup(t *testing.T) {
+func TestDeleteCluster_RejectedThenSucceedsAfterNodegroupRemoved(t *testing.T) {
 	t.Parallel()
 
 	b := newBackend(t)
@@ -599,8 +633,15 @@ func TestDeleteCluster_Cascades_Nodegroup_Cleanup(t *testing.T) {
 	mustCreateNodegroup(t, b, "del-cascade-cluster2")
 
 	_, err := b.DeleteCluster("del-cascade-cluster2")
+	require.ErrorIs(t, err, eks.ErrAlreadyExists)
+	assert.Equal(t, 1, b.NodegroupCount())
+
+	_, err = b.DeleteNodegroup("del-cascade-cluster2", "ng1")
 	require.NoError(t, err)
-	assert.Equal(t, 0, b.NodegroupCount(), "DeleteCluster must cascade nodegroup cleanup")
+
+	_, err = b.DeleteCluster("del-cascade-cluster2")
+	require.NoError(t, err)
+	assert.Equal(t, 0, b.NodegroupCount())
 }
 
 func TestUpdateNodegroupVersion_Status_InProgress(t *testing.T) {

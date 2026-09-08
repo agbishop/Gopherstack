@@ -108,6 +108,7 @@ func (b *InMemoryBackend) DeleteEmailTemplate(name string) error {
 	}
 
 	b.emailTemplates.Delete(name)
+	delete(b.resourceTags, b.emailTemplateARN(name))
 
 	return nil
 }

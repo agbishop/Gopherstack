@@ -78,6 +78,11 @@ func (b *InMemoryBackend) ListSchedules(
 	return out, next
 }
 
+// UpdateSchedule overwrites CronExpression unconditionally
+// (UpdateScheduleInput marks it "This member is required") but only
+// overwrites JobNames when non-empty: JobNames has no such marker, so a
+// caller updating just CronExpression must not have their existing
+// JobNames clobbered.
 func (b *InMemoryBackend) UpdateSchedule(
 	ctx context.Context,
 	name string,
@@ -91,7 +96,9 @@ func (b *InMemoryBackend) UpdateSchedule(
 	if !ok {
 		return ErrNotFound
 	}
-	sc.JobNames = jobNames
+	if len(jobNames) > 0 {
+		sc.JobNames = jobNames
+	}
 	sc.CronExpression = cron
 	sc.LastModifiedDate = float64(time.Now().Unix())
 

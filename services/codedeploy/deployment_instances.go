@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
+	"github.com/blackbirdworks/gopherstack/pkgs/strs"
 
 	ec2backend "github.com/blackbirdworks/gopherstack/services/ec2"
 )
@@ -202,8 +203,10 @@ func (b *InMemoryBackend) GetDeploymentTarget(deploymentID, targetID string) (*D
 	)
 }
 
-// ListDeploymentTargets returns the sorted target IDs participating in a deployment.
-func (b *InMemoryBackend) ListDeploymentTargets(deploymentID string) ([]string, error) {
+// ListDeploymentTargets returns the sorted target IDs participating in a
+// deployment, narrowed by filter's TargetStatus/ServerInstanceLabel values
+// (the two TargetFilterName keys the real API defines).
+func (b *InMemoryBackend) ListDeploymentTargets(deploymentID string, filter TargetListFilter) ([]string, error) {
 	b.mu.RLock("ListDeploymentTargets")
 	defer b.mu.RUnlock()
 
@@ -215,10 +218,27 @@ func (b *InMemoryBackend) ListDeploymentTargets(deploymentID string) ([]string, 
 	targets := b.deploymentTargets(d)
 	ids := make([]string, 0, len(targets))
 	for _, t := range targets {
+		if !targetMatchesFilter(t, filter) {
+			continue
+		}
 		ids = append(ids, t.TargetID)
 	}
 
 	return ids, nil
+}
+
+// targetMatchesFilter reports whether t satisfies a ListDeploymentTargets
+// targetFilters map (empty per-key lists impose no constraint for that key).
+func targetMatchesFilter(t DeploymentTargetRecord, filter TargetListFilter) bool {
+	if len(filter.TargetStatus) > 0 && !strs.ContainsFold(filter.TargetStatus, t.Status) {
+		return false
+	}
+
+	if len(filter.ServerInstanceLabel) > 0 && !strs.ContainsFold(filter.ServerInstanceLabel, t.InstanceLabel) {
+		return false
+	}
+
+	return true
 }
 
 // BatchGetDeploymentTargets returns the computed targets matching the given
@@ -256,7 +276,7 @@ func (b *InMemoryBackend) BatchGetDeploymentTargets(
 // deployment (ECS deployments have no per-instance concept and always
 // resolve to an empty list here, matching the legacy API's EC2/On-premises +
 // Lambda scope).
-func (b *InMemoryBackend) ListDeploymentInstances(deploymentID string) ([]string, error) {
+func (b *InMemoryBackend) ListDeploymentInstances(deploymentID string, filter InstanceListFilter) ([]string, error) {
 	b.mu.RLock("ListDeploymentInstances")
 	defer b.mu.RUnlock()
 
@@ -272,9 +292,19 @@ func (b *InMemoryBackend) ListDeploymentInstances(deploymentID string) ([]string
 
 	ids := make([]string, 0)
 	for _, t := range b.deploymentTargets(d) {
-		if t.TargetType == targetTypeInstance {
-			ids = append(ids, t.TargetID)
+		if t.TargetType != targetTypeInstance {
+			continue
 		}
+
+		if len(filter.StatusFilter) > 0 && !strs.ContainsFold(filter.StatusFilter, t.Status) {
+			continue
+		}
+
+		if len(filter.TypeFilter) > 0 && !strs.ContainsFold(filter.TypeFilter, t.InstanceLabel) {
+			continue
+		}
+
+		ids = append(ids, t.TargetID)
 	}
 
 	sort.Strings(ids)

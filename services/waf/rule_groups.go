@@ -79,12 +79,17 @@ func (b *InMemoryBackend) UpdateRuleGroup(id, changeToken string, updates []Acti
 		case updateInsert:
 			if active[u.ActivatedRule.RuleId] {
 				return fmt.Errorf("%w: rule %q is already activated in this RuleGroup",
-					ErrInvalidParameter, u.ActivatedRule.RuleId)
+					ErrInvalidOperation, u.ActivatedRule.RuleId)
 			}
 
 			active[u.ActivatedRule.RuleId] = true
 			rules = append(rules, u.ActivatedRule)
 		case updateDelete:
+			if !active[u.ActivatedRule.RuleId] {
+				return fmt.Errorf("%w: rule %q isn't activated in this RuleGroup",
+					ErrInvalidOperation, u.ActivatedRule.RuleId)
+			}
+
 			delete(active, u.ActivatedRule.RuleId)
 
 			filtered := rules[:0]
@@ -128,6 +133,7 @@ func (b *InMemoryBackend) DeleteRuleGroup(id, changeToken string) error {
 
 	b.ruleGroups.Delete(id)
 	delete(b.ruleGroupRules, id)
+	delete(b.tags, b.ruleGroupARN(id))
 
 	return nil
 }

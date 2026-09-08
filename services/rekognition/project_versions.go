@@ -65,13 +65,20 @@ func (b *InMemoryBackend) CreateProjectVersion(
 	return v.toProjectVersion(), nil
 }
 
-// DeleteProjectVersion deletes a project version.
+// DeleteProjectVersion deletes a project version. DeleteProjectVersionInput's
+// own doc comment (api_op_DeleteProjectVersion.go): "You can't delete a
+// project version if it is running or if it is training.".
 func (b *InMemoryBackend) DeleteProjectVersion(projectVersionARN string) error {
 	b.mu.Lock("DeleteProjectVersion")
 	defer b.mu.Unlock()
 
-	if !b.projectVersions.Has(projectVersionARN) {
+	v, exists := b.projectVersions.Get(projectVersionARN)
+	if !exists {
 		return ErrProjectVersionNotFound
+	}
+
+	if v.Status == "TRAINING_IN_PROGRESS" || v.Status == processorRunning {
+		return ErrProjectVersionInUse
 	}
 
 	b.projectVersions.Delete(projectVersionARN)

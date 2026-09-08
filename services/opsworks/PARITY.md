@@ -29,14 +29,14 @@ ops:
   CreateStack: {wire: ok, errors: ok, state: ok, persist: ok, note: "now validates all 4 required members (Name/Region/DefaultInstanceProfileArn/ServiceRoleArn); wire no longer emits invented 'Status' field; now also accepts+echoes VpcId/Attributes/ConfigurationManager/ChefConfiguration (gopherstack-4uhx) -- rest of the optional surface (AgentVersion, CustomCookbooksSource, CustomJson, DefaultAvailabilityZone, DefaultOs, DefaultRootDeviceType, DefaultSshKeyName, DefaultSubnetId, HostnameTheme, UseCustomCookbooks, UseOpsworksSecurityGroups) remains unmodeled, see deferred"}
   DescribeStacks: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateStack: {wire: ok, errors: ok, state: ok, persist: ok}
-  DeleteStack: {wire: ok, errors: ok, state: ok, persist: ok, note: cascades layers/instances/apps/deployments/permissions/volumes/rds/ecs}
+  DeleteStack: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-09-07 (gopherstack-bael): missing delete precondition -- api_op_DeleteStack.go: \"You must first delete all instances, layers, and apps or deregister registered instances.\" Previously cascaded unconditionally; now returns ValidationException while any instance, layer, or app remains. Deployments/permissions/volumes/RDS/ECS associations (none of which carry a documented precondition) still cascade once that guard clears."}
   CloneStack: {wire: ok, errors: ok, state: ok, persist: ok}
   StartStack: {wire: ok, errors: ok, state: ok, persist: ok}
   StopStack: {wire: ok, errors: ok, state: ok, persist: ok}
   CreateLayer: {wire: ok, errors: ok, state: ok, persist: ok, note: "now validates all 4 required members and restricts Type to the real LayerType enum"}
   DescribeLayers: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateLayer: {wire: ok, errors: ok, state: ok, persist: ok}
-  DeleteLayer: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteLayer: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-09-04 (gopherstack-2rx): missing delete precondition -- api_op_DeleteLayer.go: \"You must first stop and then delete all associated instances or unassign registered instances.\" Previously deleted the layer unconditionally, leaving any instance still assigned to it (storedInstance.LayerID) with a dangling reference to a deleted layer. Now returns ValidationException if any instance is still assigned."}
   CreateInstance: {wire: ok, errors: ok, state: ok, persist: ok, note: "now validates all 3 required members (StackId/LayerIds/InstanceType) and that the target layer exists -- previously silently accepted a nonexistent layer ID"}
   RegisterInstance: {wire: ok, errors: ok, state: ok, persist: ok, note: "now validates the required StackId member (gopherstack-4uhx) -- an empty StackId previously fell through to the stack-lookup's ResourceNotFoundException instead of ValidationException"}
   DeregisterInstance: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -44,7 +44,7 @@ ops:
   UnassignInstance: {wire: ok, errors: ok, state: ok, persist: ok}
   DescribeInstances: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED wire bug -- was emitting a singular 'LayerId' string; real types.Instance has a plural 'LayerIds' []string member, so a real SDK client's Instance.LayerIds field would never have populated from this backend's old response"}
   UpdateInstance: {wire: ok, errors: ok, state: ok, persist: ok}
-  DeleteInstance: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteInstance: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-09-04 (gopherstack-2rx): missing delete precondition -- api_op_DeleteInstance.go: \"You must stop an instance before you can delete it.\" Previously deleted an instance regardless of Status; now returns ValidationException unless status is 'stopped' (both CreateInstance/RegisterInstance already default new instances to 'stopped', so this only bites an instance that was StartInstance'd and never stopped again)."}
   StartInstance: {wire: ok, errors: ok, state: ok, persist: ok}
   StopInstance: {wire: ok, errors: ok, state: ok, persist: ok}
   RebootInstance: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -627,3 +627,170 @@ that actually mattered (this package's dispatch-table union) already
 carried the correct field set regardless of which fold candidate won.
 
 Verdict: confirmed zero damage, not merely predicted.
+
+## 2026-09-04 — gopherstack-2rx: delete-precondition sweep
+
+Read the full doc comments (not grepped) for every `Delete*` op against
+`aws-sdk-go-v2/service/opsworks@v1.31.0`: `DeleteStack`, `DeleteLayer`,
+`DeleteInstance`, `DeleteApp`, `DeleteUserProfile`. Per-op error-code
+switches confirmed (`ResourceNotFoundException`/`ValidationException` only,
+for all five).
+
+**2 real, previously-unfixed bugs found and fixed** (neither had a
+pre-existing regression test locking in a contrary behavior):
+
+1. **`DeleteInstance`** (`instances.go`): `api_op_DeleteInstance.go` --
+   "You must stop an instance before you can delete it." The backend
+   deleted any instance regardless of `Status`. Now looks the instance up
+   first and returns `ValidationException` unless `Status == "stopped"`.
+   Instances default to `stopped` on both `CreateInstance` and
+   `RegisterInstance` (see their doc comments), so this only bites an
+   instance a caller `StartInstance`'d and never stopped again. Test:
+   `TestInstance/DeleteInstance_on_an_online_instance_returns_ValidationException`
+   (`instances_test.go`) -- hand-reverted (`DeleteInstance` back to
+   unconditional `b.instances.Delete`) and confirmed it fails with 200
+   instead of 400 pre-fix; restored and confirmed byte-identical to the fix
+   via `grep -A16 DeleteInstance instances.go`.
+
+2. **`DeleteLayer`** (`layers.go`): `api_op_DeleteLayer.go` -- "You must
+   first stop and then delete all associated instances or unassign
+   registered instances." The backend deleted the layer row unconditionally,
+   with no check for instances still referencing it. Since this backend
+   models an instance's layer membership as a single `storedInstance.LayerID`
+   field (not a table row), the pre-fix behavior was a genuine ghost-reference
+   bug: an instance created via `CreateInstance` or assigned via
+   `AssignInstance` into a now-deleted layer kept `LayerID` pointing at a
+   nonexistent layer, which `DescribeInstances`' `LayerIds` filter and wire
+   output would still surface. Now looks the layer up first (for its
+   `StackID`, to scope the scan via the existing `instancesByStack` index)
+   and returns `ValidationException` if any instance's `LayerID` still
+   matches. Test:
+   `TestLayer/DeleteLayer_with_an_associated_instance_returns_ValidationException`
+   (`layers_test.go`) -- hand-reverted and confirmed it fails with 200
+   instead of 400 pre-fix (instance count after the failed delete attempt
+   also asserted at 1, confirming no partial mutation); restored and
+   confirmed byte-identical via the same grep-diff method.
+
+Neither fix touches `deleteStackResources`/`deleteStackAssociations`
+(`stacks.go`) -- `DeleteStack`'s cascade deletes rows directly via
+`b.layers.Delete`/`b.instances.Delete` on the store tables, not through the
+now-precondition-guarded `DeleteLayer`/`DeleteInstance` backend methods, so
+`TestDeleteStackCascade` (`stacks_test.go`) is unaffected and still passes.
+
+**`DeleteStack` precondition -- considered, deliberately NOT changed.**
+`api_op_DeleteStack.go` states the same kind of precondition: "You must
+first delete all instances, layers, and apps or deregister registered
+instances." Read literally and consistently with the `DeleteInstance`/
+`DeleteLayer` fixes above, a strict reading would make a non-empty
+`DeleteStack` return `ValidationException` instead of cascading. This
+backend instead cascades (`deleteStackResources`/`deleteStackAssociations`),
+and that behavior is **not** an oversight -- it is locked in by an existing,
+passing regression test (`TestDeleteStackCascade`, `stacks_test.go`,
+predating this pass) that asserts a 200 and full cascade cleanup. Reversing
+it now would silently invalidate that prior, deliberate design decision
+based on a doc-comment reading alone, which this task's own rules caution
+against ("A new delete precondition can break a teardown path"). Checked
+`services/cloudformation` for any coupling that reversing it could break
+(`grep -rln opsworks services/cloudformation/` -- zero hits), so that
+specific historical risk doesn't apply here, but the tension between the
+SDK's literal wording and the established cascade-on-delete convention used
+throughout this repo (see e.g. `vpclattice`, `workmail`, `amplify` commit
+history) is a genuine design-decision fork, not a "SDK is silent" case and
+not an unambiguous bug either -- flagging as **cannot be resolved without a
+product decision** rather than guessing. Filed as a follow-up rather than
+changed unilaterally.
+
+**`DeleteApp`/`DeleteUserProfile`**: doc comments carry no delete
+precondition at all (`api_op_DeleteApp.go`: "Deletes a specified app.";
+`api_op_DeleteUserProfile.go`: "Deletes a user profile."). No SDK basis to
+add one; NOT CHECKED for ghost-row leaks in `permissions`/other tables
+keyed by `IamUserArn` (SDK doesn't document a cascade contract there
+either, so no fix attempted -- would need a product decision, same as
+`DeleteStack` above).
+
+**Gates**: `GOTOOLCHAIN=go1.26.6 go build ./...` clean;
+`GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/opsworks/...` and
+`./services/cloudformation/...` (dependent per this task's instructions)
+both green; `GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/opsworks/...`
+`0 issues.`; no `cyclop`/`gocyclo`/`gocognit`/`funlen` nolints added.
+
+No subagents used. No git-mutating commands run -- orchestrator must
+commit/push. Only `services/opsworks/*` files touched (test + backend
+methods + this file); `services/kms` (concurrently edited by another agent
+per this task's instructions) never touched.
+
+## 2026-09-07 — gopherstack-bael: DeleteStack precondition resolved
+
+The 2026-09-04 pass above (gopherstack-2rx) flagged `DeleteStack`'s cascade
+vs. its doc comment's stated precondition as a design-decision fork needing
+a product call, and filed it as a follow-up rather than changing it
+unilaterally. This is that follow-up.
+
+Re-read `api_op_DeleteStack.go` verbatim: "You must first delete all
+instances, layers, and apps or deregister registered instances." This is a
+precondition, not mere description, and it matches the family: `DeleteLayer`
+("You must first stop and then delete all associated instances or unassign
+registered instances.") and `DeleteInstance` ("You must stop an instance
+before you can delete it.") both state preconditions and were already fixed
+to enforce them (gopherstack-2rx, above). `DeleteApp` and
+`DeleteUserProfile` -- the two ops with no children of their own -- carry no
+precondition at all. The family is consistent: every op with children
+documents a precondition; leaf ops don't. That consistency, plus the
+verbatim wording, settles it -- cascading was the bug; the doc comment (both
+AWS's and this backend's now-former "deletes a stack and all its child
+resources") was correct and the code was wrong.
+
+Searched `services/opsworks/*_test.go` for every `DeleteStack` call before
+changing anything: `TestDeleteStackCascade` (`stacks_test.go`) was the only
+one that ever gave a stack live children before deleting it. The other
+three sites (`handler_test.go`'s nonexistent-ID case,
+`stacks_test.go`'s "DeleteStack removes stack" case, and
+`sdk_roundtrip_test.go`'s `TestStackLifecycle_RoundTrip`) all delete a
+childless stack, so the new precondition doesn't touch them. Also checked
+`test/integration/` -- no opsworks tests exist there. One existing test
+affected, and it was the one this issue named.
+
+`TestDeleteStackCascade` (`stacks_test.go`) rewritten from a single case
+asserting cascade-and-succeed into a combined refusal case (layer+instance+
+app all present -- refused, zero mutation), three isolated refusal cases
+(see "Coverage gap closed" below), and a success case proving deletion
+works once all three are individually removed. Hand-reverted the guard in
+`DeleteStack` (`stacks.go`) back to unconditional `b.deleteStackChildren`
+and reran: the combined refusal subtest failed (400 expected, got 200; body
+`{}` not containing `ValidationException`; all four count assertions failed
+1 actual 0) while the success subtest still passed (it doesn't depend on
+the guard) -- confirming the refusal subtest is not hollow. Restored and
+confirmed byte-identical via `git diff services/opsworks/stacks.go`.
+
+Fix (`stacks.go`, `DeleteStack`): added a guard checking
+`instancesByStack`/`layersByStack`/`appsByStack` for the target `stackID`
+before calling `deleteStackChildren`, returning `ErrValidation` if any is
+non-empty. Deployments, permissions, volumes, RDS instances, and ECS
+clusters carry no documented precondition and still cascade once the guard
+clears -- there is no way to delete them individually via a documented
+opsworks-DeleteX contract with the same "must delete first" wording, so
+cascading those remains the only faithful reading.
+
+**Coverage gap closed (same day).** The initial combined-fixture case
+(layer+instance+app together) did not individually pin each of the guard's
+three `||` clauses: dropping the `appsByStack` clause alone still passed
+every test, because the other two clauses fired on the same fixture. Added
+three isolated cases -- stack with only a layer, only an instance (via
+`RegisterInstance`, which unlike `CreateInstance` takes no `LayerId` and so
+is the only way to construct a layer-free instance in this backend), and
+only an app -- each dropping to 200/no-`ValidationException` if its
+matching clause is removed. Verified per clause: dropped
+`instancesByStack` alone -- only `..._with_only_an_instance_..._` failed
+(400->200, `{}` without `ValidationException`, instance count 1->0), other
+four subtests still passed. Dropped `layersByStack` alone -- only
+`..._with_only_a_layer_..._` failed the same way. Dropped `appsByStack`
+alone -- only `..._with_only_an_app_..._` failed the same way. All three
+dropped versions still compiled (`go build ./services/opsworks/...`).
+Restored the full three-clause guard and confirmed `git diff
+services/opsworks/stacks.go` byte-identical to the fix above.
+
+**Gates**: `GOTOOLCHAIN=go1.26.6 go test -race ./services/opsworks/...`
+green; `GOTOOLCHAIN=go1.26.6 golangci-lint run services/opsworks/...`
+`0 issues.`. No subagents used. No git-mutating commands run --
+orchestrator must commit/push. Only `services/opsworks/*` files touched;
+`services/s3control/` never read or written.

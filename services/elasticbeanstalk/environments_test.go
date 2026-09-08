@@ -182,3 +182,31 @@ func TestInMemoryBackend_TerminateEnvironment(t *testing.T) {
 		})
 	}
 }
+
+// TestInMemoryBackend_TerminateEnvironment_ClearsManagedActionHistory verifies
+// that terminating an environment clears its managed action history. Otherwise
+// recreating an environment with the same (user-chosen, reusable) name
+// inherits the terminated environment's stale history.
+func TestInMemoryBackend_TerminateEnvironment_ClearsManagedActionHistory(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBackend()
+	ctx := context.Background()
+
+	_, err := b.CreateEnvironment(ctx, "my-app", "my-env", "", "", nil,
+		elasticbeanstalk.CreateEnvironmentParams{})
+	require.NoError(t, err)
+
+	b.AddManagedActionHistory(ctx, "my-env", "action-1", "InstanceRefresh", "ghost action", "Succeeded")
+	require.NotEmpty(t, b.DescribeEnvironmentManagedActionHistory(ctx, "my-env"))
+
+	_, err = b.TerminateEnvironment(ctx, "my-app", "my-env")
+	require.NoError(t, err)
+
+	_, err = b.CreateEnvironment(ctx, "my-app", "my-env", "", "", nil,
+		elasticbeanstalk.CreateEnvironmentParams{})
+	require.NoError(t, err)
+
+	assert.Empty(t, b.DescribeEnvironmentManagedActionHistory(ctx, "my-env"),
+		"recreated environment must not inherit the terminated environment's managed action history")
+}

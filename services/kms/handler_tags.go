@@ -236,27 +236,27 @@ func (h *Handler) tagResource(ctx context.Context, b []byte) (any, error) {
 // validateTag checks that a tag key and value satisfy AWS KMS length and content constraints.
 func validateTag(key, value string) error {
 	if key == "" {
-		return fmt.Errorf("%w: tag key must not be empty", ErrValidation)
+		return fmt.Errorf("%w: tag key must not be empty", ErrInvalidTag)
 	}
 
 	if len(key) > maxTagKeyLength {
 		return fmt.Errorf(
 			"%w: tag key %q exceeds maximum length of %d characters",
-			ErrValidation, key, maxTagKeyLength,
+			ErrInvalidTag, key, maxTagKeyLength,
 		)
 	}
 
 	if strings.HasPrefix(key, "aws:") {
 		return fmt.Errorf(
 			"%w: tag key %q must not start with the reserved prefix 'aws:'",
-			ErrValidation, key,
+			ErrInvalidTag, key,
 		)
 	}
 
 	if len(value) > maxTagValueLength {
 		return fmt.Errorf(
 			"%w: tag value for key %q exceeds maximum length of %d characters",
-			ErrValidation, key, maxTagValueLength,
+			ErrInvalidTag, key, maxTagValueLength,
 		)
 	}
 
@@ -277,7 +277,7 @@ func (h *Handler) validateTagCount(keyID string, newTags map[string]string) erro
 	if len(existing)+netNew > maxTagsPerKey {
 		return fmt.Errorf(
 			"%w: tagging key %q would exceed the maximum of %d tags",
-			ErrValidation, keyID, maxTagsPerKey,
+			ErrLimitExceeded, keyID, maxTagsPerKey,
 		)
 	}
 

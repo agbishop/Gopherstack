@@ -256,9 +256,11 @@ func (b *InMemoryBackend) DeleteServer(serverID string) error {
 	}
 
 	b.servers.Delete(serverID)
+	delete(b.tagsStore, serverARN(b.accountID, b.region, serverID))
 
 	for _, u := range slices.Clone(b.usersByServer.Get(serverID)) {
 		b.users.Delete(userKey(u.ServerID, u.UserName))
+		delete(b.tagsStore, userARN(b.accountID, b.region, u.ServerID, u.UserName))
 	}
 
 	for _, a := range slices.Clone(b.accessesByServer.Get(serverID)) {
@@ -267,6 +269,7 @@ func (b *InMemoryBackend) DeleteServer(serverID string) error {
 
 	for _, ag := range slices.Clone(b.agreementsByServer.Get(serverID)) {
 		b.agreements.Delete(agreementKey(ag.ServerID, ag.AgreementID))
+		delete(b.tagsStore, agreementARN(b.accountID, b.region, ag.ServerID, ag.AgreementID))
 	}
 
 	for _, k := range slices.Clone(b.sshKeysByServer.Get(serverID)) {
@@ -277,6 +280,7 @@ func (b *InMemoryBackend) DeleteServer(serverID string) error {
 
 	for _, hk := range slices.Clone(b.hostKeysByServer.Get(serverID)) {
 		b.hostKeys.Delete(hostKeyKey(hk.ServerID, hk.HostKeyID))
+		delete(b.tagsStore, hostKeyARN(b.accountID, b.region, hk.ServerID, hk.HostKeyID))
 	}
 
 	return nil

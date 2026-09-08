@@ -220,6 +220,10 @@ func (h *Handler) handleUpdateSamplingRule(_ context.Context, body []byte) ([]by
 		}
 	}
 
+	if err := ValidateSamplingRuleUpdate(updates); err != nil {
+		return nil, err
+	}
+
 	r, err := h.Backend.UpdateSamplingRuleWithPointers(
 		in.SamplingRuleUpdate.RuleName, in.SamplingRuleUpdate.RuleARN, updates,
 	)

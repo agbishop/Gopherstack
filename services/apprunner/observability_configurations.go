@@ -65,8 +65,6 @@ func (b *InMemoryBackend) DescribeObservabilityConfiguration(obsArn string) (*Ob
 }
 
 // DeleteObservabilityConfiguration deletes an observability config.
-//
-//nolint:dupl // mirrors DeleteAutoScalingConfiguration's revision-list bookkeeping by design.
 func (b *InMemoryBackend) DeleteObservabilityConfiguration(obsArn string) (*ObservabilityConfiguration, error) {
 	b.mu.Lock("DeleteObservabilityConfiguration")
 	defer b.mu.Unlock()
@@ -74,6 +72,15 @@ func (b *InMemoryBackend) DeleteObservabilityConfiguration(obsArn string) (*Obse
 	cfg, ok := b.observabilityConfigs.Get(obsArn)
 	if !ok {
 		return nil, fmt.Errorf("observability configuration %s not found: %w", obsArn, ErrNotFound)
+	}
+
+	// DeleteObservabilityConfiguration doc (api_op_DeleteObservabilityConfiguration.go):
+	// "You can't delete a configuration that's used by one or more App
+	// Runner services."
+	if b.serviceUsesObservabilityConfig(obsArn) {
+		return nil, fmt.Errorf(
+			"observability configuration %s is used by one or more services: %w", obsArn, ErrInvalidParameter,
+		)
 	}
 
 	cfg.Status = obsStatusInactive
@@ -102,6 +109,8 @@ func (b *InMemoryBackend) DeleteObservabilityConfiguration(obsArn string) (*Obse
 }
 
 // ListObservabilityConfigurations returns observability configs with optional name filter.
+//
+//nolint:dupl // mirrors ListAutoScalingConfigurations's latest-only filtering by design.
 func (b *InMemoryBackend) ListObservabilityConfigurations(
 	nameFilter string,
 	latestOnly bool,

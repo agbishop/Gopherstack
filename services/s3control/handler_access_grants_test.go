@@ -303,6 +303,42 @@ func TestAccessGrantsLocation(t *testing.T) {
 		require.NoError(t, b2.DeleteAccessGrantsLocation("000000000000", l.AccessGrantsLocationID))
 	})
 
+	// "delete location rejected while grants exist" and "delete location
+	// succeeds once grants are gone" lock in DeleteAccessGrantsLocation's
+	// own doc comment: "You can only delete a location registration ... if
+	// there are no grants associated with this location" -- previously
+	// unenforced, so gopherstack silently deleted a location out from under
+	// live grants that still pointed at it.
+	t.Run("delete location rejected while grants exist", func(t *testing.T) {
+		t.Parallel()
+		b2 := s3control.NewInMemoryBackend()
+		l := b2.CreateAccessGrantsLocation("000000000000", "s3://b/", "arn:test")
+		_, err := b2.CreateAccessGrant("000000000000", l.AccessGrantsLocationID, "IAMUser", "arn:test", "READ", "")
+		require.NoError(t, err)
+
+		err = b2.DeleteAccessGrantsLocation("000000000000", l.AccessGrantsLocationID)
+		require.Error(t, err)
+		require.ErrorIs(t, err, s3control.ErrValidation)
+
+		_, getErr := b2.GetAccessGrantsLocation("000000000000", l.AccessGrantsLocationID)
+		require.NoError(t, getErr, "location must survive a rejected delete")
+	})
+
+	t.Run("delete location succeeds once grants are gone", func(t *testing.T) {
+		t.Parallel()
+		b2 := s3control.NewInMemoryBackend()
+		l := b2.CreateAccessGrantsLocation("000000000000", "s3://b/", "arn:test")
+		grant, err := b2.CreateAccessGrant(
+			"000000000000", l.AccessGrantsLocationID, "IAMUser", "arn:test", "READ", "",
+		)
+		require.NoError(t, err)
+
+		require.Error(t, b2.DeleteAccessGrantsLocation("000000000000", l.AccessGrantsLocationID))
+
+		require.NoError(t, b2.DeleteAccessGrant("000000000000", grant.AccessGrantID))
+		require.NoError(t, b2.DeleteAccessGrantsLocation("000000000000", l.AccessGrantsLocationID))
+	})
+
 	// "delete location cascade cleans tags" locks in the ghost-map-row fix:
 	// DeleteAccessGrantsLocation previously left generic resource tags
 	// behind forever after the location row itself was removed.

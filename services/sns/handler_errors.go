@@ -100,7 +100,12 @@ func errorCode(err error) string {
 	case errors.Is(err, ErrEndpointDisabled):
 		return "EndpointDisabled"
 	case errors.Is(err, ErrOptedOut):
-		return "OptedOut"
+		// Publish is the only call site (PublishSMS), and
+		// awsAwsquery_deserializeOpErrorPublish (sns@v1.42.4 deserializers.go)
+		// models no "OptedOut" shape -- OptedOutException exists only on
+		// CreateSMSSandboxPhoneNumber's switch. InvalidParameter is the same
+		// nearest-fit precedent used above for ErrPlatformApplicationAlreadyExists.
+		return errCodeInvalidParameter
 	case errors.Is(err, ErrPermissionLabelExists), errors.Is(err, ErrPermissionLabelNotFound):
 		return "AuthorizationError"
 	case errors.Is(err, ErrSubscriptionLimitExceeded):

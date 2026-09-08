@@ -59,7 +59,7 @@ func (rc *ResourceCreator) createAppAutoScalingScalableTarget(
 	roleARN := strProp(props, "RoleARN", params, physicalIDs)
 
 	target, err := rc.backends.AppAutoScaling.Backend.RegisterScalableTarget(
-		serviceNamespace, resourceID, scalableDimension, minCap, maxCap, nil, roleARN, nil,
+		serviceNamespace, resourceID, scalableDimension, &minCap, &maxCap, nil, roleARN, nil,
 	)
 	if err != nil {
 		return "", fmt.Errorf("register scalable target %s: %w", resourceID, err)

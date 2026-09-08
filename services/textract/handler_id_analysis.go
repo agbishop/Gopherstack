@@ -35,6 +35,10 @@ func (h *Handler) handleAnalyzeID(
 
 	uris := make([]string, 0, len(in.DocumentPages))
 	for _, dp := range in.DocumentPages {
+		if err := h.checkS3Object(ctx, dp.S3Object.Bucket, dp.S3Object.Name); err != nil {
+			return nil, err
+		}
+
 		uris = append(uris, documentURI(dp.S3Object.Bucket, dp.S3Object.Name))
 	}
 

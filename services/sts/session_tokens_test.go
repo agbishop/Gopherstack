@@ -20,8 +20,8 @@ func TestGetSessionTokenSessionStored(t *testing.T) {
 	resp, err := b.GetSessionToken(&sts.GetSessionTokenInput{})
 	require.NoError(t, err)
 
-	accessKeyID := resp.GetSessionTokenResult.Credentials.AccessKeyID
-	ci, err := b.GetCallerIdentity(accessKeyID, "")
+	creds := resp.GetSessionTokenResult.Credentials
+	ci, err := b.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 	require.NoError(t, err)
 	assert.NotEmpty(t, ci.GetCallerIdentityResult.Arn)
 }

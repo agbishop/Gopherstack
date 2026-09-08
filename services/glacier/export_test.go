@@ -100,6 +100,17 @@ func ArchiveCount(b *InMemoryBackend) int {
 	return total
 }
 
+// ArchiveDataCount returns the number of raw archive byte payloads held in
+// b.archiveData (for testing only). Kept separate from ArchiveCount since
+// archiveData outlives its owning vault's Archive entry across Reset() --
+// see gopherstack-xvm1.
+func ArchiveDataCount(b *InMemoryBackend) int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	return len(b.archiveData)
+}
+
 // MultipartUploadCount returns the total number of in-progress multipart uploads (for testing only).
 func MultipartUploadCount(b *InMemoryBackend) int {
 	b.mu.RLock()

@@ -1,6 +1,16 @@
 package secretsmanager
 
-import "time"
+import (
+	"context"
+	"time"
+)
+
+// CtxWithRegion returns ctx carrying region as the per-request AWS region,
+// for backend-level tests that need to address a specific region (e.g. a
+// replica secret's own region) without going through the HTTP handler.
+func CtxWithRegion(ctx context.Context, region string) context.Context {
+	return context.WithValue(ctx, regionContextKey{}, region)
+}
 
 // SecretCount returns the total number of secrets in the backend across all regions.
 func SecretCount(b *InMemoryBackend) int {

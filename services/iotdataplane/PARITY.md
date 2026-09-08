@@ -6,8 +6,8 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: iotdataplane
 sdk_module: aws-sdk-go-v2/service/iotdataplane@v1.35.4   # bumped from v1.32.20; +3 new ops (device connection/messaging introspection)
-last_audit_commit: 67b92e0b9   # HEAD at time of this pass (wrapper-key/nested-shape sweep, zero new bugs)
-last_audit_date: 2026-08-20
+last_audit_commit: 18d7bc9b8   # HEAD at time of this pass (pre-commit of this pass); one bug fixed (ListSubscriptions pagination)
+last_audit_date: 2026-09-04
 overall: A            # restored from A-: ListSubscriptions now reports real per-client subscriptions and SendDirectMessage now truly addresses one client, both read/written through a new MQTTPublisher.ClientSubscriptions/SendToClient boundary implemented in services/iot/broker.go off mochi-mqtt's real cl.State.Subscriptions/cl.WritePacket -- see gaps for the one remaining honest divergence (fallback broadcast when the broker has no live session for a gopherstack-admin-tracked clientId)
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
@@ -21,7 +21,7 @@ ops:
   GetRetainedMessage: {wire: ok, errors: ok, state: ok, persist: ok, note: "response now includes userProperties (base64, null when unset) -- was missing entirely; confirmed against GetRetainedMessageOutput"}
   ListRetainedMessages: {wire: ok, errors: ok, state: ok, persist: ok, note: "summary now includes qos -- a prior audit incorrectly asserted RetainedMessageSummary excludes qos; the real deserializer (awsRestjson1_deserializeDocumentRetainedMessageSummary) proves it's present"}
   GetConnection: {wire: ok, errors: ok, state: partial, persist: ok, note: "NEW op (GET /connections/{clientId}, real path field-diffed against serializers.go/deserializers.go). Reuses the same connections table DeleteConnection already tracks (gopherstack-only RegisterConnection admin extension) -- an untracked clientId is ResourceNotFoundException (matches the real op's modeled error), a tracked one returns connected:true/clientId/connectedSince genuinely. cleanSession/disconnectReason/disconnectedSince/keepAliveDuration/sessionExpiry/sourcePort/targetIp/targetPort/thingName/vpcEndpointId have no real backing data in this emulator and are omitted from the response (not fabricated as zero values) -- see gaps"}
-  ListSubscriptions: {wire: ok, errors: ok, state: ok, persist: n/a, note: "GET /connections/{clientId}/subscriptions. Errors/not-found semantics reuse the connections table (consistent with GetConnection/DeleteConnection). subscriptions now reflects the client's REAL live MQTT subscriptions: InMemoryBackend.ListSubscriptions calls the new MQTTPublisher.ClientSubscriptions(clientID), implemented in services/iot/broker.go off mochi-mqtt's cl.State.Subscriptions.GetAll() (topicFilter+qos, field-diffed against types.SubscriptionSummary). A tracked clientId whose broker session the broker doesn't currently know about (no broker wired, or gopherstack's admin-only RegisterConnection registered it without a real MQTT socket connection -- a distinct, weaker notion of 'connected' than a live broker session) still honestly returns an empty list rather than fabricating entries -- see gaps"}
+  ListSubscriptions: {wire: ok, errors: ok, state: ok, persist: n/a, note: "GET /connections/{clientId}/subscriptions. Errors/not-found semantics reuse the connections table (consistent with GetConnection/DeleteConnection). subscriptions now reflects the client's REAL live MQTT subscriptions: InMemoryBackend.ListSubscriptions calls the new MQTTPublisher.ClientSubscriptions(clientID), implemented in services/iot/broker.go off mochi-mqtt's cl.State.Subscriptions.GetAll() (topicFilter+qos, field-diffed against types.SubscriptionSummary). A tracked clientId whose broker session the broker doesn't currently know about (no broker wired, or gopherstack's admin-only RegisterConnection registered it without a real MQTT socket connection -- a distinct, weaker notion of 'connected' than a live broker session) still honestly returns an empty list rather than fabricating entries -- see gaps. FIXED (parity sweep 2026-09-04): maxResults/nextToken -- real ListSubscriptionsInput query params (awsRestjson1_serializeOpHttpBindingsListSubscriptionsInput in serializers.go) -- were parsed nowhere; handleListSubscriptions always returned every subscription in one page and never emitted nextToken. Now paginated the same way as the other list ops (findCursorIndex/parsePageSize), honoring the documented MaxResults default of 20 (ListSubscriptionsInput.MaxResults doc comment) rather than the generic defaultPageSize=25 used elsewhere in this service."}
   SendDirectMessage: {wire: ok, errors: ok, state: ok, persist: n/a, note: "POST /connections/{clientId}/messages, field-diffed against serializers.go's awsRestjson1_serializeOpHttpBindingsSendDirectMessageInput. Validates clientId/topic exactly like GetConnection/Publish and returns ResourceNotFoundException for an untracked clientId (413 RequestEntityTooLargeException on oversized payload -- unlike Publish, this IS modeled for SendDirectMessage, confirmed via its error case list). Delivers via MQTTPublisher.SendToClientWithProperties(clientId,...) when the broker has a live session for that client -- a genuine per-client-addressed write (services/iot/broker.go's cl.WritePacket, bypassing subscription matching entirely, matching AWS's documented 'the receiving client does not need to subscribe to the topic'). Falls back to PublishWithProperties (topic broadcast) only when the broker has no live session for a tracked clientId. RESOLVED this pass (gopherstack-76fj): SendDirectMessageInput shares its contentType/correlationData/payloadFormatIndicator/responseTopic/userProperties wire locations with PublishInput (confirmed identical query/header names in the SDK's serializer) but contentType and correlationData were never even parsed for this op before -- now reuses Publish's parseMQTT5PublishParams and forwards every field to the broker on both the direct-send and broadcast-fallback paths, same as Publish (SendDirectMessageInput has no messageExpiry field, unlike PublishInput)."}
 families:
   admin-only-extensions: {status: ok, note: "RegisterConnection/ListConnections/ListThingsWithShadows have NO real AWS iotdataplane equivalent (confirmed against the SDK's op file listing); correctly confined to gopherstack-only paths (/_admin/connections, /api/things/shadow/ListThingsWithShadows) so they cannot shadow real AWS traffic"}
@@ -41,6 +41,30 @@ leaks: {status: clean, note: "no goroutines/timers introduced; tombstone rows ar
 Freeform: AWS-behavior specifics worth remembering (exact algorithms, wire quirks,
 error-message text, protocol = query-XML / REST-XML / REST-JSON / json-1.0), and any
 "looks-wrong-but-correct" traps so the next auditor doesn't re-flag them.
+
+- **2026-09-04 pass: ListSubscriptions pagination was never wired.**
+  `ListSubscriptionsInput.MaxResults`/`NextToken` are real, documented query
+  params (`maxResults`/`nextToken`, confirmed via
+  `awsRestjson1_serializeOpHttpBindingsListSubscriptionsInput` in
+  `aws-sdk-go-v2/service/iotdataplane@v1.35.4`'s `serializers.go`) with a
+  documented default: "The maximum number of subscriptions to return in a
+  single request. By default, this is set to 20."
+  (`ListSubscriptionsInput.MaxResults` doc comment, `api_op_ListSubscriptions.go`).
+  `handleListSubscriptions` (handler_connections.go) never read either
+  param -- every call returned the client's complete subscription list in one
+  page and `nextToken` never appeared in the response, regardless of how many
+  subscriptions existed or what the caller asked for. Every other list op in
+  this service (`ListThingsWithShadows`, `ListNamedShadowsForThing`,
+  `ListRetainedMessages`) already paginated via `parsePageSize`/
+  `findCursorIndex`; `ListSubscriptions` was the one exception. Fixed by
+  applying the same pattern, but honoring ListSubscriptions' own 20-item
+  default (added `defaultSubscriptionsPageSize`) rather than the generic
+  `defaultPageSize=25` those other (partly gopherstack-invented) admin/list
+  endpoints use, since 20 is an AWS-documented value specific to this op.
+  `parsePageSize` was generalized to take an explicit default instead of
+  hard-coding `defaultPageSize`, and its three pre-existing call sites updated
+  to pass `defaultPageSize` explicitly (behavior-preserving for them). See
+  `TestHandler_ListSubscriptions_Pagination`.
 
 - **2026-08-20 wrapper-key/nested-shape sweep, zero new bugs.** Re-verified all
   11 real ops against `aws-sdk-go-v2/service/iotdataplane@v1.35.4` (unchanged

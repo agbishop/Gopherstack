@@ -151,6 +151,67 @@ func TestReplication_NotFound(t *testing.T) {
 	require.ErrorIs(t, err, secretsmanager.ErrSecretNotFound)
 }
 
+// TestReplication_ReplicaSecretReadableInReplicaRegion confirms
+// ReplicateSecretToRegions does more than bookkeep a status: a client
+// switching to the replica region must be able to read the replicated value,
+// not get ResourceNotFoundException.
+func TestReplication_ReplicaSecretReadableInReplicaRegion(t *testing.T) {
+	t.Parallel()
+
+	h := newSMHandler()
+
+	createRec := doSMRequestInRegion(t, h, secretsmanager.MockRegion, "secretsmanager.CreateSecret",
+		`{"Name":"rep-readable","SecretString":"replicated-value"}`)
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	replicateRec := doSMRequestInRegion(t, h, secretsmanager.MockRegion, "secretsmanager.ReplicateSecretToRegions",
+		`{"SecretId":"rep-readable","AddReplicaRegions":[{"Region":"us-west-2"}]}`)
+	require.Equal(t, http.StatusOK, replicateRec.Code)
+
+	getRec := doSMRequestInRegion(t, h, "us-west-2", "secretsmanager.GetSecretValue",
+		`{"SecretId":"rep-readable"}`)
+	require.Equal(t, http.StatusOK, getRec.Code,
+		"replica region must serve the replicated secret, got: %s", getRec.Body.String())
+
+	var getOut secretsmanager.GetSecretValueOutput
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &getOut))
+	assert.Equal(t, "replicated-value", getOut.SecretString)
+
+	descRec := doSMRequestInRegion(t, h, "us-west-2", "secretsmanager.DescribeSecret",
+		`{"SecretId":"rep-readable"}`)
+	require.Equal(t, http.StatusOK, descRec.Code)
+
+	var descOut secretsmanager.DescribeSecretOutput
+	require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &descOut))
+	assert.Equal(t, secretsmanager.MockRegion, descOut.PrimaryRegion)
+	assert.Contains(t, descOut.ARN, "us-west-2")
+}
+
+// TestReplication_RemoveRegionsDeletesReplicaSecret confirms
+// RemoveRegionsFromReplication doesn't just stop tracking a region's status
+// while leaving the mirrored secret readable there forever.
+func TestReplication_RemoveRegionsDeletesReplicaSecret(t *testing.T) {
+	t.Parallel()
+
+	h := newSMHandler()
+
+	require.Equal(t, http.StatusOK, doSMRequestInRegion(t, h, secretsmanager.MockRegion,
+		"secretsmanager.CreateSecret", `{"Name":"rep-removed","SecretString":"v"}`).Code)
+	require.Equal(t, http.StatusOK, doSMRequestInRegion(t, h, secretsmanager.MockRegion,
+		"secretsmanager.ReplicateSecretToRegions",
+		`{"SecretId":"rep-removed","AddReplicaRegions":[{"Region":"ap-south-1"}]}`).Code)
+
+	require.Equal(t, http.StatusOK, doSMRequestInRegion(t, h, "ap-south-1",
+		"secretsmanager.GetSecretValue", `{"SecretId":"rep-removed"}`).Code, "replica must be readable before removal")
+
+	require.Equal(t, http.StatusOK, doSMRequestInRegion(t, h, secretsmanager.MockRegion,
+		"secretsmanager.RemoveRegionsFromReplication",
+		`{"SecretId":"rep-removed","RemoveReplicaRegions":["ap-south-1"]}`).Code)
+
+	getRec := doSMRequestInRegion(t, h, "ap-south-1", "secretsmanager.GetSecretValue", `{"SecretId":"rep-removed"}`)
+	assert.Equal(t, http.StatusBadRequest, getRec.Code, "removed replica region must no longer serve the secret")
+}
+
 // ---------------------------------------------------------------------------
 // Replication HTTP cycle
 // ---------------------------------------------------------------------------
@@ -341,8 +402,16 @@ func TestReplication_BackendEdgeCases(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestReplicateSecretToRegions_ExistingRegionRejectedWithoutForce verifies that
-// replicating to a region that already has a replica returns ResourceExistsException
-// when ForceOverwriteReplicaSecret is false. Real AWS behavior.
+// replicating to a region that already has a replica is rejected when
+// ForceOverwriteReplicaSecret is false.
+//
+// ReplicateSecretToRegions's own deserializeOpError (aws-sdk-go-v2/service/
+// secretsmanager@v1.44.4 deserializers.go) recognizes InternalServiceError,
+// InvalidParameterException, InvalidRequestException and
+// ResourceNotFoundException -- no ResourceExistsException case, unlike
+// CreateSecret/PutSecretValue/UpdateSecret. InvalidRequestException is the
+// existing in-service precedent for "operation invalid given the resource's
+// current state" (ErrSecretDeleted, ErrRotationStrategyRequired).
 func TestReplicateSecretToRegions_ExistingRegionRejectedWithoutForce(t *testing.T) {
 	t.Parallel()
 
@@ -367,9 +436,38 @@ func TestReplicateSecretToRegions_ExistingRegionRejectedWithoutForce(t *testing.
 		SecretID:          "replicated-secret",
 		AddReplicaRegions: []secretsmanager.ReplicaRegion{{Region: "us-east-2"}},
 	})
-	assert.ErrorIs(t, err, secretsmanager.ErrSecretAlreadyExists,
-		"real AWS: replicating to existing region without ForceOverwriteReplicaSecret"+
-			" must return ResourceExistsException")
+	assert.ErrorIs(t, err, secretsmanager.ErrReplicaAlreadyExists,
+		"replicating to existing region without ForceOverwriteReplicaSecret"+
+			" must return an error ReplicateSecretToRegions's own deserializer recognizes")
+}
+
+// TestReplicateSecretToRegions_ExistingRegionErrorType_WireCode verifies the
+// wire __type/X-Amzn-Errortype for the same condition is InvalidRequestException,
+// not ResourceExistsException -- see the ErrorIs test above for why.
+func TestReplicateSecretToRegions_ExistingRegionErrorType_WireCode(t *testing.T) {
+	t.Parallel()
+
+	h := newSMHandler()
+
+	create := doSMRequest(t, h, "secretsmanager.CreateSecret",
+		`{"Name":"wire-replicated-secret","SecretString":"v"}`)
+	require.Equal(t, http.StatusOK, create.Code)
+
+	first := doSMRequest(t, h, "secretsmanager.ReplicateSecretToRegions",
+		`{"SecretId":"wire-replicated-secret","AddReplicaRegions":[{"Region":"us-east-2"}]}`)
+	require.Equal(t, http.StatusOK, first.Code)
+
+	second := doSMRequest(t, h, "secretsmanager.ReplicateSecretToRegions",
+		`{"SecretId":"wire-replicated-secret","AddReplicaRegions":[{"Region":"us-east-2"}]}`)
+	require.Equal(t, http.StatusBadRequest, second.Code)
+	assert.Equal(t, "InvalidRequestException", second.Header().Get("X-Amzn-Errortype"))
+
+	var body struct {
+		Type string `json:"__type"`
+	}
+	require.NoError(t, json.Unmarshal(second.Body.Bytes(), &body))
+	assert.Equal(t, "InvalidRequestException", body.Type)
+	assert.NotEqual(t, "ResourceExistsException", body.Type)
 }
 
 // TestReplicateSecretToRegions_ForceOverwriteAllowed verifies that

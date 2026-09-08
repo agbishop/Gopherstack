@@ -434,6 +434,7 @@ func TestIntegration_ECS_DeleteService(t *testing.T) {
 	out, err := client.DeleteService(ctx, &ecs.DeleteServiceInput{
 		Cluster: aws.String(clusterName),
 		Service: aws.String(serviceName),
+		Force:   aws.Bool(true),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, out.Service)

@@ -94,9 +94,12 @@ func TestHandler_EnablePolicyType(t *testing.T) {
 			roots := rootsResp["Roots"].([]any)
 			rootID := roots[0].(map[string]any)["Id"].(string)
 
+			// TAG_POLICY, not SERVICE_CONTROL_POLICY: SCP is auto-enabled by
+			// CreateOrganization under FeatureSet=ALL (gopherstack-inmm), so
+			// enabling it here would already return AlreadyEnabled.
 			rec := doRequest(t, h, "EnablePolicyType", map[string]any{
 				"RootId":     rootID,
-				"PolicyType": "SERVICE_CONTROL_POLICY",
+				"PolicyType": "TAG_POLICY",
 			})
 			assert.Equal(t, tt.wantStatus, rec.Code)
 		})
@@ -163,12 +166,14 @@ func TestBackend_DisablePolicyType(t *testing.T) {
 
 			b, rootID := newOrgBackend(t)
 
-			// Enable first.
-			_, err := b.EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
+			// TAG_POLICY, not SERVICE_CONTROL_POLICY: SCP is auto-enabled by
+			// CreateOrganization under FeatureSet=ALL (gopherstack-inmm), so
+			// TAG_POLICY is what starts genuinely disabled here.
+			_, err := b.EnablePolicyType(rootID, "TAG_POLICY")
 			require.NoError(t, err)
 
 			// Now disable.
-			_, err = b.DisablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
+			_, err = b.DisablePolicyType(rootID, "TAG_POLICY")
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -198,15 +203,32 @@ func TestPolicyTypes(t *testing.T) {
 		t.Run(pt, func(t *testing.T) {
 			t.Parallel()
 
-			b, rootID := newOrgBackend(t)
+			// CONSOLIDATED_BILLING seeds the same default FullAWSAccess SCP as
+			// ALL but leaves every policy type disabled on root (SDK doc:
+			// "no policy types are enabled by default"), so EnablePolicyType
+			// below always starts from a genuinely disabled state -- SCP
+			// included, since ALL auto-enables it (gopherstack-inmm).
+			b := newTestBackend()
+
+			_, orgRoot, err := b.CreateOrganization("CONSOLIDATED_BILLING")
+			require.NoError(t, err)
+
+			rootID := orgRoot.ID
 
 			p, err := b.CreatePolicy("test-"+pt, "desc", `{"Version":"2012-10-17"}`, pt, nil)
 			require.NoError(t, err, "CreatePolicy")
 			assert.Equal(t, pt, p.PolicySummary.Type)
 
+			// SCP starts with 1 extra entry: the default FullAWSAccess policy
+			// every organization is created with.
+			wantListed := 1
+			if pt == "SERVICE_CONTROL_POLICY" {
+				wantListed = 2
+			}
+
 			listed, err := b.ListPolicies(pt)
 			require.NoError(t, err, "ListPolicies")
-			assert.Len(t, listed, 1)
+			assert.Len(t, listed, wantListed)
 
 			_, err = b.EnablePolicyType(rootID, pt)
 			require.NoError(t, err, "EnablePolicyType")
@@ -501,9 +523,6 @@ func TestDeletePolicy_Attached_Rejected(t *testing.T) {
 
 	b, rootID := newOrgBackend(t)
 
-	_, err := b.EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
-	require.NoError(t, err)
-
 	p, err := b.CreatePolicy("deny-all", "", `{"Version":"2012-10-17"}`, "SERVICE_CONTROL_POLICY", nil)
 	require.NoError(t, err)
 
@@ -575,8 +594,6 @@ func TestDeletePolicy_Succeeds(t *testing.T) {
 			require.NoError(t, err)
 
 			if tt.attachThenDetach {
-				_, err = b.EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
-				require.NoError(t, err)
 				require.NoError(t, b.AttachPolicy(p.PolicySummary.ID, rootID))
 				require.NoError(t, b.DetachPolicy(p.PolicySummary.ID, rootID))
 			}
@@ -596,9 +613,6 @@ func TestDisablePolicyType_WithAttached_Rejected(t *testing.T) {
 	t.Parallel()
 
 	b, rootID := newOrgBackend(t)
-
-	_, err := b.EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
-	require.NoError(t, err)
 
 	p, err := b.CreatePolicy("scp", "", `{"Version":"2012-10-17"}`, "SERVICE_CONTROL_POLICY", nil)
 	require.NoError(t, err)
@@ -677,14 +691,15 @@ func TestDisablePolicyType_AfterDetach_OK(t *testing.T) {
 
 	b, rootID := newOrgBackend(t)
 
-	_, err := b.EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
-	require.NoError(t, err)
-
 	p, err := b.CreatePolicy("scp", "", `{"Version":"2012-10-17"}`, "SERVICE_CONTROL_POLICY", nil)
 	require.NoError(t, err)
 
 	require.NoError(t, b.AttachPolicy(p.PolicySummary.ID, rootID))
 	require.NoError(t, b.DetachPolicy(p.PolicySummary.ID, rootID))
+
+	// The default FullAWSAccess SCP is also attached to root; detach it too
+	// so disabling isn't rejected by the still-attached guard.
+	require.NoError(t, b.DetachPolicy("p-FullAWSAccess", rootID))
 
 	_, err = b.DisablePolicyType(rootID, "SERVICE_CONTROL_POLICY")
 	require.NoError(t, err)
@@ -790,6 +805,14 @@ func TestHandler_DisablePolicyType(t *testing.T) {
 				"PolicyType": "SERVICE_CONTROL_POLICY",
 			})
 
+			// The default FullAWSAccess SCP is attached to root; detach it so
+			// disabling isn't rejected by the still-attached guard.
+			detachRec := doRequest(t, h, "DetachPolicy", map[string]any{
+				"PolicyId": "p-FullAWSAccess",
+				"TargetId": rootID,
+			})
+			require.Equal(t, http.StatusOK, detachRec.Code)
+
 			rec := doRequest(t, h, "DisablePolicyType", map[string]any{
 				"RootId":     rootID,
 				"PolicyType": "SERVICE_CONTROL_POLICY",
@@ -809,14 +832,16 @@ func TestListPolicies_Sorted(t *testing.T) {
 		wantLen int
 	}{
 		{
+			// wantLen includes the default FullAWSAccess SCP every organization
+			// is created with.
 			name:    "two_policies_sorted",
 			names:   []string{"ZPolicy", "APolicy"},
-			wantLen: 2,
+			wantLen: 3,
 		},
 		{
 			name:    "three_policies_sorted",
 			names:   []string{"CPolicy", "APolicy", "BPolicy"},
-			wantLen: 3,
+			wantLen: 4,
 		},
 	}
 
@@ -1038,7 +1063,7 @@ func TestBackend_AddPolicyInternal(t *testing.T) {
 		policyID  string
 		wantCount int
 	}{
-		{name: "adds_policy", policyID: "p-12345678", wantCount: 1},
+		{name: "adds_policy", policyID: "p-12345678", wantCount: 2}, // +1 for the default FullAWSAccess SCP
 	}
 
 	for _, tt := range tests {

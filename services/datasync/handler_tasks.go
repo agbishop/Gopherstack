@@ -289,7 +289,13 @@ func (h *Handler) handleListTasks(_ context.Context, in *listTasksInput) (*listT
 // --- Task execution operations ---
 
 type startTaskExecutionInput struct {
-	TaskArn string `json:"TaskArn"`
+	OverrideOptions  map[string]any    `json:"OverrideOptions"`
+	ManifestConfig   map[string]any    `json:"ManifestConfig"`
+	TaskReportConfig map[string]any    `json:"TaskReportConfig"`
+	TaskArn          string            `json:"TaskArn"`
+	Tags             []tagInput        `json:"Tags"`
+	Excludes         []filterRuleInput `json:"Excludes"`
+	Includes         []filterRuleInput `json:"Includes"`
 }
 
 type startTaskExecutionOutput struct {
@@ -304,7 +310,15 @@ func (h *Handler) handleStartTaskExecution(
 		return nil, fmt.Errorf("%w: TaskArn is required", errInvalidRequest)
 	}
 
-	e, err := h.Backend.StartTaskExecution(in.TaskArn)
+	overrides := TaskExecutionOverrides{
+		Options:          in.OverrideOptions,
+		ManifestConfig:   in.ManifestConfig,
+		TaskReportConfig: in.TaskReportConfig,
+		Excludes:         filterRulesFromInput(in.Excludes),
+		Includes:         filterRulesFromInput(in.Includes),
+	}
+
+	e, err := h.Backend.StartTaskExecution(in.TaskArn, overrides, tagsFromInput(in.Tags))
 	if err != nil {
 		return nil, err
 	}
@@ -338,15 +352,19 @@ type describeTaskExecutionInput struct {
 }
 
 type describeTaskExecutionOutput struct {
-	Options                  map[string]any `json:"Options,omitempty"`
-	TaskExecutionArn         string         `json:"TaskExecutionArn"`
-	Status                   string         `json:"Status"`
-	TaskMode                 string         `json:"TaskMode,omitempty"`
-	StartTime                int64          `json:"StartTime"`
-	EstimatedFilesToTransfer int64          `json:"EstimatedFilesToTransfer"`
-	EstimatedBytesToTransfer int64          `json:"EstimatedBytesToTransfer"`
-	FilesTransferred         int64          `json:"FilesTransferred"`
-	BytesTransferred         int64          `json:"BytesTransferred"`
+	Options                  map[string]any     `json:"Options,omitempty"`
+	ManifestConfig           map[string]any     `json:"ManifestConfig,omitempty"`
+	TaskReportConfig         map[string]any     `json:"TaskReportConfig,omitempty"`
+	TaskExecutionArn         string             `json:"TaskExecutionArn"`
+	Status                   string             `json:"Status"`
+	TaskMode                 string             `json:"TaskMode,omitempty"`
+	Excludes                 []filterRuleOutput `json:"Excludes,omitempty"`
+	Includes                 []filterRuleOutput `json:"Includes,omitempty"`
+	StartTime                int64              `json:"StartTime"`
+	EstimatedFilesToTransfer int64              `json:"EstimatedFilesToTransfer"`
+	EstimatedBytesToTransfer int64              `json:"EstimatedBytesToTransfer"`
+	FilesTransferred         int64              `json:"FilesTransferred"`
+	BytesTransferred         int64              `json:"BytesTransferred"`
 }
 
 func (h *Handler) handleDescribeTaskExecution(
@@ -368,6 +386,10 @@ func (h *Handler) handleDescribeTaskExecution(
 		TaskMode:                 e.TaskMode,
 		StartTime:                e.StartTime.Unix(),
 		Options:                  e.Options,
+		ManifestConfig:           e.ManifestConfig,
+		TaskReportConfig:         e.TaskReportConfig,
+		Excludes:                 filterRulesToOutput(e.Excludes),
+		Includes:                 filterRulesToOutput(e.Includes),
 		EstimatedFilesToTransfer: e.EstimatedFilesToTransfer,
 		EstimatedBytesToTransfer: e.EstimatedBytesToTransfer,
 		FilesTransferred:         e.FilesTransferred,

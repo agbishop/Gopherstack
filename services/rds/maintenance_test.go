@@ -47,7 +47,7 @@ func TestRDSBackend_ApplyPendingMaintenanceAction(t *testing.T) {
 			applyAction: "system-update",
 			optInType:   "immediate",
 			wantErr:     true,
-			wantErrIs:   rds.ErrInstanceNotFound,
+			wantErrIs:   rds.ErrResourceNotFound,
 		},
 		{
 			name:        "empty_resource_id",

@@ -299,6 +299,73 @@ func TestBackend_DeleteTableReplication_StaleVersionToken(t *testing.T) {
 	require.ErrorIs(t, err, s3tables.ErrTableVersionConflict)
 }
 
+// TestBackend_DeleteTable_VersionToken proves DeleteTable enforces the
+// optional versionToken: a stale token is rejected with
+// ErrTableVersionConflict and the table survives; an omitted or matching
+// token deletes the table, per DeleteTableInput's versionToken being
+// optional (aws-sdk-go-v2/service/s3tables@v1.18.4 api_op_DeleteTable.go).
+func TestBackend_DeleteTable_VersionToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		wantErr      error
+		versionToken func(actual string) string
+		name         string
+		bucket       string
+		wantDeleted  bool
+	}{
+		{
+			name:         "stale token rejected",
+			bucket:       "del-token-stale",
+			versionToken: func(string) string { return "stale-token" },
+			wantErr:      s3tables.ErrTableVersionConflict,
+			wantDeleted:  false,
+		},
+		{
+			name:         "matching token deletes",
+			bucket:       "del-token-match",
+			versionToken: func(actual string) string { return actual },
+			wantDeleted:  true,
+		},
+		{
+			name:         "omitted token deletes",
+			bucket:       "del-token-omit",
+			versionToken: func(string) string { return "" },
+			wantDeleted:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := s3tables.NewInMemoryBackend("000000000000", "us-east-1")
+			tb, err := b.CreateTableBucket(tt.bucket, s3tables.CreateTableBucketOptions{})
+			require.NoError(t, err)
+
+			_, err = b.CreateNamespace(tb.ARN, []string{"ns1"})
+			require.NoError(t, err)
+
+			table, err := b.CreateTable(tb.ARN, []string{"ns1"}, "t1", "ICEBERG", s3tables.CreateTableOptions{})
+			require.NoError(t, err)
+
+			err = b.DeleteTable(tb.ARN, []string{"ns1"}, "t1", tt.versionToken(table.VersionToken))
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+
+			_, err = b.GetTableByARN(table.ARN)
+			if tt.wantDeleted {
+				assert.ErrorIs(t, err, s3tables.ErrTableNotFound)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestBackend_TableRecordExpiryRoundTrip(t *testing.T) {
 	t.Parallel()
 

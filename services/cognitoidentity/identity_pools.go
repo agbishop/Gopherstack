@@ -221,7 +221,10 @@ func (b *InMemoryBackend) UpdateIdentityPool(
 
 	pool.AllowUnauthenticatedIdentities = allowUnauthenticated
 	pool.AllowClassicFlow = allowClassicFlow
-	if developerProviderName != "" {
+	// api_op_CreateIdentityPool.go: "Once you have set a developer provider name, you
+	// cannot change it." A pool with one already set silently keeps it; only a pool that
+	// has never had one can adopt a new value via Update.
+	if developerProviderName != "" && pool.DeveloperProviderName == "" {
 		pool.DeveloperProviderName = developerProviderName
 	}
 	pool.IdentityProviders = cloneProviders(providers)

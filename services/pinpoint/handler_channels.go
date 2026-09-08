@@ -318,6 +318,10 @@ func (h *Handler) handleUpdateChannel(c *echo.Context, appID, channelType string
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	enabled, extra := parseChannelExtra(channelType, body)
 	ch := h.Backend.UpsertChannel(appID, channelType, enabled, extra)
 	httputils.WriteJSON(c.Request().Context(), c.Response(), http.StatusOK, toChannelResponse(ch))

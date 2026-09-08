@@ -132,6 +132,50 @@ func TestRegexPatternSetLifecycle(t *testing.T) {
 	}
 }
 
+func TestRegexPatternSet_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateRegexPatternSet(t, h, "noop-insert-pattern")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateRegexPatternSet", map[string]any{
+			"ChangeToken":       token,
+			"RegexPatternSetId": id,
+			"Updates":           []map[string]any{{"Action": "INSERT", "RegexPatternString": "(?i)select"}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateRegexPatternSet", map[string]any{
+			"ChangeToken":       token,
+			"RegexPatternSetId": id,
+			"Updates":           []map[string]any{{"Action": "INSERT", "RegexPatternString": "(?i)select"}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateRegexPatternSet(t, h, "noop-delete-pattern")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateRegexPatternSet", map[string]any{
+			"ChangeToken":       token,
+			"RegexPatternSetId": id,
+			"Updates":           []map[string]any{{"Action": "DELETE", "RegexPatternString": "(?i)select"}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestRegexPatternSetNotFound(t *testing.T) {
 	t.Parallel()
 

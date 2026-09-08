@@ -126,7 +126,12 @@ func (b *InMemoryBackend) DescribeLags(lagID string) []*Lag {
 	return out
 }
 
-// DeleteLag transitions a LAG to "deleting" then "deleted".
+// DeleteLag transitions a LAG to "deleting" then "deleted". AWS rejects
+// deletion "if it has active virtual interfaces or hosted connections"
+// (api_op_DeleteLag.go:12-13); in this backend's model both are only ever
+// reachable through a connection still associated with the LAG (VIFs
+// attach to a connectionId, never directly to a LagID), so checking for
+// any non-terminal member/hosted connection covers both clauses.
 func (b *InMemoryBackend) DeleteLag(lagID string) (*Lag, error) {
 	b.mu.Lock("DeleteLag")
 	defer b.mu.Unlock()
@@ -134,6 +139,12 @@ func (b *InMemoryBackend) DeleteLag(lagID string) (*Lag, error) {
 	l, ok := b.lags.Get(lagID)
 	if !ok {
 		return nil, notFoundError(resourceLag, lagID)
+	}
+
+	for _, c := range b.connectionsByLagLocked(lagID) {
+		if c.ConnectionState != ConnectionStateDeleted && c.ConnectionState != ConnectionStateRejected {
+			return nil, clientError("LAG " + lagID + " still has an active connection: " + c.ConnectionID)
+		}
 	}
 
 	l.LagState = LagStateDeleting

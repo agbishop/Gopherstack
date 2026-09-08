@@ -244,17 +244,37 @@ func (b *InMemoryBackend) DeleteClusterSnapshot(snapshotID string) (*Snapshot, e
 		return nil, fmt.Errorf("%w: snapshot %s not found", ErrSnapshotNotFound, snapshotID)
 	}
 
+	if len(snap.AccountsWithRestoreAccess) > 0 {
+		return nil, fmt.Errorf(
+			"%w: snapshot %s still has accounts authorized for restore access; revoke access first",
+			ErrSnapshotHasAuthorizedAccounts, snapshotID,
+		)
+	}
+
 	cp := cloneSnapshot(snap)
 	b.snapshots.Delete(snapshotID)
 
 	return cp, nil
 }
 
-// DescribeClusterSnapshots returns snapshots, optionally filtered by snapshotID, clusterID, or
-// snapshotType ("manual" or "automated"). An empty snapshotType matches all types. Results are
-// ordered by SnapshotIdentifier ascending so handleDescribeClusterSnapshots' Marker-based
-// pagination (handler_snapshots.go) sees a reproducible order across calls.
-func (b *InMemoryBackend) DescribeClusterSnapshots(snapshotID, clusterID, snapshotType string) ([]Snapshot, error) {
+// DescribeClusterSnapshots returns snapshots, optionally filtered by snapshotID, clusterID,
+// snapshotType ("manual" or "automated"), and clusterExists. An empty snapshotType matches all
+// types. Results are ordered by SnapshotIdentifier ascending so handleDescribeClusterSnapshots'
+// Marker-based pagination (handler_snapshots.go) sees a reproducible order across calls.
+//
+// clusterExists, when non-nil, filters snapshots by whether their ClusterIdentifier is still
+// present in this account's cluster table -- a single-account existence check, not the
+// cross-account snapshot-ownership model OwnerAccount would need (DescribeClusterSnapshotsInput
+// doc, api_op_DescribeClusterSnapshots.go: true selects snapshots of a still-existing cluster
+// and requires clusterID; false selects snapshots whose cluster no longer exists, which with no
+// clusterID given means every orphaned snapshot).
+func (b *InMemoryBackend) DescribeClusterSnapshots(
+	snapshotID, clusterID, snapshotType string, clusterExists *bool,
+) ([]Snapshot, error) {
+	if clusterExists != nil && *clusterExists && clusterID == "" {
+		return nil, fmt.Errorf("%w: ClusterIdentifier is required when ClusterExists is true", ErrInvalidParameter)
+	}
+
 	b.mu.RLock("DescribeClusterSnapshots")
 	defer b.mu.RUnlock()
 
@@ -275,6 +295,11 @@ func (b *InMemoryBackend) DescribeClusterSnapshots(snapshotID, clusterID, snapsh
 		}
 		if snapshotType != "" && snap.SnapshotType != snapshotType {
 			continue
+		}
+		if clusterExists != nil {
+			if _, exists := b.clusters.Get(snap.ClusterIdentifier); exists != *clusterExists {
+				continue
+			}
 		}
 		result = append(result, *cloneSnapshot(snap))
 	}

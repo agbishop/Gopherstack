@@ -294,3 +294,25 @@ func TestCodeSigning(t *testing.T) {
 		"/2020-04-22/code-signing-configs/"+cscArn, "")
 	require.Equal(t, http.StatusNoContent, rec.Code)
 }
+
+// TestCodeSigningConfig_Reset_CounterRestarts verifies that Reset() zeroes
+// cscIDCounter, so the next CodeSigningConfig created after Reset gets ID
+// suffix 1 again (matching ec2's fix establishing that this codebase resets
+// ID sequence counters on Reset -- nextPrivateIPIndex, nextElasticIPIndex),
+// not a suffix that keeps climbing from the pre-Reset run.
+func TestCodeSigningConfig_Reset_CounterRestarts(t *testing.T) {
+	t.Parallel()
+
+	_, bk := newInMemoryHandler(t)
+
+	cfg1, err := bk.CreateCodeSigningConfig(&lambda.CreateCodeSigningConfigInput{})
+	require.NoError(t, err)
+	require.Equal(t, "csc-00000001", cfg1.CodeSigningConfigID)
+
+	bk.Reset()
+
+	cfg2, err := bk.CreateCodeSigningConfig(&lambda.CreateCodeSigningConfigInput{})
+	require.NoError(t, err)
+	assert.Equal(t, "csc-00000001", cfg2.CodeSigningConfigID,
+		"cscIDCounter must restart at 1 after Reset")
+}

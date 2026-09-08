@@ -384,11 +384,15 @@ func (b *InMemoryBackend) GetTable(
 	return cloneTable(t), nil
 }
 
-// DeleteTable deletes a table by bucket ARN, namespace, and name.
+// DeleteTable deletes a table by bucket ARN, namespace, and name. When
+// versionToken is non-empty it must match the table's currently stored
+// VersionToken (optimistic concurrency, mirroring DeleteTableInput's
+// optional versionToken query parameter); a mismatch returns
+// ErrTableVersionConflict.
 func (b *InMemoryBackend) DeleteTable(
 	tableBucketARN string,
 	namespace []string,
-	name string,
+	name, versionToken string,
 ) error {
 	b.muTables.Lock("DeleteTable")
 	defer b.muTables.Unlock()
@@ -398,6 +402,10 @@ func (b *InMemoryBackend) DeleteTable(
 	t, ok := b.tableByComposite(tableBucketARN, nsStr, name)
 	if !ok {
 		return fmt.Errorf("%w: table %q not found in namespace %s", ErrTableNotFound, name, nsStr)
+	}
+
+	if versionToken != "" && versionToken != t.VersionToken {
+		return fmt.Errorf("%w: stale version token for table %q", ErrTableVersionConflict, name)
 	}
 
 	b.tables.Delete(t.ARN)

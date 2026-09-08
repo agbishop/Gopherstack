@@ -151,6 +151,7 @@ func (b *InMemoryBackend) OverridePullRequestApprovalRules(prID, overrideStatus,
 	b.prEvents[prID] = append(b.prEvents[prID], PullRequestEvent{
 		PullRequestEventType: "PULL_REQUEST_APPROVAL_RULE_OVERRIDDEN",
 		EventDate:            time.Now().UTC(),
+		ActorARN:             overriderARN,
 	})
 
 	return nil
@@ -307,8 +308,13 @@ func (b *InMemoryBackend) UpdatePullRequestApprovalRuleContent(
 	return &cp, nil
 }
 
-// DescribePullRequestEvents returns events for a pull request.
-func (b *InMemoryBackend) DescribePullRequestEvents(prID string) ([]PullRequestEvent, error) {
+// DescribePullRequestEvents returns events for a pull request, optionally
+// filtered to a single pullRequestEventType (DescribePullRequestEventsInput.
+// PullRequestEventType, api_op_DescribePullRequestEvents.go: "Optional. The
+// pull request event type about which you want to return information.") and/or
+// a single actorARN (DescribePullRequestEventsInput.ActorArn: "The Amazon
+// Resource Name (ARN) of the user whose actions resulted in the event.").
+func (b *InMemoryBackend) DescribePullRequestEvents(prID, eventType, actorARN string) ([]PullRequestEvent, error) {
 	b.mu.RLock("DescribePullRequestEvents")
 	defer b.mu.RUnlock()
 
@@ -317,11 +323,16 @@ func (b *InMemoryBackend) DescribePullRequestEvents(prID string) ([]PullRequestE
 	}
 
 	events := b.prEvents[prID]
-	if events == nil {
-		return []PullRequestEvent{}, nil
+	result := make([]PullRequestEvent, 0, len(events))
+	for _, e := range events {
+		if eventType != "" && e.PullRequestEventType != eventType {
+			continue
+		}
+		if actorARN != "" && e.ActorARN != actorARN {
+			continue
+		}
+		result = append(result, e)
 	}
-	result := make([]PullRequestEvent, len(events))
-	copy(result, events)
 
 	return result, nil
 }

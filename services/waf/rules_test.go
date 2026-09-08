@@ -129,6 +129,54 @@ func TestWAF_Rule_UpdatePredicates_InsertDelete(t *testing.T) {
 	assert.Empty(t, predicates)
 }
 
+func TestWAF_Rule_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateRule(t, h, "noop-insert-rule")
+		ipSetID := wafCreateIPSet(t, h, "noop-insert-ipset")
+		predicate := map[string]any{"Type": "IPMatch", "DataId": ipSetID, "Negated": false}
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateRule", map[string]any{
+			"ChangeToken": token,
+			"RuleId":      id,
+			"Updates":     []map[string]any{{"Action": "INSERT", "Predicate": predicate}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateRule", map[string]any{
+			"ChangeToken": token,
+			"RuleId":      id,
+			"Updates":     []map[string]any{{"Action": "INSERT", "Predicate": predicate}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateRule(t, h, "noop-delete-rule")
+		ipSetID := wafCreateIPSet(t, h, "noop-delete-ipset")
+		predicate := map[string]any{"Type": "IPMatch", "DataId": ipSetID, "Negated": false}
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateRule", map[string]any{
+			"ChangeToken": token,
+			"RuleId":      id,
+			"Updates":     []map[string]any{{"Action": "DELETE", "Predicate": predicate}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestRule_NotFound(t *testing.T) {
 	t.Parallel()
 

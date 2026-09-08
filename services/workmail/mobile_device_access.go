@@ -52,12 +52,12 @@ func (b *InMemoryBackend) DeleteMobileDeviceAccessRule(orgID, ruleID string) err
 	if _, ok := b.organizations.Get(orgID); !ok {
 		return fmt.Errorf("%w: organization %q not found", ErrOrganizationNotFound, orgID)
 	}
-	if !b.mobileDeviceRules.Delete(orgKey(orgID, ruleID)) {
-		// DeleteMobileDeviceAccessRule's own error model declares no
-		// not-found type for the rule itself (only Organization*); no
-		// correct code exists to send here (gopherstack-6flj/uox6 sweep).
-		return fmt.Errorf("%w: mobile device access rule %q not found", ErrNotFound, ruleID)
-	}
+	// Real DeleteMobileDeviceAccessRule doc (aws-sdk-go-v2
+	// api_op_DeleteMobileDeviceAccessRule.go): "Deleting already deleted and
+	// non-existing rules does not produce an error. In those cases, the
+	// service sends back an HTTP 200 response with an empty HTTP body." --
+	// this op's model doesn't even declare EntityNotFoundException.
+	b.mobileDeviceRules.Delete(orgKey(orgID, ruleID))
 
 	return nil
 }
@@ -219,6 +219,14 @@ func (b *InMemoryBackend) DeleteMobileDeviceAccessOverride(orgID, userID, device
 	}
 	key := orgKey(orgID, mobileOverrideKey(userID, deviceID))
 	if !b.mobileDeviceOverrides.Delete(key) {
+		// Unlike DeleteAccessControlRule/DeleteMobileDeviceAccessRule,
+		// DeleteMobileDeviceAccessOverride's own error model
+		// (awsAwsjson11_deserializeOpErrorDeleteMobileDeviceAccessOverride)
+		// DOES declare EntityNotFoundException, even though its SDK doc
+		// carries the same "does not produce an error" sentence as those
+		// two -- the model and the doc disagree here. Emitting the declared
+		// code is correct per the wire model; not changed to a no-op
+		// (gopherstack-hp83 investigation).
 		return fmt.Errorf("%w: mobile device access override not found", ErrNotFound)
 	}
 

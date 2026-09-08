@@ -260,7 +260,7 @@ func TestRedshiftBackend_DNSRegistrar(t *testing.T) {
 			b := redshift.NewInMemoryBackend("000000000000", "us-east-1")
 			b.SetDNSRegistrar(registrar)
 
-			cluster, err := b.CreateCluster(tt.clusterID, "dc2.large", "dev", "admin")
+			cluster, err := b.CreateCluster(tt.clusterID, "dc2.large", "dev", "admin", nil, "")
 			require.NoError(t, err)
 
 			if tt.deleteAfter {
@@ -455,7 +455,7 @@ func TestDescribeClusters_DeepCopy(t *testing.T) {
 
 	b := redshift.NewInMemoryBackend("000000000000", "us-east-1")
 
-	_, err := b.CreateCluster("c1", "dc2.large", "dev", "admin")
+	_, err := b.CreateCluster("c1", "dc2.large", "dev", "admin", nil, "")
 	require.NoError(t, err)
 
 	clusters, _, err := b.DescribeClusters("", "", 0, nil, nil)

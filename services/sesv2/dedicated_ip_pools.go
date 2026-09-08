@@ -101,6 +101,7 @@ func (b *InMemoryBackend) DeleteDedicatedIPPool(poolName string) error {
 	}
 
 	b.dedicatedIPPools.Delete(poolName)
+	delete(b.resourceTags, b.dedicatedIPPoolARN(poolName))
 
 	return nil
 }

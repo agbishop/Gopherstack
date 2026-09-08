@@ -66,13 +66,13 @@ func TestDescribeScalingActivities_TracksRegistrations(t *testing.T) {
 			b := applicationautoscaling.NewInMemoryBackend("123456789012", "us-east-1")
 
 			// Register svc-a, then update it (RegisterScalableTarget upserts).
-			_, err := b.RegisterScalableTarget(ns, resA, dimension, 1, 5, nil, "", nil)
+			_, err := b.RegisterScalableTarget(ns, resA, dimension, int32p(1), int32p(5), nil, "", nil)
 			require.NoError(t, err)
-			_, err = b.RegisterScalableTarget(ns, resA, dimension, 2, 10, nil, "", nil)
+			_, err = b.RegisterScalableTarget(ns, resA, dimension, int32p(2), int32p(10), nil, "", nil)
 			require.NoError(t, err)
 
 			// Register svc-b once.
-			_, err = b.RegisterScalableTarget(ns, resB, dimension, 1, 3, nil, "", nil)
+			_, err = b.RegisterScalableTarget(ns, resB, dimension, int32p(1), int32p(3), nil, "", nil)
 			require.NoError(t, err)
 
 			activities, _, _ := b.DescribeScalingActivities(applicationautoscaling.DescribeScalingActivitiesFilter{
@@ -102,7 +102,7 @@ func TestDescribeScalingActivities_ResetClears(t *testing.T) {
 
 	b := applicationautoscaling.NewInMemoryBackend("123456789012", "us-east-1")
 	_, err := b.RegisterScalableTarget(
-		"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 5, nil, "", nil,
+		"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(5), nil, "", nil,
 	)
 	require.NoError(t, err)
 

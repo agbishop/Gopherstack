@@ -63,3 +63,39 @@ func TestInMemoryBackend_Webhook_Lifecycle(t *testing.T) {
 	_, err = b.DeleteWebhook(wh.WebhookID)
 	require.Error(t, err)
 }
+
+// TestInMemoryBackend_Webhook_RequiresExistingBranch verifies real Amplify's
+// CreateWebhookInput.BranchName / UpdateWebhookInput.BranchName doc ("The
+// name for a branch that is part of an Amplify app") is enforced: a webhook
+// can't name a branch that doesn't belong to its app, since both ops model
+// NotFoundException.
+func TestInMemoryBackend_Webhook_RequiresExistingBranch(t *testing.T) {
+	t.Parallel()
+
+	t.Run("create_rejects_unknown_branch", func(t *testing.T) {
+		t.Parallel()
+
+		b := newTestBackend()
+		app, err := b.CreateApp("WebhookNoBranchApp", "", "", "", nil)
+		require.NoError(t, err)
+
+		_, err = b.CreateWebhook(app.AppID, "does-not-exist", "test")
+		require.Error(t, err)
+	})
+
+	t.Run("update_rejects_unknown_branch", func(t *testing.T) {
+		t.Parallel()
+
+		b := newTestBackend()
+		app, err := b.CreateApp("WebhookUpdateNoBranchApp", "", "", "", nil)
+		require.NoError(t, err)
+		_, err = b.CreateBranch(app.AppID, "main", "", "", false, nil)
+		require.NoError(t, err)
+
+		wh, err := b.CreateWebhook(app.AppID, "main", "test")
+		require.NoError(t, err)
+
+		_, err = b.UpdateWebhook(wh.WebhookID, "does-not-exist", "desc")
+		require.Error(t, err)
+	})
+}

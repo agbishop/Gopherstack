@@ -88,14 +88,67 @@ func (b *InMemoryBackend) RegisterType(typeName, _ string) (string, error) {
 	return token, nil
 }
 
-func (b *InMemoryBackend) DeregisterType(typeArn string) error {
+// DeregisterType deprecates a type or a single version of it (cloudformation@v1.76.1
+// api_op_DeregisterType.go doc comment). With no versionID it deprecates the whole
+// type. With a versionID: deregistering the default version while other active
+// versions exist is rejected; deregistering the last active version (including the
+// only version) deprecates the whole type along with it.
+func (b *InMemoryBackend) DeregisterType(typeName, typeArn, versionID string) error {
 	b.mu.Lock("DeregisterType")
 	defer b.mu.Unlock()
-	t, ok := b.typeRegistry.Get(typeArn)
-	if !ok {
-		return fmt.Errorf("%w: %s", ErrTypeNotFound, typeArn)
+
+	key := typeArn
+	if key == "" {
+		key = "arn:aws:cloudformation:::type/resource/" + typeName
 	}
-	t.Status = typeStatusDeprecated
+	t, ok := b.typeRegistry.Get(key)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrTypeNotFound, key)
+	}
+
+	if versionID == "" {
+		t.Status = typeStatusDeprecated
+		for _, v := range b.typeVersions[key] {
+			v.Status = typeStatusDeprecated
+		}
+
+		return nil
+	}
+
+	versions := b.typeVersions[key]
+	if len(versions) == 0 {
+		if versionID != t.VersionID {
+			return fmt.Errorf("%w: %s version %s", ErrTypeVersionNotFound, key, versionID)
+		}
+		t.Status = typeStatusDeprecated
+
+		return nil
+	}
+
+	var target *RegisteredTypeVersion
+	activeCount := 0
+	for _, v := range versions {
+		if v.Status != typeStatusDeprecated {
+			activeCount++
+		}
+		if v.VersionID == versionID {
+			target = v
+		}
+	}
+	if target == nil || target.Status == typeStatusDeprecated {
+		return fmt.Errorf("%w: %s version %s", ErrTypeVersionNotFound, key, versionID)
+	}
+
+	isDefault := versionID == t.DefaultVersion
+	if isDefault && activeCount > 1 {
+		return fmt.Errorf("%w: %s version %s", ErrCannotDeregisterDefaultVersion, key, versionID)
+	}
+
+	target.Status = typeStatusDeprecated
+	target.IsDefault = false
+	if isDefault {
+		t.Status = typeStatusDeprecated
+	}
 
 	return nil
 }
@@ -233,13 +286,20 @@ func (b *InMemoryBackend) ListTypes(_ string) ([]TypeSummary, error) {
 	return result, nil
 }
 
-func (b *InMemoryBackend) ListTypeVersions(typeName, _ string) ([]string, error) {
+// ListTypeVersions defaults to LIVE versions only, matching ListTypeVersionsInput's
+// DeprecatedStatus field ("The default is LIVE", cloudformation@v1.76.1
+// api_op_ListTypeVersions.go).
+func (b *InMemoryBackend) ListTypeVersions(typeName, deprecatedStatus string) ([]string, error) {
 	b.mu.RLock("ListTypeVersions")
 	defer b.mu.RUnlock()
 	typeArn := "arn:aws:cloudformation:::type/resource/" + typeName
+	wantDeprecated := deprecatedStatus == typeStatusDeprecated
 	if versions, ok := b.typeVersions[typeArn]; ok && len(versions) > 0 {
 		ids := make([]string, 0, len(versions))
 		for _, v := range versions {
+			if (v.Status == typeStatusDeprecated) != wantDeprecated {
+				continue
+			}
 			ids = append(ids, v.VersionID)
 		}
 
@@ -247,6 +307,10 @@ func (b *InMemoryBackend) ListTypeVersions(typeName, _ string) ([]string, error)
 	}
 	// Fallback: if no version records but type exists, return its current version.
 	if t, ok := b.typeRegistry.Get(typeArn); ok {
+		if (t.Status == typeStatusDeprecated) != wantDeprecated {
+			return []string{}, nil
+		}
+
 		return []string{t.VersionID}, nil
 	}
 
@@ -319,6 +383,22 @@ func (b *InMemoryBackend) DescribePublisher(publisherID string) (string, error) 
 	return p.Status, nil
 }
 
+// typeVersionDeprecatedStatus reports LIVE/DEPRECATED for a resolved version,
+// falling back to the whole type's status when the version itself isn't
+// individually tracked as deprecated.
+func (b *InMemoryBackend) typeVersionDeprecatedStatus(reg *RegisteredType, resolvedVersionID string) string {
+	if reg.Status == typeStatusDeprecated {
+		return typeStatusDeprecated
+	}
+	for _, v := range b.typeVersions[reg.TypeArn] {
+		if v.VersionID == resolvedVersionID && v.Status == typeStatusDeprecated {
+			return typeStatusDeprecated
+		}
+	}
+
+	return "LIVE"
+}
+
 // DescribeType returns detailed information about a registered CloudFormation type.
 // Lookup is by typeName, arn, or versionID — at least one must be non-empty.
 func (b *InMemoryBackend) DescribeType(typeName, arn, versionID string) (*TypeDetails, error) {
@@ -367,10 +447,7 @@ func (b *InMemoryBackend) DescribeType(typeName, arn, versionID string) (*TypeDe
 	if reg.IsPublished {
 		visibility = typeVisibilityPublic
 	}
-	deprecatedStatus := "LIVE"
-	if reg.Status == typeStatusDeprecated {
-		deprecatedStatus = typeStatusDeprecated
-	}
+	deprecatedStatus := b.typeVersionDeprecatedStatus(reg, resolvedVersionID)
 
 	return &TypeDetails{
 		TypeName:         reg.TypeName,

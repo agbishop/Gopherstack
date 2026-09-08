@@ -123,6 +123,62 @@ func TestRegexMatchSetLifecycle(t *testing.T) {
 	}
 }
 
+func TestRegexMatchSet_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		patternSetID := wafCreateRegexPatternSet(t, h, "noop-insert-patterns")
+		setID := wafCreateRegexMatchSet(t, h, "noop-insert-match")
+		tuple := map[string]any{
+			"FieldToMatch":       map[string]any{"Type": "QUERY_STRING"},
+			"TextTransformation": "URL_DECODE",
+			"RegexPatternSetId":  patternSetID,
+		}
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateRegexMatchSet", map[string]any{
+			"ChangeToken":     token,
+			"RegexMatchSetId": setID,
+			"Updates":         []map[string]any{{"Action": "INSERT", "RegexMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateRegexMatchSet", map[string]any{
+			"ChangeToken":     token,
+			"RegexMatchSetId": setID,
+			"Updates":         []map[string]any{{"Action": "INSERT", "RegexMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		patternSetID := wafCreateRegexPatternSet(t, h, "noop-delete-patterns")
+		setID := wafCreateRegexMatchSet(t, h, "noop-delete-match")
+		tuple := map[string]any{
+			"FieldToMatch":       map[string]any{"Type": "QUERY_STRING"},
+			"TextTransformation": "URL_DECODE",
+			"RegexPatternSetId":  patternSetID,
+		}
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateRegexMatchSet", map[string]any{
+			"ChangeToken":     token,
+			"RegexMatchSetId": setID,
+			"Updates":         []map[string]any{{"Action": "DELETE", "RegexMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestRegexMatchSetNotFound(t *testing.T) {
 	t.Parallel()
 

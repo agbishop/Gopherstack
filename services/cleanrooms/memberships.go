@@ -170,6 +170,12 @@ func (b *InMemoryBackend) UpdateMembership(
 	return m, nil
 }
 
+// DeleteMembership deletes the membership identified by id.
+//
+// api_op_DeleteMembership.go: "Deletes a specified membership. All resources
+// under a membership must be deleted." -- unlike DeleteCollaboration (no such
+// statement), a membership with any deletable child resource still attached
+// must be rejected rather than silently orphaning it.
 func (b *InMemoryBackend) DeleteMembership(id string) error {
 	b.mu.Lock("DeleteMembership")
 	defer b.mu.Unlock()
@@ -177,8 +183,21 @@ func (b *InMemoryBackend) DeleteMembership(id string) error {
 	if !ok {
 		return ErrNotFound
 	}
+	if b.membershipHasResources(id) {
+		return ErrConflict
+	}
 	delete(b.tagsByArn, m.Arn)
 	b.memberships.Delete(id)
 
 	return nil
+}
+
+func (b *InMemoryBackend) membershipHasResources(membershipID string) bool {
+	return len(b.ctAssociationsByMembership.Get(membershipID)) > 0 ||
+		len(b.analysisTemplatesByMembership.Get(membershipID)) > 0 ||
+		len(b.privacyBudgetTemplatesByMembership.Get(membershipID)) > 0 ||
+		len(b.idMappingTablesByMembership.Get(membershipID)) > 0 ||
+		len(b.idNamespaceAssociationsByMembership.Get(membershipID)) > 0 ||
+		len(b.camaAssociationsByMembership.Get(membershipID)) > 0 ||
+		len(b.intermediateTablesByMembership.Get(membershipID)) > 0
 }

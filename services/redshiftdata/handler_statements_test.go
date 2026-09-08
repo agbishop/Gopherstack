@@ -499,7 +499,6 @@ func TestHandler_DescribeStatement_AllFields(t *testing.T) {
 	rec := doRequest(t, h, "ExecuteStatement", map[string]any{
 		"Sql":               "SELECT 1",
 		"ClusterIdentifier": "my-cluster",
-		"WorkgroupName":     "my-workgroup",
 		"Database":          "testdb",
 		"DbUser":            "myuser",
 		"SecretArn":         "arn:aws:secretsmanager:us-east-1:000000000000:secret:mysecret",
@@ -521,7 +520,6 @@ func TestHandler_DescribeStatement_AllFields(t *testing.T) {
 	assert.Equal(t, id, resp["Id"])
 	assert.Equal(t, "FINISHED", resp["Status"])
 	assert.Equal(t, "my-cluster", resp["ClusterIdentifier"])
-	assert.Equal(t, "my-workgroup", resp["WorkgroupName"])
 	assert.Equal(t, "testdb", resp["Database"])
 	assert.Equal(t, "myuser", resp["DbUser"])
 	assert.Equal(t, "arn:aws:secretsmanager:us-east-1:000000000000:secret:mysecret", resp["SecretArn"])
@@ -586,10 +584,11 @@ func TestHandler_ListStatements_WithSecretARN(t *testing.T) {
 	h := newTestHandler(t)
 
 	doRequest(t, h, "ExecuteStatement", map[string]any{
-		"Sql":           "SELECT 1",
-		"Database":      "testdb",
-		"SecretArn":     "arn:aws:secretsmanager:us-east-1:000000000000:secret:mysecret",
-		"StatementName": "named-stmt",
+		"Sql":               "SELECT 1",
+		"ClusterIdentifier": "my-cluster",
+		"Database":          "testdb",
+		"SecretArn":         "arn:aws:secretsmanager:us-east-1:000000000000:secret:mysecret",
+		"StatementName":     "named-stmt",
 	})
 
 	rec := doRequest(t, h, "ListStatements", map[string]any{})

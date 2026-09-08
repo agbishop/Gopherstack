@@ -32,4 +32,10 @@ var (
 	ErrAdapterVersionNotFound = awserr.New("ResourceNotFoundException", awserr.ErrNotFound)
 	// ErrValidation is returned when request parameters fail validation.
 	ErrValidation = awserr.New("ValidationException", awserr.ErrInvalidParameter)
+	// ErrInvalidS3Object is returned when a Document/DocumentLocation's
+	// S3Object references a bucket/key the wired S3 backend cannot find.
+	// Real AWS reports this as InvalidS3ObjectException (textract@v1.43.4
+	// types/errors.go:312): "Amazon Textract is unable to access the S3
+	// object that's specified in the request".
+	ErrInvalidS3Object = awserr.New("InvalidS3ObjectException", awserr.ErrInvalidParameter)
 )

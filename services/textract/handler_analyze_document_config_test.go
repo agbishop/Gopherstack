@@ -193,6 +193,15 @@ func newTestHandlerT(t *testing.T) *testHandlerT {
 
 	versionRec := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
 		"AdapterId": createResp["AdapterId"],
+		"DatasetConfig": map[string]any{
+			"ManifestS3Object": map[string]any{
+				"Bucket": "test-dataset-bucket",
+				"Name":   "manifest.json",
+			},
+		},
+		"OutputConfig": map[string]any{
+			"S3Bucket": "test-output-bucket",
+		},
 	})
 	require.Equal(t, http.StatusOK, versionRec.Code)
 

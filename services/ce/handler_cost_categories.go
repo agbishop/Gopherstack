@@ -216,6 +216,7 @@ type updateCostCategoryDefinitionInput struct {
 	CostCategoryArn  string             `json:"CostCategoryArn"`
 	RuleVersion      string             `json:"RuleVersion"`
 	DefaultValue     string             `json:"DefaultValue"`
+	EffectiveStart   string             `json:"EffectiveStart"`
 	Rules            []costCategoryRule `json:"Rules"`
 	SplitChargeRules []splitChargeRule  `json:"SplitChargeRules"`
 }
@@ -253,7 +254,7 @@ func (h *Handler) handleUpdateCostCategoryDefinition(
 
 	cat, err := h.Backend.UpdateCostCategoryDefinition(
 		in.CostCategoryArn, in.RuleVersion, in.DefaultValue,
-		rules, splitChargeRules,
+		rules, splitChargeRules, in.EffectiveStart,
 	)
 	if err != nil {
 		return nil, err

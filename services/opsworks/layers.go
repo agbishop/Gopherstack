@@ -99,14 +99,26 @@ func (b *InMemoryBackend) UpdateLayer(layerID, name string) error {
 	return nil
 }
 
-// DeleteLayer deletes a layer.
+// DeleteLayer deletes a layer. AWS requires all associated instances be
+// deleted or unassigned first (api_op_DeleteLayer.go: "You must first stop
+// and then delete all associated instances or unassign registered
+// instances.").
 func (b *InMemoryBackend) DeleteLayer(layerID string) error {
 	b.mu.Lock("DeleteLayer")
 	defer b.mu.Unlock()
 
-	if !b.layers.Delete(layerID) {
+	l, ok := b.layers.Get(layerID)
+	if !ok {
 		return ErrLayerNotFound
 	}
+
+	for _, i := range b.instancesByStack.Get(l.StackID) {
+		if i.LayerID == layerID {
+			return ErrValidation
+		}
+	}
+
+	b.layers.Delete(layerID)
 
 	return nil
 }

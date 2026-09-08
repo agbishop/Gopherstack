@@ -30,7 +30,11 @@ type detectLabelsResp struct {
 	Labels                []labelEntry `json:"Labels"`
 }
 
-func (h *Handler) handleDetectLabels(_ context.Context, req *detectLabelsReq) (*detectLabelsResp, error) {
+func (h *Handler) handleDetectLabels(ctx context.Context, req *detectLabelsReq) (*detectLabelsResp, error) {
+	if err := h.checkImageRef(ctx, req.Image); err != nil {
+		return nil, err
+	}
+
 	labels := plausibleLabels(resolveMinConfidence(req.MinConfidence), req.MaxLabels)
 
 	return &detectLabelsResp{
@@ -98,8 +102,12 @@ type startLabelDetectionReq struct {
 }
 
 func (h *Handler) handleStartLabelDetection(
-	_ context.Context, req *startLabelDetectionReq,
+	ctx context.Context, req *startLabelDetectionReq,
 ) (*startJobResp, error) {
+	if err := h.checkVideoRef(ctx, req.Video); err != nil {
+		return nil, err
+	}
+
 	bucket, name, version := videoRefS3(req.Video)
 
 	jobID, err := h.Backend.StartAsyncJob(StartAsyncJobParams{

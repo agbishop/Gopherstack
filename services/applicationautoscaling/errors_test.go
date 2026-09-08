@@ -97,7 +97,7 @@ func TestBackend_PutScalingPolicy_LimitExceeded_PoliciesPerTarget(t *testing.T) 
 
 	b := applicationautoscaling.NewInMemoryBackend("123456789012", "us-east-1")
 	_, err := b.RegisterScalableTarget(
-		"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+		"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 	)
 	require.NoError(t, err)
 
@@ -132,7 +132,7 @@ func TestBackend_PutScalingPolicy_LimitExceeded_StepAdjustments(t *testing.T) {
 
 	b := applicationautoscaling.NewInMemoryBackend("123456789012", "us-east-1")
 	_, err := b.RegisterScalableTarget(
-		"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+		"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 	)
 	require.NoError(t, err)
 
@@ -157,7 +157,7 @@ func TestBackend_PutScheduledAction_LimitExceeded_ActionsPerTarget(t *testing.T)
 
 	b := applicationautoscaling.NewInMemoryBackend("123456789012", "us-east-1")
 	_, err := b.RegisterScalableTarget(
-		"ecs", "service/default/svc", "ecs:service:DesiredCount", 1, 10, nil, "", nil,
+		"ecs", "service/default/svc", "ecs:service:DesiredCount", int32p(1), int32p(10), nil, "", nil,
 	)
 	require.NoError(t, err)
 
@@ -235,7 +235,7 @@ func TestBackend_DescribeScalableTargets_ValidNextTokenRoundTrips(t *testing.T) 
 	for i := range 3 {
 		_, err := b.RegisterScalableTarget(
 			"ecs", fmt.Sprintf("service/default/svc-%d", i), "ecs:service:DesiredCount",
-			1, 10, nil, "", nil,
+			int32p(1), int32p(10), nil, "", nil,
 		)
 		require.NoError(t, err)
 	}

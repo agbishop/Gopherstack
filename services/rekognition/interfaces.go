@@ -3,7 +3,16 @@ package rekognition
 import (
 	"context"
 	"time"
+
+	sdk_s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+// S3Backend is the subset of S3 operations Rekognition needs to validate
+// that an Image/Video/Input S3Object exists, wired via SetS3Backend. When
+// unset, S3Object references are stored/echoed but never validated.
+type S3Backend interface {
+	HeadObject(ctx context.Context, input *sdk_s3.HeadObjectInput) (*sdk_s3.HeadObjectOutput, error)
+}
 
 // StorageBackend is the interface for Rekognition storage operations.
 type StorageBackend interface {

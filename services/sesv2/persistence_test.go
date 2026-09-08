@@ -127,7 +127,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 		MailType: "TRANSACTIONAL", SendingEnabled: true,
 	}))
 
-	msgID, err := original.SendEmail("verified@example.com", []string{"to@example.com"}, "Hi", "", "body")
+	msgID, err := original.SendEmail("verified@example.com", []string{"to@example.com"}, "Hi", "", "body", nil)
 	require.NoError(t, err)
 
 	snap := original.Snapshot(t.Context())

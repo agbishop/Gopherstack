@@ -2,9 +2,23 @@ package stepfunctions
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 )
+
+// aliasParentStateMachineLocked returns the state machine that owns
+// aliasARN, or (nil, false) if no state machine currently claims it (e.g.
+// DeleteStateMachine already removed the mapping). Caller must hold b.mu.
+func (b *InMemoryBackend) aliasParentStateMachineLocked(aliasARN string) (*StateMachine, bool) {
+	for smARN, aARNs := range b.smAliases {
+		if slices.Contains(aARNs, aliasARN) {
+			return b.stateMachines.Get(smARN)
+		}
+	}
+
+	return nil, false
+}
 
 // validateRoutingConfig enforces AWS alias routing constraints:
 // 1-2 entries, each weight 0-100, total weight = 100.
@@ -61,6 +75,10 @@ func (b *InMemoryBackend) CreateStateMachineAlias(
 		return nil, fmt.Errorf("%w: %s", ErrStateMachineAliasDoesNotExist, smARN)
 	}
 
+	if sm.Status == statusDeleting {
+		return nil, fmt.Errorf("%w: %s", ErrStateMachineDeleting, smARN)
+	}
+
 	aARN := b.aliasARN(smARN, sm.Name, name)
 
 	if b.aliases.Has(aARN) {
@@ -99,6 +117,10 @@ func (b *InMemoryBackend) UpdateStateMachineAlias(
 	alias, exists := b.aliases.Get(aliasARN)
 	if !exists {
 		return nil, fmt.Errorf("%w: %s", ErrStateMachineAliasDoesNotExist, aliasARN)
+	}
+
+	if sm, ok := b.aliasParentStateMachineLocked(aliasARN); ok && sm.Status == statusDeleting {
+		return nil, fmt.Errorf("%w: %s", ErrStateMachineDeleting, aliasARN)
 	}
 
 	if description != "" {
@@ -169,8 +191,13 @@ func (b *InMemoryBackend) ListStateMachineAliases(
 	b.mu.RLock("ListStateMachineAliases")
 	defer b.mu.RUnlock()
 
-	if !b.stateMachines.Has(smARN) {
+	sm, exists := b.stateMachines.Get(smARN)
+	if !exists {
 		return nil, "", fmt.Errorf("%w: %s", ErrStateMachineDoesNotExist, smARN)
+	}
+
+	if sm.Status == statusDeleting {
+		return nil, "", fmt.Errorf("%w: %s", ErrStateMachineDeleting, smARN)
 	}
 
 	aARNs := b.smAliases[smARN]

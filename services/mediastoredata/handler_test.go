@@ -652,6 +652,53 @@ func TestMediaStoreData_UploadAvailabilityValidation(t *testing.T) {
 	}
 }
 
+func TestMediaStoreData_ObjectSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	// aws-sdk-go-v2/service/mediastoredata/api_op_PutObject.go:13-14: "Object
+	// sizes are limited to 25 MB for standard upload availability and 10 MB
+	// for streaming upload availability."
+	const streamingLimit = 10 * 1024 * 1024
+
+	tests := []struct {
+		name               string
+		uploadAvailability string
+		wantType           string // __type on the wire; empty means "don't check" (2xx cases).
+		bodySize           int
+		wantStatus         int
+	}{
+		{
+			name:               "streaming_at_limit_accepted",
+			uploadAvailability: "STREAMING",
+			bodySize:           streamingLimit,
+			wantStatus:         http.StatusOK,
+		},
+		{
+			name: "streaming_over_limit_rejected", uploadAvailability: "STREAMING", bodySize: streamingLimit + 1,
+			wantStatus: http.StatusBadRequest, wantType: "ValidationException",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			headers := map[string]string{"X-Amz-Upload-Availability": tt.uploadAvailability}
+			body := make([]byte, tt.bodySize)
+
+			rec := doRequest(t, h, http.MethodPut, "/size/file.bin", body, headers)
+			assert.Equal(t, tt.wantStatus, rec.Code)
+
+			if tt.wantType != "" {
+				var resp map[string]string
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+				assert.Equal(t, tt.wantType, resp["__type"])
+			}
+		})
+	}
+}
+
 func TestMediaStoreData_ConditionalGet(t *testing.T) {
 	t.Parallel()
 

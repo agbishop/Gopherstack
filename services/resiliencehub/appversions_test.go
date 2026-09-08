@@ -34,6 +34,80 @@ func TestCreateAppVersionAppComponent_DuplicateNameConflicts(t *testing.T) {
 	require.ErrorAs(t, err, &conflict)
 }
 
+// TestUpdateAppVersionAppComponent_DuplicateNameConflicts verifies renaming a
+// component to a name already used by another component on the same version
+// is rejected -- the same rule CreateAppVersionAppComponent already enforces.
+func TestUpdateAppVersionAppComponent_DuplicateNameConflicts(t *testing.T) {
+	t.Parallel()
+
+	_, client := newTestHandlerAndClient(t)
+	ctx := t.Context()
+
+	appOut, err := client.CreateApp(ctx, &resiliencehubsdk.CreateAppInput{Name: aws.String("app")})
+	require.NoError(t, err)
+
+	_, err = client.CreateAppVersionAppComponent(ctx, &resiliencehubsdk.CreateAppVersionAppComponentInput{
+		AppArn: appOut.App.AppArn, Name: aws.String("comp1"), Type: aws.String("t"),
+	})
+	require.NoError(t, err)
+
+	comp2Out, err := client.CreateAppVersionAppComponent(ctx, &resiliencehubsdk.CreateAppVersionAppComponentInput{
+		AppArn: appOut.App.AppArn, Name: aws.String("comp2"), Type: aws.String("t"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.UpdateAppVersionAppComponent(ctx, &resiliencehubsdk.UpdateAppVersionAppComponentInput{
+		AppArn: appOut.App.AppArn, Id: comp2Out.AppComponent.Id, Name: aws.String("comp1"),
+	})
+	require.Error(t, err)
+
+	var conflict *types.ConflictException
+	require.ErrorAs(t, err, &conflict)
+}
+
+// TestUpdateAppVersionAppComponent_RenamePreservesResourceAssociation
+// verifies that renaming a component keeps its already-assigned resources
+// associated with it. This backend tracks a resource's component assignment
+// by name (wire_convert.go), so a rename must repoint every resource that
+// named the old value -- otherwise the resources would silently fall off the
+// component and DeleteAppVersionAppComponent's "still has resources
+// associated" conflict check (appversions.go) would go blind to them.
+func TestUpdateAppVersionAppComponent_RenamePreservesResourceAssociation(t *testing.T) {
+	t.Parallel()
+
+	_, client := newTestHandlerAndClient(t)
+	ctx := t.Context()
+
+	appOut, err := client.CreateApp(ctx, &resiliencehubsdk.CreateAppInput{Name: aws.String("app")})
+	require.NoError(t, err)
+
+	compOut, err := client.CreateAppVersionAppComponent(ctx, &resiliencehubsdk.CreateAppVersionAppComponentInput{
+		AppArn: appOut.App.AppArn, Name: aws.String("comp"), Type: aws.String("t"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.CreateAppVersionResource(ctx, &resiliencehubsdk.CreateAppVersionResourceInput{
+		AppArn: appOut.App.AppArn, AppComponents: []string{"comp"},
+		PhysicalResourceId: aws.String("arn:aws:sns:us-east-1:000000000000:topic:t"),
+		ResourceType:       aws.String("AWS::SNS::Topic"),
+		LogicalResourceId:  &types.LogicalResourceId{Identifier: aws.String("res")},
+	})
+	require.NoError(t, err)
+
+	_, err = client.UpdateAppVersionAppComponent(ctx, &resiliencehubsdk.UpdateAppVersionAppComponentInput{
+		AppArn: appOut.App.AppArn, Id: compOut.AppComponent.Id, Name: aws.String("renamed"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.DeleteAppVersionAppComponent(ctx, &resiliencehubsdk.DeleteAppVersionAppComponentInput{
+		AppArn: appOut.App.AppArn, Id: compOut.AppComponent.Id,
+	})
+	require.Error(t, err, "renamed component should still be blocked by its resource association")
+
+	var conflict *types.ConflictException
+	require.ErrorAs(t, err, &conflict)
+}
+
 // TestDeleteAppVersionAppComponent_RejectsWhenResourcesAssociated verifies
 // the SDK's own documented rule: a component with associated resources
 // cannot be deleted.

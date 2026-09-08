@@ -6,13 +6,14 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: mwaa
 sdk_module: aws-sdk-go-v2/service/mwaa@v1.43.4   # version audited against (go.mod pins this)
-last_audit_commit: d5aaf8e79   # HEAD when this pass finished; see 2026-08-20 Notes entry for
-                                # the provenance finding this replaces (stamp had not advanced
-                                # across two substantive intervening passes)
-last_audit_date: 2026-08-20
-overall: A                # two real bugs found and fixed this pass (AirflowVersion valid-value
-                           # set, LoggingConfiguration request/response type conflation); rest
-                           # of the 12-op surface re-verified clean against mwaa@v1.43.4
+last_audit_commit: b0509bb19   # HEAD when this pass finished; see 2026-09-04 Notes entry
+last_audit_date: 2026-09-04
+overall: A                # 2026-09-04: one real bug found and fixed (PublishMetrics fabricated
+                           # ResourceNotFoundException, an error its own op-level deserializer
+                           # switch doesn't recognize; see 2026-09-04 Notes entry). Prior pass's
+                           # two bugs (AirflowVersion valid-value set, LoggingConfiguration
+                           # request/response type conflation) remain fixed; rest of the 12-op
+                           # surface re-verified clean against mwaa@v1.43.4
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
 ops:
@@ -27,7 +28,7 @@ ops:
   CreateCliToken: {wire: ok, errors: ok, state: ok, persist: n/a, note: "re-verified CliToken/WebServerHostname field names against CreateCliTokenOutput -- matches"}
   CreateWebLoginToken: {wire: partial, errors: ok, state: ok, persist: n/a, note: "AirflowIdentity/IamIdentity response fields still not populated (see gaps -- re-investigated this pass, confirmed genuinely not derivable, not just an unwired accessor)"}
   InvokeRestApi: {wire: partial, errors: ok, state: ok, persist: n/a, note: "now enforces the environment must be AVAILABLE (ResourceNotFoundException otherwise), matching CreateCliToken/CreateWebLoginToken -- the mock previously let InvokeRestApi succeed against a CREATING/DELETING/etc environment whose Airflow webserver doesn't exist yet; response is still always a synthesized 200 for an AVAILABLE env regardless of Path (see gaps -- re-investigated this pass with botocore's service-2.json, see gap note for why this is more nuanced than a simple 404/405 miss)"}
-  PublishMetrics: {wire: ok, errors: ok, state: ok, persist: ok}
+  PublishMetrics: {wire: ok, errors: ok, state: ok, persist: ok, note: "2026-09-04: fixed a fabricated error code -- not-found returned ResourceNotFoundException, which this op's own deserializer switch doesn't recognize; now ValidationException/400 (see Notes)"}
 families:
   environment_lifecycle: {status: ok, note: "EnvironmentStatus constant fixed: gopherstack used the fabricated string \"UPDATE_ROLLING_BACK\" for a transient rollback state; the real aws-sdk-go-v2/service/mwaa/types.EnvironmentStatus enum value is \"ROLLING_BACK\". Also removed an entirely invented \"ERROR\" status (not in the real 12-value enum, was unused except in one test). CREATING/UPDATING/etc transiently promote to AVAILABLE on next GetEnvironment observation (promoteTransientStatus); this remains a deliberate mock simplification, not a stuck-forever bug"}
   errors: {status: ok, note: "error taxonomy unchanged from the prior pass (7 real exception types, confirmed again against types/errors.go); ErrEnvironmentAlreadyExists's Go error message text no longer contains the literal string \"AlreadyExistsException\" (it was leaking the fabricated exception name into the wire response's \"message\" field even though \"__type\" was already correctly ValidationException)"}
@@ -419,6 +420,69 @@ Verdict: no bugs found this pass. This is the second independent
 confirmation (after 2026-08-20's sweep) that this service's wire shape is
 correct in both directions.
 
+### 2026-09-04: per-op error-switch audit (gopherstack-0h1)
+
+Went beyond the prior passes' service-wide error-taxonomy check (7 exception
+types exist) to verify, per op, that its own
+`awsRestjson1_deserializeOpError<Op>` switch (deserializers.go) actually
+recognizes every code gopherstack returns for it -- the prior passes checked
+that a code was a real MWAA exception, not that the specific op's generated
+client can decode it as one.
+
+Found one mismatch: **`PublishMetrics` returned `ResourceNotFoundException`
+(404) for an unknown environment, but
+`awsRestjson1_deserializeOpErrorPublishMetrics` only has cases for
+`InternalServerException` and `ValidationException`** (confirmed by reading
+the function body directly, deserializers.go:1335-1425) -- unlike every
+other not-found-capable op in this service (`GetEnvironment`,
+`DeleteEnvironment`, `UpdateEnvironment`, `CreateWebLoginToken`,
+`CreateCliToken`, `InvokeRestApi`, `ListTagsForResource`, `TagResource`,
+`UntagResource`), all of which do carry a `ResourceNotFoundException` case.
+Fixed `handler_metrics.go`'s `handlePublishMetrics` to map
+`awserr.ErrNotFound` to `ValidationException`/400 instead, the same
+"op doesn't model this exception" precedent already established for
+`ErrEnvironmentAlreadyExists` in `writeEnvironmentResult`. Updated
+`TestHandler_PublishMetrics`'s `env_not_found` case to expect 400, and added
+`TestHandler_PublishMetrics_NotFound_ErrorType` asserting the wire `__type`
+is `ValidationException` (a bare status-code check wouldn't have pinned the
+exact `__type` string). Verified both tests fail against the unfixed code
+(400/`ResourceNotFoundException` reverted to 404): `TestHandler_PublishMetrics/env_not_found`
+and `TestHandler_PublishMetrics_NotFound_ErrorType` both fail with
+`Not equal: expected: 400, actual: 404`.
+
+All other ops re-checked clean: every `ResourceNotFoundException`,
+`ValidationException`, `AccessDeniedException`,
+`RestApiClientException`/`RestApiServerException` gopherstack currently
+returns for an op is present in that same op's deserializer switch.
+`CreateEnvironment`/`ListEnvironments` correctly never emit
+`ResourceNotFoundException` (their switches don't have it either).
+
+Also re-examined (no changes, findings below):
+- **DeleteEnvironment precondition**: doc comment is exactly "Deletes an
+  Amazon Managed Workflows for Apache Airflow (Amazon MWAA) environment." --
+  no status precondition documented anywhere (api_op_DeleteEnvironment.go).
+  `InMemoryBackend.DeleteEnvironment` (environments.go) deletes unconditionally
+  regardless of `Status` (CREATING/UPDATING/etc included). Left as-is: the SDK
+  is silent, so restricting delete-while-transitioning would be inventing a
+  rule, not fixing a documented one -- cannot be determined from the SDK.
+- **Ghost rows after delete**: not applicable here. Tags live inline on
+  `Environment.Tags` (deleted with the row); `metrics` (store.go) is a plain
+  `map[region]map[envName][]MetricDatum` and `DeleteEnvironment` does
+  `delete(b.metricsStore(region), name)`; CLI/web-login tokens are stateless
+  (`generateMWAAToken`, no side table at all). No hand-rolled map survives a
+  delete-and-recreate under the same name.
+- **InvokeRestApi's fixed 200/empty response regardless of Path/Method**:
+  already investigated and disclosed in `gaps` (re-read, reasoning still
+  holds -- the SDK model doesn't document which downstream Airflow HTTP
+  status maps to which of {200 w/ non-2xx `RestApiStatusCode`,
+  `RestApiClientException`, `RestApiServerException`}, and Airflow's own REST
+  surface varies by `AirflowVersion` -- not re-touched this pass).
+
+Gates: `go build ./services/mwaa/...`, `go test -race -count=1
+./services/mwaa/...` (ok), `golangci-lint run ./services/mwaa/...` (0
+issues), `go test -race -count=1 ./services/cloudformation/...` (ok,
+dependent package).
+
 ## Handler-collision determinism sweep (2026-08-31, gopherstack-id70)
 
 Same defect and fix as the census in `cmd/reqfielddiff`/`cmd/reqfieldscan`
@@ -437,3 +501,39 @@ Path, QueryParameters}`. Read the source (handler_rest_api.go:14-26):
 forwarded whole to `h.Backend.InvokeRestAPI`. Confirmed genuine -- not a bug.
 
 Verdict: zero real bugs, safe direction only.
+
+## 2026-09-08: writeErrorResponse nil-on-write fall-through audit (gopherstack-246v) -- clean
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `writeErrorResponse`
+(`handler.go:399`) writes the JSON error body and unconditionally `return nil`s, so any
+helper that rejects via `return writeErrorResponse(...)` and is called by code doing
+`err := helper(...); if err != nil { ... }` would get a silent `nil` back and fall through
+past the rejection.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test `.go` file in
+this flat package (mwaa has no subdirectories) computed the fixed-point closure of every
+function whose body contains a bare `return writeErrorResponse(...)`: seed the sink set
+with `writeErrorResponse` itself, find every function with a direct `return <sink>(...)`,
+add its name to the sink set, repeat until no growth. This closure doubles as the
+dispatch-vs-non-dispatch cross-reference the issue asks for: `ServeHTTP` (the function
+wired as `h.Handler()`, registered directly with echo) and all seven `dispatchXxx`
+functions it calls fall into the set naturally, because each ends in a
+`return writeErrorResponse(...)` default case -- so their own call sites got checked
+alongside the rest, no separate partition needed.
+
+The closure converged at 23 functions (`writeErrorResponse` plus 22 discovered wrappers:
+`ServeHTTP`, the 7 `dispatchXxx` routers, and 14 `handleXxx`/`writeEnvironmentResult`/
+`writeEnvironmentVoidResult` handlers). Every call site of every function in that set was
+then re-walked and classified: 65 total call sites, of which 63 are `return <fn>(...)`
+(direct, safe -- includes `ServeHTTP` itself, since `Handler()` just returns it, and echo
+consumes its result directly). The remaining 2 (`handler.go:315,321`, inside
+`decodeJSONBody`) store `writeErrorResponse`'s result but explicitly discard it
+(`_ = writeErrorResponse(...)`) and signal via a `bool` return, not the discarded `error`
+-- `decodeJSONBody`'s two callers (`handleCreateEnvironment`, `handleUpdateEnvironment`,
+`handler_environments.go:16,50`) correctly check `if !decodeJSONBody(...) { return nil }`
+before touching the backend. This is the same "checked-bool-helper" shape as elasticache's
+`parsePaginationChecked`, just using `bool` instead of a sentinel error, and it is correct.
+
+**No instance of the broken shape exists in mwaa.** No code changed as a result. Gates:
+`GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/mwaa/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/mwaa/...` ok.

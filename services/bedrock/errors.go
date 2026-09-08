@@ -9,4 +9,7 @@ var (
 	ErrAlreadyExists = awserr.New("ConflictException", awserr.ErrAlreadyExists)
 	// ErrValidation is returned when request validation fails.
 	ErrValidation = awserr.New("ValidationException", awserr.ErrInvalidParameter)
+	// ErrResourceInUse is returned when a resource cannot be deleted because
+	// dependent artifacts still reference it.
+	ErrResourceInUse = awserr.New("ResourceInUseException", awserr.ErrConflict)
 )

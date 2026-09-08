@@ -180,6 +180,7 @@ func (h *Handler) handleGetDomainPermissionsPolicy(c *echo.Context, domainName s
 
 type putDomainPermissionsPolicyBody struct {
 	PolicyDocument string `json:"policyDocument"`
+	PolicyRevision string `json:"policyRevision"`
 }
 
 func (h *Handler) handlePutDomainPermissionsPolicy(c *echo.Context, domainName string, body []byte) error {
@@ -202,7 +203,9 @@ func (h *Handler) handlePutDomainPermissionsPolicy(c *echo.Context, domainName s
 		return c.JSON(http.StatusBadRequest, errResp("ValidationException", "policyDocument is required"))
 	}
 
-	pol, err := h.Backend.PutDomainPermissionsPolicy(c.Request().Context(), domainName, in.PolicyDocument)
+	pol, err := h.Backend.PutDomainPermissionsPolicy(
+		c.Request().Context(), domainName, in.PolicyDocument, in.PolicyRevision,
+	)
 	if err != nil {
 		return h.handleError(c, err)
 	}
@@ -221,7 +224,9 @@ func (h *Handler) handleDeleteDomainPermissionsPolicy(c *echo.Context, domainNam
 		return c.JSON(http.StatusBadRequest, errResp("ValidationException", "domain is required"))
 	}
 
-	pol, err := h.Backend.DeleteDomainPermissionsPolicy(c.Request().Context(), domainName)
+	revision := c.Request().URL.Query().Get("policy-revision")
+
+	pol, err := h.Backend.DeleteDomainPermissionsPolicy(c.Request().Context(), domainName, revision)
 	if err != nil {
 		return h.handleError(c, err)
 	}

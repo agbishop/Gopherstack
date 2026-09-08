@@ -138,9 +138,9 @@ func TestInMemoryBackend_SnapshotRestore_FullStateRoundTrip(t *testing.T) {
 	require.NoError(t, original.AssociateKmsKey("/full/group", "", "kms-key-2"))
 	_, err = original.AssociateSourceToS3TableIntegration("arn:aws:s3tables:::bucket/tbl", "src", "type")
 	require.NoError(t, err)
-	taskID, err := original.CreateExportTask("exp", "/full/group", "", "dest-bucket", "", 0, 1_800_000_000_000)
+	taskID, err := original.CreateExportTask(ctx, "exp", "/full/group", "", "dest-bucket", "", 0, 1_800_000_000_000)
 	require.NoError(t, err)
-	importTask, err := original.CreateImportTask("arn:aws:iam:::role/import", "arn:aws:cloudtrail:::store/x")
+	importTask, err := original.CreateImportTask(ctx, "arn:aws:iam:::role/import", "arn:aws:cloudtrail:::store/x")
 	require.NoError(t, err)
 	delivery, err := original.CreateDelivery("src-name", "arn:aws:logs:::delivery-destination/dst", "", nil, nil, nil)
 	require.NoError(t, err)
@@ -693,11 +693,15 @@ func TestBackend_Reset_ClearsNewMaps(t *testing.T) {
 	b := cloudwatchlogs.NewInMemoryBackend()
 
 	// Populate all new maps.
-	taskID, err := b.CreateExportTask("task", "/grp", "", "bucket", "", 1000, 2000)
+	_, err := b.CreateLogGroup(context.Background(), "/grp", "", "")
+	require.NoError(t, err)
+
+	taskID, err := b.CreateExportTask(context.Background(), "task", "/grp", "", "bucket", "", 1000, 2000)
 	require.NoError(t, err)
 	require.NotEmpty(t, taskID)
 
 	task, err := b.CreateImportTask(
+		context.Background(),
 		"arn:aws:iam::123:role/r",
 		"arn:aws:cloudtrail:us-east-1:123:eventdatastore/abc",
 	)
@@ -744,11 +748,15 @@ func TestInMemoryBackend_SnapshotRestore_NewMaps(t *testing.T) {
 	b := cloudwatchlogs.NewInMemoryBackendWithConfig("123456789012", "us-east-1")
 
 	// Populate export task.
-	taskID, err := b.CreateExportTask("my-export", "/grp", "", "my-bucket", "prefix/", 1000, 2000)
+	_, err := b.CreateLogGroup(context.Background(), "/grp", "", "")
+	require.NoError(t, err)
+
+	taskID, err := b.CreateExportTask(context.Background(), "my-export", "/grp", "", "my-bucket", "prefix/", 1000, 2000)
 	require.NoError(t, err)
 
 	// Populate import task.
 	importTask, err := b.CreateImportTask(
+		context.Background(),
 		"arn:aws:iam::123456789012:role/import-role",
 		"arn:aws:cloudtrail:us-east-1:123456789012:eventdatastore/abc",
 	)

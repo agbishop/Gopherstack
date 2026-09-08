@@ -119,26 +119,32 @@ func TestHandler_StubOperations(t *testing.T) {
 			wantStatus: http.StatusNoContent,
 			wantBody:   "",
 		},
+		// "mybucket" is never created against this fresh handler; Get/Put/
+		// DeleteBucketReplication now require the bucket to exist (matching
+		// every other bucket sub-resource op), so all three 404 with
+		// NoSuchBucket instead of the pre-fix behavior (200/204, or a
+		// misleading "config missing" 404 that ignored the bucket itself
+		// not existing).
 		{
 			name:       "get_bucket_replication",
 			method:     http.MethodGet,
 			path:       "/v20180820/bucket/mybucket/replication",
 			wantStatus: http.StatusNotFound,
-			wantBody:   "ReplicationConfigurationNotFoundError",
+			wantBody:   "NoSuchBucket",
 		},
 		{
 			name:       "put_bucket_replication",
 			method:     http.MethodPut,
 			path:       "/v20180820/bucket/mybucket/replication",
-			wantStatus: http.StatusOK,
-			wantBody:   "",
+			wantStatus: http.StatusNotFound,
+			wantBody:   "NoSuchBucket",
 		},
 		{
 			name:       "delete_bucket_replication",
 			method:     http.MethodDelete,
 			path:       "/v20180820/bucket/mybucket/replication",
-			wantStatus: http.StatusNoContent,
-			wantBody:   "",
+			wantStatus: http.StatusNotFound,
+			wantBody:   "NoSuchBucket",
 		},
 		{
 			name:       "get_storage_lens_config",
@@ -217,12 +223,16 @@ func TestHandler_StubOperations(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantBody:   "ListStorageLensGroupsResult",
 		},
+		// "mymrap" is never created against this fresh handler; submitting
+		// routes for it now 404s with NoSuchMultiRegionAccessPoint instead
+		// of the pre-fix behavior (200, silently accepting routes for any
+		// name) -- see PARITY.md, gopherstack-l498.
 		{
 			name:       "submit_mrap_routes",
 			method:     http.MethodPatch,
 			path:       "/v20180820/mrap/instances/mymrap/routes",
-			wantStatus: http.StatusOK,
-			wantBody:   "",
+			wantStatus: http.StatusNotFound,
+			wantBody:   "NoSuchMultiRegionAccessPoint",
 		},
 	}
 

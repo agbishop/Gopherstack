@@ -468,6 +468,16 @@ func (db *InMemoryDB) DeleteTable(
 		)
 	}
 
+	table.mu.RLock("DeleteTable.statusCheck")
+	status := types.TableStatus(table.Status)
+	table.mu.RUnlock()
+
+	if status == types.TableStatusCreating || status == types.TableStatusUpdating {
+		return nil, NewResourceInUseException(
+			"Attempt to change a resource which is still in use: Table is being created or updated: " + tableName,
+		)
+	}
+
 	// Cancel any pending activation timer and any in-flight GSI lifecycle timers.
 	// Stop() is called while db.mu is held, which prevents a concurrent CreateTable from
 	// racing with us. If a timer has already fired and the callback is in progress, Stop()
@@ -490,6 +500,11 @@ func (db *InMemoryDB) DeleteTable(
 	if table.StreamARN != "" {
 		db.streamARNIndex.Delete(table.StreamARN)
 	}
+
+	// Clear any FIS global-table-pause-replication fault. TableArn is
+	// deterministic from the table name, so a same-named recreated table
+	// would otherwise inherit a stale paused-replication state.
+	delete(db.fisReplicationPaused, table.TableArn)
 
 	// The table is already unlinked from db.tables, but a caller that grabbed
 	// this same *Table just before this delete can still be actively writing to

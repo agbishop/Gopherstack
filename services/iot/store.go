@@ -183,10 +183,10 @@ func (b *InMemoryBackend) Reset() {
 	defer b.mu.Unlock()
 
 	// Clears every table registered in store_setup.go's registerAllTables.
-	// b.shadows is deliberately NOT part of the registry and NOT cleared
-	// here — see registerAllTables' comment for why this preserves a
-	// pre-existing quirk byte-for-byte.
+	// b.shadows is not part of the registry (no pure keyFn without changing
+	// ThingShadow's shape), so it needs its own clear here.
 	b.registry.ResetAll()
+	b.shadows = make(map[shadowKey]*ThingShadow)
 
 	b.certificateTransfers = make(map[string]string)
 	b.thingBillingGroups = make(map[string]string)
@@ -415,19 +415,29 @@ func (b *InMemoryBackend) ListThings() []*Thing {
 // the other side of the same jobId/thingName key) so a deleted thing never
 // leaves a ghost JobExecution behind for DescribeJobExecution/
 // ListJobExecutionsForThing to keep returning.
-func (b *InMemoryBackend) DeleteThing(thingName string) error {
+func (b *InMemoryBackend) DeleteThing(thingName string, expectedVersion int64) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	if !b.things.Has(thingName) {
+	t, ok := b.things.Get(thingName)
+	if !ok {
 		return fmt.Errorf("%w: %s", ErrThingNotFound, thingName)
+	}
+
+	if expectedVersion != 0 && expectedVersion != t.Version {
+		return fmt.Errorf("%w: expected version %d, current version %d",
+			ErrVersionConflict, expectedVersion, t.Version)
 	}
 
 	if principals := b.thingPrincipals[thingName]; len(principals) > 0 {
 		return fmt.Errorf("%w: thing %q has attached principals", ErrDeleteConflict, thingName)
 	}
 
+	thingARN := arn.Build("iot", b.region, b.accountID, fmt.Sprintf("thing/%s", thingName))
+
 	b.things.Delete(thingName)
+	delete(b.resourceTags, thingARN)
+	delete(b.thingBillingGroups, thingName)
 
 	for _, exec := range b.jobExecutions.All() {
 		if exec.ThingName == thingName {

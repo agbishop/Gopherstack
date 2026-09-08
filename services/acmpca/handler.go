@@ -264,6 +264,8 @@ func (h *Handler) handleOpError(c *echo.Context, action string, opErr error) err
 		code = "PermissionAlreadyExistsException"
 	case errors.Is(opErr, ErrTooManyTags):
 		code = "TooManyTagsException"
+	case errors.Is(opErr, ErrRequestAlreadyProcessed):
+		code = "RequestAlreadyProcessedException"
 	default:
 		code = "InternalFailure"
 		statusCode = http.StatusInternalServerError

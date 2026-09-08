@@ -115,6 +115,10 @@ func (b *InMemoryBackend) CreateListener(input CreateListenerInput) (*Listener, 
 		return nil, err
 	}
 
+	if err := b.validateCertificates(input.Certificates); err != nil {
+		return nil, err
+	}
+
 	if err := b.validateForwardTargetGroupsExist(input.DefaultActions); err != nil {
 		return nil, err
 	}
@@ -158,6 +162,7 @@ func (b *InMemoryBackend) CreateListener(input CreateListenerInput) (*Listener, 
 	}
 
 	b.listeners.Put(listener)
+	b.markCertificatesInUse(listenerArn, input.Certificates)
 
 	// Auto-create default rule (AWS behaviour: every listener has a default rule).
 	defaultRuleArn := b.ruleARN(listenerArn, priorityDefault)
@@ -312,6 +317,7 @@ func (b *InMemoryBackend) DeleteListener(listenerArn string) error {
 		b.rules.Delete(r.RuleArn)
 	}
 
+	b.unmarkCertificatesInUse(listenerArn, listener.Certificates)
 	listener.Tags.Close()
 	b.listeners.Delete(listenerArn)
 
@@ -350,7 +356,14 @@ func (b *InMemoryBackend) ModifyListener(input ModifyListenerInput) (*Listener, 
 	}
 
 	if len(input.Certificates) > 0 {
+		if err := b.validateCertificates(input.Certificates); err != nil {
+			return nil, err
+		}
+
+		oldCerts := l.Certificates
 		l.Certificates = input.Certificates
+		b.unmarkCertificatesInUse(input.ListenerArn, oldCerts)
+		b.markCertificatesInUse(input.ListenerArn, input.Certificates)
 	}
 
 	if input.SSLPolicy != "" {

@@ -107,6 +107,36 @@ func TestInMemoryBackend_CreateApplicationVersion_RequiresApplication(t *testing
 	})
 }
 
+// TestInMemoryBackend_DeleteApplicationVersion_RefusesRunningEnvironment locks
+// real AWS's DeleteApplicationVersion doc comment: "You cannot delete an
+// application version that is associated with a running environment".
+func TestInMemoryBackend_DeleteApplicationVersion_RefusesRunningEnvironment(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	b := newTestBackend()
+
+	_, err := b.CreateApplication(ctx, "eb-app", "", nil)
+	require.NoError(t, err)
+	_, err = b.CreateApplicationVersion(ctx, "eb-app", "v1", "", "", "", nil)
+	require.NoError(t, err)
+	_, err = b.CreateEnvironment(ctx, "eb-app", "eb-env", "", "", nil,
+		elasticbeanstalk.CreateEnvironmentParams{VersionLabel: "v1"})
+	require.NoError(t, err)
+
+	err = b.DeleteApplicationVersion(ctx, "eb-app", "v1")
+	require.Error(t, err)
+	require.ErrorIs(t, err, awserr.ErrInvalidParameter)
+
+	vers := b.DescribeApplicationVersions(ctx, "eb-app", nil)
+	require.Len(t, vers, 1, "version must survive a refused delete")
+
+	_, err = b.TerminateEnvironment(ctx, "eb-app", "eb-env")
+	require.NoError(t, err)
+
+	require.NoError(t, b.DeleteApplicationVersion(ctx, "eb-app", "v1"))
+}
+
 // TestInMemoryBackend_UpdateApplicationVersion_BumpsDateUpdated verifies that
 // UpdateApplicationVersion advances DateUpdated on every mutation, not just at
 // creation time.

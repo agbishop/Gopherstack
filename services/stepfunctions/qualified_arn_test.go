@@ -173,6 +173,81 @@ func TestDescribeStateMachine_VersionQualifiedARN(t *testing.T) {
 	assert.Equal(t, sm.Name, described.Name)
 }
 
+// TestUpdateStateMachineAlias_EmptyRoutingLeavesConfigUnchanged verifies
+// that passing an empty RoutingConfiguration to UpdateStateMachineAlias
+// leaves the alias's existing (already-validated) routing untouched rather
+// than clearing it -- see aliases.go's UpdateStateMachineAlias, which only
+// calls validateRoutingConfig (and assigns) when len(routing) > 0. This is
+// one of two ways gopherstack-t8iz asked to be ruled out as a path to an
+// alias with an empty RoutingConfiguration (the other is persistence
+// restore, covered by TestAliasRoutingConfiguration_NotPersistedAcrossRestore).
+func TestUpdateStateMachineAlias_EmptyRoutingLeavesConfigUnchanged(t *testing.T) {
+	t.Parallel()
+
+	b := stepfunctions.NewInMemoryBackend()
+	sm, err := b.CreateStateMachine(
+		context.Background(), "empty-routing-update-sm", minimalDefinition, validRoleARN, "STANDARD",
+	)
+	require.NoError(t, err)
+
+	v1, err := b.PublishStateMachineVersion(sm.StateMachineArn, "v1", "")
+	require.NoError(t, err)
+
+	alias, err := b.CreateStateMachineAlias(sm.StateMachineArn, "live", "", []stepfunctions.AliasRoutingConfig{
+		{StateMachineVersionArn: v1.StateMachineVersionArn, Weight: 100},
+	})
+	require.NoError(t, err)
+
+	updated, err := b.UpdateStateMachineAlias(
+		alias.StateMachineAliasArn, "new-desc", []stepfunctions.AliasRoutingConfig{},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, alias.RoutingConfiguration, updated.RoutingConfiguration,
+		"empty routing on update must leave the existing routing config unchanged, never clear it")
+	assert.NotEmpty(t, updated.RoutingConfiguration)
+
+	// Confirm resolveExecutionTarget (via StartExecution) still resolves
+	// through the alias afterward -- the routing config was never cleared.
+	exec, err := b.StartExecution(alias.StateMachineAliasArn, "post-update-exec", "{}")
+	require.NoError(t, err)
+	assert.Equal(t, v1.StateMachineVersionArn, exec.StateMachineVersionArn)
+}
+
+// TestAliasRoutingConfiguration_NotPersistedAcrossRestore verifies that
+// Restore cannot reintroduce a StateMachineAlias at all, let alone one with
+// an empty RoutingConfiguration: persistence.go's newPersistedDTORegistry
+// only registers stateMachines, activities, and executions, so aliases are
+// never part of backendSnapshot. This rules out the snapshot/restore path
+// as a way to construct the alias pickRoutedVersion (qualified_arn.go)
+// guards against -- see gopherstack-t8iz.
+func TestAliasRoutingConfiguration_NotPersistedAcrossRestore(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	original := stepfunctions.NewInMemoryBackend()
+	sm, err := original.CreateStateMachine(ctx, "restore-alias-sm", minimalDefinition, validRoleARN, "STANDARD")
+	require.NoError(t, err)
+
+	v1, err := original.PublishStateMachineVersion(sm.StateMachineArn, "v1", "")
+	require.NoError(t, err)
+
+	alias, err := original.CreateStateMachineAlias(sm.StateMachineArn, "live", "", []stepfunctions.AliasRoutingConfig{
+		{StateMachineVersionArn: v1.StateMachineVersionArn, Weight: 100},
+	})
+	require.NoError(t, err)
+
+	snap := original.Snapshot(ctx)
+	require.NotNil(t, snap)
+
+	fresh := stepfunctions.NewInMemoryBackend()
+	require.NoError(t, fresh.Restore(ctx, snap))
+
+	_, err = fresh.DescribeStateMachineAlias(alias.StateMachineAliasArn)
+	require.ErrorIs(t, err, stepfunctions.ErrStateMachineAliasDoesNotExist,
+		"aliases are not part of backendSnapshot, so restore must not resurrect one -- "+
+			"with or without routing config")
+}
+
 // TestUpdateStateMachine_RevisionIDChangesPerUpdate verifies that every
 // UpdateStateMachine call produces a fresh opaque RevisionId, and that a
 // freshly-created (never updated) state machine has none.

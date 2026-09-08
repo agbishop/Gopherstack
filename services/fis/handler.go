@@ -138,6 +138,11 @@ func (h *Handler) SetActionProviders(providers []service.FISActionProvider) {
 	h.Backend.SetActionProviders(providers)
 }
 
+// SetAlarmStateSubscriber registers the CloudWatch alarm-state-change hook with the backend.
+func (h *Handler) SetAlarmStateSubscriber(sub AlarmStateSubscriber) {
+	h.Backend.SetAlarmStateSubscriber(sub)
+}
+
 // Name returns the service name.
 func (h *Handler) Name() string { return "FIS" }
 

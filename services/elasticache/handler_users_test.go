@@ -12,15 +12,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestHandler_DeleteUser_RejectsWhenInGroup(t *testing.T) {
+func TestHandler_DeleteUser(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		wantErrMsg string
-		setup      func(t *testing.T, client *elasticachesdk.Client)
-		userID     string
-		wantErr    bool
+		setup   func(t *testing.T, client *elasticachesdk.Client)
+		name    string
+		userID  string
+		wantErr bool
 	}{
 		{
 			name:   "user_not_in_group_succeeds",
@@ -38,9 +37,11 @@ func TestHandler_DeleteUser_RejectsWhenInGroup(t *testing.T) {
 			},
 		},
 		{
-			name:    "user_in_group_rejected",
-			userID:  "grouped-user",
-			wantErr: true,
+			// api_op_DeleteUser.go: "The user will be removed from all user
+			// groups and in turn removed from all replication groups" --
+			// membership in a group does not block DeleteUser, it cascades.
+			name:   "user_in_group_succeeds",
+			userID: "grouped-user",
 			setup: func(t *testing.T, client *elasticachesdk.Client) {
 				t.Helper()
 				_, err := client.CreateUser(t.Context(), &elasticachesdk.CreateUserInput{
@@ -91,6 +92,43 @@ func TestHandler_DeleteUser_RejectsWhenInGroup(t *testing.T) {
 			assert.Equal(t, tt.userID, aws.ToString(out.UserId))
 		})
 	}
+}
+
+// TestHandler_DeleteUser_CascadesFromUserGroup locks the cascade side of
+// DeleteUser via a real SDK round trip: the deleted user must no longer
+// appear in a user group's UserIds on a subsequent DescribeUserGroups.
+func TestHandler_DeleteUser_CascadesFromUserGroup(t *testing.T) {
+	t.Parallel()
+
+	client := newTestStack(t)
+
+	_, err := client.CreateUser(t.Context(), &elasticachesdk.CreateUserInput{
+		UserId:             aws.String("cascade-user"),
+		UserName:           aws.String("cascade-user"),
+		Engine:             aws.String("redis"),
+		AccessString:       aws.String("on ~* +@all"),
+		NoPasswordRequired: aws.Bool(true),
+	})
+	require.NoError(t, err)
+
+	_, err = client.CreateUserGroup(t.Context(), &elasticachesdk.CreateUserGroupInput{
+		UserGroupId: aws.String("cascade-group"),
+		Engine:      aws.String("redis"),
+		UserIds:     []string{"cascade-user"},
+	})
+	require.NoError(t, err)
+
+	_, err = client.DeleteUser(t.Context(), &elasticachesdk.DeleteUserInput{
+		UserId: aws.String("cascade-user"),
+	})
+	require.NoError(t, err)
+
+	out, err := client.DescribeUserGroups(t.Context(), &elasticachesdk.DescribeUserGroupsInput{
+		UserGroupId: aws.String("cascade-group"),
+	})
+	require.NoError(t, err)
+	require.Len(t, out.UserGroups, 1)
+	assert.NotContains(t, out.UserGroups[0].UserIds, "cascade-user")
 }
 
 // ----------------------------------------

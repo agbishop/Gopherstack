@@ -332,7 +332,6 @@ type backendIndexes struct {
 	originAccessControlByName         map[string]string
 	responseHeadersPolicyByName       map[string]string
 	originRequestPolicyByName         map[string]string
-	fieldLevelEncryptionByName        map[string]string
 	fieldLevelEncryptionProfileByName map[string]string
 	publicKeyByName                   map[string]string
 	keyGroupByName                    map[string]string
@@ -419,11 +418,10 @@ func rebuildNameIndexes(snap *backendSnapshot) backendIndexes {
 		orpByName[p.Name] = p.ID
 	}
 
-	fleByName := make(map[string]string)
-	for _, fle := range tableFrom[FieldLevelEncryption](snap, "fieldLevelEncryptions") {
-		fleByName[fle.Name] = fle.ID
-	}
-
+	// FieldLevelEncryption has no name index to rebuild here -- two configs may share a
+	// CallerReference (gopherstack-kpk5), so CreateFieldLevelEncryption's collision check
+	// scans fieldLevelEncryptions directly instead of a unique name->ID map
+	// (gopherstack-lt9v).
 	flePByName := make(map[string]string)
 	for _, p := range tableFrom[FieldLevelEncryptionProfile](snap, "fieldLevelEncryptionProfiles") {
 		flePByName[p.Name] = p.ID
@@ -459,7 +457,6 @@ func rebuildNameIndexes(snap *backendSnapshot) backendIndexes {
 		originAccessControlByName:         oacByName,
 		responseHeadersPolicyByName:       rhpByName,
 		originRequestPolicyByName:         orpByName,
-		fieldLevelEncryptionByName:        fleByName,
 		fieldLevelEncryptionProfileByName: flePByName,
 		publicKeyByName:                   pkByName,
 		keyGroupByName:                    kgByName,
@@ -569,7 +566,6 @@ func (b *InMemoryBackend) restoreIndexes(idx *backendIndexes) {
 	b.originAccessControlByName = idx.originAccessControlByName
 	b.responseHeadersPolicyByName = idx.responseHeadersPolicyByName
 	b.originRequestPolicyByName = idx.originRequestPolicyByName
-	b.fieldLevelEncryptionByName = idx.fieldLevelEncryptionByName
 	b.fieldLevelEncryptionProfileByName = idx.fieldLevelEncryptionProfileByName
 	b.publicKeyByName = idx.publicKeyByName
 	b.keyGroupByName = idx.keyGroupByName

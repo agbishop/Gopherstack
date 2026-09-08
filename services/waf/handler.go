@@ -161,6 +161,8 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err 
 		code, status = errReferencedItem, http.StatusBadRequest
 	case errors.Is(err, ErrNonEmptyEntity):
 		code, status = errNonEmptyEntity, http.StatusBadRequest
+	case errors.Is(err, ErrInvalidOperation):
+		code, status = errInvalidOperation, http.StatusBadRequest
 	}
 
 	return c.JSON(status, service.JSONErrorResponse{Type: code, Message: err.Error()})

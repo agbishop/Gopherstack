@@ -132,15 +132,32 @@ func (b *InMemoryBackend) SendEmail(in SendEmailInput) (string, error) {
 		)
 	}
 
+	msgID, email, targets, err := b.sendEmailLocked(in)
+	if err != nil {
+		return "", err
+	}
+
+	b.publishEmailNotifications(email, targets)
+
+	return msgID, nil
+}
+
+// sendEmailLocked performs the locked portion of SendEmail -- precondition
+// checks, message construction, and appending to the email store -- and
+// collects the SNS notification targets for the send's outcome. The caller
+// publishes to those targets after the lock is released (see
+// publishEmailNotifications), matching cloudwatch's alarmActionDeps pattern
+// of not holding the backend lock across an outbound SNS call.
+func (b *InMemoryBackend) sendEmailLocked(in SendEmailInput) (string, Email, sesNotificationTargets, error) {
 	b.mu.Lock("SendEmail")
 	defer b.mu.Unlock()
 
 	if err := b.checkSendingAllowedLocked(in.ConfigurationSetName); err != nil {
-		return "", err
+		return "", Email{}, sesNotificationTargets{}, err
 	}
 
 	if !b.isVerifiedLocked(in.From) {
-		return "", fmt.Errorf(
+		return "", Email{}, sesNotificationTargets{}, fmt.Errorf(
 			"%w: Email address is not verified. The following identities failed the check in region %s: %s",
 			ErrMessageRejected, strings.ToUpper(b.region), in.From,
 		)
@@ -149,7 +166,7 @@ func (b *InMemoryBackend) SendEmail(in SendEmailInput) (string, error) {
 	msgID := "ses-" + uuid.New().String()
 	bounced, complained := classifySimulatedRecipients(allRecipients(in.To, in.Cc, in.Bcc))
 
-	b.appendEmailLocked(Email{
+	email := Email{
 		MessageID:            msgID,
 		From:                 in.From,
 		To:                   in.To,
@@ -167,9 +184,12 @@ func (b *InMemoryBackend) SendEmail(in SendEmailInput) (string, error) {
 		Timestamp:            time.Now(),
 		Bounced:              bounced,
 		Complained:           complained,
-	})
+	}
+	b.appendEmailLocked(email)
 
-	return msgID, nil
+	targets := b.collectNotificationTargetsLocked(in.From, in.ConfigurationSetName, bounced, complained)
+
+	return msgID, email, targets, nil
 }
 
 // SendTemplatedEmail sends an email using a stored template and returns the message ID.
@@ -194,15 +214,31 @@ func (b *InMemoryBackend) SendTemplatedEmail(in SendTemplatedEmailInput) (string
 		)
 	}
 
+	msgID, email, targets, err := b.sendTemplatedEmailLocked(in, vars)
+	if err != nil {
+		return "", err
+	}
+
+	b.publishEmailNotifications(email, targets)
+
+	return msgID, nil
+}
+
+// sendTemplatedEmailLocked is SendTemplatedEmail's locked portion -- see
+// sendEmailLocked's doc comment for why notification publishing happens
+// after this returns, unlocked.
+func (b *InMemoryBackend) sendTemplatedEmailLocked(
+	in SendTemplatedEmailInput, vars map[string]string,
+) (string, Email, sesNotificationTargets, error) {
 	b.mu.Lock("SendTemplatedEmail")
 	defer b.mu.Unlock()
 
 	if sendErr := b.checkSendingAllowedLocked(in.ConfigurationSetName); sendErr != nil {
-		return "", sendErr
+		return "", Email{}, sesNotificationTargets{}, sendErr
 	}
 
 	if !b.isVerifiedLocked(in.From) {
-		return "", fmt.Errorf(
+		return "", Email{}, sesNotificationTargets{}, fmt.Errorf(
 			"%w: Email address is not verified. The following identities failed the check in region %s: %s",
 			ErrMessageRejected, strings.ToUpper(b.region), in.From,
 		)
@@ -210,13 +246,13 @@ func (b *InMemoryBackend) SendTemplatedEmail(in SendTemplatedEmailInput) (string
 
 	tmpl, ok := b.templates.Get(in.TemplateName)
 	if !ok {
-		return "", fmt.Errorf("%w: %s", ErrTemplateNotFound, in.TemplateName)
+		return "", Email{}, sesNotificationTargets{}, fmt.Errorf("%w: %s", ErrTemplateNotFound, in.TemplateName)
 	}
 
 	msgID := "ses-" + uuid.New().String()
 	bounced, complained := classifySimulatedRecipients(allRecipients(in.To, in.Cc, in.Bcc))
 
-	b.appendEmailLocked(Email{
+	email := Email{
 		MessageID:            msgID,
 		From:                 in.From,
 		To:                   in.To,
@@ -234,9 +270,12 @@ func (b *InMemoryBackend) SendTemplatedEmail(in SendTemplatedEmailInput) (string
 		Timestamp:            time.Now(),
 		Bounced:              bounced,
 		Complained:           complained,
-	})
+	}
+	b.appendEmailLocked(email)
 
-	return msgID, nil
+	targets := b.collectNotificationTargetsLocked(in.From, in.ConfigurationSetName, bounced, complained)
+
+	return msgID, email, targets, nil
 }
 
 // ListEmails returns a copy of all captured emails.

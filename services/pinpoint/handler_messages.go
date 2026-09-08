@@ -18,6 +18,10 @@ func (h *Handler) handleSendMessages(c *echo.Context, appID string) error {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	var req sendMessagesRequest
 	if jsonErr := json.Unmarshal(body, &req); jsonErr != nil {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "invalid request body")
@@ -44,6 +48,10 @@ func (h *Handler) handleSendUsersMessages(c *echo.Context, appID string) error {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	var req sendUsersMessagesRequest
 	if len(body) > 0 {
 		if jsonErr := json.Unmarshal(body, &req); jsonErr != nil {
@@ -67,7 +75,11 @@ func (h *Handler) handleSendUsersMessages(c *echo.Context, appID string) error {
 
 // handleSendOTPMessage handles POST /v1/apps/{appId}/otp.
 func (h *Handler) handleSendOTPMessage(c *echo.Context, appID string) error {
-	_, _ = httputils.ReadBody(c.Request())
+	body, _ := httputils.ReadBody(c.Request())
+
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
 
 	resp, err := h.Backend.SendOTPMessage(appID)
 	if err != nil {
@@ -86,6 +98,10 @@ func (h *Handler) handleSendOTPMessage(c *echo.Context, appID string) error {
 // handleVerifyOTPMessage handles POST /v1/apps/{appId}/verify-otp.
 func (h *Handler) handleVerifyOTPMessage(c *echo.Context, appID string) error {
 	body, _ := httputils.ReadBody(c.Request())
+
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
 
 	var req verifyOTPMessageRequest
 	if len(body) > 0 {
@@ -113,6 +129,10 @@ func (h *Handler) handlePhoneNumberValidate(c *echo.Context) error {
 	body, err := httputils.ReadBody(c.Request())
 	if err != nil {
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
+	}
+
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
 	}
 
 	var req phoneNumberValidateRequest

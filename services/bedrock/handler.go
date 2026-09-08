@@ -612,6 +612,8 @@ func (h *Handler) writeError(c *echo.Context, err error) error {
 		return c.JSON(http.StatusConflict, errorResponse("ConflictException", err.Error()))
 	case errors.Is(err, ErrValidation):
 		return c.JSON(http.StatusBadRequest, errorResponse("ValidationException", err.Error()))
+	case errors.Is(err, ErrResourceInUse):
+		return c.JSON(http.StatusConflict, errorResponse("ResourceInUseException", err.Error()))
 	default:
 		return c.JSON(http.StatusInternalServerError, errorResponse("InternalServerException", err.Error()))
 	}

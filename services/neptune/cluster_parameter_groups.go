@@ -129,6 +129,16 @@ func (b *InMemoryBackend) DeleteDBClusterParameterGroup(ctx context.Context, nam
 			name,
 		)
 	}
+	for _, c := range b.clustersInRegion(region) {
+		if c.DBClusterParameterGroupName == name {
+			return fmt.Errorf(
+				"%w: cluster parameter group %s is used by cluster %s",
+				ErrParameterGroupInUse,
+				name,
+				c.DBClusterIdentifier,
+			)
+		}
+	}
 	b.clusterParameterGroupDelete(region, name)
 	delete(b.tagsStore(region), b.clusterParameterGroupARN(region, name))
 	delete(b.clusterParameterOverrides, regionKey(region, name))

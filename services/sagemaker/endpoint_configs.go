@@ -15,6 +15,8 @@ var (
 	ErrEndpointConfigNotFound = awserr.New("ValidationException", awserr.ErrNotFound)
 	// ErrEndpointConfigAlreadyExists is returned when an endpoint config already exists.
 	ErrEndpointConfigAlreadyExists = awserr.New("ResourceInUse", awserr.ErrConflict)
+	// ErrEndpointConfigInUse is returned when deleting an endpoint config still used by an endpoint.
+	ErrEndpointConfigInUse = awserr.New("ResourceInUse", awserr.ErrConflict)
 )
 
 // CreateEndpointConfig creates a new SageMaker endpoint configuration.
@@ -111,6 +113,17 @@ func (b *InMemoryBackend) DeleteEndpointConfig(ctx context.Context, name string)
 			ErrEndpointConfigNotFound,
 			name,
 		)
+	}
+
+	for _, ep := range b.endpointsStore(region).All() {
+		if ep.EndpointConfigName == name {
+			return fmt.Errorf(
+				"%w: endpoint configuration %q is in use by endpoint %q",
+				ErrEndpointConfigInUse,
+				name,
+				ep.EndpointName,
+			)
+		}
 	}
 
 	arnIndex := b.endpointConfigARNIndexStore(region)

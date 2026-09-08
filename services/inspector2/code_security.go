@@ -392,9 +392,9 @@ func (b *InMemoryBackend) StartCodeSecurityScan(resourceID string) (map[string]a
 
 	scanID := uuid.New().String()
 	scan := map[string]any{
-		"scanId":     scanID,
-		"resourceId": resourceID,
-		keyStatus:    codeScanStatusInProgress,
+		"scanId":      scanID,
+		keyResourceID: resourceID,
+		keyStatus:     codeScanStatusInProgress,
 	}
 	b.codeSecurityScans[scanID] = scan
 

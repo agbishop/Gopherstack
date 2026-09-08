@@ -513,7 +513,9 @@ func (b *InMemoryBackend) recordFailedRecords(region, streamName string, n int) 
 // logDeliveryIssue emits a delivery error to the logger, honouring the destination's
 // CloudWatch logging options: when logging is enabled the configured log group/stream are
 // attached so operators can correlate the failure, matching the CloudWatch error log that
-// Firehose writes for failed deliveries.
+// Firehose writes for failed deliveries. When CloudWatch Logs has been wired in (see
+// SetCWLogsBackend), the same event is also delivered there; when it hasn't, this stays a
+// local-log-only no-op rather than failing the flush.
 func (b *InMemoryBackend) logDeliveryIssue(
 	ctx context.Context,
 	cwLog *CloudWatchLoggingOptions,
@@ -523,9 +525,26 @@ func (b *InMemoryBackend) logDeliveryIssue(
 	attrs := []any{"stream", streamName, "error", err}
 	if cwLog != nil && cwLog.Enabled {
 		attrs = append(attrs, "logGroup", cwLog.LogGroupName, "logStream", cwLog.LogStreamName)
+		b.deliverCWLogEvent(cwLog, streamName, msg, err)
 	}
 
 	logger.Load(ctx).WarnContext(ctx, "firehose: "+msg, attrs...)
+}
+
+// deliverCWLogEvent writes a delivery-failure event to the destination's configured
+// CloudWatch Logs group/stream. A no-op when CloudWatch Logs has not been wired in, or when
+// the destination didn't specify a log group/stream despite Enabled being set.
+func (b *InMemoryBackend) deliverCWLogEvent(cwLog *CloudWatchLoggingOptions, streamName, msg string, err error) {
+	if b.cwLogs == nil || cwLog.LogGroupName == "" || cwLog.LogStreamName == "" {
+		return
+	}
+
+	if ensureErr := b.cwLogs.EnsureLogGroupAndStream(cwLog.LogGroupName, cwLog.LogStreamName); ensureErr != nil {
+		return
+	}
+
+	line := fmt.Sprintf("firehose: %s (stream=%s): %v", msg, streamName, err)
+	_ = b.cwLogs.PutLogLines(cwLog.LogGroupName, cwLog.LogStreamName, []string{line})
 }
 
 // flushStream delivers all buffered records for a stream to S3.

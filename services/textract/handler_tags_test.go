@@ -199,6 +199,15 @@ func TestHandler_TagResource_AdapterVersionARN(t *testing.T) {
 
 	createVersionRec := doTextractRequest(t, h, "CreateAdapterVersion", map[string]any{
 		"AdapterId": adapterID,
+		"DatasetConfig": map[string]any{
+			"ManifestS3Object": map[string]any{
+				"Bucket": "test-dataset-bucket",
+				"Name":   "manifest.json",
+			},
+		},
+		"OutputConfig": map[string]any{
+			"S3Bucket": "test-output-bucket",
+		},
 	})
 	require.Equal(t, http.StatusOK, createVersionRec.Code)
 

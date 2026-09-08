@@ -158,33 +158,32 @@ func (r *historyRecorder) RecordTaskFailed(
 	})
 }
 
+// resourceTypeFromResource derives AWS's TaskScheduled/TaskSucceeded/TaskFailed
+// ResourceType from a Task state's Resource ARN: for a direct-service ARN
+// (e.g. "arn:aws:lambda:...:function:fn") it's that ARN's own service; for a
+// States service-integration ARN ("arn:aws:states:::sqs:sendMessage", optionally
+// "arn:aws:states:::aws-sdk:sqs:sendMessage") it's the integration's service
+// name; for an activity ARN it's "activity".
 func resourceTypeFromResource(resource string) string {
-	if resource == "" {
+	parts := strings.Split(resource, ":")
+	if len(parts) < 6 || parts[0] != "arn" {
 		return ""
 	}
-	if strings.Contains(resource, ":activity:") {
-		return "activity"
-	}
-	if strings.Contains(resource, ":lambda:") || strings.Contains(resource, ":::lambda:") {
-		return "lambda"
-	}
-	if strings.Contains(resource, ":sqs:") || strings.Contains(resource, ":::sqs:") {
-		return "sqs"
-	}
-	if strings.Contains(resource, ":sns:") || strings.Contains(resource, ":::sns:") {
-		return "sns"
-	}
-	if strings.Contains(resource, ":dynamodb:") || strings.Contains(resource, ":::dynamodb:") {
-		return "dynamodb"
-	}
-	if strings.Contains(resource, ":s3:") || strings.Contains(resource, ":::s3:") {
-		return "s3"
-	}
-	if strings.Contains(resource, ":states:") {
-		return "stepfunctions"
+
+	service := parts[2]
+	if service != "states" {
+		return service
 	}
 
-	return "lambda"
+	if parts[5] == "activity" {
+		return "activity"
+	}
+
+	if parts[5] == "aws-sdk" && len(parts) > 6 {
+		return parts[6]
+	}
+
+	return parts[5]
 }
 
 // historyValueToJSON marshals a state input/output value to its JSON string

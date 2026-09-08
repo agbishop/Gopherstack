@@ -3,6 +3,7 @@ package cloudformation
 import (
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -275,7 +276,12 @@ func (h *Handler) handleRegisterType(form url.Values, c *echo.Context) error {
 }
 
 func (h *Handler) handleDeregisterType(form url.Values, c *echo.Context) error {
-	if err := h.Backend.DeregisterType(form.Get("Arn")); err != nil {
+	err := h.Backend.DeregisterType(form.Get("TypeName"), form.Get("Arn"), form.Get("VersionId"))
+	if err != nil {
+		if errors.Is(err, ErrCannotDeregisterDefaultVersion) {
+			return h.xmlError(c, "CFNRegistryException", err.Error())
+		}
+
 		return h.xmlError(c, "TypeNotFoundException", err.Error())
 	}
 	type result struct{}
@@ -444,7 +450,7 @@ func (h *Handler) handleListTypes(_ url.Values, c *echo.Context) error {
 }
 
 func (h *Handler) handleListTypeVersions(form url.Values, c *echo.Context) error {
-	versionIDs, err := h.Backend.ListTypeVersions(form.Get("TypeName"), form.Get("Type"))
+	versionIDs, err := h.Backend.ListTypeVersions(form.Get("TypeName"), form.Get("DeprecatedStatus"))
 	if err != nil {
 		return h.xmlError(c, "CFNRegistryException", err.Error())
 	}

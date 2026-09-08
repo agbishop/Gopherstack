@@ -14,6 +14,25 @@ func (b *InMemoryBackend) findingsFilterARN(id string) string {
 	return arn.Build("macie2", b.region, b.accountID, fmt.Sprintf("findings-filter/%s", id))
 }
 
+// filterActionArchive is FindingsFilterAction's ARCHIVE value: "suppress (automatically
+// archive) the findings" that match the filter criteria.
+const filterActionArchive = "ARCHIVE"
+
+// matchesArchiveFilter reports whether any ARCHIVE-action findings filter matches f.
+// CreateFindingsFilter's Action was previously stored and echoed back but never applied --
+// CreateSampleFindings is this backend's only finding-creation path, so it is the only
+// place Action can take effect. Mirrors guardduty's identical fix (matchesArchiveFilter in
+// services/guardduty/filters.go). Caller must already hold b.mu.
+func (b *InMemoryBackend) matchesArchiveFilter(f *storedFinding) bool {
+	for _, ff := range b.findingsFilters.All() {
+		if ff.Action == filterActionArchive && matchesFindingCriteria(f, ff.FindingCriteria) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // CreateFindingsFilter creates a new findings filter.
 func (b *InMemoryBackend) CreateFindingsFilter(
 	name, description, action string,
@@ -32,16 +51,14 @@ func (b *InMemoryBackend) CreateFindingsFilter(
 	}
 
 	ff := &storedFindingsFilter{
-		FindingsFilterDetail: FindingsFilterDetail{
-			ID:              id,
-			Arn:             b.findingsFilterARN(id),
-			Name:            name,
-			Description:     description,
-			Action:          action,
-			Position:        pos,
-			FindingCriteria: criteria,
-			Tags:            maps.Clone(tags),
-		},
+		ID:              id,
+		Arn:             b.findingsFilterARN(id),
+		Name:            name,
+		Description:     description,
+		Action:          action,
+		Position:        pos,
+		FindingCriteria: criteria,
+		Tags:            maps.Clone(tags),
 	}
 
 	b.findingsFilters.Put(ff)
@@ -127,6 +144,7 @@ func (b *InMemoryBackend) DeleteFindingsFilter(id string) error {
 	if !b.findingsFilters.Delete(id) {
 		return ErrFindingsFilterNotFound
 	}
+	delete(b.tags, b.findingsFilterARN(id))
 
 	return nil
 }

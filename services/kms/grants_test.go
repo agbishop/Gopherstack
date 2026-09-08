@@ -88,6 +88,39 @@ func TestGrantToken_JustExpired_Boundary(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestGrantToken_OperationNotPermitted_Rejected(t *testing.T) {
+	t.Parallel()
+	b := newBackend(t)
+	keyID := mustCreateSymKey(t, b)
+
+	// Grant only permits Decrypt.
+	gOut, err := b.CreateGrant(context.Background(), &kms.CreateGrantInput{
+		KeyID:            keyID,
+		GranteePrincipal: "arn:aws:iam::123456789012:role/TestRole",
+		Operations:       []string{"Decrypt"},
+	})
+	require.NoError(t, err)
+
+	// Using the token to authorize Encrypt (not in the grant's Operations) must fail.
+	_, err = b.Encrypt(context.Background(), &kms.EncryptInput{
+		KeyID:       keyID,
+		Plaintext:   []byte("hello"),
+		GrantTokens: []string{gOut.GrantToken},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AccessDeniedException")
+
+	// The same token still works for the operation it does permit.
+	enc, err := b.Encrypt(context.Background(), &kms.EncryptInput{KeyID: keyID, Plaintext: []byte("hello")})
+	require.NoError(t, err)
+
+	_, err = b.Decrypt(context.Background(), &kms.DecryptInput{
+		CiphertextBlob: enc.CiphertextBlob,
+		GrantTokens:    []string{gOut.GrantToken},
+	})
+	require.NoError(t, err)
+}
+
 func TestGrantToken_NotFound_Rejected(t *testing.T) {
 	t.Parallel()
 	b := newBackend(t)

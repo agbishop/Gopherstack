@@ -80,9 +80,13 @@ func (b *InMemoryBackend) DescribeRepositoryCreationTemplates(
 		}
 	} else {
 		for _, prefix := range prefixes {
+			// Real DescribeRepositoryCreationTemplates declares no
+			// TemplateNotFoundException (per deserializeOpErrorDescribeRepositoryCreationTemplates,
+			// unlike DeleteRepositoryCreationTemplate/UpdateRepositoryCreationTemplate) --
+			// an unmatched prefix is silently omitted, not an error.
 			tmpl, ok := b.repositoryCreationTemplates.Get(prefix)
 			if !ok {
-				return nil, fmt.Errorf("%w: %s", ErrRepositoryCreationTemplateNotFound, prefix)
+				continue
 			}
 
 			out = append(out, copyRepositoryCreationTemplate(tmpl))

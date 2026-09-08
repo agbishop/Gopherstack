@@ -370,6 +370,41 @@ func TestUnarchiveFindings_UpdatesTimestamp(t *testing.T) {
 	}
 }
 
+// TestCreateSampleFindings_AppliesArchiveFilter verifies that a saved
+// filter's Action ("the action that is to be applied to the findings that
+// match the filter") is actually applied to findings, not merely stored and
+// echoed back on Get/List/Update -- CreateSampleFindings is this backend's
+// only finding-creation path, so it is the only place Action can ever take
+// effect.
+func TestCreateSampleFindings_AppliesArchiveFilter(t *testing.T) {
+	t.Parallel()
+
+	const findingType = "UnauthorizedAccess:IAMUser/ConsoleLoginSuccess.B"
+
+	b := guardduty.NewInMemoryBackend("111111111111", "us-east-1")
+	det, err := b.CreateDetector(true, "", nil, nil)
+	require.NoError(t, err)
+	detID := det.DetectorID
+
+	_, err = b.CreateFilter(detID, "archive-console-logins", "", "ARCHIVE", 1,
+		map[string]any{"criterion": map[string]any{
+			"type": map[string]any{"equals": []string{findingType}},
+		}}, nil)
+	require.NoError(t, err)
+
+	require.NoError(t, b.CreateSampleFindings(detID, []string{findingType}))
+
+	ids, _, err := b.ListFindings(detID, guardduty.FindingsQuery{})
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	findings, err := b.GetFindings(detID, ids)
+	require.NoError(t, err)
+	require.Len(t, findings, 1)
+	assert.True(t, findings[0].Service.Archived,
+		"a finding matching an ARCHIVE filter must be created already archived")
+}
+
 // TestGetFindingsStatistics_Handler verifies the HTTP layer returns
 // findingStatistics with numeric severity keys.
 func TestGetFindingsStatistics_Handler(t *testing.T) {

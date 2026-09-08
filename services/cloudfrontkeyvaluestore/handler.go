@@ -343,6 +343,9 @@ func (h *Handler) handlePutKey(c *echo.Context, kvs *cloudfrontbackend.KeyValueS
 	}
 
 	ifMatch := c.Request().Header.Get(ifMatchHeader)
+	if ok, ifMatchErr := requireIfMatch(c, ifMatch); !ok {
+		return ifMatchErr
+	}
 
 	newETag, putErr := h.Backend.PutKVSValue(kvs.ID, key, req.Value, ifMatch)
 	if putErr != nil {
@@ -360,6 +363,9 @@ func (h *Handler) handlePutKey(c *echo.Context, kvs *cloudfrontbackend.KeyValueS
 
 func (h *Handler) handleDeleteKey(c *echo.Context, kvs *cloudfrontbackend.KeyValueStore, key string) error {
 	ifMatch := c.Request().Header.Get(ifMatchHeader)
+	if ok, ifMatchErr := requireIfMatch(c, ifMatch); !ok {
+		return ifMatchErr
+	}
 
 	newETag, delErr := h.Backend.DeleteKVSValue(kvs.ID, key, ifMatch)
 	if delErr != nil {
@@ -424,6 +430,9 @@ func (h *Handler) handleUpdateKeys(c *echo.Context, kvs *cloudfrontbackend.KeyVa
 	}
 
 	ifMatch := c.Request().Header.Get(ifMatchHeader)
+	if ok, ifMatchErr := requireIfMatch(c, ifMatch); !ok {
+		return ifMatchErr
+	}
 
 	newETag, updateErr := h.Backend.UpdateKVSValues(kvs.ID, ifMatch, puts, deletes)
 	if updateErr != nil {
@@ -437,6 +446,24 @@ func (h *Handler) handleUpdateKeys(c *echo.Context, kvs *cloudfrontbackend.KeyVa
 	c.Response().Header().Set(etagHeader, newETag)
 
 	return writeJSON(c, mutateKeyOutput{ItemCount: itemCount, TotalSizeInBytes: totalBytes})
+}
+
+// requireIfMatch enforces IfMatch as a required input member on
+// PutKey/DeleteKey/UpdateKeys (validators.go's validateOp{PutKey,DeleteKey,
+// UpdateKeys}Input in cloudfrontkeyvaluestore@v1.15.4 -- each adds
+// smithy.NewErrParamRequired("IfMatch") when it's unset). Without this, an
+// absent If-Match header falls through to the backend's ETag comparison,
+// which treats "" as "skip the check" rather than "reject the request" --
+// silently bypassing the concurrency guard entirely. Returns false only
+// after already writing the ValidationException response.
+func requireIfMatch(c *echo.Context, ifMatch string) (bool, error) {
+	if ifMatch != "" {
+		return true, nil
+	}
+
+	status, exType := classifyError(errIfMatchRequired)
+
+	return false, writeAWSError(c, status, exType, errIfMatchRequired.Error())
 }
 
 // parseMaxResults validates the MaxResults query parameter against the real

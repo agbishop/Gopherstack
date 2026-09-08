@@ -47,8 +47,7 @@ func ensureStateMachine(ctx context.Context, cl *sfn.Client, roleArn string, log
 		return aws.ToString(out.StateMachineArn), nil
 	}
 
-	var exists *sfntypes.StateMachineAlreadyExists
-	if !errors.As(err, &exists) {
+	if _, ok := errors.AsType[*sfntypes.StateMachineAlreadyExists](err); !ok {
 		return "", fmt.Errorf("create state machine %s: %w", sfnStateMachineName, err)
 	}
 

@@ -38,6 +38,28 @@ func TestReset(t *testing.T) {
 	}
 }
 
+// TestReset_ArchiveDataCleared verifies that Reset() clears raw archive byte
+// payloads, not just the Archive metadata nested on Vault. Left unclear this
+// is also a memory-retention concern: archiveData holds actual archive
+// bytes, unbounded by vault/archive count once orphaned.
+func TestReset_ArchiveDataCleared(t *testing.T) {
+	t.Parallel()
+
+	b := glacier.NewInMemoryBackend()
+
+	_, err := b.CreateVault(testAccountID, testRegion, "vault-a")
+	require.NoError(t, err)
+
+	_, err = b.UploadArchive(testAccountID, testRegion, "vault-a", "desc", "", 5, []byte("hello"))
+	require.NoError(t, err)
+
+	require.Equal(t, 1, glacier.ArchiveDataCount(b), "sanity: archive bytes should be stored")
+
+	b.Reset()
+
+	assert.Equal(t, 0, glacier.ArchiveDataCount(b), "archiveData must be cleared by Reset")
+}
+
 // TestMultipleResetCycle verifies reset + repopulate + reset clears everything.
 func TestMultipleResetCycle(t *testing.T) {
 	t.Parallel()

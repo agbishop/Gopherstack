@@ -4,7 +4,50 @@ sdk_module: aws-sdk-go-v2/service/appconfig@v1.48.4    # version audited against
 last_audit_commit: f86ef17b                            # this pass (2026-08-13, gopherstack-xs7l) fixed the
                                                         # seven List-op Get-field leaks below; commit hash not
                                                         # yet known at edit time
-last_audit_date: 2026-08-29   # bd gopherstack-6flj/21my continuation: StartDeployment's Tags/
+last_audit_date: 2026-09-08   # bd gopherstack-z4v1: corrected a false claim from the 2026-09-07 pass
+                               # (bd gopherstack-kpvs) below. That pass concluded DeletionProtectionCheck
+                               # enforcement was structurally blocked because "no cross-service backend-lookup
+                               # pattern exists anywhere in this repo" -- that premise was wrong. The lazy
+                               # sibling pattern (a backend stores service.AppContext.Config via
+                               # SetAppConfig(ctx.Config) in Provider.Init, then type-asserts it to a narrow
+                               # siblingServices interface to reach another service's backend through *CLI's
+                               # Get<Service>Handler accessors) already existed and was already in production
+                               # use by six services (codedeploy, ec2, grafana, mgn, resiliencehub, guardduty)
+                               # at the time of that audit -- it was missed, not absent. This pass wired
+                               # appconfig to appconfigdata via that exact pattern (cross_service.go,
+                               # GetAppConfigDataHandler -- the same accessor wireAppConfigDeployments already
+                               # used for the appconfig -> appconfigdata publish bridge, bd gopherstack-uiyi)
+                               # and now ACTUALLY ENFORCES DeletionProtectionCheck on both DeleteEnvironment
+                               # and DeleteConfigurationProfile: APPLY forces the check (even against a
+                               # resource created within the past hour); ACCOUNT_DEFAULT runs it only when the
+                               # account has DeletionProtection.Enabled and the resource is older than an hour;
+                               # both block with ConflictException when AppConfigData recorded a
+                               # GetLatestConfiguration call for the resource within the configured
+                               # ProtectionPeriodInMinutes (default 60). ConfigurationProfile gained an
+                               # internal-only CreatedAt field (not on the wire -- see
+                               # configurationProfileToOutput) so its past-hour grace exclusion can be honored
+                               # the same way Environment's already-tracked CreatedAt is. See
+                               # deletion_protection.go, cross_service.go, deletion_protection_test.go, and
+                               # the deletion_protection_check note below (now FIXED, not a gap).
+                               # 2026-09-04 (prior pass) bd gopherstack-5pl: full ranked bug-pattern sweep (delete preconditions,
+                               # deployment state machine, deployment strategy numeric ranges, ghost rows,
+                               # referential integrity, inert config, fabricated values/unstable
+                               # sort/leaks) against all 6 Delete ops, the deployment strategy/validator
+                               # fields, and the appconfigdata cross-service boundary. One new, previously
+                               # undisclosed gap found and documented (not code-fixed at the time, see gaps
+                               # below): DeleteEnvironment/DeleteConfigurationProfile's DeletionProtectionCheck
+                               # header was entirely unread -- now fixed per the 2026-09-07 entry above.
+                               # Everything else re-checked this pass (all 6 Delete ops' modeled error
+                               # sets against deserializers.go, DeploymentDurationInMinutes/GrowthFactor/
+                               # FinalBakeTimeInMinutes -- confirmed the SDK's own validators.go models no
+                               # numeric range for any of them, only required-ness, so there is no range to
+                               # enforce; Validators -- SDK gives no documented trigger for when/how
+                               # JSON_SCHEMA/LAMBDA validators execute, so left unimplemented per the same
+                               # honesty rule; all 11 sort.Slice call sites' sort keys confirmed unique
+                               # (ID/VersionNumber/Run/DeploymentNumber/ExtensionAssociationID), so no
+                               # unstable-sort bug) came back clean -- confirmed, not merely re-asserted.
+                               # Stays A.
+                               # 2026-08-29 (prior pass) bd gopherstack-6flj/21my continuation: StartDeployment's Tags/
                                # KmsKeyIdentifier/LatestDeploymentNumber fixed (see overall/ops notes).
                                # prior pass 2026-08-15, bd gopherstack-6flj wrapper-key/discarded-input sweep: 4 real bugs fixed
                                # (ConfigurationProfile/Deployment.KmsKeyIdentifier discarded on input and
@@ -109,12 +152,12 @@ ops:
   GetEnvironment: {wire: ok, errors: ok, state: ok, persist: ok}
   ListEnvironments: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateEnvironment: {wire: ok, errors: ok, state: ok, persist: ok}
-  DeleteEnvironment: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED — same ExtensionAssociation + deployedConfigs cascade-cleanup as DeleteApplication."}
+  DeleteEnvironment: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED — same ExtensionAssociation + deployedConfigs cascade-cleanup as DeleteApplication. FIXED 2026-09-07 (bd gopherstack-kpvs): real DeleteEnvironmentInput.DeletionProtectionCheck (api_op_DeleteEnvironment.go, bound to the 'X-Amzn-Deletion-Protection-Check' request header per serializers.go:1268) was never read by this handler at all -- now parsed and validated against the types.DeletionProtectionCheck enum (BYPASS|APPLY|ACCOUNT_DEFAULT); an unrecognized value now gets BadRequestException instead of being silently accepted. FIXED 2026-09-08 (bd gopherstack-z4v1): the check is now actually enforced, not just validated -- see the deletion_protection_check note below."}
   CreateConfigurationProfile: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS (bd gopherstack-lcan): same inline-Tags-dropped bug/fix as CreateApplication. ALSO FIXED (bd gopherstack-6flj): real CreateConfigurationProfileInput.KmsKeyIdentifier (api_op_CreateConfigurationProfile.go) was silently discarded -- not bound in the request struct at all -- and never echoed on CreateConfigurationProfileOutput/GetConfigurationProfileOutput/UpdateConfigurationProfileOutput. A prior audit pass explicitly considered this and concluded 'no honest value to put here' (see ListHostedConfigurationVersions/GetDeployment notes below, now corrected); that reasoning conflated KmsKeyIdentifier (a caller-supplied string, trivially echoable) with KmsKeyArn (which genuinely does require unavailable KMS-ARN resolution and correctly stays unmodeled). KmsKeyIdentifier is now accepted, stored, and echoed on Create/Get/Update; KmsKeyArn remains absent."}
   GetConfigurationProfile: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS (bd gopherstack-6flj): now echoes KmsKeyIdentifier -- see CreateConfigurationProfile note."}
   ListConfigurationProfiles: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-xs7l: was raw-marshaling the full ConfigurationProfile domain struct; now emits types.ConfigurationProfileSummary (types.go:193, deserializers.go:12061) via a dedicated configurationProfileToSummary -- dropped Description/RetrievalRoleArn/the full Validators list (3 leaked members), and added ValidatorTypes (a real Summary member that was simply never emitted -- derived honestly from each Validators[i].Type, an already-stored field). 2026-08-29 wrapper-key sweep: REQUEST direction verified against appconfig@v1.48.4 serializers.go. type query filter (serializers.go:2700) was never read -- always returned every profile regardless of type; ConfigurationProfile.Type already existed as a backing field, now wired through a new profileType param on the interface method (call sites updated)."}
   UpdateConfigurationProfile: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED THIS PASS (bd gopherstack-6flj): KmsKeyIdentifier is now accepted (nil-means-unchanged, matching every other optional *string member here) and echoed -- see CreateConfigurationProfile note."}
-  DeleteConfigurationProfile: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED — same ExtensionAssociation + deployedConfigs cascade-cleanup."}
+  DeleteConfigurationProfile: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED — same ExtensionAssociation + deployedConfigs cascade-cleanup. FIXED 2026-09-07 (bd gopherstack-kpvs): real DeleteConfigurationProfileInput.DeletionProtectionCheck (api_op_DeleteConfigurationProfile.go, bound to the 'X-Amzn-Deletion-Protection-Check' request header per serializers.go:1121) was never read by this handler at all -- now parsed and validated against the types.DeletionProtectionCheck enum (BYPASS|APPLY|ACCOUNT_DEFAULT); an unrecognized value now gets BadRequestException instead of being silently accepted. FIXED 2026-09-08 (bd gopherstack-z4v1): the check is now actually enforced, not just validated -- see the deletion_protection_check note below."}
   CreateHostedConfigurationVersion: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED — the previously-ignored optional 'Latest-Version-Number' request header (an optimistic-concurrency check: real CreateHostedConfigurationVersionInput.LatestVersionNumber must match the profile's current latest version or the SDK client expects a conflict) is now parsed and validated; a stale value now returns ConflictException instead of silently racing another writer. httpPayload response-body/header split (Application-Id/Configuration-Profile-Id/Content-Type/Description/VersionLabel/Version-Number headers, raw content body) verified against deserializers.go, matching the prior audit pass."}
   GetHostedConfigurationVersion: {wire: ok, errors: ok, state: ok, persist: ok}
   ListHostedConfigurationVersions: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-xs7l: was raw-marshaling the full HostedConfigurationVersion domain struct; now emits types.HostedConfigurationVersionSummary (types.go:610, deserializers.go:13825) via a dedicated hostedConfigurationVersionToSummary -- dropped CreatedAt (Get-only, 1 leaked member). KmsKeyArn is a real Summary member too, but this backend has no honest source for it (genuine ARN resolution is unavailable) -- stays absent rather than fabricated, same rationale as personalize's undocumented FailureReason members (gopherstack-sm02). CORRECTED (bd gopherstack-6flj): this note previously also claimed CreateConfigurationProfile doesn't accept a KmsKeyIdentifier as the reason KmsKeyArn couldn't be modeled; that premise was itself the bug -- KmsKeyIdentifier is now accepted and echoed on the ConfigurationProfile family (see CreateConfigurationProfile), it was simply never wired up. Only KmsKeyArn (the resolved-ARN member) remains genuinely unavailable here."}

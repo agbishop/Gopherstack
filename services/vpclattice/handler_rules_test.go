@@ -132,6 +132,87 @@ func TestRule_CRUD(t *testing.T) {
 	assert.Len(t, items, 1)
 }
 
+// TestUpdateRule_RejectsDefaultRule verifies UpdateRule rejects modifying a
+// listener's default rule with a 400 ValidationException, matching real
+// AWS's UpdateRule doc comment ("You can't modify a default listener rule.
+// To modify a default listener rule, use UpdateListener." --
+// aws-sdk-go-v2/service/vpclattice's api_op_UpdateRule.go). A non-default
+// rule on the same listener must still be updatable, proving the guard
+// targets only the default rule.
+func TestUpdateRule_RejectsDefaultRule(t *testing.T) {
+	t.Parallel()
+	h := newTestHandler(t)
+
+	recSvc := doRequest(t, h, http.MethodPost, "/services", map[string]any{"name": "svc-default-rule"})
+	require.Equal(t, http.StatusCreated, recSvc.Code)
+	svcID, _ := parseBody(t, recSvc)["id"].(string)
+
+	recL := doRequest(t, h, http.MethodPost, "/services/"+svcID+"/listeners", map[string]any{
+		"name":     "l1",
+		"protocol": "HTTP",
+		"defaultAction": map[string]any{
+			"fixedResponse": map[string]any{"statusCode": 404},
+		},
+	})
+	require.Equal(t, http.StatusCreated, recL.Code)
+	listenerID, _ := parseBody(t, recL)["id"].(string)
+
+	recRule := doRequest(
+		t,
+		h,
+		http.MethodPost,
+		"/services/"+svcID+"/listeners/"+listenerID+"/rules",
+		map[string]any{
+			"name":     "rule1",
+			"priority": 10,
+			"action": map[string]any{
+				"fixedResponse": map[string]any{"statusCode": 200},
+			},
+			"match": map[string]any{
+				"httpMatch": map[string]any{
+					"pathMatch": map[string]any{"match": map[string]any{"exact": "/api"}},
+				},
+			},
+		},
+	)
+	require.Equal(t, http.StatusCreated, recRule.Code)
+	nonDefaultRuleID, _ := parseBody(t, recRule)["id"].(string)
+
+	listRec := doRequest(t, h, http.MethodGet, "/services/"+svcID+"/listeners/"+listenerID+"/rules", nil)
+	require.Equal(t, http.StatusOK, listRec.Code)
+	items, _ := parseBody(t, listRec)["items"].([]any)
+	require.Len(t, items, 2)
+
+	var defaultRuleID string
+
+	for _, it := range items {
+		m, _ := it.(map[string]any)
+		if isDefault, _ := m["isDefault"].(bool); isDefault {
+			defaultRuleID, _ = m["id"].(string)
+		}
+	}
+
+	require.NotEmpty(t, defaultRuleID, "expected an auto-created default rule")
+
+	rec := doRequest(
+		t,
+		h,
+		http.MethodPatch,
+		"/services/"+svcID+"/listeners/"+listenerID+"/rules/"+defaultRuleID,
+		map[string]any{"priority": 5},
+	)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "modifying the default rule must be rejected")
+
+	rec = doRequest(
+		t,
+		h,
+		http.MethodPatch,
+		"/services/"+svcID+"/listeners/"+listenerID+"/rules/"+nonDefaultRuleID,
+		map[string]any{"priority": 5},
+	)
+	assert.Equal(t, http.StatusOK, rec.Code, "non-default rule updates must still succeed")
+}
+
 // TestBatchUpdateRule tests batch rule updates.
 func TestBatchUpdateRule(t *testing.T) {
 	t.Parallel()

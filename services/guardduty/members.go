@@ -2,6 +2,7 @@ package guardduty
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 )
@@ -81,6 +82,10 @@ func (b *InMemoryBackend) DeleteMembers(detectorID string, accountIDs []string) 
 		return nil, ErrDetectorNotFound
 	}
 
+	if b.rejectOrgMembersStillInOrg(detectorID, accountIDs) {
+		return nil, ErrValidation
+	}
+
 	var unprocessed []map[string]any
 
 	for _, id := range accountIDs {
@@ -93,6 +98,31 @@ func (b *InMemoryBackend) DeleteMembers(detectorID string, accountIDs []string) 
 	}
 
 	return unprocessed, nil
+}
+
+// autoEnableOrgMembersAll reports whether the detector's org config has
+// autoEnableOrganizationMembers set to ALL.
+func (b *InMemoryBackend) autoEnableOrgMembersAll(detectorID string) bool {
+	cfg, ok := b.orgConfigs.Get(detectorID)
+
+	return ok && cfg.AutoEnableOrganizationMembers == "ALL"
+}
+
+// rejectOrgMembersStillInOrg reports whether DeleteMembers/
+// DisassociateMembers/StopMonitoringMembers must reject this call: the
+// detector's autoEnableOrganizationMembers is ALL, and at least one
+// requested account is still in the AWS Organization per the wired
+// Organizations backend (see cross_service.go's stillInOrganization).
+// Matches the real ops' doc text, e.g. DisassociateMembers: "you'll receive
+// an error if you attempt to disassociate a member account before removing
+// them from your organization" -- the error is conditioned on org
+// membership, not merely on the ALL setting (gopherstack-uu0n).
+func (b *InMemoryBackend) rejectOrgMembersStillInOrg(detectorID string, accountIDs []string) bool {
+	if !b.autoEnableOrgMembersAll(detectorID) {
+		return false
+	}
+
+	return slices.ContainsFunc(accountIDs, b.stillInOrganization)
 }
 
 // GetMembers retrieves member account details.
@@ -228,6 +258,10 @@ func (b *InMemoryBackend) StopMonitoringMembers(detectorID string, accountIDs []
 		return nil, ErrDetectorNotFound
 	}
 
+	if b.rejectOrgMembersStillInOrg(detectorID, accountIDs) {
+		return nil, ErrValidation
+	}
+
 	var unprocessed []map[string]any
 
 	for _, id := range accountIDs {
@@ -253,6 +287,10 @@ func (b *InMemoryBackend) DisassociateMembers(detectorID string, accountIDs []st
 
 	if !b.detectors.Has(detectorID) {
 		return nil, ErrDetectorNotFound
+	}
+
+	if b.rejectOrgMembersStillInOrg(detectorID, accountIDs) {
+		return nil, ErrValidation
 	}
 
 	var unprocessed []map[string]any

@@ -630,9 +630,17 @@ func collectDNSRegisterOp(rrs ResourceRecordSet) *dnsOp {
 	return nil
 }
 
-// applyChange mutates zd for one Change, collecting DNS ops into toRegister/toDeregister.
+// dnsEligible reports whether rrs is a record type this backend mirrors
+// into the embedded DNS server (A/AAAA/CNAME, or any alias record).
+func dnsEligible(rrs ResourceRecordSet) bool {
+	return rrs.Type == recordTypeA || rrs.Type == recordTypeCNAME ||
+		rrs.Type == recordTypeAAAA || rrs.AliasTarget != nil
+}
+
+// applyChange mutates zd for one Change, recording rrs.Name into affected
+// when the record is DNS-eligible so the caller can resync it afterward.
 // Returns an error only for unknown actions.
-func applyChange(zd *zoneData, ch Change, toRegister *[]dnsOp, toDeregister *[]string, hasDNS bool) error {
+func applyChange(zd *zoneData, ch Change, affected map[string]struct{}, hasDNS bool) error {
 	rrs := ch.ResourceRecordSet
 	key := recordSetKey(rrs.Name, rrs.Type, rrs.SetIdentifier)
 
@@ -641,25 +649,44 @@ func applyChange(zd *zoneData, ch Change, toRegister *[]dnsOp, toDeregister *[]s
 		cp := rrs
 		zd.records[key] = &cp
 
-		if hasDNS {
-			if op := collectDNSRegisterOp(rrs); op != nil {
-				*toRegister = append(*toRegister, *op)
-			}
-		}
-
 	case ChangeActionDelete:
 		delete(zd.records, key)
-
-		if hasDNS &&
-			(rrs.Type == recordTypeA || rrs.Type == recordTypeCNAME || rrs.Type == recordTypeAAAA || rrs.AliasTarget != nil) {
-			*toDeregister = append(*toDeregister, rrs.Name)
-		}
 
 	default:
 		return fmt.Errorf("%w: unknown action %q", ErrInvalidAction, ch.Action)
 	}
 
+	if hasDNS && dnsEligible(rrs) {
+		affected[rrs.Name] = struct{}{}
+	}
+
 	return nil
+}
+
+// resyncDNSName clears any embedded-DNS-server registration for name and
+// re-derives it from every record set, across every zone, that currently
+// resolves it. A plain RegisterRecord/Deregister-per-change approach breaks
+// as soon as a name has more than one live record set — an UPSERT that
+// replaces a value would leave the old value registered alongside the new
+// one (pkgs/dns.RegisterRecord appends, it never replaces), and deleting one
+// of several record sets sharing a name (weighted/failover/multivalue
+// routing, or two zones that happen to use the same name) would deregister
+// the name entirely instead of leaving the survivors resolvable. Caller must
+// hold b.mu and have already confirmed b.dns != nil.
+func (b *InMemoryBackend) resyncDNSName(name string) {
+	b.dns.Deregister(name)
+
+	for _, zd := range b.zones.All() {
+		for _, rrs := range zd.records {
+			if rrs.Name != name {
+				continue
+			}
+
+			if op := collectDNSRegisterOp(*rrs); op != nil {
+				b.dns.RegisterRecord(op.name, op.recordType, op.values)
+			}
+		}
+	}
 }
 
 // ChangeResourceRecordSets applies a batch of record set changes atomically.
@@ -695,22 +722,21 @@ func (b *InMemoryBackend) ChangeResourceRecordSets(
 	}
 
 	// All valid — apply.
-	var toRegister []dnsOp
-	var toDeregister []string
+	affected := make(map[string]struct{})
 
 	for _, ch := range normalised {
-		if err := applyChange(zd, ch, &toRegister, &toDeregister, b.dns != nil); err != nil {
+		if err := applyChange(zd, ch, affected, b.dns != nil); err != nil {
 			return "", err
 		}
 	}
 
-	// Register/deregister outside the record mutation loop.
-	for _, op := range toRegister {
-		b.dns.RegisterRecord(op.name, op.recordType, op.values)
-	}
-
-	for _, name := range toDeregister {
-		b.dns.Deregister(name)
+	// Resync DNS outside the record mutation loop, once the batch's final
+	// state is known, so a name with more than one surviving record set is
+	// re-derived correctly rather than incrementally patched.
+	if b.dns != nil {
+		for name := range affected {
+			b.resyncDNSName(name)
+		}
 	}
 
 	// Record the change for GetChange.

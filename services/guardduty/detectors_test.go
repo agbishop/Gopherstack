@@ -344,6 +344,17 @@ func TestDeleteDetectorCleansUpSubResources(t *testing.T) {
 	inv, err := b.CreateInvestigation(detID, "Investigate finding in this account")
 	require.NoError(t, err)
 
+	// Seed a malware scan and malware scan settings -- both are
+	// detector-scoped on the real API (DescribeMalwareScans and
+	// Get/UpdateMalwareScanSettings all require DetectorId in the URL), the
+	// same as members/publishing destinations/entity sets above, so
+	// DeleteDetector must cascade to them too.
+	scanID, err := b.StartMalwareScan("arn:aws:ec2:us-east-1:111111111111:instance/i-0123456789abcdef0")
+	require.NoError(t, err)
+	require.NoError(t, b.UpdateMalwareScanSettings(detID, &guardduty.MalwareScanSettings{
+		EbsSnapshotPreservation: "RETENTION_WITH_FINDING",
+	}))
+
 	// Verify sub-resources exist before deletion.
 	assert.Equal(t, 1, guardduty.MemberCount(b, detID), "member should exist before delete")
 	assert.Equal(t, 1, guardduty.PublishingDestinationCount(b, detID),
@@ -370,6 +381,24 @@ func TestDeleteDetectorCleansUpSubResources(t *testing.T) {
 	// which serializes the raw table.
 	assert.NotContains(t, string(b.Snapshot(t.Context())), inv.InvestigationID,
 		"investigations must be removed when detector is deleted")
+
+	// The malware scan is reachable via GetMalwareScan/ListMalwareScans,
+	// neither of which is detector-scoped on the real API -- unlike the
+	// resources above, a leftover row here is directly client-observable,
+	// not merely inert state.
+	_, getErr := b.GetMalwareScan(scanID)
+	require.ErrorIs(t, getErr, guardduty.ErrMalwareScanNotFound,
+		"GetMalwareScan must not return a scan whose detector was deleted")
+
+	allScans, _, listErr := b.ListMalwareScans(guardduty.MalwareScanQuery{})
+	require.NoError(t, listErr)
+	for _, s := range allScans {
+		assert.NotEqual(t, scanID, s.ScanID,
+			"ListMalwareScans must not return a scan whose detector was deleted")
+	}
+
+	assert.NotContains(t, string(b.Snapshot(t.Context())), "RETENTION_WITH_FINDING",
+		"malware scan settings must be removed when detector is deleted")
 }
 
 // TestCreateDetector_RejectsInvalidFindingPublishingFrequency locks that an

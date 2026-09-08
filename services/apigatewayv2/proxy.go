@@ -75,6 +75,15 @@ func (h *Handler) handleProxy(c *echo.Context, apiID, stageName, resourcePath st
 		return c.String(http.StatusNotFound, "API not found")
 	}
 
+	// A request naming a stage that was never created has no deployed
+	// snapshot to route against. Previously this handler never checked
+	// stageName against the backend at all here, so any string in the URL's
+	// stage-name slot -- including one that was never created via
+	// CreateStage -- still routed through to the live integration.
+	if _, stageErr := h.Backend.GetStage(apiID, stageName); stageErr != nil {
+		return writeErr(c, http.StatusNotFound, msgNotFound)
+	}
+
 	// 2. Determine protocol
 	protocol := api.ProtocolType
 	switch protocol {
@@ -220,6 +229,12 @@ func (h *Handler) invokeWSRoute(c *echo.Context, apiID, routeKey, connectionID s
 	integration, err := h.Backend.GetIntegration(apiID, integrationID)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrIntegrationNotFound, integrationID)
+	}
+
+	// MOCK: "integrating the route or method request with API Gateway as a
+	// 'loopback' endpoint without invoking any backend" (api_op_CreateIntegration.go).
+	if integration.IntegrationType == integrationTypeMock {
+		return nil
 	}
 
 	if integration.IntegrationType != IntegrationTypeAWSProxy {

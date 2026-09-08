@@ -100,8 +100,14 @@ func (b *InMemoryBackend) ListJobs(accountID string) []*BatchJob {
 	return out
 }
 
-// UpdateJobPriority changes the priority of a batch job.
+// UpdateJobPriority changes the priority of a batch job. The non-negative
+// bound is inferred from CreateJob's own check, not stated by this op's doc:
+// both fields are the same JobPriority quantity.
 func (b *InMemoryBackend) UpdateJobPriority(accountID, jobID string, priority int32) (*BatchJob, error) {
+	if priority < 0 {
+		return nil, fmt.Errorf("priority must be non-negative: %w", ErrValidation)
+	}
+
 	b.mu.Lock("UpdateJobPriority")
 	defer b.mu.Unlock()
 

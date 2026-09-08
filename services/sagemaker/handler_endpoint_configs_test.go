@@ -142,6 +142,22 @@ func TestHandler_DeleteEndpointConfig(t *testing.T) {
 			body:     map[string]any{"EndpointConfigName": "nonexistent"},
 			wantCode: http.StatusBadRequest,
 		},
+		{
+			name: "in use by endpoint",
+			setup: func(t *testing.T, h *sagemaker.Handler) {
+				t.Helper()
+
+				_, err := h.Backend.CreateEndpointConfig(context.Background(), "in-use", nil, nil)
+				require.NoError(t, err)
+				_, err = h.Backend.CreateEndpoint(context.Background(), sagemaker.CreateEndpointOptions{
+					Name:               "using-endpoint",
+					EndpointConfigName: "in-use",
+				})
+				require.NoError(t, err)
+			},
+			body:     map[string]any{"EndpointConfigName": "in-use"},
+			wantCode: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -158,6 +174,29 @@ func TestHandler_DeleteEndpointConfig(t *testing.T) {
 			assert.Equal(t, tt.wantCode, rec.Code)
 		})
 	}
+}
+
+// TestHandler_DeleteEndpointConfig_AfterEndpointDeleted asserts that once the
+// referencing endpoint is gone, DeleteEndpointConfig succeeds
+// (api_op_DeleteEndpointConfig.go: "You must not delete an EndpointConfig in
+// use by an endpoint that is live").
+func TestHandler_DeleteEndpointConfig_AfterEndpointDeleted(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	_, err := h.Backend.CreateEndpointConfig(context.Background(), "ec-freed", nil, nil)
+	require.NoError(t, err)
+	_, err = h.Backend.CreateEndpoint(context.Background(), sagemaker.CreateEndpointOptions{
+		Name:               "ep-freed",
+		EndpointConfigName: "ec-freed",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, h.Backend.DeleteEndpoint(context.Background(), "ep-freed"))
+
+	rec := doSageMakerRequest(t, h, "DeleteEndpointConfig", map[string]any{"EndpointConfigName": "ec-freed"})
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestHandler_ListEndpointConfigs(t *testing.T) {

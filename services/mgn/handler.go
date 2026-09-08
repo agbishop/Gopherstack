@@ -220,8 +220,7 @@ func (h *Handler) handleError(c *echo.Context, err error) error {
 
 	body := map[string]any{"message": err.Error()}
 
-	var apiErr *apiError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*apiError](err); ok {
 		addErrorFields(body, apiErr)
 	}
 

@@ -87,6 +87,7 @@ func (b *InMemoryBackend) DeleteOTAUpdate(id string) error {
 		return fmt.Errorf("OTA update %q not found: %w", id, ErrResourceNotFound)
 	}
 	b.otaUpdates.Delete(id)
+	delete(b.resourceTags, b.otaARN(id))
 
 	return nil
 }

@@ -391,7 +391,10 @@ func (b *InMemoryBackend) InviteAccountToOrganization(
 	return copyHandshake(h), nil
 }
 
-// LeaveOrganization removes the management account from the organization (stub: returns no error).
+// LeaveOrganization is callable only from a member account (SDK doc comment
+// on the operation), but this backend's caller identity is always the
+// management account (organization.go's CreateOrganization: b.accountID
+// becomes org.MasterAccountID), so it always fails.
 func (b *InMemoryBackend) LeaveOrganization() error {
 	b.mu.RLock("LeaveOrganization")
 	defer b.mu.RUnlock()
@@ -400,7 +403,7 @@ func (b *InMemoryBackend) LeaveOrganization() error {
 		return ErrOrgNotFound
 	}
 
-	return nil
+	return ErrMasterCannotLeaveOrganization
 }
 
 // ListHandshakesForAccount returns all handshakes visible to the calling account.

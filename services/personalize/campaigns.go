@@ -10,6 +10,28 @@ import (
 
 // --- Campaign ---
 
+// latestSuffix is the CreateCampaignInput.SolutionVersionArn magic suffix
+// (api_op_CreateCampaign.go field doc): to specify the latest solution
+// version of a solution, specify the ARN of the solution in
+// SolutionArn/$LATEST format.
+const latestSuffix = "/$LATEST"
+
+// resolveSolutionVersionArn resolves a SolutionArn/$LATEST reference to the
+// solution's actual latest solution version ARN; any other input is
+// returned unchanged. Callers must already hold b.mu.
+func (b *InMemoryBackend) resolveSolutionVersionArn(solutionVersionArn string) (string, error) {
+	solutionArn, ok := strings.CutSuffix(solutionVersionArn, latestSuffix)
+	if !ok {
+		return solutionVersionArn, nil
+	}
+	sv := b.latestSolutionVersionLocked(solutionArn)
+	if sv == nil {
+		return "", fmt.Errorf("%w: solution %q has no solution versions", ErrNotFound, solutionArn)
+	}
+
+	return sv.SolutionVersionArn, nil
+}
+
 // CreateCampaign creates a new campaign.
 func (b *InMemoryBackend) CreateCampaign(
 	name, solutionVersionArn string,
@@ -25,6 +47,10 @@ func (b *InMemoryBackend) CreateCampaign(
 	}
 	if b.campaigns.Has(name) {
 		return nil, fmt.Errorf("%w: campaign %q already exists", ErrAlreadyExists, name)
+	}
+	solutionVersionArn, err := b.resolveSolutionVersionArn(solutionVersionArn)
+	if err != nil {
+		return nil, err
 	}
 	if !b.solutionVersions.Has(solutionVersionArn) {
 		return nil, fmt.Errorf("%w: solution version %q not found", ErrNotFound, solutionVersionArn)
@@ -78,10 +104,14 @@ func (b *InMemoryBackend) UpdateCampaign(
 		return nil, fmt.Errorf("%w: campaign %q not found", ErrNotFound, nameOrArn)
 	}
 	if solutionVersionArn != "" {
-		if !b.solutionVersions.Has(solutionVersionArn) {
-			return nil, fmt.Errorf("%w: solution version %q not found", ErrNotFound, solutionVersionArn)
+		resolved, err := b.resolveSolutionVersionArn(solutionVersionArn)
+		if err != nil {
+			return nil, err
 		}
-		c.SolutionVersionArn = solutionVersionArn
+		if !b.solutionVersions.Has(resolved) {
+			return nil, fmt.Errorf("%w: solution version %q not found", ErrNotFound, resolved)
+		}
+		c.SolutionVersionArn = resolved
 	}
 	if minProvisionedTPS > 0 {
 		c.MinProvisionedTPS = minProvisionedTPS

@@ -53,6 +53,7 @@ func (b *InMemoryBackend) AttachInstances(groupName string, instanceIDs []string
 	}
 
 	b.registerELBTargets(added, g.TargetGroupARNs)
+	b.registerELBInstances(added, g.LoadBalancerNames)
 
 	return nil
 }
@@ -124,6 +125,7 @@ func (b *InMemoryBackend) TerminateInstanceInAutoScalingGroup(
 	delete(b.instanceIndex, instanceID)
 	b.terminateInEC2([]string{instanceID})
 	b.deregisterELBTargets([]string{instanceID}, targetGroup.TargetGroupARNs)
+	b.deregisterELBInstances([]string{instanceID}, targetGroup.LoadBalancerNames)
 
 	if shouldDecrement {
 		if targetGroup.DesiredCapacity > 0 {
@@ -237,6 +239,7 @@ func (b *InMemoryBackend) removeInstanceByID(g *AutoScalingGroup, instanceID str
 	delete(b.instanceIndex, instanceID)
 	b.terminateInEC2([]string{instanceID})
 	b.deregisterELBTargets([]string{instanceID}, g.TargetGroupARNs)
+	b.deregisterELBInstances([]string{instanceID}, g.LoadBalancerNames)
 }
 
 // finishTermination completes a deferred termination once its Terminating:Wait hook
@@ -334,6 +337,7 @@ func (b *InMemoryBackend) DetachInstances(
 	// Detached instances stop being ASG-managed, including their target group
 	// membership, mirroring real AWS's default deregister-on-detach behavior.
 	b.deregisterELBTargets(detachedIDs, g.TargetGroupARNs)
+	b.deregisterELBInstances(detachedIDs, g.LoadBalancerNames)
 
 	if shouldDecrement && detached > 0 {
 		delta := int32(detached) //nolint:gosec // detached <= len(g.Instances), bounded by maxDesiredCapacity

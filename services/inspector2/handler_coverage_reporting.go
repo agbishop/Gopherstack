@@ -49,7 +49,7 @@ func (h *Handler) handleListCoverage(c *echo.Context) error {
 func coverageEntryToWire(e *CoverageEntry) map[string]any {
 	entry := map[string]any{
 		keyAccountID:   e.AccountID,
-		"resourceId":   e.ResourceID,
+		keyResourceID:  e.ResourceID,
 		"resourceType": e.ResourceType,
 		"scanType":     e.ScanType,
 	}

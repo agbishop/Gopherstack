@@ -81,7 +81,7 @@ ops:
   ListCreateAccountStatus: {wire: fixed, errors: ok, state: ok, persist: ok, note: "MaxResults/NextToken were parsed into the request but never applied -- handler always returned the full unfiltered set. Now wired through pkgs/page.New."}
   DescribeAccount: {wire: fixed, errors: ok, state: ok, persist: ok, note: "Account.Paths now populated -- computed at read time from accountParent/ouParent (org tree is already fully modeled), not stored; see gaps entry below for format verification"}
   ListAccounts: {wire: fixed, errors: ok, state: ok, persist: ok, note: "already paginated via pkgs/page; Paths now populated per-account same as DescribeAccount"}
-  RemoveAccountFromOrganization: {wire: ok, errors: ok, state: ok, persist: ok, note: "cascades policyTargets/tags/delegated-admin cleanup"}
+  RemoveAccountFromOrganization: {wire: ok, errors: ok, state: fixed, persist: ok, note: "cascades policyTargets/tags/delegated-admin cleanup. FIXED (gopherstack-3ahs, b8484292f) -- also left emailToAccountID[email] behind, permanently blocking CreateAccount from reusing that email even though no account held it any more (a wrong-answer rejection, not the usual inherited-ghost-state shape); now cleared. Regression: TestBackend_RemoveAccountFromOrganization_FreesEmailForReuse."}
   MoveAccount: {wire: ok, errors: ok, state: ok, persist: ok, note: "validates current parent == SourceParentId and dest existence before mutating both index directions"}
   CloseAccount: {wire: ok, errors: ok, state: ok, persist: ok}
   CreateOrganizationalUnit: {wire: fixed, errors: ok, state: ok, persist: ok, note: "depth-limit (root=0, OUs 1-5) and O(1) sibling-name uniqueness enforced; Path now populated on the returned OU"}
@@ -400,3 +400,152 @@ Gaps confirmed and NOT fixed, no backing state:
 InviteOrganizationToTransferResponsibility's Tags and PutResourcePolicy's Tags
 -- neither handshakes nor resource-policy IDs are registered taggable types
 (resourceExistsLocked covers root, OU, account and policy only).
+
+## 2026-09-07 (gopherstack-hg4i): no default FullAWSAccess policy modeled
+
+Real AWS Organizations creates every organization with an AWS-managed SCP,
+`p-FullAWSAccess`, attached to root (`api_op_DetachPolicy.go`'s doc: "Every
+root, OU, and account must have at least one SCP attached. If you want to
+replace the default FullAWSAccess policy with an SCP that limits the
+permissions that can be delegated, you must attach the replacement SCP
+before you can remove the default SCP"; `api_op_CreateOrganization.go`'s doc:
+"By default (or if you set the FeatureSet parameter to ALL) ... service
+control policies automatically enabled in the root"). This backend modeled
+no such policy at all, and `CreatePolicy` hardcoded `AwsManaged: false` for
+every policy it created -- correct for user-created policies, but there was
+no path that ever produced an `AwsManaged: true` policy, so no code
+anywhere could branch on it. The issue's premise that `DeletePolicy` had a
+now-dead `AwsManaged` guard was itself wrong: `DeletePolicy` had no
+`AwsManaged` check of any kind (dead or live) before this fix; `UpdatePolicy`
+likewise had none, despite `types.PolicySummary.AwsManaged`'s doc comment
+("you can attach the policy to roots, OUs, or accounts, but you cannot edit
+it") only ever describing edit restrictions, not deletion.
+
+Fixed by seeding `p-FullAWSAccess` (Name `FullAWSAccess`, Type
+`SERVICE_CONTROL_POLICY`, `AwsManaged: true`) at `CreateOrganization`,
+attached to root when `FeatureSet` is `ALL` (`seedFullAWSAccessPolicyLocked`,
+policies.go) -- the SDK ships no policy id/name/content defaults of its own,
+so the id/name/description match live `describe-policy` output and the
+content is AWS's documented full-access SCP body, not SDK-verified. Added an
+`AwsManaged` guard to both `DeletePolicy` and `UpdatePolicy`, returning
+`AccessDeniedException` (`ErrAccessDeniedManagedPolicy`): neither op's
+declared error set (`deserializers.go`) includes
+`ConstraintViolationException`, and no `ConstraintViolationExceptionReason`
+enum value fits "AWS-managed policy" either, so `AccessDeniedException`
+(declared on both) is the only fit. `DetachPolicy` was left unguarded --
+its own doc describes detaching the default SCP as a normal, supported
+step in replacing it, not a restricted operation.
+
+Seeding a real policy on every organization changed what `ListPolicies`,
+`ListPoliciesForTarget`, and `DescribeEffectivePolicy` return by default,
+and shifted the 5-SCP-per-target attachment ceiling on root down by one
+already-occupied slot. 15 pre-existing tests needed correcting for the new
+count/content (not weakened -- exact counts bumped, e.g. "attach 5 new SCPs
+to root succeeds" became "attach 4 new SCPs succeeds, the 5th fails", and
+`DescribeEffectivePolicy`'s "no policy attached returns not-found" case for
+SCP specifically was rewritten to assert it now correctly resolves to the
+inherited default instead, since real AWS never returns not-found for SCP
+once an org exists). New coverage added in `default_policy_test.go`, all
+HTTP-handler-driven: default policy identity/AwsManaged, its root
+attachment via `ListPoliciesForTarget`, delete/update refusal with survivor
+checks, and a too-broad-guard tripwire (a user-created policy must remain
+`AwsManaged: false` and stay deletable). All new guard lines and the seed
+call were individually neutered (commented out / forced true) and confirmed
+to (a) still compile and (b) fail at least one test each, including a
+simulated always-refuse `DeletePolicy` guard, which multiple existing tests
+and the tripwire both caught.
+
+Not implemented: `EnablePolicyType`/root `PolicyTypes` are not
+auto-populated with `SERVICE_CONTROL_POLICY: ENABLED` at org creation, even
+though `CreateOrganization`'s own doc also promises that for `FeatureSet:
+ALL`. Left alone deliberately -- multiple existing tests
+(`TestPolicyTypes`) call `EnablePolicyType(rootID, "SERVICE_CONTROL_POLICY")`
+and require `NoError`, which a pre-enabled root would break via
+`ErrPolicyTypeAlreadyEnabled`; recommend a separate, explicitly-scoped issue
+rather than folding it into this fix.
+
+A snapshot restored from before this change carries no `p-FullAWSAccess`
+policy (Restore does not seed one; only `CreateOrganization` does), so a
+long-lived organization restored across this change has zero SCPs where a
+fresh one would have one. No migration was built for this -- flagged for
+the operator to decide.
+
+## 2026-09-08: CreateAccount/CreateGovCloudAccount nil-on-write fall-through fix (gopherstack-3t96, P2) -- found and fixed
+
+Part of the sweep following elasticache (gopherstack-8haq, P1), pinpoint (gopherstack-246v),
+and apigatewayv2 (gopherstack-wsvb, P1). `validateCreateAccountInput` (handler_accounts.go)
+rejected an invalid `AccountName`, `Email`, or `IamUserAccessToBilling` by writing the 400 via
+`h.writeError` and returning that call's result, which is nil after a successful write. Both
+callers, `handleCreateAccount` and `handleCreateGovCloudAccount`, stored that nil in `err` and
+tested `if err != nil`, which never fired, so execution fell through to `h.Backend.CreateAccount`/
+`CreateGovCloudAccount` and the account was created anyway -- with an empty `AccountName` or
+`Email`, or the raw invalid `IamUserAccessToBilling` value stored verbatim -- while the client had
+already received a 400.
+
+**Tests first.** Two pre-existing tests already covered these rejection branches by status code
+only, which is exactly why this survived: `TestHandler_CreateAccount`'s `missing_name_fails`/
+`missing_email_fails` cases and `TestCreateAccount_IamUserAccessToBilling`'s `invalid_value`/
+`invalid_lowercase` cases all asserted `wantStatus: http.StatusBadRequest` and nothing else --
+`httptest.ResponseRecorder.WriteHeader` keeps only the first call's code, so the 400 from
+`validateCreateAccountInput`'s write survived on the wire even though `CreateAccount` ran
+underneath it and created a real account. Both were strengthened (not just supplemented) to
+assert `organizations.AccountCount(b)` is unchanged after a rejection and grows by exactly one
+after a success; `TestHandler_CreateGovCloudAccount` (previously status-only for its own
+missing-name/email cases, sharing the same helper) got the same treatment, plus a new
+`invalid_iam_user_access_to_billing_fails` case since GovCloud had none before. Confirmed all
+FAIL against unmodified code (verbatim, `go test ./services/organizations/...`):
+
+```
+=== NAME  TestHandler_CreateAccount/missing_name_fails
+    handler_accounts_test.go:79:
+        Error:      Not equal:
+                    expected: 1
+                    actual  : 2
+        Messages:   a rejected CreateAccount must not create an account
+=== NAME  TestHandler_CreateAccount/missing_email_fails
+    (same shape, expected 1 actual 2)
+=== NAME  TestHandler_CreateAccount/invalid_iam_user_access_to_billing_fails
+    (same shape, expected 1 actual 2)
+=== NAME  TestCreateAccount_IamUserAccessToBilling/invalid_value
+    handler_accounts_test.go:282: Not equal: expected 1, actual 2
+=== NAME  TestCreateAccount_IamUserAccessToBilling/invalid_lowercase
+    (same shape, expected 1 actual 2)
+=== NAME  TestHandler_CreateGovCloudAccount/missing_account_name
+    handler_accounts_test.go:721: Not equal: expected 1, actual 2
+=== NAME  TestHandler_CreateGovCloudAccount/missing_email
+    (same shape, expected 1 actual 2)
+=== NAME  TestHandler_CreateGovCloudAccount/invalid_iam_user_access_to_billing_fails
+    (same shape, expected 1 actual 2)
+```
+each paired with a `logger` line `"echo: response already written to client"` confirming the
+double write.
+
+Fixed with the pinpoint raw-unwritten-error pattern: `validateCreateAccountInput` no longer
+takes `*echo.Context` and returns one of three new unexported static errors
+(`errAccountNameRequired`, `errEmailRequired`, `errInvalidIamAccess`) instead of writing;
+`handleCreateAccount` and `handleCreateGovCloudAccount` each map any non-nil error to
+`InvalidInputException`/400 via `h.writeError(c, http.StatusBadRequest, "InvalidInputException",
+err.Error())` and write exactly once. All three branches live in the one helper already in the
+fix's call chain, so all three were fixed together rather than treating any as a separate
+"other instance." `errname`/`err113` (this repo's golangci-lint config) require these as static
+package-level sentinels, not inline `errors.New` at each call site -- confirmed by lint failing
+on the inline-error draft and passing once converted.
+
+Neuter-verified two ways at handler_accounts.go's `handleCreateAccount`: (1) restoring the
+call site to bare `return err` (the shape after removing the write, without adding the map-and-
+write-once step) still compiles and fails with `require.NoError` errors surfacing the raw
+"AccountName is required"/"email is required"/"IamUserAccessToBilling must be ALLOW or DENY"
+text, since nothing ever wrote a response; (2) restoring the entire original
+`validateCreateAccountInput`/call-site pair verbatim (write-then-return-nil) still compiles and
+reproduces the exact `expected 1 actual 2` failures above.
+
+Swept the rest of the package for the same shape (a `*echo.Context`-taking helper whose result
+is stored and re-checked by a caller, rather than returned directly as a handler's own final
+`return h.writeError(...)`): `validateCreateAccountInput` was the only match.
+`grep -rn "return err$"` across non-test `.go` files turns up exactly two other sites
+(`tags.go:91`, `persistence.go:176/204`), both pure backend `InMemoryBackend` methods with no
+`*echo.Context` in scope and no response ever written -- ordinary Go error propagation, not this
+bug shape.
+
+`go test -race ./services/organizations/...` and `golangci-lint run ./services/organizations/...`
+both clean after the fix.

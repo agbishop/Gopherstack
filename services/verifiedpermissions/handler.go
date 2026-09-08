@@ -226,6 +226,11 @@ func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err 
 			keyTypeField:    "ResourceNotFoundException",
 			keyMessageField: err.Error(),
 		})
+	case errors.Is(err, ErrPolicyStoreDeletionProtected):
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			keyTypeField:    "InvalidStateException",
+			keyMessageField: err.Error(),
+		})
 	case errors.Is(err, awserr.ErrConflict):
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			keyTypeField:    "ConflictException",

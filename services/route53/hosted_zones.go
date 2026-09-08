@@ -228,6 +228,16 @@ func (b *InMemoryBackend) DeleteHostedZone(zoneID string) error {
 		)
 	}
 
+	// AWS also rejects deletion while DNSSEC signing is enabled; disable it
+	// (DisableHostedZoneDNSSEC) before deleting.
+	if zd.dnssecEnabled {
+		return fmt.Errorf(
+			"%w: hosted zone %s has DNSSEC signing enabled and must be disabled first",
+			ErrHostedZoneNotEmpty,
+			zoneID,
+		)
+	}
+
 	// Deregister all DNS records before deletion.
 	if b.dns != nil {
 		for _, rrs := range zd.records {

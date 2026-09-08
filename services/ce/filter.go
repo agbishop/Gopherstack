@@ -21,19 +21,62 @@ type ceCostCategoryValues struct {
 	Values []string `json:"Values"`
 }
 
-// ceExpression mirrors the top-level (non-nested) shape of costexplorer's
-// types.Expression: Dimensions/Tags/CostCategories. The real wire type also
-// carries And/Or/Not for compound boolean expressions; this emulator applies
-// only the simple, single-clause form and does not evaluate boolean
-// composition. A client sending a compound expression still gets its
-// top-level Dimensions/Tags/CostCategories clause (if any is present
-// alongside And/Or/Not, which real AWS itself rejects as invalid) applied,
-// which is the documented behavior at each call site below rather than a
-// silent no-op.
+// ceExpression mirrors costexplorer's types.Expression, including the And/Or/Not
+// boolean composition (api_op_GetCostAndUsage.go:85-86: "You can nest Expression
+// objects to define any combination of dimension filters"). matchesExpression below
+// evaluates the full tree for GetCostAndUsage; most other call sites in this package
+// still only look at the top-level Dimensions/Tags clause via narrower per-op shims
+// (serviceDimensionFilter and friends) tied to their own backend's data model.
 type ceExpression struct {
+	Not            *ceExpression         `json:"Not,omitempty"`
 	Dimensions     *ceDimensionValues    `json:"Dimensions,omitempty"`
 	Tags           *ceTagValues          `json:"Tags,omitempty"`
 	CostCategories *ceCostCategoryValues `json:"CostCategories,omitempty"`
+	And            []ceExpression        `json:"And,omitempty"`
+	Or             []ceExpression        `json:"Or,omitempty"`
+}
+
+// matchesExpression evaluates the full Dimensions/Tags/And/Or/Not tree against a
+// cost ledger entry. CostCategories clauses are not modeled per-entry (no
+// per-usage cost-category assignment exists in this ledger) so they don't narrow.
+// An unmodeled Dimensions key (dimensionFieldValue's ok=false) also doesn't narrow,
+// rather than spuriously matching nothing.
+func matchesExpression(e CostEntry, expr *ceExpression) bool {
+	if expr == nil {
+		return true
+	}
+
+	switch {
+	case len(expr.And) > 0:
+		for i := range expr.And {
+			if !matchesExpression(e, &expr.And[i]) {
+				return false
+			}
+		}
+
+		return true
+	case len(expr.Or) > 0:
+		for i := range expr.Or {
+			if matchesExpression(e, &expr.Or[i]) {
+				return true
+			}
+		}
+
+		return false
+	case expr.Not != nil:
+		return !matchesExpression(e, expr.Not)
+	case expr.Dimensions != nil:
+		val, ok := dimensionFieldValue(e, expr.Dimensions.Key)
+		if !ok {
+			return true
+		}
+
+		return stringSliceContainsFold(expr.Dimensions.Values, val)
+	case expr.Tags != nil:
+		return stringSliceContainsFold(expr.Tags.Values, e.Tags[expr.Tags.Key])
+	default:
+		return true
+	}
 }
 
 // ceSortDefinition mirrors costexplorer's types.SortDefinition.

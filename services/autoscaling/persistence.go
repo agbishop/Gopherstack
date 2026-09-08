@@ -89,6 +89,14 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 	})
 	b.pendingHookTokens.Reset()
 
+	// Same for in-flight instance-refresh transition timers.
+	b.pendingRefreshActions.Range(func(action *pendingRefreshAction) bool {
+		action.timer.Stop()
+
+		return true
+	})
+	b.pendingRefreshActions.Reset()
+
 	if snap.Version != autoscalingSnapshotVersion {
 		// An incompatible (older/newer/absent) snapshot version must never be
 		// partially decoded as the current shape -- that risks silently
@@ -149,6 +157,10 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 	// Re-arm heartbeat timers for any instances restored mid lifecycle-hook wait;
 	// in-flight timers themselves are never persisted (see pendingHookTokens above).
 	b.rearmPendingWaits()
+
+	// Re-arm transition timers for any instance refresh restored mid InProgress,
+	// Cancelling, or RollbackInProgress; same rationale as rearmPendingWaits.
+	b.rearmPendingRefreshes()
 
 	return nil
 }

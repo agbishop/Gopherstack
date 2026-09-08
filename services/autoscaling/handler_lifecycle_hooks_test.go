@@ -1020,3 +1020,98 @@ func TestAutoscalingHandler_LifecycleHookChainResumesAfterRestore(t *testing.T) 
 	state, _ = soleInstanceState(t, rh, asgName)
 	assert.Equal(t, "InService", state, "restore must not drop the pending wait")
 }
+
+// TestAutoscalingHandler_DeleteLifecycleHookResolvesOutstandingAction verifies
+// that deleting a hook with an instance still waiting on it completes that
+// action instead of stranding the instance forever. api_op_DeleteLifecycleHook.go:
+// "If there are any outstanding lifecycle actions, they are completed first
+// (ABANDON for launching instances, CONTINUE for terminating instances)."
+// Before this fix, DeleteLifecycleHook's cleanupHookTimers only stopped the
+// timer and dropped the pending action -- no hook left to complete it, no
+// timer left to time it out, leaving the instance in Pending:Wait/
+// Terminating:Wait permanently.
+func TestAutoscalingHandler_DeleteLifecycleHookResolvesOutstandingAction(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		transition string
+	}{
+		{
+			name:       "launching hook abandon terminates and replaces",
+			transition: "autoscaling:EC2_INSTANCE_LAUNCHING",
+		},
+		{
+			name:       "terminating hook continue finishes removal",
+			transition: "autoscaling:EC2_INSTANCE_TERMINATING",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAutoscalingHandler()
+			asgName := "delete-hook-outstanding-" + tc.transition
+
+			code, body := doAS(t, h, "CreateAutoScalingGroup", url.Values{
+				"AutoScalingGroupName":       {asgName},
+				"MinSize":                    {"0"},
+				"MaxSize":                    {"5"},
+				"AvailabilityZones.member.1": {"us-east-1a"},
+			})
+			require.Equal(t, 200, code, body)
+
+			putLaunchOrTerminateHook(t, h, asgName, "hook", tc.transition)
+
+			var waitingInstanceID string
+
+			if tc.transition == "autoscaling:EC2_INSTANCE_LAUNCHING" {
+				code, body = doAS(t, h, "SetDesiredCapacity", url.Values{
+					"AutoScalingGroupName": {asgName},
+					"DesiredCapacity":      {"1"},
+				})
+				require.Equal(t, 200, code, body)
+
+				state, id := soleInstanceState(t, h, asgName)
+				require.Equal(t, "Pending:Wait", state)
+				waitingInstanceID = id
+			} else {
+				code, body = doAS(t, h, "SetDesiredCapacity", url.Values{
+					"AutoScalingGroupName": {asgName},
+					"DesiredCapacity":      {"1"},
+				})
+				require.Equal(t, 200, code, body)
+
+				_, waitingInstanceID = soleInstanceState(t, h, asgName)
+
+				code, body = doAS(t, h, "TerminateInstanceInAutoScalingGroup", url.Values{
+					"InstanceId":                     {waitingInstanceID},
+					"ShouldDecrementDesiredCapacity": {"true"},
+				})
+				require.Equal(t, 200, code, body)
+
+				state, _ := soleInstanceState(t, h, asgName)
+				require.Equal(t, "Terminating:Wait", state)
+			}
+
+			code, body = doAS(t, h, "DeleteLifecycleHook", url.Values{
+				"AutoScalingGroupName": {asgName},
+				"LifecycleHookName":    {"hook"},
+			})
+			require.Equal(t, 200, code, body)
+
+			state, id := soleInstanceState(t, h, asgName)
+
+			if tc.transition == "autoscaling:EC2_INSTANCE_LAUNCHING" {
+				assert.Equal(t, "InService", state,
+					"abandoning the launch on hook deletion must replace the instance, not leave it Pending:Wait")
+				assert.NotEqual(t, waitingInstanceID, id, "the replacement must be a new instance")
+			} else {
+				assert.Empty(t, state,
+					"continuing the termination on hook deletion must actually remove the instance, "+
+						"not leave it Terminating:Wait")
+			}
+		})
+	}
+}

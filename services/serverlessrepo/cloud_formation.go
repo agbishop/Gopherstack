@@ -114,7 +114,10 @@ func (b *InMemoryBackend) CreateCloudFormationChangeSetWithOptions(
 
 	app, ok := b.applications.Get(appName)
 	if !ok {
-		return nil, fmt.Errorf("%w: could not find application %q", ErrApplicationNotFound, appName)
+		// CreateCloudFormationChangeSet's modelled error set has no NotFoundException
+		// (deserializers.go awsRestjson1_deserializeOpErrorCreateCloudFormationChangeSet):
+		// an unknown ApplicationId is a BadRequestException, not a 404.
+		return nil, fmt.Errorf("%w: could not find application %q", ErrValidation, appName)
 	}
 
 	for _, capability := range opts.Capabilities {
@@ -124,14 +127,15 @@ func (b *InMemoryBackend) CreateCloudFormationChangeSetWithOptions(
 	}
 
 	// TemplateId, when supplied, must reference a template previously created for this
-	// application via CreateCloudFormationTemplate -- real AWS SAR 404s on an unknown or
-	// mismatched-application TemplateId rather than silently ignoring it.
+	// application via CreateCloudFormationTemplate, rather than being silently ignored.
+	// CreateCloudFormationChangeSet models no NotFoundException, so an unknown or
+	// mismatched-application TemplateId is a BadRequestException, not a 404.
 	if opts.TemplateID != "" {
 		t, foundTemplate := b.cfTemplates.Get(opts.TemplateID)
 		if !foundTemplate || t.AppName != appName {
 			return nil, fmt.Errorf(
 				"%w: could not find template %q for application %q",
-				ErrTemplateNotFound,
+				ErrValidation,
 				opts.TemplateID,
 				appName,
 			)

@@ -195,7 +195,7 @@ func TestWriteRecords_RecordsIngestedSDKRoundTrip(t *testing.T) {
 		TableName:    aws.String("wr-tbl"),
 		Records: []twtypes.Record{
 			{
-				Time:             aws.String("1700000000"),
+				Time:             aws.String(recentTimeSeconds()),
 				TimeUnit:         twtypes.TimeUnitSeconds,
 				MeasureName:      aws.String("multi"),
 				MeasureValueType: twtypes.MeasureValueTypeMulti,

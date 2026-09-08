@@ -112,7 +112,7 @@ func (b *InMemoryBackend) deleteInvalidationsForTenant(tenantID string) {
 //     connectionFunctionByName, connectionGroupARNs, connectionGroupByName,
 //     connectionGroupByRoutingEndpoint, originAccessControlByName,
 //     responseHeadersPolicyByName, originRequestPolicyByName,
-//     fieldLevelEncryptionByName, fieldLevelEncryptionProfileByName,
+//     fieldLevelEncryptionProfileByName,
 //     publicKeyByName, keyGroupByName, realtimeLogConfigByName,
 //     keyValueStoreByName, trustStoreARNs, trustStoreByName,
 //     streamingDistributionARNs, streamingDistributionCallerRefs,

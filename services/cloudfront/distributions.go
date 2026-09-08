@@ -167,6 +167,8 @@ func (b *InMemoryBackend) DeleteDistribution(id string) error {
 	b.deleteInvalidationsForDist(id)
 	delete(b.distributionAliases, id)
 	delete(b.distributionWebACLs, id)
+	delete(b.distributionFunctionAssociations, id)
+	delete(b.monitoringSubscriptions, id)
 	b.deindexDistributionConfig(id)
 
 	return nil

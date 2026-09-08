@@ -262,6 +262,10 @@ func (h *Handler) handleUpdateRuleGroup(ctx context.Context, body []byte) ([]byt
 		return nil, fmt.Errorf("%w: Scope is required", errInvalidRequest)
 	}
 
+	if req.LockToken == "" {
+		return nil, fmt.Errorf("%w: LockToken is required", errInvalidRequest)
+	}
+
 	if err := validateVisibilityConfig(req.VisibilityConfig); err != nil {
 		return nil, err
 	}
@@ -300,16 +304,8 @@ func (h *Handler) handleDeleteRuleGroup(ctx context.Context, body []byte) ([]byt
 		return nil, fmt.Errorf("%w: %w", errInvalidRequest, err)
 	}
 
-	if req.ID == "" {
-		return nil, fmt.Errorf("%w: Id is required", errInvalidRequest)
-	}
-
-	if req.Name == "" {
-		return nil, fmt.Errorf("%w: Name is required", errInvalidRequest)
-	}
-
-	if req.Scope == "" {
-		return nil, fmt.Errorf("%w: Scope is required", errInvalidRequest)
+	if err := requireIDNameScopeLockToken(req.ID, req.Name, req.Scope, req.LockToken); err != nil {
+		return nil, err
 	}
 
 	if err := h.Backend.DeleteRuleGroup(ctx, req.ID, req.LockToken); err != nil {

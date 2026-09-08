@@ -22,10 +22,27 @@ func (b *InMemoryBackend) CreateDBCluster(
 	if err := validateDBClusterEngine(engine); err != nil {
 		return nil, err
 	}
+	if err := ValidateStorageTypeForCluster(opts.StorageType); err != nil {
+		return nil, err
+	}
+	if err := ValidateEngineLifecycleSupport(opts.EngineLifecycleSupport); err != nil {
+		return nil, err
+	}
 	b.mu.Lock("CreateDBCluster")
 	defer b.mu.Unlock()
 	if _, exists := b.clusters.Get(normalizeID(id)); exists {
 		return nil, fmt.Errorf("%w: cluster %s already exists", ErrClusterAlreadyExists, id)
+	}
+
+	var replicationSource *DBCluster
+	if opts.ReplicationSourceIdentifier != "" {
+		var srcExists bool
+		replicationSource, srcExists = b.clusters.Get(normalizeID(opts.ReplicationSourceIdentifier))
+		if !srcExists {
+			return nil, fmt.Errorf(
+				"%w: source cluster %s not found", ErrClusterNotFound, opts.ReplicationSourceIdentifier,
+			)
+		}
 	}
 	if engine == "" {
 		engine = "aurora-postgresql"
@@ -74,9 +91,15 @@ func (b *InMemoryBackend) CreateDBCluster(
 		StorageEncrypted:             opts.StorageEncrypted,
 		CopyTagsToSnapshot:           opts.CopyTagsToSnapshot,
 		DeletionProtection:           opts.DeletionProtection,
+		ReplicationSourceIdentifier:  opts.ReplicationSourceIdentifier,
 		DBClusterMembers:             []DBClusterMember{},
 	}
 	b.clusters.Put(cluster)
+
+	if replicationSource != nil {
+		replicationSource.ReadReplicaIdentifiers = append(replicationSource.ReadReplicaIdentifiers, id)
+	}
+
 	cp := *cluster
 
 	return &cp, nil
@@ -92,12 +115,15 @@ func (b *InMemoryBackend) DescribeDBClusters(id string) ([]DBCluster, error) {
 			return nil, fmt.Errorf("%w: cluster %s not found", ErrClusterNotFound, id)
 		}
 		cp := *cluster
+		b.overlayFailoverStatusRLocked(&cp)
 
 		return []DBCluster{cp}, nil
 	}
 	result := make([]DBCluster, 0, b.clusters.Len())
 	for _, cluster := range b.clusters.All() {
-		result = append(result, *cluster)
+		cp := *cluster
+		b.overlayFailoverStatusRLocked(&cp)
+		result = append(result, cp)
 	}
 	slices.SortFunc(result, func(a, b DBCluster) int {
 		if a.DBClusterIdentifier < b.DBClusterIdentifier {
@@ -246,6 +272,16 @@ func (b *InMemoryBackend) DeleteDBClusterWithOptions(
 	// themselves, so they must be keyed off the same casing used when they
 	// were populated -- see normalizeID's doc comment.
 	canonicalID := cluster.DBClusterIdentifier
+
+	// Remove this cluster from its source's ReadReplicaIdentifiers.
+	if cluster.ReplicationSourceIdentifier != "" {
+		if src, srcExists := b.clusters.Get(normalizeID(cluster.ReplicationSourceIdentifier)); srcExists {
+			src.ReadReplicaIdentifiers = slices.DeleteFunc(src.ReadReplicaIdentifiers, func(s string) bool {
+				return idEqual(s, canonicalID)
+			})
+		}
+	}
+
 	b.clusters.Delete(normalizeID(id))
 	delete(b.tags, b.rdsARN("cluster", canonicalID))
 	delete(b.fisFailoverFaults, canonicalID)
@@ -637,8 +673,13 @@ func ValidateStorageTypeForCluster(storageType string) error {
 	}
 }
 
-// FailoverDBCluster triggers a failover on an Aurora DB cluster.
-func (b *InMemoryBackend) FailoverDBCluster(clusterID, _ string) (*DBCluster, error) {
+// FailoverDBCluster triggers a failover on an Aurora DB cluster, promoting an
+// Aurora Replica to be the new cluster writer (rds@v1.124.1
+// api_op_FailoverDBCluster.go:13-14). targetDBInstanceIdentifier, when given,
+// must name an existing cluster member other than the current writer; when
+// empty, the first non-writer member is promoted instead, mirroring AWS
+// auto-selecting a replica.
+func (b *InMemoryBackend) FailoverDBCluster(clusterID, targetDBInstanceIdentifier string) (*DBCluster, error) {
 	b.mu.Lock("FailoverDBCluster")
 	defer b.mu.Unlock()
 	cluster, exists := b.clusters.Get(normalizeID(clusterID))
@@ -648,8 +689,31 @@ func (b *InMemoryBackend) FailoverDBCluster(clusterID, _ string) (*DBCluster, er
 	if cluster.Status != instanceStatusAvailable {
 		return nil, fmt.Errorf("%w: cluster %s is not in available state", ErrInvalidDBClusterStateFault, clusterID)
 	}
-	cluster.Status = "failing-over"
+
+	var targetIdx int
+	if targetDBInstanceIdentifier != "" {
+		targetIdx = slices.IndexFunc(cluster.DBClusterMembers, func(m DBClusterMember) bool {
+			return idEqual(m.DBInstanceIdentifier, targetDBInstanceIdentifier)
+		})
+		if targetIdx < 0 {
+			return nil, fmt.Errorf(
+				"%w: %s is not a member of cluster %s",
+				ErrInvalidDBInstanceState, targetDBInstanceIdentifier, clusterID,
+			)
+		}
+	} else {
+		targetIdx = slices.IndexFunc(cluster.DBClusterMembers, func(m DBClusterMember) bool {
+			return !m.IsClusterWriter
+		})
+	}
+
+	cluster.Status = clusterStatusFailingOver
 	b.publishClusterEventLocked(cluster.DBClusterIdentifier, "DB cluster failover started")
+	if targetIdx >= 0 {
+		for i := range cluster.DBClusterMembers {
+			cluster.DBClusterMembers[i].IsClusterWriter = i == targetIdx
+		}
+	}
 	cluster.Status = instanceStatusAvailable
 	cp := *cluster
 
@@ -717,6 +781,16 @@ func (b *InMemoryBackend) PromoteReadReplicaDBCluster(clusterID string) (*DBClus
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrClusterNotFound, clusterID)
 	}
+
+	if cluster.ReplicationSourceIdentifier != "" {
+		if src, srcExists := b.clusters.Get(normalizeID(cluster.ReplicationSourceIdentifier)); srcExists {
+			src.ReadReplicaIdentifiers = slices.DeleteFunc(src.ReadReplicaIdentifiers, func(s string) bool {
+				return idEqual(s, cluster.DBClusterIdentifier)
+			})
+		}
+	}
+
+	cluster.ReplicationSourceIdentifier = ""
 	cluster.Status = instanceStatusAvailable
 	cp := *cluster
 
@@ -816,4 +890,27 @@ func (b *InMemoryBackend) IsClusterFailoverActive(clusterID string) bool {
 	}
 
 	return true
+}
+
+// clusterFailoverActiveRLocked reports whether a FIS failover fault is active
+// for clusterID, without mutating b.fisFailoverFaults. Caller must hold at
+// least b.mu.RLock(); an expired entry is left in place for the locked
+// IsClusterFailoverActive path to evict.
+func (b *InMemoryBackend) clusterFailoverActiveRLocked(clusterID string) bool {
+	exp, ok := b.fisFailoverFaults[clusterID]
+	if !ok {
+		return false
+	}
+
+	return exp.IsZero() || !time.Now().After(exp)
+}
+
+// overlayFailoverStatusRLocked sets cluster.Status to "failing-over" when a
+// FIS failover fault is active for it, so DescribeDBClusters observably
+// reflects an in-progress FIS failover experiment. Caller must hold at least
+// b.mu.RLock().
+func (b *InMemoryBackend) overlayFailoverStatusRLocked(cluster *DBCluster) {
+	if b.clusterFailoverActiveRLocked(cluster.DBClusterIdentifier) {
+		cluster.Status = clusterStatusFailingOver
+	}
 }

@@ -49,6 +49,24 @@ func doSMRequest(t *testing.T, h *secretsmanager.Handler, target, body string) *
 	return rec
 }
 
+// doSMRequestInRegion is doSMRequest with an explicit AWS region, via the
+// same X-Amz-Region header httputils.ExtractRegionFromRequest reads.
+func doSMRequestInRegion(
+	t *testing.T, h *secretsmanager.Handler, region, target, body string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+
+	e := echo.New()
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("X-Amz-Target", target)
+	req.Header.Set("X-Amz-Region", region)
+	rec := httptest.NewRecorder()
+	require.NoError(t, h.Handler()(e.NewContext(req, rec)))
+
+	return rec
+}
+
 // ptr64 returns the address of an int64 literal.
 func ptr64(v int64) *int64 {
 	p := new(int64)

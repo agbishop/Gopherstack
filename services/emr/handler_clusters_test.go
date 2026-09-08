@@ -267,6 +267,51 @@ func TestRunJobFlow_InvalidReleaseLabel(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+func TestRunJobFlow_SecurityConfigurationValidation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unknown security configuration returns error", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		rec := doEMRRequest(t, h, "RunJobFlow", map[string]any{
+			"Name":                  "sc-cluster",
+			"SecurityConfiguration": "does-not-exist",
+		})
+
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+
+		var errOut map[string]string
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errOut))
+		assert.Equal(t, "InvalidRequestException", errOut["__type"])
+	})
+
+	t.Run("no security configuration still succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		rec := doEMRRequest(t, h, "RunJobFlow", map[string]any{"Name": "no-sc-cluster"})
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("existing security configuration succeeds", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		scRec := doEMRRequest(t, h, "CreateSecurityConfiguration", map[string]any{
+			"Name":                  "my-sc",
+			"SecurityConfiguration": "{}",
+		})
+		require.Equal(t, http.StatusOK, scRec.Code)
+
+		rec := doEMRRequest(t, h, "RunJobFlow", map[string]any{
+			"Name":                  "sc-cluster-ok",
+			"SecurityConfiguration": "my-sc",
+		})
+		require.Equal(t, http.StatusOK, rec.Code)
+	})
+}
+
 func TestRunJobFlow_DefaultReleaseLabel(t *testing.T) {
 	t.Parallel()
 

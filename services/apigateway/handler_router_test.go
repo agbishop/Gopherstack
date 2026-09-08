@@ -1042,6 +1042,10 @@ func (n *noopBackend) EnforceUsagePlan(_, _, _ string) error {
 	return nil
 }
 
+func (n *noopBackend) EnforceMethodThrottle(_, _, _, _ string) error {
+	return nil
+}
+
 func (n *noopBackend) CreateVpcLink(_ apigateway.CreateVpcLinkInput) (*apigateway.VpcLink, error) {
 	return nil, errNoopNotImplemented
 }

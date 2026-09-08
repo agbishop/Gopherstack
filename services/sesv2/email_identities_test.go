@@ -1078,6 +1078,32 @@ func TestDeleteEmailIdentity(t *testing.T) {
 	}
 }
 
+func TestDeleteEmailIdentity_ClearsGhostStateOnRecreate(t *testing.T) {
+	t.Parallel()
+
+	h := newHandler()
+
+	_, err := h.Backend.CreateEmailIdentity("reused@example.com", "", map[string]string{"env": "prod"})
+	require.NoError(t, err)
+	require.NoError(
+		t,
+		h.Backend.CreateEmailIdentityPolicy("reused@example.com", "my-policy", `{"Version":"2012-10-17"}`),
+	)
+
+	require.NoError(t, h.Backend.DeleteEmailIdentity("reused@example.com"))
+
+	_, err = h.Backend.CreateEmailIdentity("reused@example.com", "", nil)
+	require.NoError(t, err)
+
+	recreated, err := h.Backend.GetEmailIdentity("reused@example.com")
+	require.NoError(t, err)
+	assert.Empty(t, recreated.Tags)
+
+	policies, err := h.Backend.GetEmailIdentityPolicies("reused@example.com")
+	require.NoError(t, err)
+	assert.Empty(t, policies)
+}
+
 func TestEmailIdentity_DeepCopy(t *testing.T) {
 	t.Parallel()
 

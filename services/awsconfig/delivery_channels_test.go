@@ -210,6 +210,26 @@ func TestAWSConfigBackend_DeleteDeliveryChannel(t *testing.T) {
 	}
 }
 
+// TestAWSConfigBackend_DeleteDeliveryChannel_RejectedWhileRecorderActive
+// locks real AWS's DeleteDeliveryChannel doc comment: "Before you can
+// delete the delivery channel, you must stop the customer managed
+// configuration recorder".
+func TestAWSConfigBackend_DeleteDeliveryChannel_RejectedWhileRecorderActive(t *testing.T) {
+	t.Parallel()
+
+	b := awsconfig.NewInMemoryBackend()
+
+	require.NoError(t, b.PutDeliveryChannel("ch-active", "bucket", "", "", nil))
+	require.NoError(t, b.PutConfigurationRecorder("rec-active", "arn:aws:iam::000000000000:role/r", nil))
+	require.NoError(t, b.StartConfigurationRecorder("rec-active"))
+
+	err := b.DeleteDeliveryChannel("ch-active")
+	require.ErrorIs(t, err, awsconfig.ErrLastDeliveryChannelDeleteFailed)
+
+	require.NoError(t, b.StopConfigurationRecorder("rec-active"))
+	require.NoError(t, b.DeleteDeliveryChannel("ch-active"))
+}
+
 func TestAWSConfigBackend_DeliverConfigSnapshot(t *testing.T) {
 	t.Parallel()
 

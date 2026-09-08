@@ -62,7 +62,7 @@ func TestHandler_PutObject_ContentMD5(t *testing.T) {
 			mustCreateBucket(t, backend, tt.bucket)
 
 			req := httptest.NewRequest(http.MethodPut, tt.url, strings.NewReader(tt.body))
-			req.Header.Set("Content-Md5", tt.md5Header)
+			req.Header.Set("Content-MD5", tt.md5Header)
 			rec := httptest.NewRecorder()
 			serveS3Handler(handler, rec, req)
 

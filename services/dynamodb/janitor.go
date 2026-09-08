@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/blackbirdworks/gopherstack/pkgs/dynamoattr"
 	"github.com/blackbirdworks/gopherstack/pkgs/logger"
 	"github.com/blackbirdworks/gopherstack/pkgs/telemetry"
 	"github.com/blackbirdworks/gopherstack/pkgs/worker"
@@ -230,13 +229,12 @@ func drainDeletingTablesLocked(db *InMemoryDB) ([]*Table, int) {
 func (j *Janitor) sweepTTL(ctx context.Context) {
 	db := j.Backend
 	tables := db.ListAllTables()
-	now := float64(time.Now().Unix())
 	totalEvicted := 0
 
 	replicationQueue := make([]ttlReplicationEntry, 0, len(tables))
 
 	for _, table := range tables {
-		count, pending := j.sweepTableTTL(ctx, db, table, now)
+		count, pending := j.sweepTableTTL(ctx, db, table)
 		totalEvicted += count
 		replicationQueue = append(replicationQueue, pending...)
 	}
@@ -276,7 +274,6 @@ func (j *Janitor) sweepTableTTL(
 	ctx context.Context,
 	db *InMemoryDB,
 	table *Table,
-	now float64,
 ) (int, []ttlReplicationEntry) {
 	ttlAttr, gtName, tableARN := ttlSweepMetaRLocked(table)
 
@@ -299,7 +296,7 @@ func (j *Janitor) sweepTableTTL(
 		var batchEvicted int
 		var batchPending []ttlReplicationEntry
 
-		i, batchEvicted, batchPending = j.sweepTTLBatchLocked(db, table, ttlAttr, gtName, region, now, i)
+		i, batchEvicted, batchPending = j.sweepTTLBatchLocked(db, table, ttlAttr, gtName, region, i)
 		pending = append(pending, batchPending...)
 		totalEvicted += batchEvicted
 
@@ -338,7 +335,6 @@ func (j *Janitor) sweepTTLBatchLocked(
 	db *InMemoryDB,
 	table *Table,
 	ttlAttr, gtName, region string,
-	now float64,
 	i int,
 ) (int, int, []ttlReplicationEntry) {
 	table.mu.Lock("TTLSweep")
@@ -365,8 +361,7 @@ func (j *Janitor) sweepTTLBatchLocked(
 	for ; i > batchEnd; i-- {
 		item := table.Items[i]
 
-		ttlVal, ok := dynamoattr.ParseNumeric(item[ttlAttr])
-		if !ok || ttlVal >= now {
+		if !isItemExpiredWithGrace(item, ttlAttr, TTLGracePeriod) {
 			continue
 		}
 
@@ -727,15 +722,44 @@ func sweepTableStreamRecordsLocked(t *Table, now int64) int {
 	}
 
 	// Compact the ring buffer when more than half the slots are expired tombstones.
-	// Allocate a fresh slice so the GC can reclaim the old backing array immediately
-	// (unlike [:0] which retains the backing array).
 	if len(t.StreamRecords) > 0 && tombstones*2 >= len(t.StreamRecords) {
-		t.streamTrimSeq = t.streamSeq + 1
-		t.StreamRecords = make([]models.StreamRecord, 0, maxStreamRecords)
-		t.StreamHead = 0
+		t.compactExpiredStreamRecordsLocked(now)
 	}
 
 	return cleared
+}
+
+// compactExpiredStreamRecordsLocked drops only the stream records older than
+// streamExpirySeconds and advances streamTrimSeq past them, preserving every
+// record still within DynamoDB Streams' 24-hour retention window. A prior
+// version discarded the entire ring (StreamRecords = nil, streamTrimSeq =
+// streamSeq+1) here, which also destroyed records under 24h old and made
+// them wrongly appear as trimmed to GetRecords/GetShardIterator callers.
+// Must be called with table.mu held (write lock).
+func (t *Table) compactExpiredStreamRecordsLocked(now int64) {
+	tail, head := t.streamRecordsInOrder()
+	ordered := make([]models.StreamRecord, 0, len(tail)+len(head))
+	ordered = append(ordered, tail...)
+	ordered = append(ordered, head...)
+
+	kept := ordered[:0]
+	trimSeq := t.streamTrimSeq
+
+	for _, r := range ordered {
+		if r.ApproximateCreationDateTime > 0 && now-r.ApproximateCreationDateTime > streamExpirySeconds {
+			if seq, err := parseSeqNum(r.SequenceNumber); err == nil && seq+1 > trimSeq {
+				trimSeq = seq + 1
+			}
+
+			continue
+		}
+
+		kept = append(kept, r)
+	}
+
+	t.StreamRecords = kept
+	t.StreamHead = 0
+	t.streamTrimSeq = trimSeq
 }
 
 // TTLGracePeriod is the extra time added after an item's TTL timestamp before it

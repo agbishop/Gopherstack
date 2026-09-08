@@ -135,6 +135,29 @@ func subnetsToMappings(subnets []string) []SubnetMapping {
 	return out
 }
 
+// validateNetworkRefs checks CreateLoadBalancer's SecurityGroups and subnet mappings
+// against the wired EC2Resolver. Callers must hold b.mu. A nil ec2Resolver (the
+// default) accepts every security-group/subnet id unvalidated.
+func (b *InMemoryBackend) validateNetworkRefs(sgs []string, mappings []SubnetMapping) error {
+	if b.ec2Resolver == nil {
+		return nil
+	}
+
+	for _, sg := range sgs {
+		if !b.ec2Resolver.SecurityGroupExists(sg) {
+			return fmt.Errorf("%w: %s", ErrInvalidSecurityGroup, sg)
+		}
+	}
+
+	for _, m := range mappings {
+		if !b.ec2Resolver.SubnetExists(m.SubnetID) {
+			return fmt.Errorf("%w: %s", ErrSubnetNotFound, m.SubnetID)
+		}
+	}
+
+	return nil
+}
+
 // CreateLoadBalancer creates a new load balancer.
 func (b *InMemoryBackend) CreateLoadBalancer(input CreateLoadBalancerInput) (*LoadBalancer, error) {
 	b.mu.Lock("CreateLoadBalancer")
@@ -199,6 +222,10 @@ func (b *InMemoryBackend) CreateLoadBalancer(input CreateLoadBalancerInput) (*Lo
 	mappings := input.SubnetMappings
 	if len(mappings) == 0 {
 		mappings = subnetsToMappings(input.Subnets)
+	}
+
+	if err := b.validateNetworkRefs(input.SecurityGroups, mappings); err != nil {
+		return nil, err
 	}
 
 	azs := subnetMappingsToAZs(b.region, mappings)
@@ -390,6 +417,7 @@ func (b *InMemoryBackend) DeleteLoadBalancer(lbArn string) error {
 	}
 
 	lb.Tags.Close()
+	delete(b.resourcePolicies, lbArn)
 	b.loadBalancers.Delete(lbArn)
 
 	return nil

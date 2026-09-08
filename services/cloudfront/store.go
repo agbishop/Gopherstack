@@ -99,7 +99,6 @@ type InMemoryBackend struct {
 	originRequestPolicies             *store.Table[OriginRequestPolicy]
 	originRequestPolicyByName         map[string]string // name → policy ID (uniqueness)
 	fieldLevelEncryptions             *store.Table[FieldLevelEncryption]
-	fieldLevelEncryptionByName        map[string]string // name → ID
 	fieldLevelEncryptionProfiles      *store.Table[FieldLevelEncryptionProfile]
 	fieldLevelEncryptionProfileByName map[string]string // name → ID
 	publicKeys                        *store.Table[PublicKey]
@@ -197,7 +196,6 @@ func NewInMemoryBackend(ctx context.Context, accountID, region string) *InMemory
 		originAccessControlByName:           make(map[string]string),
 		responseHeadersPolicyByName:         make(map[string]string),
 		originRequestPolicyByName:           make(map[string]string),
-		fieldLevelEncryptionByName:          make(map[string]string),
 		fieldLevelEncryptionProfileByName:   make(map[string]string),
 		publicKeyByName:                     make(map[string]string),
 		keyGroupByName:                      make(map[string]string),
@@ -309,6 +307,8 @@ func (b *InMemoryBackend) Reset() {
 	// store_setup.go's registerAllTables doc), so they need an explicit Reset call.
 	b.invalidations.Reset()
 	b.tenantInvalidations.Reset()
+	b.invalidationReadyAt = make(map[string]map[string]time.Time)
+	b.tenantInvalidationReadyAt = make(map[string]map[string]time.Time)
 
 	b.resetDistributions()
 	b.resetPoliciesAndKeys()
@@ -348,7 +348,6 @@ func (b *InMemoryBackend) resetDistributions() {
 // resetPoliciesAndKeys clears encryption, key, and store maps not covered by
 // b.registry.ResetAll().
 func (b *InMemoryBackend) resetPoliciesAndKeys() {
-	b.fieldLevelEncryptionByName = make(map[string]string)
 	b.fieldLevelEncryptionProfileByName = make(map[string]string)
 	b.publicKeyByName = make(map[string]string)
 	b.keyGroupByName = make(map[string]string)

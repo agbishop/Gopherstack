@@ -65,13 +65,13 @@ ops:
   AssociateDelegateToResource: {wire: ok, errors: ok, state: ok, persist: ok}
   DisassociateDelegateFromResource: {wire: ok, errors: ok, state: ok, persist: ok}
   ListResourceDelegates: {wire: ok, errors: ok, state: ok, persist: ok}
-  CreateAlias: {wire: ok, errors: ok, state: ok, persist: ok, note: "errcodeaudit 2026-08-29 FIX: alias-in-use rejection emitted the fabricated EntityAlreadyExistsException; switched to the real EmailAddressInUseException CreateAlias's own model defines."}
+  CreateAlias: {wire: ok, errors: ok, state: ok, persist: ok, note: "errcodeaudit 2026-08-29 FIX: alias-in-use rejection emitted the fabricated EntityAlreadyExistsException; switched to the real EmailAddressInUseException CreateAlias's own model defines. gopherstack-gmny (2026-09-06): now enforces the documented, non-adjustable 100-aliases-per-user quota (maxAliasesPerUser, aliases.go) -- see LimitExceededException gap note below for sourcing."}
   DeleteAlias: {wire: ok, errors: ok, state: ok, persist: ok}
   ListAliases: {wire: ok, errors: ok, state: ok, persist: ok, note: "primary email correctly included as first alias entry."}
   PutMailboxPermissions: {wire: ok, errors: ok, state: ok, persist: ok}
   DeleteMailboxPermissions: {wire: ok, errors: ok, state: ok, persist: ok}
   ListMailboxPermissions: {wire: ok, errors: ok, state: ok, persist: ok}
-  RegisterMailDomain: {wire: ok, errors: ok, state: ok, persist: ok, note: "now sets DkimVerificationStatus=PENDING and populates Records (see GetMailDomain gap-close note). errcodeaudit 2026-08-29 FIX: duplicate-registration rejection emitted the fabricated EntityAlreadyExistsException; switched to the real MailDomainInUseException RegisterMailDomain's own model defines. Verified via TestRegisterMailDomain_InUse."}
+  RegisterMailDomain: {wire: ok, errors: ok, state: ok, persist: ok, note: "now sets DkimVerificationStatus=PENDING and populates Records (see GetMailDomain gap-close note). errcodeaudit 2026-08-29 FIX: duplicate-registration rejection emitted the fabricated EntityAlreadyExistsException; switched to the real MailDomainInUseException RegisterMailDomain's own model defines. Verified via TestRegisterMailDomain_InUse. gopherstack-gmny (2026-09-06): now enforces the documented, non-adjustable 1,000-domains-per-organization quota (maxDomainsPerOrganization, mail_domains.go) -- see LimitExceededException gap note below for sourcing."}
   DeregisterMailDomain: {wire: ok, errors: ok, state: ok, persist: ok, note: "default-domain protection verified (MailDomainStateException)."}
   GetMailDomain: {wire: ok, errors: ok, state: ok, persist: ok, note: "GAP CLOSED: DkimVerificationStatus (PENDING on RegisterMailDomain, VERIFIED on the org's own domains from CreateOrganization) and Records (types.DnsRecord list: MX + SPF TXT + autodiscover CNAME + 3 DKIM CNAMEs, via dnsRecordsForDomain in mail_domains.go) now modeled and wired through the response. Record token/value contents are simulation-only placeholders (real WorkMail issues real per-domain DKIM tokens); the wire shape ({Hostname,Type,Value} per entry) is what a real SDK client actually reads and is correct. IsDefault/IsTestDomain/OwnershipVerificationStatus still correct (prior pass)."}
   ListMailDomains: {wire: ok, errors: ok, state: ok, persist: ok, note: "item shape is types.MailDomainSummary, wire key is DefaultDomain (not IsDefault) and there is no IsTestDomain field -- was silently emitting IsDefault=false/absent forever from the real client's point of view. Fixed (prior pass)."}
@@ -133,6 +133,7 @@ gaps:
   - "CORRECTED 2026-08-23 (manifest-harvest pass): this bullet was stale. DescribeResource already models both BookingOptions and HiddenFromGlobalAddressList -- field-diffed against DescribeResourceOutput/types.BookingOptions (workmail@v1.39.4 api_op_DescribeResource.go:54-84, types/types.go:85-98): both fields present on handler_resources.go's describeResourceResp, BookingOptions carries all 3 real sub-fields (AutoAcceptRequests/AutoDeclineConflictingRequests/AutoDeclineRecurringRequests, interfaces.go), and CreateResource/UpdateResource both thread BookingOptions through. Already covered end-to-end by TestDescribeResource_BookingOptionsAndHiddenFromGAL (handler_resources_test.go), which passes. No code change needed -- the implementation predates this note and the note was never updated to match."
   - "Organization.State is hardcoded to ACTIVE (org creation is synchronous); real AWS transitions through Creating/Active/etc, but nothing in this backend ever leaves an org in a non-terminal state, so this is a non-issue in practice, not a hidden bug. Left as-is (re-verified this pass, not fixed -- there is nothing to fix: no code path produces an incorrect State)."
   - "ALREADY FIXED (2026-08-29 gopherstack-sm09 re-verification): this bullet was stale. CreateOrganization threads EnableInteroperability onto Organization.InteroperabilityEnabled (organizations.go:47, landed in fb80d66cd) and DescribeOrganization echoes it back (handler_organizations.go:78); TestCreateOrganization_EnableInteroperability (handler_organizations_test.go) proves both true and false round-trip through the real handler. No code change needed -- the fix predates this note and the note was never updated to match."
+  - "LimitExceededException (gopherstack-gmny, 2026-09-06): declared on 10 ops but only 2 have a published, non-adjustable AWS quota to enforce. DOCUMENTATION-SOURCED, not SDK-verified (no wire field exists to check these numbers against) -- per docs.aws.amazon.com/workmail/latest/adminguide/workmail_limits.html: CreateAlias enforces 'Maximum number of aliases per user | 100. This is a hard quota and can't be changed.' (maxAliasesPerUser, aliases.go, scoped per entity from the existing b.aliases[orgID][entityID] bookkeeping); RegisterMailDomain enforces 'Number of domains per Amazon WorkMail organization | 1,000. This is a hard quota and can't be changed.' (maxDomainsPerOrganization, mail_domains.go, scoped per org from the existing b.mailDomainsByOrg index). CreateOrganization's published number (100 orgs/account) is explicitly NOT enforced: AWS states it 'Can be increased based on an organization's directory type' -- the same adjustable-quota shape already declined at services/efs/PARITY.md:76,80, so hardcoding it here would risk breaking legitimate high-volume use of the mock for no wire-shape benefit. The remaining 7 ops (CreateAvailabilityConfiguration, CreateImpersonationRole, CreateMobileDeviceAccessRule, PutAccessControlRule, PutRetentionPolicy, StartMailboxExportJob, UpdateImpersonationRole) have no published number anywhere on the quotas page or the API reference; durably blocked, recorded so nobody re-searches."
 deferred: []
 # The single previously-deferred item (Tags persistence) was independently
 # re-verified this pass and found to be NOT actually deferred -- see the
@@ -527,3 +528,128 @@ was broken at the time of this pass by a concurrent, out-of-scope edit to
 via `git status`/`git diff --stat`, unrelated to this pass), `go test -race
 -count=1 ./services/workmail/...` (pass, no new tests -- nothing to prove),
 `golangci-lint run ./services/workmail/...` (0 issues).
+
+## 2026-09-07 errtargetaudit re-sweep (gopherstack-hp83): 2 of 12 flip from refusal to fix on new evidence
+
+Re-verified all 12 class-A findings the tool reports for workmail (same 12
+as the 2026-08-31 pass: 11 `EntityNotFoundException` + 1
+`MailDomainStateException`, all on `Delete*`/`DeregisterMailDomain`), again
+against `workmail@v1.39.4/deserializers.go`'s per-op
+`awsAwsjson11_deserializeOpError<Op>` switches. Confirms every prior
+per-op wire-model claim unchanged: none of the 11 flagged ops declare
+`EntityNotFoundException`/`ResourceNotFoundException`/
+`MailDomainNotFoundException`, and `DeregisterMailDomain` declares no
+`MailDomainStateException` either.
+
+New this pass: also read each flagged op's doc comment in the pinned SDK's
+own `api_op_<Op>.go` (not just its error-set switch, which only says what
+code *isn't* used, not what the op actually does on a missing entity).
+`api_op_DeleteAccessControlRule.go` and
+`api_op_DeleteMobileDeviceAccessRule.go` state outright: "Deleting already
+deleted and non-existing rules does not produce an error. In those cases,
+the service sends back an HTTP 200 response with an empty HTTP body."
+(`grep -l "does not produce an error" api_op_*.go` across all 92 workmail
+ops matches exactly these two plus `DeleteMobileDeviceAccessOverride`,
+which is out of scope -- its own model does declare
+`EntityNotFoundException` and it isn't one of the 12 findings.) That is
+direct, authoritative textual proof of intended behavior, not an inference
+from an error-set omission, and it flips these 2 findings from "no correct
+code, leave" to "the current code is wrong on both the code AND on
+whether to error at all."
+
+**Fixed** (`services/workmail/access_control.go` `DeleteAccessControlRule`,
+`services/workmail/mobile_device_access.go`
+`DeleteMobileDeviceAccessRule`): both now delete-if-present and return nil
+unconditionally once the organization is confirmed to exist, matching the
+documented idempotent-delete semantics, instead of returning
+`EntityNotFoundException` (a code their own wire model never declares) when
+the target rule is missing. Regression tests added:
+`TestDeleteAccessControlRule_NonExistent`
+(`handler_access_control_test.go`) and
+`TestDeleteMobileDeviceAccessRule_NonExistent`
+(`handler_mobile_device_access_test.go`), each asserting HTTP 200 with an
+empty body (no `__type`) for a delete of a name/ID that was never created.
+No pre-existing test exercised deleting a non-existent
+rule for either op (the existing `delete_rule`/lifecycle tests only cover
+deleting a rule that exists), so no pre-existing test needed correcting or
+was pinning the old behavior for these two ops.
+
+Neuter check (temporarily reverted each fix to the prior
+`if !...Delete(...) { return fmt.Errorf(...ErrNotFound...) }` shape,
+confirmed `go build ./services/workmail/...` still compiled, confirmed the
+corresponding new test failed with `400`/`EntityNotFoundException` instead
+of the expected `200`, then restored the fix): both lines behaved exactly
+as required.
+
+**Left unchanged** (10 findings: `DeleteAvailabilityConfiguration`,
+`DeleteGroup`, `DeleteIdentityCenterApplication`, `DeleteImpersonationRole`,
+`DeletePersonalAccessToken`, `DeleteResource`, `DeleteRetentionPolicy`,
+`DeleteUser`, and `DeregisterMailDomain`'s both findings) -- none of these
+ops' `api_op_<Op>.go` doc comments carry the "does not produce an error"
+text or any other statement of missing-entity behavior (checked directly,
+not assumed by analogy to the two fixed ops), so applying the same
+idempotent-no-op fix to them would be guessing, which the 2026-08-31 pass
+already correctly declined to do. The existing per-site comments citing
+gopherstack-6flj/uox6 remain accurate and are left in place. Filed for the
+issue author to decide whether to chase down non-SDK-doc evidence (e.g. AWS
+admin-guide text) before guessing further.
+
+Re-ran `errtargetaudit`: workmail class-A findings dropped from 12 to 10,
+exactly the 2 fixed ops falling out; the remaining 10 are the pre-existing
+documented refusals, unchanged.
+
+Gates: `GOTOOLCHAIN=go1.26.6 go build ./services/workmail/...` (clean),
+`GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/workmail/...`
+(pass), `GOTOOLCHAIN=go1.26.6 golangci-lint run services/workmail/...` (0
+issues).
+
+### Addendum, same day: a third op shares the doc sentence but not the bug
+
+`grep -l "does not produce an error" api_op_*.go` (used above to find the 2
+fixed ops) actually matches three files, not two:
+`DeleteAccessControlRule`, `DeleteMobileDeviceAccessRule`, and
+`DeleteMobileDeviceAccessOverride`. The third was initially dismissed
+without checking its own error set -- wrong. Checked directly:
+
+```
+awk "/deserializeOpErrorDeleteMobileDeviceAccessOverride\(/,/^}/" deserializers.go | grep -oE '"[A-Za-z0-9]+"'
+"UnknownError"
+"EntityNotFoundException"
+"InvalidParameterException"
+"OrganizationNotFoundException"
+"OrganizationStateException"
+```
+
+Unlike the other two, `DeleteMobileDeviceAccessOverride` DOES declare
+`EntityNotFoundException` in its own model -- even though its doc comment
+carries the identical "Deleting already deleted and non-existing overrides
+does not produce an error... HTTP 200... empty HTTP body" sentence. AWS's
+own model and doc comment disagree with each other for this one op. Since
+the modeled `errors` list is what a real client can even deserialize as a
+typed exception (and is the same signal `errtargetaudit` and every
+gopherstack error-envelope fix in this file has treated as authoritative
+over free text), gopherstack's existing behavior -- returning
+`EntityNotFoundException` when the override doesn't exist -- is correct as
+written. **Not changed.** Added an in-place comment at
+`mobile_device_access.go`'s `DeleteMobileDeviceAccessOverride` recording
+the conflict so it isn't rediscovered as a false lead later.
+
+This also answers why `errtargetaudit` flagged 2 of the 3 doc-sentence ops
+and not the third: the tool's finding criterion is "emitted code absent
+from the op's own declared error set," and `EntityNotFoundException` *is*
+declared for `DeleteMobileDeviceAccessOverride` -- so by the tool's own
+(wire-model-grounded) methodology this one is correctly a non-finding, not
+a miss. Confirmed no pre-existing test pins a bug here either:
+`TestMobileDeviceAccessOverrideErrors`'s "delete nonexistent override" case
+(`handler_mobile_device_access_test.go`) already asserts
+`EntityNotFoundException`/400, which matches the declared model -- it was
+asserting correct behavior all along, not pinning a defect. No fix, no new
+test needed; existing coverage already proves the modeled path.
+
+Files changed this addendum: `services/workmail/mobile_device_access.go`
+(comment only, no behavior change).
+
+Gates re-run: `GOTOOLCHAIN=go1.26.6 go build ./services/workmail/...`
+(clean), `GOTOOLCHAIN=go1.26.6 go test -race -count=1
+./services/workmail/...` (pass, unchanged), `GOTOOLCHAIN=go1.26.6
+golangci-lint run services/workmail/...` (0 issues).

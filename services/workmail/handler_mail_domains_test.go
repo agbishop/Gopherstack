@@ -190,3 +190,74 @@ func TestGetMailDomain_DkimAndRecords(t *testing.T) {
 		})
 	}
 }
+
+// TestWorkMail_RegisterMailDomain_MaxDomainsPerOrganization covers the hard,
+// non-adjustable "Number of domains per Amazon WorkMail organization" quota
+// of 1,000 (docs.aws.amazon.com/workmail/latest/adminguide/
+// workmail_limits.html). CreateOrganization always registers one default
+// domain, so reaching the limit takes 999 additional RegisterMailDomain
+// calls.
+func TestWorkMail_RegisterMailDomain_MaxDomainsPerOrganization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		run  func(t *testing.T, h *workmail.Handler)
+		name string
+	}{
+		{
+			name: "at_limit_succeeds_one_over_fails",
+			run: func(t *testing.T, h *workmail.Handler) {
+				t.Helper()
+				orgID := createTestOrg(t, h, "domainquotaorg")
+
+				for i := range 999 {
+					rec := doOp(t, h, "RegisterMailDomain", fmt.Sprintf(
+						`{"OrganizationId":%q,"DomainName":"quota%d.example.com"}`, orgID, i,
+					))
+					require.Equalf(t, http.StatusOK, rec.Code, "domain %d should succeed at the limit", i)
+				}
+
+				rec := doOp(t, h, "RegisterMailDomain", fmt.Sprintf(
+					`{"OrganizationId":%q,"DomainName":"quota999.example.com"}`, orgID,
+				))
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				m := decodeJSON(t, rec)
+				assert.Equal(t, "LimitExceededException", m["__type"])
+			},
+		},
+		{
+			name: "scoped_per_organization_not_account",
+			run: func(t *testing.T, h *workmail.Handler) {
+				t.Helper()
+				org1 := createTestOrg(t, h, "domainscopeorg1")
+				org2 := createTestOrg(t, h, "domainscopeorg2")
+
+				for i := range 999 {
+					rec := doOp(t, h, "RegisterMailDomain", fmt.Sprintf(
+						`{"OrganizationId":%q,"DomainName":"org1quota%d.example.com"}`, org1, i,
+					))
+					require.Equalf(t, http.StatusOK, rec.Code, "domain %d should succeed at the limit", i)
+				}
+
+				rec := doOp(t, h, "RegisterMailDomain", fmt.Sprintf(
+					`{"OrganizationId":%q,"DomainName":"org1over.example.com"}`, org1,
+				))
+				assert.Equal(t, http.StatusBadRequest, rec.Code, "org1 is at its own limit")
+
+				rec2 := doOp(t, h, "RegisterMailDomain", fmt.Sprintf(
+					`{"OrganizationId":%q,"DomainName":"org2fresh.example.com"}`, org2,
+				))
+				assert.Equal(t, http.StatusOK, rec2.Code, "org2's own quota is untouched by org1's")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			tt.run(t, h)
+		})
+	}
+}

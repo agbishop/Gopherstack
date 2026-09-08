@@ -309,15 +309,20 @@ func maskPhone(phone string) string {
 	return "+*******" + phone[len(phone)-maskPhoneVisibleSuffix:]
 }
 
-func (b *InMemoryBackend) EvictExpiredAttrVerificationCodes() {
+// EvictExpiredAttrVerificationCodes deletes expired codes and returns the count evicted.
+func (b *InMemoryBackend) EvictExpiredAttrVerificationCodes() int {
 	b.mu.Lock("EvictExpiredAttrVerificationCodes")
 	defer b.mu.Unlock()
 
 	now := time.Now()
+	evicted := 0
 
 	for key, entry := range b.attrVerificationCodes {
 		if now.After(entry.ExpiresAt) {
 			delete(b.attrVerificationCodes, key)
+			evicted++
 		}
 	}
+
+	return evicted
 }

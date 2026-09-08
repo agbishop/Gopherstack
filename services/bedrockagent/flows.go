@@ -237,7 +237,16 @@ func (b *InMemoryBackend) GetFlowVersion(
 }
 
 // DeleteFlowVersion deletes a flow version.
-func (b *InMemoryBackend) DeleteFlowVersion(_ context.Context, flowID, flowVersion string) error {
+//
+// Real AWS (api_op_DeleteFlowVersion.go): "By default, this value is false
+// and deletion is stopped if the resource is in use. If you set it to true,
+// the resource will be deleted even if the resource is in use." A flow
+// version is "in use" when a flow alias's routingConfiguration still points
+// at it (types.FlowAliasRoutingConfigurationListItem.FlowVersion) -- the
+// only wire-visible relationship a flow version participates in.
+func (b *InMemoryBackend) DeleteFlowVersion(
+	_ context.Context, flowID, flowVersion string, skipResourceInUseCheck bool,
+) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -248,6 +257,19 @@ func (b *InMemoryBackend) DeleteFlowVersion(_ context.Context, flowID, flowVersi
 	key := flowVersionKey(flowID, flowVersion)
 	if !b.flowVersions.Has(key) {
 		return fmt.Errorf("%w: flow version %q not found", ErrNotFound, flowVersion)
+	}
+
+	if !skipResourceInUseCheck {
+		for _, al := range b.flowAliasesByFlow.Get(flowID) {
+			for _, r := range al.RoutingConfiguration {
+				if r.FlowVersion == flowVersion {
+					return fmt.Errorf(
+						"%w: flow version %q is referenced by alias %q",
+						ErrResourceInUse, flowVersion, al.AliasID,
+					)
+				}
+			}
+		}
 	}
 
 	b.flowVersions.Delete(key)

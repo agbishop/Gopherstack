@@ -1,6 +1,8 @@
 package medialive
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
@@ -98,10 +100,13 @@ type InMemoryBackend struct {
 	networks                 *store.Table[storedNetwork]
 	sdiSources               *store.Table[storedSdiSource]
 	channelPlacementGroups   *store.Table[storedChannelPlacementGroup]
-	accountKmsKeyID          string
-	accountID                string
-	region                   string
-	offerings                []*Offering
+	// nowFunc is the backend's time source, overridable in tests so
+	// PurchaseOffering's derived Start/End can be exercised deterministically.
+	nowFunc         func() time.Time
+	accountKmsKeyID string
+	accountID       string
+	region          string
+	offerings       []*Offering
 }
 
 // NewInMemoryBackend creates a new InMemoryBackend.
@@ -115,11 +120,14 @@ func NewInMemoryBackend(accountID, region string) *InMemoryBackend {
 		offerings:                seedOfferings(region),
 		accountID:                accountID,
 		region:                   region,
+		nowFunc:                  time.Now,
 	}
 	registerAllTables(b)
 
 	return b
 }
+
+func (b *InMemoryBackend) now() time.Time { return b.nowFunc().UTC() }
 
 // seedOfferings returns a small catalog of standard offerings.
 func seedOfferings(region string) []*Offering {

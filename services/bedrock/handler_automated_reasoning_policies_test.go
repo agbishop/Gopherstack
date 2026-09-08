@@ -687,6 +687,106 @@ func TestHandler_DeleteAutomatedReasoningPolicy(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec3.Code)
 }
 
+// TestHandler_DeleteAutomatedReasoningPolicy_ResourceInUse covers the force
+// precondition AWS documents: without force, delete fails while the policy
+// still has versions or test cases (bedrock@v1.66.4
+// api_op_DeleteAutomatedReasoningPolicy.go:36-41); force bypasses it.
+func TestHandler_DeleteAutomatedReasoningPolicy_ResourceInUse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		setup      func(t *testing.T, b *bedrock.InMemoryBackend, policyARN string)
+		name       string
+		force      bool
+		wantStatus int
+	}{
+		{
+			name:       "no artifacts no force succeeds",
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "test case blocks delete without force",
+			setup: func(t *testing.T, b *bedrock.InMemoryBackend, policyARN string) {
+				t.Helper()
+				_, err := b.CreateAutomatedReasoningPolicyTestCase(policyARN)
+				require.NoError(t, err)
+			},
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name: "test case does not block delete with force",
+			setup: func(t *testing.T, b *bedrock.InMemoryBackend, policyARN string) {
+				t.Helper()
+				_, err := b.CreateAutomatedReasoningPolicyTestCase(policyARN)
+				require.NoError(t, err)
+			},
+			force:      true,
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "version blocks delete without force",
+			setup: func(t *testing.T, b *bedrock.InMemoryBackend, policyARN string) {
+				t.Helper()
+				_, err := b.CreateAutomatedReasoningPolicyVersion(policyARN, "hash", nil)
+				require.NoError(t, err)
+			},
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name: "version does not block delete with force",
+			setup: func(t *testing.T, b *bedrock.InMemoryBackend, policyARN string) {
+				t.Helper()
+				_, err := b.CreateAutomatedReasoningPolicyVersion(policyARN, "hash", nil)
+				require.NoError(t, err)
+			},
+			force:      true,
+			wantStatus: http.StatusNoContent,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			policy, err := h.Backend.CreateAutomatedReasoningPolicy("del-inuse-pol", "", nil)
+			require.NoError(t, err)
+
+			if tt.setup != nil {
+				tt.setup(t, h.Backend, policy.PolicyArn)
+			}
+
+			path := "/automated-reasoning-policies/" + url.PathEscape(policy.PolicyArn)
+			if tt.force {
+				path += "?force=true"
+			}
+
+			rec := doRequest(t, h, http.MethodDelete, path, nil)
+			assert.Equal(t, tt.wantStatus, rec.Code)
+		})
+	}
+}
+
+// TestHandler_DeleteAutomatedReasoningPolicy_ForceRemovesVersionGhostRow
+// covers a ghost-row bug: force-deleting a policy previously left its
+// versions behind in the arpVersions store, still exportable by ARN even
+// though the owning policy was gone.
+func TestHandler_DeleteAutomatedReasoningPolicy_ForceRemovesVersionGhostRow(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	policy, err := h.Backend.CreateAutomatedReasoningPolicy("ghost-pol", "", nil)
+	require.NoError(t, err)
+
+	version, err := h.Backend.CreateAutomatedReasoningPolicyVersion(policy.PolicyArn, "hash", nil)
+	require.NoError(t, err)
+
+	require.NoError(t, h.Backend.DeleteAutomatedReasoningPolicy(policy.PolicyArn, true))
+
+	_, err = h.Backend.ExportAutomatedReasoningPolicyVersion(version.PolicyArn)
+	assert.ErrorIs(t, err, bedrock.ErrNotFound)
+}
+
 // TestHandler_StartARPBuildWorkflow drives the real path AWS uses --
 // .../build-workflows/{buildWorkflowType}/start (bedrock@v1.66.4
 // serializers.go:8008), not the bare .../build-workflows path gopherstack

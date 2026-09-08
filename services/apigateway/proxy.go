@@ -29,6 +29,10 @@ const defaultAuthorizerCacheMaxEntries = 1024
 
 const defaultIdentitySource = "method.request.header.Authorization"
 
+// jsonMessageKey is the JSON key AWS uses for the human-readable error text in every
+// API Gateway error response body.
+const jsonMessageKey = "message"
+
 // maxProxyRequestBodyBytes caps API Gateway proxy request bodies. AWS limits the
 // Lambda synchronous invoke payload to 6 MiB; bodies larger than that cannot be
 // forwarded anyway, so cap reads to prevent unbounded io.ReadAll memory usage.
@@ -37,6 +41,21 @@ const maxProxyRequestBodyBytes = 6 * 1024 * 1024 // 6 MiB
 // LambdaInvoker can invoke a Lambda function by name/ARN.
 type LambdaInvoker interface {
 	InvokeFunction(ctx context.Context, name, invocationType string, payload []byte) ([]byte, int, error)
+}
+
+// SQSSender can send a message to an SQS queue by ARN, for AWS integrations whose
+// URI targets sqs (arn:aws:apigateway:{region}:sqs:path/{accountId}/{queueName}).
+// Mirrors the SQSSender interface already declared by eventbridge, s3, and pipes --
+// same consuming-service-declares-the-interface convention, wired in cli.go.
+type SQSSender interface {
+	SendMessageToQueue(ctx context.Context, queueARN, messageBody string) error
+}
+
+// SNSPublisher can publish a message to an SNS topic by ARN, for AWS integrations
+// whose URI targets sns action/Publish. Mirrors the SNSPublisher interface already
+// declared by cloudwatch, eventbridge, pipes, s3, and ses.
+type SNSPublisher interface {
+	PublishToTopic(ctx context.Context, topicARN, message string) error
 }
 
 // LambdaProxyEvent is the API Gateway Lambda proxy event format.
@@ -155,6 +174,17 @@ func (h *Handler) handleProxyRequest(apiID, stageName string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
+		// AWS requires an explicit deployment before a stage is invocable, and rejects
+		// any request whose {stage} segment doesn't name a real, deployed stage -- with
+		// 403 "Missing Authentication Token", not 404. Gate on that here so an API with
+		// resources/methods/integrations configured but never deployed (or invoked with a
+		// made-up stage name) cannot be routed to.
+		if _, err := h.Backend.GetStage(apiID, stageName); err != nil {
+			writeMissingAuthenticationTokenResponse(w)
+
+			return
+		}
+
 		// Resolve the routing trie (cached per resource-set version) and match.
 		trie, err := h.routingTrie(apiID)
 		if err != nil {
@@ -167,7 +197,7 @@ func (h *Handler) handleProxyRequest(apiID, stageName string) http.HandlerFunc {
 		// Match request path to resource path, extracting any path parameters.
 		resource, pathParams := matchResourceTrie(trie, r.URL.Path, stageName)
 		if resource == nil {
-			http.NotFound(w, r)
+			writeMissingAuthenticationTokenResponse(w)
 
 			return
 		}
@@ -186,8 +216,11 @@ func (h *Handler) handleProxyRequest(apiID, stageName string) http.HandlerFunc {
 			h.addCORSHeaders(w, r, resource.CorsConfiguration)
 		}
 
-		// Apply method-level access controls (authorizer + request validator).
-		if denied := h.applyMethodControls(ctx, w, r, apiID, stageName, resource.ID, pathParams); denied {
+		// Apply method-level access controls (throttle, authorizer, request validator).
+		denied := h.applyMethodControls(
+			ctx, w, r, apiID, stageName, resource.ID, resource.Path, pathParams,
+		)
+		if denied {
 			return
 		}
 
@@ -197,7 +230,7 @@ func (h *Handler) handleProxyRequest(apiID, stageName string) http.HandlerFunc {
 			// Fall back to any method.
 			integration, err = h.Backend.GetIntegration(apiID, resource.ID, "ANY")
 			if err != nil {
-				http.NotFound(w, r)
+				writeMissingAuthenticationTokenResponse(w)
 
 				return
 			}
@@ -207,13 +240,14 @@ func (h *Handler) handleProxyRequest(apiID, stageName string) http.HandlerFunc {
 	}
 }
 
-// applyMethodControls runs the authorizer and request validator for the matched method.
-// Returns true if the request was denied and the response has already been written.
+// applyMethodControls runs the throttle, authorizer, and request validator checks for the
+// matched method. Returns true if the request was denied and the response has already been
+// written.
 func (h *Handler) applyMethodControls(
 	ctx context.Context,
 	w http.ResponseWriter,
 	r *http.Request,
-	apiID, stageName, resourceID string,
+	apiID, stageName, resourceID, resourcePath string,
 	pathParams map[string]string,
 ) bool {
 	method, methodErr := h.Backend.GetMethod(apiID, resourceID, r.Method)
@@ -229,6 +263,13 @@ func (h *Handler) applyMethodControls(
 		if h.enforceAPIKey(ctx, w, r, apiID, stageName) {
 			return true
 		}
+	}
+
+	// Stage MethodSettings throttling: the tier below usage-plan per-client/per-method
+	// limits (api-gateway-request-throttling.html's precedence list), and the only
+	// throttle path that fires for traffic that isn't apiKeyRequired.
+	if h.enforceMethodThrottle(ctx, w, apiID, stageName, resourcePath, r.Method) {
+		return true
 	}
 
 	if method.AuthorizerID != "" {
@@ -308,6 +349,29 @@ func (h *Handler) enforceUsagePlan(
 	}
 }
 
+// enforceMethodThrottle applies a stage's MethodSettings throttling and writes the
+// AWS-accurate 429 response when the limit is exceeded. Returns true when the request was
+// denied.
+func (h *Handler) enforceMethodThrottle(
+	ctx context.Context, w http.ResponseWriter, apiID, stageName, resourcePath, httpMethod string,
+) bool {
+	err := h.Backend.EnforceMethodThrottle(apiID, stageName, resourcePath, httpMethod)
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, ErrThrottled):
+		logger.Load(ctx).InfoContext(ctx, "APIGateway proxy: stage method-setting throttle exceeded",
+			"apiId", apiID, "stage", stageName, "resourcePath", resourcePath, "method", httpMethod)
+		writeThrottleResponse(w, "TooManyRequestsException", "Too Many Requests")
+
+		return true
+	default:
+		logger.Load(ctx).WarnContext(ctx, "APIGateway proxy: method-throttle enforcement error", "error", err)
+
+		return false
+	}
+}
+
 // writeThrottleResponse writes the AWS API Gateway 429 error body and x-amzn-ErrorType
 // header used for quota (LimitExceededException) and throttle (TooManyRequestsException)
 // rejections.
@@ -315,7 +379,20 @@ func writeThrottleResponse(w http.ResponseWriter, errorType, message string) {
 	w.Header().Set(headerContentType, "application/json")
 	w.Header().Set("X-Amzn-Errortype", errorType)
 	w.WriteHeader(http.StatusTooManyRequests)
-	_ = json.NewEncoder(w).Encode(map[string]string{"message": message})
+	_ = json.NewEncoder(w).Encode(map[string]string{jsonMessageKey: message})
+}
+
+// writeMissingAuthenticationTokenResponse writes AWS API Gateway's real response for a
+// request that never resolves to a deployed stage + matching resource + method: HTTP 403
+// with a "Missing Authentication Token" body and x-amzn-errortype header, not a 404. AWS
+// returns this for an invalid or undeployed stage, an unmatched resource path, or a
+// resource with no method for the request's HTTP verb -- the error fires before
+// authentication is ever considered, despite its name.
+func writeMissingAuthenticationTokenResponse(w http.ResponseWriter) {
+	w.Header().Set(headerContentType, "application/json")
+	w.Header().Set("X-Amzn-Errortype", "MissingAuthenticationTokenException")
+	w.WriteHeader(http.StatusForbidden)
+	_ = json.NewEncoder(w).Encode(map[string]string{jsonMessageKey: "Missing Authentication Token"})
 }
 
 // dispatchIntegration routes the request to the appropriate integration handler.

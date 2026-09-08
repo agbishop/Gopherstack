@@ -480,7 +480,7 @@ func (b *InMemoryBackend) CreateFileSystem(input *createFileSystemInput) (*FileS
 		)
 	}
 
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 
@@ -661,14 +661,15 @@ func (b *InMemoryBackend) DescribeFileSystems(
 	return result, next, nil
 }
 
-// DeleteFileSystem removes a file system, cascading to every child resource
-// real AWS also tears down as part of file-system deletion: storage virtual
-// machines (and, transitively, their volumes and those volumes' snapshots),
-// directly-attached volumes (e.g. an OpenZFS root/child volume), data
-// repository associations, and DNS aliases. Backups and data repository
-// tasks are intentionally left alone: real AWS backups persist independently
-// of the file system they were taken from, and data repository tasks are
-// historical execution records.
+// DeleteFileSystem removes a file system. For ONTAP, real AWS requires every
+// SVM and volume to be deleted first and refuses otherwise; for every other
+// type it cascades to the child resources real AWS also tears down as part
+// of file-system deletion: storage virtual machines (and, transitively,
+// their volumes and those volumes' snapshots), directly-attached volumes
+// (e.g. an OpenZFS root/child volume), data repository associations, and DNS
+// aliases. Backups and data repository tasks are intentionally left alone:
+// real AWS backups persist independently of the file system they were taken
+// from, and data repository tasks are historical execution records.
 func (b *InMemoryBackend) DeleteFileSystem(fileSystemID string) error {
 	b.mu.Lock("DeleteFileSystem")
 	defer b.mu.Unlock()
@@ -678,11 +679,60 @@ func (b *InMemoryBackend) DeleteFileSystem(fileSystemID string) error {
 		return ErrFileSystemNotFound
 	}
 
+	if fs.FileSystemType == fileSystemTypeONTAP {
+		if err := b.requireNoONTAPChildrenLocked(fileSystemID); err != nil {
+			return err
+		}
+	}
+
 	b.cascadeDeleteFileSystemChildrenLocked(fileSystemID)
 
 	delete(b.aliases, fileSystemID)
 	b.fileSystems.Delete(fileSystemID)
 	delete(b.tags, fs.ResourceARN)
+
+	return nil
+}
+
+// requireNoONTAPChildrenLocked returns ErrValidation if fileSystemID still has
+// any storage virtual machine or volume attached. Real AWS requires an ONTAP
+// file system's SVMs and volumes to be deleted first (api_op_DeleteFileSystem.go);
+// other file system types cascade-delete their children instead. Caller must
+// already hold b.mu.
+func (b *InMemoryBackend) requireNoONTAPChildrenLocked(fileSystemID string) error {
+	var hasSVM bool
+
+	b.storageVirtualMachines.Range(func(s *storedStorageVirtualMachine) bool {
+		if s.FileSystemID == fileSystemID {
+			hasSVM = true
+
+			return false
+		}
+
+		return true
+	})
+
+	if hasSVM {
+		return fmt.Errorf(
+			"%w: file system %s has storage virtual machines; delete them first", ErrValidation, fileSystemID,
+		)
+	}
+
+	var hasVolume bool
+
+	b.volumes.Range(func(v *storedVolume) bool {
+		if v.FileSystemID == fileSystemID {
+			hasVolume = true
+
+			return false
+		}
+
+		return true
+	})
+
+	if hasVolume {
+		return fmt.Errorf("%w: file system %s has volumes; delete them first", ErrValidation, fileSystemID)
+	}
 
 	return nil
 }
@@ -967,7 +1017,7 @@ func resolveFileSystemFromBackupFields(
 
 // CreateFileSystemFromBackup creates a new file system from an existing backup.
 func (b *InMemoryBackend) CreateFileSystemFromBackup(input *createFileSystemFromBackupInput) (*FileSystem, error) {
-	if err := validateTags(input.Tags); err != nil {
+	if err := validateCreateTags(input.Tags); err != nil {
 		return nil, err
 	}
 

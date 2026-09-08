@@ -8,6 +8,16 @@ import (
 )
 
 // CreateCustomActionType stores a new custom action type.
+//
+// gopherstack-wlab: the guard below emits InvalidStructureException on a
+// duplicate category/provider/version -- not in this op's declared error
+// set per botocore codepipeline/2015-07-09/service-2.json
+// (ConcurrentModificationException/InvalidTagsException/
+// LimitExceededException/TooManyTagsException/ValidationException only).
+// Left unfixed: no declared code's doc text fits "duplicate", and the
+// idempotent-upsert theory tried in gopherstack-3djp doesn't hold (see
+// DeleteCustomActionType). NOTE: this does not break errors.As for a real
+// caller -- see undeclared_error_codes_test.go.
 func (b *InMemoryBackend) CreateCustomActionType(
 	ctx context.Context,
 	cat *CustomActionType,
@@ -37,6 +47,17 @@ func (b *InMemoryBackend) CreateCustomActionType(
 }
 
 // DeleteCustomActionType removes a custom action type.
+//
+// gopherstack-wlab: the guard below emits ActionTypeNotFoundException on a
+// nonexistent type -- not in this op's declared error set per botocore
+// codepipeline/2015-07-09/service-2.json (ConcurrentModificationException/
+// ValidationException only). Left unfixed: the "HTTP 200, empty body"
+// doc sentence cited in gopherstack-3djp for an idempotent-delete fix is
+// generic Response-shape boilerplate (also appears on DisableStageTransition,
+// which DOES throw PipelineNotFoundException on a missing pipeline) --
+// not evidence either way. No declared code fits "not found". NOTE: this
+// does not break errors.As for a real caller -- see
+// undeclared_error_codes_test.go.
 // Returns ResourceInUseException if any pipeline references the type.
 func (b *InMemoryBackend) DeleteCustomActionType(ctx context.Context, category, provider, version string) error {
 	b.mu.Lock("DeleteCustomActionType")

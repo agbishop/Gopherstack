@@ -46,6 +46,7 @@ gaps:
   - "No AccessDeniedException path anywhere in this service -- gopherstack has no IAM policy evaluation engine to source it from; this is a cross-cutting infra gap common to every gopherstack service, not specific to rolesanywhere."
   - "FIXED this pass: CreateProfile now rejects a nil roleArns list with ValidationException, matching CreateProfileInput.RoleArns's \"This member is required\" marker (aws-sdk-go-v2@v1.26.3's validateOpCreateProfileInput checks v.RoleArns == nil) and botocore's CreateProfileRequest.required list. A prior pass's note framed this as deliberately left permissive 'to control blast radius' against existing tests -- that framing was backwards: the tests asserting nil-roleArns success were the bug, not a constraint to protect. An explicitly empty (non-nil) roleArns slice is still accepted, since the RoleArnList shape declares min:0 (requirement is presence, not non-emptiness). ImportCrlInput.CrlData/TrustAnchorArn and CreateTrustAnchorInput.Source were already validated by a prior pass."
   - "TrustAnchorDetail has no createdBy field in the real API (confirmed absent from types.TrustAnchorDetail) -- correctly NOT added to TrustAnchor's JSON output this pass (a prior gaps note incorrectly implied it should be); ProfileDetail DOES have createdBy and it is now implemented."
+  - "gopherstack-i5ss (2026-09-06): ImportCrl does not validate TrustAnchorArn refers to an existing trust anchor, and DeleteTrustAnchor does not cascade to CRLs referencing it. Both left unimplemented -- see the dated section below for the sourced reasoning. Would be revisited if AWS ever adds ResourceNotFoundException to ImportCrl's modelled errors, or a doc revision states either behavior explicitly."
 leaks: {status: clean, note: "no goroutines/janitors in this service; locking is via the shared lockmetrics.RWMutex per pkgs-catalog rule, single lock, no re-entrant locking (CreateTrustAnchor's notificationSettings-at-create path calls the new putNotificationSettingsLocked helper directly instead of re-entering PutNotificationSettings's own Lock). This pass's real find: DeleteTrustAnchor/DeleteProfile/DeleteCrl left ghost rows in the notificationSettings/attributeMappings/tags maps (keyed by the now-dead resource ID/ARN) -- all three Delete paths now cascade-delete their dependent maps under the same lock as the primary delete, closing the leak."}
 ---
 
@@ -348,3 +349,76 @@ a second page.
 **Gates**: `go build ./services/rolesanywhere/...`, `go vet ./services/rolesanywhere/...`,
 `go test -race -count=1 ./services/rolesanywhere/...` all pass; `golangci-lint run
 ./services/rolesanywhere/...` reports 0 issues.
+
+## 2026-09-06: gopherstack-i5ss -- ImportCrl trust-anchor validation and DeleteTrustAnchor->CRL cascade (no code change)
+
+The 2026-09-04 audit declined to invent either behavior for lack of a doc sentence or
+fitting modelled error. This pass sourced both questions against
+`aws-sdk-go-v2/service/rolesanywhere@v1.26.3` instead of overturning on hunch.
+
+**Error-taxonomy extraction** (`awk "/deserializeOpError<Op>\(/,/^}/" deserializers.go`):
+
+```
+ImportCrl:          UnknownError, AccessDeniedException, ValidationException
+DeleteTrustAnchor:  UnknownError, AccessDeniedException, ResourceNotFoundException
+GetTrustAnchor:     UnknownError, AccessDeniedException, ResourceNotFoundException, ValidationException
+DeleteCrl:          UnknownError, AccessDeniedException, ResourceNotFoundException
+GetCrl:             UnknownError, ResourceNotFoundException
+```
+
+**Question 1 -- does ImportCrl validate the trust anchor exists?** Verdict: **evidence
+implies AWS does not.** `ImportCrl` is the only one of these five ops without
+`ResourceNotFoundException`; every sibling op that resolves an existing resource by ID/ARN
+(`GetTrustAnchor`, `DeleteTrustAnchor`, `DeleteCrl`, `GetCrl`) declares it. `ValidationException`
+has no doc comment at all in `types/errors.go` (a bare struct, no description) -- it cannot be
+stretched to cover a missing trust anchor without inventing semantics; every other
+existence-style check in this service already goes through `ResourceNotFoundException`
+(`GetSubject`/`TagResource`/`ListTagsForResource`, per the frontmatter above), never
+`ValidationException`. `ImportCrlInput.TrustAnchorArn`'s own doc comment only says "This
+member is required" (presence, not existence). This is not merely absence of evidence: the
+same declare-it-where-a-check-happens/omit-it-where-it-doesn't pattern is already the
+precedent this file uses elsewhere -- `UntagResource` (line ~104 above) was left a silent
+no-op specifically because it "declares no `ResourceNotFoundException` in the real model,"
+and `services/acm/PARITY.md`'s `CreateAcmeExternalAccountBinding` (an owned-child create,
+the closest analogue to `ImportCrl`) explicitly *does* declare `ResourceNotFoundException`
+for its owning-endpoint FK and gopherstack validates it there. `ImportCrl`'s omission, next
+to that established contrast, reads as deliberate, not silent. Not implemented.
+
+**Question 2 -- does DeleteTrustAnchor cascade to CRLs?** Verdict: **evidence implies AWS
+does not**, on weaker (structural, not error-taxonomy) footing than Question 1.
+`DeleteTrustAnchor`'s doc comment is exactly one sentence -- "Deletes a trust anchor." --
+with no mention of CRLs. `types.CrlDetail.TrustAnchorArn` is a one-directional data field
+(`TrustAnchorDetail` carries no reverse reference to its CRLs). `ListCrlsInput` has exactly
+two members, `NextToken`/`PageSize` -- no trust-anchor filter of any kind, so AWS's own API
+gives no operational tool to enumerate "CRLs belonging to trust anchor X," which a
+maintained cascade relationship would typically need. More decisively: grepping every
+`api_op_*.go` in the module for a `TrustAnchorId` parameter shows it appears only on
+trust-anchor-specific ops and `{Put,Reset}NotificationSettings` -- **no CRL operation
+(`ImportCrl`, `GetCrl`, `UpdateCrl`, `DeleteCrl`, `EnableCrl`, `DisableCrl`, `ListCrls`)
+ever takes a `TrustAnchorId`**, and `UpdateCrlInput` cannot even change `TrustAnchorArn`
+once set (immutable after `ImportCrl`). Every CRL lifecycle operation in the real API is
+addressed and scoped purely by `CrlId` -- contrast `services/acm/PARITY.md`'s
+`DeleteAcmeEndpoint` cascade, which is justified because its children
+(`AcmeExternalAccountBinding`/`AcmeDomainValidation`) are *structurally* owned: created
+with a required, existence-checked `AcmeEndpointArn` FK and listed only in an
+endpoint-scoped page (`ListAcmeDomainValidations`/`ListAcmeExternalAccountBindings`, "paginated
+per-endpoint"), i.e. inaccessible except through the parent. CRLs have none of that: no FK
+existence check on creation (Question 1), no endpoint-scoped listing, and a top-level
+`ListCrls`/`GetCrl`/`DeleteCrl` surface structurally identical to `ListTrustAnchors`'s own --
+siblings, not parent/child, in the API's own shape. This is silence plus multiple converging
+structural signals, not a bare absence, so it's recorded as "implies not" rather than
+"genuinely silent" -- but it rests on inference across several fields, not a single
+authoritative declared-error contrast the way Question 1 does, hence weaker. Not implemented.
+
+**What would change either answer**: for Question 1, AWS adding `ResourceNotFoundException`
+to `ImportCrl`'s modelled errors, or a doc revision stating the ARN is validated. For
+Question 2, `ListCrls` gaining a `TrustAnchorId`/`TrustAnchorArn` filter parameter, any CRL
+op gaining a `TrustAnchorId` parameter, or a doc revision to `DeleteTrustAnchor` naming CRLs
+explicitly.
+
+No files under `services/rolesanywhere/` changed behavior this pass. `PARITY.md` is the only
+diff.
+
+**Gates**: `GOTOOLCHAIN=go1.26.6 go test -race ./services/rolesanywhere/...` and
+`GOTOOLCHAIN=go1.26.6 golangci-lint run services/rolesanywhere/...` both pass, unchanged from
+before this pass (no code touched).

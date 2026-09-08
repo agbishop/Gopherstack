@@ -188,6 +188,10 @@ func TestIntegration_AppSync_GraphQL_NoneResolver(t *testing.T) {
 	api := createOut.GraphqlApi
 	apiID := aws.ToString(api.ApiId)
 
+	keyOut, err := client.CreateApiKey(ctx, &appsyncsdkv2.CreateApiKeyInput{ApiId: aws.String(apiID)})
+	require.NoError(t, err)
+	apiKey := aws.ToString(keyOut.ApiKey.Id)
+
 	// Upload schema.
 	_, err = client.StartSchemaCreation(ctx, &appsyncsdkv2.StartSchemaCreationInput{
 		ApiId:      aws.String(apiID),
@@ -220,7 +224,7 @@ func TestIntegration_AppSync_GraphQL_NoneResolver(t *testing.T) {
 
 	// Execute GraphQL query via raw HTTP POST.
 	query := `query { getGreeting(name: "World") }`
-	respBody := executeGraphQL(t, graphqlEndpoint, query, "", nil)
+	respBody := executeGraphQL(t, graphqlEndpoint, query, "", nil, apiKey)
 
 	assert.Nil(t, respBody["errors"], "no GraphQL errors expected")
 
@@ -232,8 +236,11 @@ func TestIntegration_AppSync_GraphQL_NoneResolver(t *testing.T) {
 	_, _ = client.DeleteGraphqlApi(ctx, &appsyncsdkv2.DeleteGraphqlApiInput{ApiId: aws.String(apiID)})
 }
 
-// executeGraphQL sends a GraphQL request to the given endpoint and returns the parsed response.
-func executeGraphQL(t *testing.T, gqlEndpoint, query, operationName string, variables map[string]any) map[string]any {
+// executeGraphQL sends a GraphQL request to the given endpoint and returns the
+// parsed response. apiKey, if non-empty, is sent as the x-api-key header.
+func executeGraphQL(
+	t *testing.T, gqlEndpoint, query, operationName string, variables map[string]any, apiKey string,
+) map[string]any {
 	t.Helper()
 
 	body := map[string]any{"query": query}
@@ -253,6 +260,10 @@ func executeGraphQL(t *testing.T, gqlEndpoint, query, operationName string, vari
 	require.NoError(t, err)
 
 	req.Header.Set("Content-Type", "application/json")
+
+	if apiKey != "" {
+		req.Header.Set("X-Api-Key", apiKey)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)

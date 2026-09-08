@@ -153,9 +153,9 @@ func TestGetDelegatedAccessToken_SessionTrackedForCallerIdentity(t *testing.T) {
 	resp, err := b.GetDelegatedAccessToken(&sts.GetDelegatedAccessTokenInput{TradeInToken: "my-token"})
 	require.NoError(t, err)
 
-	accessKeyID := resp.GetDelegatedAccessTokenResult.Credentials.AccessKeyID
+	creds := resp.GetDelegatedAccessTokenResult.Credentials
 
-	ciResp, err := b.GetCallerIdentity(accessKeyID, "")
+	ciResp, err := b.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 	require.NoError(t, err)
 	assert.NotEmpty(t, ciResp.GetCallerIdentityResult.Arn)
 	assert.Equal(t, 1, b.SessionCount())

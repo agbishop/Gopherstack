@@ -65,13 +65,21 @@ func (b *InMemoryBackend) CreateDataset(projectARN, datasetType string) (*Datase
 	return ds.toDataset(), nil
 }
 
-// DeleteDataset deletes a dataset.
+// DeleteDataset deletes a dataset. DeleteDatasetInput's own doc comment
+// (api_op_DeleteDataset.go): "You can't delete a dataset while it is
+// creating (Status = CREATE_IN_PROGRESS) or if the dataset is updating
+// (Status = UPDATE_IN_PROGRESS).".
 func (b *InMemoryBackend) DeleteDataset(datasetARN string) error {
 	b.mu.Lock("DeleteDataset")
 	defer b.mu.Unlock()
 
-	if !b.datasets.Has(datasetARN) {
+	ds, exists := b.datasets.Get(datasetARN)
+	if !exists {
 		return ErrDatasetNotFound
+	}
+
+	if ds.Status == "CREATE_IN_PROGRESS" || ds.Status == "UPDATE_IN_PROGRESS" {
+		return ErrDatasetInUse
 	}
 
 	b.datasets.Delete(datasetARN)

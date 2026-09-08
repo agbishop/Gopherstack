@@ -96,6 +96,71 @@ func TestWAF_XssMatchSet_CreateGetUpdateDeleteList(t *testing.T) {
 	assert.Equal(t, 0, waf.XssMatchSetCount(h.Backend.(*waf.InMemoryBackend)))
 }
 
+func wafCreateXSSMatchSet(t *testing.T, h *waf.Handler, name string) string {
+	t.Helper()
+
+	token := wafGetToken(t, h)
+	rec := wafDo(t, h, "CreateXssMatchSet", map[string]any{"ChangeToken": token, "Name": name})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	m := resp["XssMatchSet"].(map[string]any)
+	id := m["XssMatchSetId"].(string)
+	require.NotEmpty(t, id)
+
+	return id
+}
+
+func TestWAF_XssMatchSet_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	tuple := map[string]any{
+		"FieldToMatch":       map[string]any{"Type": "BODY"},
+		"TextTransformation": "HTML_ENTITY_DECODE",
+	}
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateXSSMatchSet(t, h, "noop-insert-xss")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateXssMatchSet", map[string]any{
+			"ChangeToken":   token,
+			"XssMatchSetId": id,
+			"Updates":       []map[string]any{{"Action": "INSERT", "XssMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateXssMatchSet", map[string]any{
+			"ChangeToken":   token,
+			"XssMatchSetId": id,
+			"Updates":       []map[string]any{{"Action": "INSERT", "XssMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateXSSMatchSet(t, h, "noop-delete-xss")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateXssMatchSet", map[string]any{
+			"ChangeToken":   token,
+			"XssMatchSetId": id,
+			"Updates":       []map[string]any{{"Action": "DELETE", "XssMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestWAF_XssMatchSet_NotFound(t *testing.T) {
 	t.Parallel()
 

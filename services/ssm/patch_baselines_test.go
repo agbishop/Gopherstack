@@ -759,6 +759,47 @@ func TestBackendOps_DeletePatchBaseline(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestBackendOps_DeletePatchBaseline_RefusesWhileRegisteredToPatchGroup
+// verifies real AWS's documented DeletePatchBaseline behavior: it returns
+// ResourceInUseException rather than deleting a baseline that is still
+// registered to a patch group, so no patch group is ever left pointing at a
+// deleted baseline.
+func TestBackendOps_DeletePatchBaseline_RefusesWhileRegisteredToPatchGroup(t *testing.T) {
+	t.Parallel()
+
+	b := newBackend(t)
+	id := createTestBaseline(t, b, "in-use-baseline")
+	otherID := createTestBaseline(t, b, "in-use-baseline-sibling")
+
+	_, err := b.RegisterPatchBaselineForPatchGroup(context.TODO(), &ssm.RegisterPatchBaselineForPatchGroupInput{
+		BaselineID: id,
+		PatchGroup: "in-use-group",
+	})
+	require.NoError(t, err)
+
+	_, err = b.DeletePatchBaseline(context.TODO(), &ssm.DeletePatchBaselineInput{BaselineID: id})
+	require.ErrorIs(t, err, ssm.ErrPatchBaselineInUse)
+
+	// The baseline must still exist -- the delete was refused, not silently
+	// applied with the registration left dangling.
+	_, err = b.GetPatchBaseline(context.TODO(), &ssm.GetPatchBaselineInput{BaselineID: id})
+	require.NoError(t, err)
+
+	// An unrelated baseline's delete must not be disturbed.
+	_, err = b.DeletePatchBaseline(context.TODO(), &ssm.DeletePatchBaselineInput{BaselineID: otherID})
+	require.NoError(t, err)
+
+	// Deregistering the patch group clears the way to delete.
+	_, err = b.DeregisterPatchBaselineForPatchGroup(context.TODO(), &ssm.DeregisterPatchBaselineForPatchGroupInput{
+		BaselineID: id,
+		PatchGroup: "in-use-group",
+	})
+	require.NoError(t, err)
+
+	_, err = b.DeletePatchBaseline(context.TODO(), &ssm.DeletePatchBaselineInput{BaselineID: id})
+	require.NoError(t, err)
+}
+
 func TestBackendOps_DescribePatchBaselines(t *testing.T) {
 	t.Parallel()
 

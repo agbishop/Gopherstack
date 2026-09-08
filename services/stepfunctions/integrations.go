@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -11,6 +12,8 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 
 	dynamodbpkg "github.com/blackbirdworks/gopherstack/services/dynamodb"
+	ecsbackend "github.com/blackbirdworks/gopherstack/services/ecs"
+	gluebackend "github.com/blackbirdworks/gopherstack/services/glue"
 	s3pkg "github.com/blackbirdworks/gopherstack/services/s3"
 	"github.com/blackbirdworks/gopherstack/services/sns"
 	"github.com/blackbirdworks/gopherstack/services/sqs"
@@ -349,4 +352,140 @@ func (a *dynamoDBAdapter) SFNDeleteTable(ctx context.Context, input any) (any, e
 	}
 
 	return outputToAny(out)
+}
+
+// ecsSyncAdapter adapts ecs.InMemoryBackend to asl.ECSSyncWaiter, polling
+// DescribeTasks for the task(s) a ".sync" RunTask started (gopherstack-tdp6).
+type ecsSyncAdapter struct {
+	backend *ecsbackend.InMemoryBackend
+}
+
+// NewECSSyncWaiter creates an ECS ".sync" pattern poller.
+func NewECSSyncWaiter(backend *ecsbackend.InMemoryBackend) asl.ECSSyncWaiter {
+	return &ecsSyncAdapter{backend: backend}
+}
+
+const ecsTaskStatusStopped = "STOPPED"
+
+// SFNPollSyncTask implements asl.ECSSyncWaiter.
+func (a *ecsSyncAdapter) SFNPollSyncTask(_ context.Context, runTaskResult any) (asl.ECSSyncPoll, error) {
+	started := extractECSTasks(runTaskResult)
+	if len(started) == 0 {
+		return asl.ECSSyncPoll{Done: true, Result: runTaskResult}, nil
+	}
+
+	described := make([]ecsbackend.Task, 0, len(started))
+
+	for _, t := range started {
+		out, failures, err := a.backend.DescribeTasks(t.ClusterArn, []string{t.TaskArn})
+		if err != nil {
+			return asl.ECSSyncPoll{}, err
+		}
+
+		if len(failures) > 0 || len(out) == 0 {
+			return asl.ECSSyncPoll{
+				Done:          true,
+				Failed:        true,
+				FailureReason: fmt.Sprintf("ECS task %s no longer exists", t.TaskArn),
+			}, nil
+		}
+
+		if out[0].LastStatus != ecsTaskStatusStopped {
+			return asl.ECSSyncPoll{}, nil
+		}
+
+		described = append(described, out[0])
+	}
+
+	failed, reason := ecsTasksFailed(described)
+	taskAny := make([]any, len(described))
+	for i, t := range described {
+		taskAny[i] = t
+	}
+
+	return asl.ECSSyncPoll{
+		Done:          true,
+		Failed:        failed,
+		FailureReason: reason,
+		Result:        map[string]any{"Tasks": taskAny, "Failures": []any{}},
+	}, nil
+}
+
+// ecsTasksFailed reports whether any described task stopped with a
+// non-zero container exit code -- real ECS's own signal that a task's
+// essential container failed rather than completed normally.
+func ecsTasksFailed(tasks []ecsbackend.Task) (bool, string) {
+	for _, t := range tasks {
+		for _, c := range t.Containers {
+			if c.ExitCode != nil && *c.ExitCode != 0 {
+				return true, fmt.Sprintf(
+					"ECS task %s stopped: %s (container %q exited with code %d)",
+					t.TaskArn, t.StoppedReason, c.Name, *c.ExitCode,
+				)
+			}
+		}
+	}
+
+	return false, ""
+}
+
+// extractECSTasks pulls the started tasks out of an ECSIntegration.SFNRunTask
+// result, which is always exactly ecs.InMemoryBackend.SFNRunTask's own
+// map[string]any{"Tasks": []any, "Failures": []any} (see
+// services/ecs/sfn_integration.go), with each Tasks entry an ecs.Task value.
+func extractECSTasks(runTaskResult any) []ecsbackend.Task {
+	m, ok := runTaskResult.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	rawTasks, _ := m["Tasks"].([]any)
+	tasks := make([]ecsbackend.Task, 0, len(rawTasks))
+
+	for _, rt := range rawTasks {
+		if t, isTask := rt.(ecsbackend.Task); isTask {
+			tasks = append(tasks, t)
+		}
+	}
+
+	return tasks
+}
+
+// glueSyncAdapter adapts glue.InMemoryBackend to asl.GlueSyncWaiter, polling
+// GetJobRun for the job run a ".sync" StartJobRun started (gopherstack-tdp6).
+type glueSyncAdapter struct {
+	backend *gluebackend.InMemoryBackend
+}
+
+// NewGlueSyncWaiter creates a Glue ".sync" pattern poller.
+func NewGlueSyncWaiter(backend *gluebackend.InMemoryBackend) asl.GlueSyncWaiter {
+	return &glueSyncAdapter{backend: backend}
+}
+
+// SFNPollSyncJobRun implements asl.GlueSyncWaiter. Terminal JobRunState
+// values per aws-sdk-go-v2/service/glue/types/enums.go's JobRunState enum:
+// SUCCEEDED is the only success; STOPPED, FAILED, TIMEOUT, ERROR, and EXPIRED
+// are all terminal failures (this backend's reconciler only ever produces
+// SUCCEEDED, TIMEOUT, or STOPPED -- see services/glue/reconciler.go -- the
+// rest are handled defensively).
+func (a *glueSyncAdapter) SFNPollSyncJobRun(_ context.Context, jobName, runID string) (asl.GlueSyncPoll, error) {
+	run, err := a.backend.GetJobRun(jobName, runID)
+	if err != nil {
+		return asl.GlueSyncPoll{}, err
+	}
+
+	switch run.JobRunState {
+	case "SUCCEEDED":
+		return asl.GlueSyncPoll{Done: true, Result: map[string]any{"JobRun": run}}, nil
+	// statusFailed == "FAILED", coincidentally shared with execution status.
+	case "STOPPED", statusFailed, "TIMEOUT", "ERROR", "EXPIRED":
+		reason := run.ErrorMessage
+		if reason == "" {
+			reason = fmt.Sprintf("Glue job run %s/%s ended in state %s", jobName, runID, run.JobRunState)
+		}
+
+		return asl.GlueSyncPoll{Done: true, Failed: true, FailureReason: reason}, nil
+	default:
+		return asl.GlueSyncPoll{}, nil
+	}
 }

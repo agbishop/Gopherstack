@@ -119,6 +119,20 @@ func syncContainerStatuses(task *Task, exitCode *int) {
 	}
 }
 
+// setContainerExitCode records exitCode on the named container within task,
+// if present. Used when a container's own exit is observed directly (see
+// markTaskStoppedByContainerExit), unlike the StopTask path where no
+// per-container exit code is known.
+func setContainerExitCode(task *Task, containerName string, exitCode int) {
+	for i := range task.Containers {
+		if task.Containers[i].Name == containerName {
+			task.Containers[i].ExitCode = &exitCode
+
+			return
+		}
+	}
+}
+
 const (
 	// eniIDLen is the length of a UUID-derived suffix used as ENI attachment IDs.
 	eniIDLen = 36

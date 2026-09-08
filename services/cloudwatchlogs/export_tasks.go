@@ -1,6 +1,7 @@
 package cloudwatchlogs
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -93,6 +94,7 @@ func (b *InMemoryBackend) CancelImportTask(importID string) (*ImportTask, error)
 // objects using the AWS key layout and the task completes synchronously;
 // otherwise the task starts PENDING and advances by janitor age.
 func (b *InMemoryBackend) CreateExportTask(
+	ctx context.Context,
 	taskName, logGroupName, logStreamNamePrefix, destination, destinationPrefix string,
 	from, to int64,
 ) (string, error) {
@@ -108,6 +110,8 @@ func (b *InMemoryBackend) CreateExportTask(
 		return "", fmt.Errorf("%w: from (%d) must be less than to (%d)", ErrValidation, from, to)
 	}
 
+	region := getRegion(ctx, b.region)
+
 	task := &ExportTask{
 		TaskID:              uuid.New().String(),
 		TaskName:            taskName,
@@ -121,6 +125,7 @@ func (b *InMemoryBackend) CreateExportTask(
 		Status:              exportStatusPending,
 		CreationTime:        time.Now().UnixMilli(),
 		CompletionTime:      0,
+		Region:              region,
 	}
 
 	var limitErr error
@@ -128,6 +133,13 @@ func (b *InMemoryBackend) CreateExportTask(
 	func() {
 		b.mu.Lock("CreateExportTask")
 		defer b.mu.Unlock()
+
+		if !b.groupHas(region, logGroupName) {
+			limitErr = fmt.Errorf("%w: Log group %s not found", ErrLogGroupNotFound, logGroupName)
+
+			return
+		}
+
 		if b.exportTasks.Len() >= maxExportTasks {
 			limitErr = fmt.Errorf("%w: export task limit exceeded", ErrValidation)
 
@@ -174,6 +186,7 @@ func (b *InMemoryBackend) finishExport(task *ExportTask) {
 
 // CreateImportTask creates an import task from a CloudTrail Lake event data store.
 func (b *InMemoryBackend) CreateImportTask(
+	ctx context.Context,
 	importRoleArn, importSourceArn string,
 ) (*ImportTask, error) {
 	if importRoleArn == "" {
@@ -184,9 +197,10 @@ func (b *InMemoryBackend) CreateImportTask(
 		return nil, fmt.Errorf("%w: importSourceArn is required", ErrValidation)
 	}
 
+	region := getRegion(ctx, b.region)
 	importID := uuid.New().String()
 	now := time.Now().UnixMilli()
-	destARN := arn.Build("logs", b.region, b.accountID, "log-group:/aws/cloudtrail/"+importID)
+	destARN := arn.Build("logs", region, b.accountID, "log-group:/aws/cloudtrail/"+importID)
 
 	task := &ImportTask{
 		ImportID:             importID,

@@ -72,28 +72,36 @@ const defaultAgentVersionSSM = "3.0.0"
 // Patch Manager ships knowledge of out of the box, spanning the platforms this
 // emulator's patch baselines commonly target. It seeds a region's
 // available-patches store on first access (see availablePatchesFor) instead of
-// leaving DescribeAvailablePatches permanently empty.
+// leaving DescribeAvailablePatches permanently empty. ReleaseDate values are
+// the real-world release dates of these KB/advisory IDs, fixed at compile
+// time (never time.Now()) so ApprovalRules.ApproveAfterDays evaluation stays
+// reproducible.
 func defaultPatchCatalog() []Patch {
 	return []Patch{
 		{
 			Name: "KB5034441", Product: "WindowsServer2022",
 			Classification: patchClassificationSecurityUpdates, Severity: "Critical",
+			ReleaseDate: UnixTimeFloat(time.Date(2024, time.January, 9, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			Name: "KB5034129", Product: "WindowsServer2019",
 			Classification: patchClassificationSecurityUpdates, Severity: "Important",
+			ReleaseDate: UnixTimeFloat(time.Date(2023, time.December, 12, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			Name: "ALAS2-2024-2451", Product: patchProductAmazonLinux2,
 			Classification: "Security", Severity: "Critical",
+			ReleaseDate: UnixTimeFloat(time.Date(2024, time.March, 1, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			Name: "ALAS2-2024-2460", Product: patchProductAmazonLinux2,
 			Classification: "Bugfix", Severity: "Medium",
+			ReleaseDate: UnixTimeFloat(time.Date(2024, time.March, 15, 0, 0, 0, 0, time.UTC)),
 		},
 		{
 			Name: "USN-6567-1", Product: "Ubuntu2204",
 			Classification: "Security", Severity: "High",
+			ReleaseDate: UnixTimeFloat(time.Date(2024, time.January, 22, 0, 0, 0, 0, time.UTC)),
 		},
 	}
 }
@@ -200,8 +208,9 @@ func (b *InMemoryBackend) applyPatchBaselineOperation(
 
 // patchComplianceFromEffective converts a baseline's effective patch set into
 // per-patch compliance records for an instance. An Install operation marks
-// explicitly-approved patches Installed; a Scan (or anything else) reports the
-// baseline's real compliance state (Missing for anything not yet installed).
+// explicitly- or rule-approved patches (EXPLICIT_APPROVED, APPROVED)
+// Installed; a Scan (or anything else) reports the baseline's real compliance
+// state (Missing for anything not yet installed).
 func patchComplianceFromEffective(
 	effective []EffectivePatch,
 	operation string,
@@ -224,7 +233,9 @@ func patchComplianceFromEffective(
 			continue
 		}
 
-		approved := ep.PatchStatus != nil && ep.PatchStatus.DeploymentStatus == patchDeploymentStatusExplicitApproved
+		approved := ep.PatchStatus != nil &&
+			(ep.PatchStatus.DeploymentStatus == patchDeploymentStatusExplicitApproved ||
+				ep.PatchStatus.DeploymentStatus == patchDeploymentStatusApproved)
 
 		complianceState := patchComplianceStateMissing
 

@@ -125,23 +125,27 @@ func buildFirehoseEnvelope(ev *events.SNSPublishedEvent, sub events.SNSSubscript
 // On invocation failure, the message is forwarded to the subscription DLQ when
 // a RedrivePolicy is configured and a SQSSender is wired.
 func (b *InMemoryBackend) deliverToLambdaSubscriptions(ev *events.SNSPublishedEvent) {
-	lambda := b.lambdaBackend
-	if lambda == nil {
-		return
-	}
-
-	sqsSender := b.sqsSender
-
-	var topicEffectivePolicy string
+	var (
+		lambda               LambdaInvoker
+		sqsSender            SQSSender
+		topicEffectivePolicy string
+	)
 
 	func() {
 		b.mu.RLock("lambda-topic-policy")
 		defer b.mu.RUnlock()
 
+		lambda = b.lambdaBackend
+		sqsSender = b.sqsSender
+
 		if topic, ok := b.topics.Get(ev.TopicARN); ok {
 			topicEffectivePolicy = topic.Attributes["EffectiveDeliveryPolicy"]
 		}
 	}()
+
+	if lambda == nil {
+		return
+	}
 
 	for _, sub := range ev.Subscriptions {
 		if sub.Protocol != protocolLambda {
@@ -176,23 +180,27 @@ func (b *InMemoryBackend) deliverToLambdaSubscriptions(ev *events.SNSPublishedEv
 // delivers the bare message body. On delivery failure, the message is forwarded to the subscription DLQ
 // when a RedrivePolicy is configured and a SQSSender is wired — matching the HTTP/HTTPS and Lambda paths.
 func (b *InMemoryBackend) deliverToFirehoseSubscriptions(ev *events.SNSPublishedEvent) {
-	firehose := b.firehoseBackend
-	if firehose == nil {
-		return
-	}
-
-	sqsSender := b.sqsSender
-
-	var topicEffectivePolicy string
+	var (
+		firehose             FirehosePutter
+		sqsSender            SQSSender
+		topicEffectivePolicy string
+	)
 
 	func() {
 		b.mu.RLock("firehose-topic-policy")
 		defer b.mu.RUnlock()
 
+		firehose = b.firehoseBackend
+		sqsSender = b.sqsSender
+
 		if topic, ok := b.topics.Get(ev.TopicARN); ok {
 			topicEffectivePolicy = topic.Attributes["EffectiveDeliveryPolicy"]
 		}
 	}()
+
+	if firehose == nil {
+		return
+	}
 
 	for _, sub := range ev.Subscriptions {
 		if sub.Protocol != protocolFirehose {

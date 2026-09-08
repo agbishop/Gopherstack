@@ -7,6 +7,7 @@ package lightsail
 // independently of this repo's real services/s3 (PARITY.md 4.6/S).
 
 import (
+	"fmt"
 	"slices"
 	"sort"
 
@@ -74,7 +75,13 @@ func findBucketBundle(id string) (*BucketBundle, bool) {
 	return nil, false
 }
 
-// DeleteBucket deletes the named bucket.
+// DeleteBucket deletes the named bucket. ForceDelete's own doc comment
+// (api_op_DeleteBucket.go) lists four conditions requiring it: the bucket
+// is a distribution's origin, an instance/container service was granted
+// access to it, it has objects, or it has access keys -- this backend
+// checks the first, second, and fourth (it does not model bucket object
+// contents at all, PARITY.md family S's 10-op list has no object
+// operations, so "has objects" cannot be evaluated).
 func (b *InMemoryBackend) DeleteBucket(name string, forceDelete bool) ([]Operation, error) {
 	b.mu.Lock("DeleteBucket")
 	defer b.mu.Unlock()
@@ -84,8 +91,22 @@ func (b *InMemoryBackend) DeleteBucket(name string, forceDelete bool) ([]Operati
 		return nil, notFoundError("Bucket", name)
 	}
 
-	if len(bk.ReadonlyAccessAccounts) > 0 && !forceDelete {
-		return nil, validationError("bucket has readonly access accounts; set ForceDelete to delete anyway")
+	if !forceDelete {
+		if len(bk.ReadonlyAccessAccounts) > 0 {
+			return nil, validationError("bucket has readonly access accounts; set ForceDelete to delete anyway")
+		}
+
+		if len(bk.AccessKeys) > 0 {
+			return nil, validationError("bucket has access keys; set ForceDelete to delete anyway")
+		}
+
+		for _, d := range b.distributions.All() {
+			if d.Origin.Name == name {
+				return nil, validationError(
+					fmt.Sprintf("bucket is the origin of distribution %s; set ForceDelete to delete anyway", d.Name),
+				)
+			}
+		}
 	}
 
 	if bk.Tags != nil {

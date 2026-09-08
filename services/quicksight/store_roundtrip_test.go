@@ -59,7 +59,7 @@ func TestQuickSight_Phase3_3_StoreRoundTrip(t *testing.T) {
 	_, err = b.CreateIngestion(testAccountID, "dset1", "ingest1")
 	require.NoError(t, err)
 
-	dash, err := b.CreateDashboard(testAccountID, "dash1", "Dashboard1", nil, nil, nil)
+	dash, err := b.CreateDashboard(testAccountID, "dash1", "Dashboard1", "", "", nil, nil, nil)
 	require.NoError(t, err)
 
 	_, err = b.CreateAnalysis(testAccountID, "an1", "Analysis1", "", nil, nil, nil)

@@ -22,7 +22,7 @@ func TestScheduler_SnapshotRestore_FullState(t *testing.T) {
 	orig := NewInMemoryBackend("000000000000", "us-east-1")
 
 	// A schedule group with tags in the default region.
-	_, err := orig.CreateScheduleGroup(ctxEast, "team-a", "group A", map[string]string{"owner": "a"})
+	_, err := orig.CreateScheduleGroup(ctxEast, "team-a", map[string]string{"owner": "a"})
 	require.NoError(t, err)
 
 	// A schedule in the custom group with start/end dates and tags.
@@ -68,10 +68,10 @@ func TestScheduler_SnapshotRestore_FullState(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "prod", kv["env"])
 
-	// Group tags preserved.
+	// Group state preserved.
 	groupTags, err := fresh.GetScheduleGroup(ctxEast, "team-a")
 	require.NoError(t, err)
-	assert.Equal(t, "group A", groupTags.Description)
+	assert.Equal(t, scheduleGroupStateActive, groupTags.State)
 
 	// West region isolated: its own same-named schedule with a different expression.
 	west, err := fresh.GetSchedule(ctxWest, "sched-east", "")

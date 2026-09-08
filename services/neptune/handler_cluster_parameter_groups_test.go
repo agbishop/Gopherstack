@@ -84,6 +84,54 @@ func TestHandler_DBClusterParameterGroups(t *testing.T) {
 	}
 }
 
+// TestHandler_DeleteDBClusterParameterGroup_InUse asserts
+// DeleteDBClusterParameterGroup rejects a cluster parameter group still
+// associated with a DB cluster (api_op_DeleteDBClusterParameterGroup.go:
+// "The DB cluster parameter group to be deleted can't be associated with any
+// DB clusters.").
+func TestHandler_DeleteDBClusterParameterGroup_InUse(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	doRequest(t, h, url.Values{
+		"Action":                      {"CreateDBClusterParameterGroup"},
+		"Version":                     {"2014-10-31"},
+		"DBClusterParameterGroupName": {"used-cpg"},
+		"DBParameterGroupFamily":      {"neptune1.3"},
+		"Description":                 {"in use"},
+	})
+	doRequest(t, h, url.Values{
+		"Action":                      {"CreateDBCluster"},
+		"Version":                     {"2014-10-31"},
+		"DBClusterIdentifier":         {"cpg-user-cluster"},
+		"DBClusterParameterGroupName": {"used-cpg"},
+	})
+
+	recEarly := doRequest(t, h, url.Values{
+		"Action":                      {"DeleteDBClusterParameterGroup"},
+		"Version":                     {"2014-10-31"},
+		"DBClusterParameterGroupName": {"used-cpg"},
+	})
+	assert.Equal(t, http.StatusBadRequest, recEarly.Code)
+	assert.Contains(t, recEarly.Body.String(), "InvalidDBParameterGroupState")
+
+	recDeleteCluster := doRequest(t, h, url.Values{
+		"Action":              {"DeleteDBCluster"},
+		"Version":             {"2014-10-31"},
+		"DBClusterIdentifier": {"cpg-user-cluster"},
+		"SkipFinalSnapshot":   {"true"},
+	})
+	require.Equal(t, http.StatusOK, recDeleteCluster.Code)
+
+	recDelete := doRequest(t, h, url.Values{
+		"Action":                      {"DeleteDBClusterParameterGroup"},
+		"Version":                     {"2014-10-31"},
+		"DBClusterParameterGroupName": {"used-cpg"},
+	})
+	assert.Equal(t, http.StatusOK, recDelete.Code)
+}
+
 func TestHandler_CopyDBClusterParameterGroup(t *testing.T) {
 	t.Parallel()
 

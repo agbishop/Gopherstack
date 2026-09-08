@@ -47,7 +47,48 @@ families:
   LifecyclePolicy: {status: ok, note: "Put/Get/Delete round-trip the raw JSON string verbatim."}
   MetricPolicy: {status: ok, note: "Put validates ContainerLevelMetrics enum and >5-rule limit; Get/Delete round-trip full policy including MetricPolicyRules."}
   Tags: {status: ok, note: "Tag/Untag/ListTagsForResource keyed by ARN via containerNameFromARN; tags also settable at CreateContainer time."}
-gaps: []          # all three prior gaps closed this pass -- see "Re-audit 2026-07-24 (gap closure)" below
+gaps:
+  - "gopherstack-apg3 (2026-09-07, audited, NOT fixed -- structural): DeleteContainer does not
+    require the container to be empty. Real AWS's doc comment (aws-sdk-go-v2/service/mediastore
+    @v1.32.4 api_op_DeleteContainer.go:10-12, byte-identical in botocore's mediastore/2017-09-01/
+    service-2.json.gz operations.DeleteContainer.documentation) states \"Before you make a
+    DeleteContainer request, delete any objects in the container or in any folders in the
+    container. You can delete only empty containers,\" but DeleteContainer's own modeled error
+    set (deserializers.go:201-251's awsAwsjson11_deserializeOpErrorDeleteContainer switch;
+    identical in botocore's operations.DeleteContainer.errors) is only ContainerInUseException,
+    ContainerNotFoundException, InternalServerError -- no distinct \"container not empty\"
+    exception exists to enforce against. ContainerInUseException's own doc (types/errors.go:10-11:
+    \"The container that you specified in the request already exists or is being updated\")
+    already maps 1:1 to gopherstack's existing create-time already-exists/being-updated case
+    (handler.go:643-645), not emptiness. STRUCTURAL, not fixable by cross-service wiring alone:
+    gopherstack DOES have a cross-service backend-lookup mechanism (a backend records
+    service.AppContext.Config via SetAppConfig in its provider.Init, then type-asserts it to a
+    narrow siblingServices interface -- see pkgs/service.AppContext's doc comment, service.go:
+    179-189, and services/grafana/cross_service.go for the reference implementation). Neither
+    mediastore's nor mediastoredata's provider.Init uses it today (mediastoredata/provider.go:
+    17-30 builds its NewInMemoryBackend with no sibling lookup), so the two are not wired to each
+    other -- gopherstack-z4v1 corrects an earlier version of this entry that took that as evidence
+    no such mechanism exists in the repo at all. But wiring alone would not be enough:
+    mediastoredata's object store (InMemoryBackend.states map[string]*store.Table[Object],
+    mediastoredata/store.go:38-42) is keyed ONLY by region (getRegion, store.go:15-27), with no
+    container dimension at all -- its handler resolves only the SigV4 region per request
+    (requestContext, handler.go:118-126), never a container identifier. Even a wired
+    cross-service handle could not answer \"is this container empty\" today: mediastoredata would
+    first need a container key added to its storage model. Left unenforced rather than
+    fabricated. Adjacent items checked per the same issue:
+    error type for a missing container is correct (ContainerNotFoundException, handler.go:625-631,
+    already pinned by a terraform-provider-aws-waiter comment); container-name format validation
+    (validateContainerName, containers.go:19-26) runs only on CreateContainer, not Delete or any
+    other container-name-consuming op -- long-standing and uniform across this file, and the real
+    SDK's client-side validator (validators.go:33-51) only checks required-ness, not the
+    pattern/max shape traits, so there is no clear SDK-side evidence this diverges from real AWS;
+    left as-is, unverified rather than asserted as a bug. DeleteContainer skips any Status
+    precondition (containers.go:107-143): deleting a CREATING container is a tested, deliberate
+    choice (supersedes the pending creating->active transition -- containers.go:125-129's comment,
+    pinned by containers_test.go's TestInMemoryBackend_ContainerActivationDelay); a second
+    DeleteContainer call on an already-DELETING container is UNTESTED and its real-AWS behavior
+    (idempotent success vs. ContainerInUseException) could not be verified from the SDK/botocore
+    model -- flagged as unverified, not fixed."
 deferred: []
 leaks: {status: clean, note: "No goroutines, timers, or janitors in this service; InMemoryBackend is a single lockmetrics.RWMutex over per-region store.Table maps. The new container-lifecycle simulation (activationDelay/containerTransitions, see gap-closure note below) does NOT add a goroutine -- transitions are advanced lazily on read/mutate (advanceContainerStates), matching services/redshift's clusterTransitions pattern minus its optional background reconciler goroutine, which was deliberately not added here since lazy advancement alone is sufficient for every caller (SDK waiters always call Describe/List in a loop) and keeps this service goroutine-free."}
 ---
@@ -389,3 +430,92 @@ other concurrent work, not touched here.
 MetricPolicy field lists, `MaxAgeSeconds` int32, lifecycle policy as string,
 enum sets) matched the pinned v1.32.4 SDK exactly -- nothing in the brief
 disagreed with the pinned SDK.
+
+## Audit 2026-09-07 (gopherstack-apg3 -- DeleteContainer empty-container precondition)
+
+Title-only issue, no description. Verdict: **STRUCTURAL GAP, not fixed** --
+see the `gaps` entry above for the full citation trail. Short version: real
+AWS's DeleteContainer doc prose requires an empty container, but neither the
+Go SDK's nor botocore's modeled error set for the op names a distinct
+"container not empty" exception to enforce it against. `services/mediastore`
+and `services/mediastoredata` are separate `Provider.Init`s and, as things
+stand today, neither wires to the other -- but gopherstack does have a
+cross-service backend-lookup mechanism available for exactly this (see
+`pkgs/service.AppContext`'s doc comment, `service.go:179-189`, and
+`services/grafana/cross_service.go` for the reference implementation); it is
+just unused here, not architecturally absent (gopherstack-z4v1 corrects an
+earlier version of this entry that concluded otherwise). Wiring is not the
+decisive blocker, though: `mediastoredata`'s `InMemoryBackend.states` is
+keyed only by region (`services/mediastoredata/store.go:38-42`), with **no
+container dimension in the data model at all**. Fixing this for real needs
+two things: (1) wiring mediastore to mediastoredata via the established
+SetAppConfig/siblingServices pattern, and (2) adding a container key to
+mediastoredata's object table, which today only exists per-region. Neither
+was built this pass; (2) in particular is a real storage-model change, out
+of scope for a parity fix.
+
+Also checked the scope note's three adjacent questions: DeleteContainer's
+error type for a missing container is correct
+(`ContainerNotFoundException`, already verified and pinned by prior audits);
+container-name format validation runs only on `CreateContainer`
+(`validateContainerName`, `containers.go:19-26`), not on `DeleteContainer` or
+any other container-name-consuming op -- this is a pre-existing, uniform
+choice across the whole file, not something introduced or specific to
+`DeleteContainer`, and the real SDK's client-side validator
+(`validators.go:33-51`) only checks required-ness, not the `ContainerName`
+shape's `pattern`/`max` traits, so there's no clear SDK-side evidence this
+actually diverges from real AWS; left unverified rather than "fixed" on a
+guess. DeleteContainer has no `Status` precondition: deleting a `CREATING`
+container is intentional, tested behavior (supersedes the pending
+`CREATING`->`ACTIVE` transition, per `containers.go:125-129`'s comment and
+`TestInMemoryBackend_ContainerActivationDelay`); a second `DeleteContainer`
+call while a container is already `DELETING` is untested and its real-AWS
+behavior could not be established from the SDK/botocore model available
+here -- flagged as an open question, not asserted as a bug.
+
+No code changed this session (no fixable defect within reach). Gates run
+against unmodified code for the record: `GOTOOLCHAIN=go1.27.0 golangci-lint
+run ./services/mediastore/... ./services/mediastoredata/...` -> `0 issues.`;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/mediastore/...
+./services/mediastoredata/...` -> both `ok`. Confidence: high on the
+decisive finding (mediastoredata's region-only storage keying, independently
+confirmed by direct code reading); lower on the two flagged-but-unverified
+adjacent items
+(name-format validation on non-Create ops, double-delete-while-DELETING
+semantics), which are genuinely unconfirmed against real AWS rather than
+dismissed.
+
+## 2026-09-08: writeError nil-on-write fall-through sweep (gopherstack-246v) -- clean
+
+Part of the 12-service sweep for the elasticache class bug (gopherstack-8haq): a helper
+that rejects a request via the local response writer and *returns* that writer's result
+hands a caller doing `if err != nil { return err }` a `nil`, since the writer returns nil
+after a successful write -- the rejection is silently skipped and the operation continues.
+
+**Base writer**: `writeError` (`handler.go:664`) returns `c.JSON(status, errorResponse{...})`
+directly -- nil on a successful write. `writeBackendError` (`handler.go:623`, a method)
+wraps it, `return writeError(...)` at every branch of its error-classification switch.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test `.go` file found
+every function with a `return`-statement whose result is a bare call to `writeError`, then
+fixed-point-expanded to any function bare-returning a call to an already-found member --
+24 functions discovered: `writeBackendError`, all 20 `handleXxx` op handlers, and `dispatch`.
+
+**Dispatch verified, not assumed.** `Handler()` returns `h.dispatch(c, op, body)` directly;
+`dispatch` looks up `op` in `mediastoreDispatch`, a flat `map[string]func(*Handler,
+*echo.Context, []byte) error` (20 entries), and returns `fn(h, c, body)` directly -- read
+in full, no intermediate `if err != nil` anywhere in the dispatch path. All 20 `handleXxx`
+functions are dispatch targets, safe by construction; `writeBackendError` is the only
+non-dispatch helper in the discovered set.
+
+Every call site of `writeError` and `writeBackendError` across the package (73 total) was
+enumerated and classified: **all 73 are direct `return writeError(...)` / `return
+writeBackendError(...)` / `return fn(h, c, body)` returns. Zero stored-then-checked sites,
+zero `_ =` discards.** Independently confirmed by grepping every non-test-file occurrence
+of `writeError(`/`writeBackendError(` outside their own definitions: every one is
+immediately preceded by `return` on the same line.
+
+**No instance of the broken shape exists in mediastore.** No code changed. Gates re-run for
+the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/mediastore/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/mediastore/...` ok. (mediastoredata's own
+audit is recorded separately in its own PARITY.md, same date.)

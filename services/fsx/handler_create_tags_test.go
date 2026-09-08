@@ -110,6 +110,13 @@ func TestCreateOpsWithTags_RoundTrip(t *testing.T) {
 					StorageCapacity:      aws.Int32(1200),
 					SubnetIds:            []string{"subnet-0123abcd"},
 					Tags:                 []types.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},
+					LustreConfiguration: &types.CreateFileCacheLustreConfiguration{
+						DeploymentType: types.FileCacheLustreDeploymentTypeCache1,
+						MetadataConfiguration: &types.FileCacheLustreMetadataConfiguration{
+							StorageCapacity: aws.Int32(2400),
+						},
+						PerUnitStorageThroughput: aws.Int32(1000),
+					},
 				})
 				require.NoError(t, err)
 
@@ -171,7 +178,7 @@ func TestCreateOpsWithTags_RoundTrip(t *testing.T) {
 					VolumeType: types.VolumeTypeOntap,
 					OntapConfiguration: &types.CreateOntapVolumeConfiguration{
 						JunctionPath:            aws.String("/snap-source"),
-						SizeInMegabytes:         aws.Int32(1024),
+						SizeInBytes:             aws.Int64(1024 * 1024 * 1024),
 						StorageVirtualMachineId: svmOut.StorageVirtualMachine.StorageVirtualMachineId,
 					},
 				})
@@ -219,7 +226,7 @@ func TestCreateOpsWithTags_RoundTrip(t *testing.T) {
 					VolumeType: types.VolumeTypeOntap,
 					OntapConfiguration: &types.CreateOntapVolumeConfiguration{
 						JunctionPath:            aws.String("/tagged-vol"),
-						SizeInMegabytes:         aws.Int32(1024),
+						SizeInBytes:             aws.Int64(1024 * 1024 * 1024),
 						StorageVirtualMachineId: svmOut.StorageVirtualMachine.StorageVirtualMachineId,
 					},
 					Tags: []types.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},

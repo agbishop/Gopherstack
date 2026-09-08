@@ -102,7 +102,10 @@ func (b *InMemoryBackend) UpdatePrompt(promptID, name, description string) (*Pro
 	return &cp, nil
 }
 
-// DeletePrompt deletes a Prompt.
+// DeletePrompt deletes a Prompt and its versions.
+// Without this, GetPromptVersion/ListPromptVersions keep returning rows for a
+// prompt ID that no longer resolves (gopherstack-jkiu, same shape as
+// gopherstack-wg7i's DeleteKnowledgeBase fix).
 func (b *InMemoryBackend) DeletePrompt(promptID string) error {
 	b.mu.Lock("DeletePrompt")
 	defer b.mu.Unlock()
@@ -113,6 +116,15 @@ func (b *InMemoryBackend) DeletePrompt(promptID string) error {
 	}
 
 	delete(b.promptsByName, p.Name)
+	delete(b.agentTags, p.PromptArn)
+	delete(b.promptVersionCounters, promptID)
+
+	// Reset, not delete: see DeleteFlow's comment in flows.go -- same
+	// register-once-panic-on-reregister landmine applies to promptVersionsStore.
+	if versions, versionsOK := b.promptVersions[promptID]; versionsOK {
+		versions.Reset()
+	}
+
 	b.prompts.Delete(promptID)
 
 	return nil

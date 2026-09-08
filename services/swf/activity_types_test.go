@@ -38,6 +38,40 @@ func TestRegisterActivityType_Duplicate(t *testing.T) {
 	assert.ErrorIs(t, err, swf.ErrTypeAlreadyExists)
 }
 
+// TestRegisterActivityType_DomainChecks verifies ErrNotFound (UnknownResourceFault)
+// both when the domain does not exist and when it has been deprecated -- per
+// DeprecateDomain's doc ("it cannot be used to create new workflow executions or
+// register new types"). RegisterActivityType's modelled error set has
+// UnknownResourceFault but no DomainDeprecatedFault.
+func TestRegisterActivityType_DomainChecks(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		setupDeprecatedDomain bool
+	}{
+		{name: "domain_missing"},
+		{name: "domain_deprecated", setupDeprecatedDomain: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := swf.NewInMemoryBackend()
+			if tt.setupDeprecatedDomain {
+				require.NoError(t, b.RegisterDomain("dom", "", "NONE"))
+				require.NoError(t, b.DeprecateDomain("dom"))
+			}
+
+			err := b.RegisterActivityType("dom", "act", "1.0", "", swf.ActivityTypeDefaults{})
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, swf.ErrNotFound)
+		})
+	}
+}
+
 func TestActivityTypeDefaults(t *testing.T) {
 	t.Parallel()
 

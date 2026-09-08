@@ -111,6 +111,7 @@ func (b *InMemoryBackend) DeleteCommand(id string) error {
 		return fmt.Errorf("command %q not found: %w", id, ErrResourceNotFound)
 	}
 	b.commands.Delete(id)
+	delete(b.resourceTags, b.commandARN(id))
 
 	return nil
 }

@@ -68,6 +68,7 @@ func (b *InMemoryBackend) GetIdentityPoolRoles(
 	}
 
 	cp := *roles
+	cp.RoleMappings = cloneRoleMappings(roles.RoleMappings)
 
 	return &cp, nil
 }

@@ -282,6 +282,28 @@ func buildServiceModuleTruth(
 	return smt, nil
 }
 
+// sparseModuleThreshold mirrors cmd/errcodeaudit's moduleCodes.sparselyModeled
+// (same 0.5 cutoff, same s3-class rationale): below it, most of this
+// module's own deserializeOpError<Op> functions matched zero codes, so an
+// operation's absence from PerOp is weak evidence of a real gap, not strong
+// -- gopherstack-zofv's orphan-code class (deser.go's mgt.sparselyModeled)
+// must not fire against a module this thinly parsed, or "no parseable ops"
+// reads as a flood of findings instead of the noise it is.
+const sparseModuleThreshold = 0.5
+
+// sparselyModeled reports whether mgt's own deserializer matched at least
+// one code for under half of its own OpFuncs -- see sparseModuleThreshold.
+// A module with zero OpFuncs (cloudwatch's newer-codegen case, deser.go's
+// doc comment) is never "sparse": it is excluded upstream by the
+// !mgt.OpFuncs[op] guard in scan.go before this is ever consulted.
+func (mgt *moduleGroundTruth) sparselyModeled() bool {
+	if len(mgt.OpFuncs) == 0 {
+		return false
+	}
+
+	return float64(len(mgt.PerOp))/float64(len(mgt.OpFuncs)) < sparseModuleThreshold
+}
+
 // allServiceCodes is the union of every resolved module's AllCodes -- the
 // "real code somewhere in this service's SDK" universe used to separate a
 // class A finding (real code, wrong operation) from class B (cmd/errcodeaudit's

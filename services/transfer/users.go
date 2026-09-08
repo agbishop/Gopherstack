@@ -153,6 +153,7 @@ func (b *InMemoryBackend) DeleteUser(serverID, userName string) error {
 	}
 
 	b.users.Delete(uKey)
+	delete(b.tagsStore, userARN(b.accountID, b.region, serverID, userName))
 
 	// Delete all SSH public keys for this user.
 	for _, k := range slices.Clone(b.sshKeysByServerUser.Get(serverUserKey(serverID, userName))) {

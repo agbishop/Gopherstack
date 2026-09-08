@@ -116,20 +116,51 @@ func TestInMemoryBackend_GetIntrospectionSchema(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		wantSDL   string
-		hasSchema bool
-		wantErr   bool
+		wantErrIs  error
+		name       string
+		format     string
+		wantSDL    string
+		hasSchema  bool
+		invalidSDL bool
+		wantErr    bool
 	}{
 		{
-			name:      "returns_schema_sdl",
+			name:      "sdl_format_returns_schema_sdl_verbatim",
+			format:    "SDL",
+			hasSchema: true,
+			wantSDL:   `type Query { hello: String }`,
+		},
+		{
+			name:      "empty_format_defaults_to_sdl",
+			format:    "",
 			hasSchema: true,
 			wantSDL:   `type Query { hello: String }`,
 		},
 		{
 			name:      "error_when_no_schema",
+			format:    "SDL",
 			hasSchema: false,
 			wantErr:   true,
+			wantErrIs: awserr.ErrNotFound,
+		},
+		{
+			name:      "unrecognized_format_rejected",
+			format:    "XML",
+			hasSchema: true,
+			wantErr:   true,
+			wantErrIs: appsync.ErrValidation,
+		},
+		{
+			// gopherstack-w4kf: JSON introspection of an unparsed schema must
+			// raise ErrGraphQLSchemaInvalid, not the ErrInvalidSchema sentinel
+			// StartSchemaCreation uses -- this op's declared set has no
+			// BadRequestException.
+			name:       "invalid_schema_json_format_rejected",
+			format:     "JSON",
+			hasSchema:  true,
+			invalidSDL: true,
+			wantErr:    true,
+			wantErrIs:  appsync.ErrGraphQLSchemaInvalid,
 		},
 	}
 
@@ -141,13 +172,22 @@ func TestInMemoryBackend_GetIntrospectionSchema(t *testing.T) {
 			api, _ := b.CreateGraphqlAPI("TestAPI", appsync.AuthTypeAPIKey, false, "", "", nil, nil, nil)
 
 			if tt.hasSchema {
-				_, _ = b.StartSchemaCreation(api.APIID, tt.wantSDL)
+				sdl := `type Query { hello: String }`
+				if tt.invalidSDL {
+					sdl = `type { broken schema`
+				}
+
+				_, _ = b.StartSchemaCreation(api.APIID, sdl)
 			}
 
-			sdl, err := b.GetIntrospectionSchema(api.APIID, "SDL")
+			sdl, err := b.GetIntrospectionSchema(api.APIID, tt.format, true)
 
 			if tt.wantErr {
 				require.Error(t, err)
+
+				if tt.wantErrIs != nil {
+					require.ErrorIs(t, err, tt.wantErrIs)
+				}
 
 				return
 			}

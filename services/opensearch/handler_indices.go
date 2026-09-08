@@ -364,6 +364,8 @@ func (h *Handler) writeIndexError(r *http.Request, w http.ResponseWriter, err er
 		h.writeError(r, w, http.StatusNotFound, "ResourceNotFoundException", err.Error())
 	case errors.Is(err, ErrValidation):
 		h.writeError(r, w, http.StatusBadRequest, "ValidationException", err.Error())
+	case errors.Is(err, ErrAccessDenied):
+		h.writeError(r, w, http.StatusForbidden, "AccessDeniedException", err.Error())
 	default:
 		h.writeError(r, w, http.StatusInternalServerError, "InternalException", err.Error())
 	}

@@ -79,4 +79,16 @@ var (
 	// ErrInvalidNetworkSettings is returned when a SubnetId/SecurityGroupId
 	// supplied to CreateFileSystem doesn't match the real ID format.
 	ErrInvalidNetworkSettings = awserr.New("InvalidNetworkSettings", awserr.ErrInvalidParameter)
+	// ErrDataRepositoryTaskExecuting is returned by CreateDataRepositoryTask
+	// when the target file system already has a task with Lifecycle
+	// EXECUTING (fsx@v1.68.4 types/errors.go: "An existing data repository
+	// task is currently executing on the file system. Wait until the
+	// existing task has completed, then create the new task.").
+	ErrDataRepositoryTaskExecuting = awserr.New("DataRepositoryTaskExecuting", awserr.ErrInvalidParameter)
+	// ErrMissingFileCacheConfiguration is returned when CreateFileCache is
+	// called without the required LustreConfiguration block (fsx@v1.68.4
+	// types/errors.go: "A cache configuration is required for this
+	// operation." -- FileCacheType is always LUSTRE, so this is the only
+	// per-type config block CreateFileCache has).
+	ErrMissingFileCacheConfiguration = awserr.New("MissingFileCacheConfiguration", awserr.ErrInvalidParameter)
 )

@@ -534,6 +534,14 @@ func TestACMHandler_UpdateCertificateOptions_DescribeShowsOptions(t *testing.T) 
 }
 
 // TestACMHandler_RevokeCertificate_PendingValidationRejected verifies that PENDING certs cannot be revoked.
+//
+// STRENGTHENED (gopherstack-bzyl): previously asserted InvalidStateException, a code
+// RevokeCertificate's real deserializer never declares (deserializers.go, acm@v1.43.4:
+// AccessDeniedException/ConflictException/InvalidArnException/ResourceInUseException/
+// ResourceNotFoundException/ThrottlingException/ValidationException only). ConflictException's
+// own doc text ("trying to update a resource ... that is already being created or updated.
+// Wait for the previous operation to finish and try again") is a direct match for a cert
+// still mid-validation, and it IS declared -- the old assertion was pinning an undeclared code.
 func TestACMHandler_RevokeCertificate_PendingValidationRejected(t *testing.T) {
 	t.Parallel()
 
@@ -576,7 +584,7 @@ func TestACMHandler_RevokeCertificate_PendingValidationRejected(t *testing.T) {
 	})
 	revokeRec := postACMJSON(t, h, "RevokeCertificate", string(revokeBody))
 	assert.Equal(t, http.StatusBadRequest, revokeRec.Code)
-	assert.Contains(t, revokeRec.Body.String(), "InvalidStateException")
+	assert.Contains(t, revokeRec.Body.String(), "ConflictException")
 }
 
 // TestACMHandler_StatusLifecycle_DescribeReflectsNewStatus verifies that lifecycle status

@@ -229,6 +229,7 @@ func (b *InMemoryBackend) DeleteOriginEndpoint(id string) (*OriginEndpoint, erro
 	}
 
 	b.originEndpoints.Delete(id)
+	delete(b.tags, ep.ARN)
 
 	return ep.toOriginEndpoint(), nil
 }

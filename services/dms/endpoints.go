@@ -132,6 +132,7 @@ func (b *InMemoryBackend) DeleteEndpoint(ctx context.Context, arnOrID string) (*
 		cp := *ep
 		ep.Tags.Close()
 		b.endpoints.Delete(regionKey(region, id))
+		delete(b.endpointSchemasStore(region), ep.EndpointArn)
 		b.appendEvent(
 			region, ep.EndpointArn, "replication-instance",
 			"Endpoint "+id+" deleted", []string{eventCategoryDeletion},
@@ -183,6 +184,11 @@ func (b *InMemoryBackend) DescribeSchemas(ctx context.Context, endpointARN strin
 	defer b.mu.RUnlock()
 
 	region := getRegion(ctx, b.region)
+
+	if _, ok := lookupUnique(b.endpointsByARN, regionKey(region, endpointARN)); !ok {
+		return nil, fmt.Errorf("%w: endpoint %s not found", ErrNotFound, endpointARN)
+	}
+
 	schemas := b.endpointSchemasStoreRO(region)[endpointARN]
 
 	if schemas == nil {

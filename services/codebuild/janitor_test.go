@@ -127,9 +127,17 @@ func TestJanitor_SweepCompletedBuilds(t *testing.T) {
 	}
 }
 
-// TestDeleteProject_CleanupBuilds verifies that deleting a project removes
-// all associated builds.
-func TestDeleteProject_CleanupBuilds(t *testing.T) {
+// TestDeleteProject_DoesNotCleanupBuilds verifies that deleting a project
+// leaves its builds intact.
+//
+// This replaces a prior test (TestDeleteProject_CleanupBuilds) that asserted
+// the opposite -- that DeleteProject cascade-deleted a project's builds. That
+// assertion encoded a real parity bug: aws-sdk-go-v2/service/codebuild@v1.72.4's
+// api_op_DeleteProject.go doc comment states plainly: "Deletes a build
+// project. When you delete a project, its builds are not deleted." The
+// backend was deleting them anyway; PARITY.md had (incorrectly) recorded the
+// cascade as an intentional cleanup rather than a bug.
+func TestDeleteProject_DoesNotCleanupBuilds(t *testing.T) {
 	t.Parallel()
 
 	backend := newTestBackend(t)
@@ -157,9 +165,9 @@ func TestDeleteProject_CleanupBuilds(t *testing.T) {
 	err = backend.DeleteProject("proj")
 	require.NoError(t, err)
 
-	assert.Equal(t, 0, backend.BuildCount(), "all builds should be removed after project deletion")
-	assert.Equal(t, 0, backend.BuildARNIndexSize(), "ARN index should be empty after project deletion")
-	assert.Equal(t, 0, backend.BuildsByProjectSize("proj"), "project index should be empty after project deletion")
+	assert.Equal(t, 2, backend.BuildCount(), "builds must survive project deletion, matching real AWS")
+	assert.Equal(t, 2, backend.BuildARNIndexSize(), "ARN index must still resolve the surviving builds")
+	assert.Equal(t, 2, backend.BuildsByProjectSize("proj"), "project index must still list the surviving builds")
 }
 
 // TestJanitor_SweepCleansARNIndex verifies that sweeping builds also removes

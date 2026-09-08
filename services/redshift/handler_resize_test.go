@@ -96,7 +96,7 @@ func TestBackend_CancelResize(t *testing.T) {
 		{
 			name: "success",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("cr-cluster", "", "", "")
+				_, _ = b.CreateCluster("cr-cluster", "", "", "", nil, "")
 				b.AddActiveResizeInternal("cr-cluster", &redshift.ResizeProgress{
 					Status:            "IN_PROGRESS",
 					AllowCancelResize: true,
@@ -117,7 +117,7 @@ func TestBackend_CancelResize(t *testing.T) {
 		{
 			name: "no_active_resize",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("no-resize", "", "", "")
+				_, _ = b.CreateCluster("no-resize", "", "", "", nil, "")
 			},
 			clusterID: "no-resize",
 			wantErr:   redshift.ErrResizeNotFound,
@@ -156,7 +156,7 @@ func TestCancelResize_AllowCancelResizeFalse(t *testing.T) {
 	b := redshift.NewInMemoryBackend("000000000000", "us-east-1")
 	h := redshift.NewHandler(b)
 
-	_, err := b.CreateCluster("cr-cluster", "dc2.large", "dev", "admin")
+	_, err := b.CreateCluster("cr-cluster", "dc2.large", "dev", "admin", nil, "")
 	require.NoError(t, err)
 
 	b.AddActiveResizeInternal("cr-cluster", &redshift.ResizeProgress{
@@ -192,7 +192,7 @@ func TestCancelResize_NoActiveResize(t *testing.T) {
 	b := redshift.NewInMemoryBackend("000000000000", "us-east-1")
 	h := redshift.NewHandler(b)
 
-	_, err := b.CreateCluster("nr-cluster", "dc2.large", "dev", "admin")
+	_, err := b.CreateCluster("nr-cluster", "dc2.large", "dev", "admin", nil, "")
 	require.NoError(t, err)
 
 	rec := postRedshiftForm(t, h,
@@ -210,7 +210,7 @@ func TestCancelResize_ReturnsAllXMLFields(t *testing.T) {
 	b := redshift.NewInMemoryBackend("000000000000", "us-east-1")
 	h := redshift.NewHandler(b)
 
-	_, err := b.CreateCluster("rp-cluster", "dc2.large", "dev", "admin")
+	_, err := b.CreateCluster("rp-cluster", "dc2.large", "dev", "admin", nil, "")
 	require.NoError(t, err)
 
 	b.AddActiveResizeInternal("rp-cluster", &redshift.ResizeProgress{
@@ -254,7 +254,7 @@ func TestHandler_DescribeResize(t *testing.T) {
 			name: "success",
 			setup: func(t *testing.T, b *redshift.InMemoryBackend) {
 				t.Helper()
-				_, err := b.CreateCluster("dr-cluster", "dc2.large", "dev", "admin")
+				_, err := b.CreateCluster("dr-cluster", "dc2.large", "dev", "admin", nil, "")
 				require.NoError(t, err)
 				b.AddActiveResizeInternal("dr-cluster", &redshift.ResizeProgress{
 					Status:         "IN_PROGRESS",
@@ -310,7 +310,7 @@ func TestBackend_DescribeResize(t *testing.T) {
 		{
 			name: "success",
 			setup: func(b *redshift.InMemoryBackend) {
-				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin")
+				_, _ = b.CreateCluster("c1", "dc2.large", "dev", "admin", nil, "")
 				b.AddActiveResizeInternal("c1", &redshift.ResizeProgress{Status: "IN_PROGRESS"})
 			},
 			clusterID: "c1",

@@ -2,9 +2,58 @@ package transcribe
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 )
+
+// supportedMedicalScribeParticipantRoles returns the set of participant roles
+// accepted for a Medical Scribe channel definition.
+func supportedMedicalScribeParticipantRoles() []string { return []string{"PATIENT", "CLINICIAN"} }
+
+// validateMedicalScribeSettings enforces the constraints documented on
+// StartMedicalScribeJob: Settings is required and must set exactly one of
+// ShowSpeakerLabels or ChannelIdentification to true; ShowSpeakerLabels=true
+// requires MaxSpeakerLabels to also be set; ChannelDefinitions must be present
+// if and only if ChannelIdentification is true.
+func validateMedicalScribeSettings(
+	settings *MedicalScribeSettings, channelDefs []MedicalScribeChannelDefinition,
+) error {
+	if settings == nil {
+		return fmt.Errorf("%w: Settings is required for MedicalScribeJob", ErrValidation)
+	}
+
+	if settings.ShowSpeakerLabels == settings.ChannelIdentification {
+		return fmt.Errorf(
+			"%w: exactly one of Settings.ShowSpeakerLabels or Settings.ChannelIdentification must be true",
+			ErrValidation,
+		)
+	}
+
+	if settings.ShowSpeakerLabels && settings.MaxSpeakerLabels == 0 {
+		return fmt.Errorf("%w: Settings.MaxSpeakerLabels is required when ShowSpeakerLabels is true", ErrValidation)
+	}
+
+	if (len(channelDefs) > 0) != settings.ChannelIdentification {
+		return fmt.Errorf(
+			"%w: ChannelDefinitions must be set if and only if Settings.ChannelIdentification is true",
+			ErrValidation,
+		)
+	}
+
+	for i := range channelDefs {
+		if channelDefs[i].ParticipantRole == "" {
+			return fmt.Errorf("%w: each ChannelDefinition must have a ParticipantRole", ErrValidation)
+		}
+
+		if !slices.Contains(supportedMedicalScribeParticipantRoles(), channelDefs[i].ParticipantRole) {
+			return fmt.Errorf("%w: ChannelDefinition.ParticipantRole %q must be one of %v",
+				ErrValidation, channelDefs[i].ParticipantRole, supportedMedicalScribeParticipantRoles())
+		}
+	}
+
+	return nil
+}
 
 // StartMedicalScribeJob creates a new Medical Scribe job.
 func (b *InMemoryBackend) StartMedicalScribeJob(input *MedicalScribeJob) (*MedicalScribeJob, error) {
@@ -18,6 +67,10 @@ func (b *InMemoryBackend) StartMedicalScribeJob(input *MedicalScribeJob) (*Medic
 
 	if input.OutputBucketName == "" {
 		return nil, fmt.Errorf("%w: OutputBucketName is required for MedicalScribeJob", ErrValidation)
+	}
+
+	if err := validateMedicalScribeSettings(input.Settings, input.ChannelDefinitions); err != nil {
+		return nil, err
 	}
 
 	b.mu.Lock("StartMedicalScribeJob")

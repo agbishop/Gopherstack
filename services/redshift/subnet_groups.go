@@ -2,6 +2,7 @@ package redshift
 
 import (
 	"fmt"
+	"maps"
 )
 
 // Subnet represents a single subnet within a cluster subnet group.
@@ -12,17 +13,19 @@ type Subnet struct {
 
 // ClusterSubnetGroup represents a Redshift cluster subnet group.
 type ClusterSubnetGroup struct {
-	ClusterSubnetGroupName string   `json:"clusterSubnetGroupName"`
-	Description            string   `json:"description"`
-	VpcID                  string   `json:"vpcId"`
-	SubnetGroupStatus      string   `json:"subnetGroupStatus"`
-	Subnets                []Subnet `json:"subnets"`
+	Tags                   map[string]string `json:"tags,omitempty"`
+	ClusterSubnetGroupName string            `json:"clusterSubnetGroupName"`
+	Description            string            `json:"description"`
+	VpcID                  string            `json:"vpcId"`
+	SubnetGroupStatus      string            `json:"subnetGroupStatus"`
+	Subnets                []Subnet          `json:"subnets"`
 }
 
 // CreateClusterSubnetGroup creates a new cluster subnet group.
 func (b *InMemoryBackend) CreateClusterSubnetGroup(
 	name, description, vpcID string,
 	subnetIDs []string,
+	tagsIn map[string]string,
 ) (*ClusterSubnetGroup, error) {
 	if name == "" {
 		return nil, fmt.Errorf("%w: ClusterSubnetGroupName is required", ErrInvalidParameter)
@@ -46,6 +49,7 @@ func (b *InMemoryBackend) CreateClusterSubnetGroup(
 		VpcID:                  vpcID,
 		SubnetGroupStatus:      "Complete",
 		Subnets:                subnets,
+		Tags:                   tagsIn,
 	}
 	b.subnetGroups.Put(sg)
 
@@ -70,26 +74,26 @@ func (b *InMemoryBackend) DeleteClusterSubnetGroup(name string) error {
 	return nil
 }
 
-// DescribeClusterSubnetGroups returns all subnet groups, or a specific one if name is non-empty.
-func (b *InMemoryBackend) DescribeClusterSubnetGroups(name string) ([]ClusterSubnetGroup, error) {
+// DescribeClusterSubnetGroups returns subnet groups. If name is non-empty,
+// returns only that group (ignoring marker/maxRecords/tag filters, matching
+// DescribeClusters' id-lookup shortcut). Otherwise tagKeys/tagValues are
+// applied to the full set before Marker/MaxRecords pagination, following the
+// same convention as DescribeClusters (see store.go).
+func (b *InMemoryBackend) DescribeClusterSubnetGroups(
+	name, marker string, maxRecords int, tagKeys, tagValues []string,
+) ([]ClusterSubnetGroup, string, error) {
 	b.mu.RLock("DescribeClusterSubnetGroups")
 	defer b.mu.RUnlock()
 
-	if name != "" {
-		sg, exists := b.subnetGroups.Get(name)
-		if !exists {
-			return nil, fmt.Errorf("%w: subnet group %s not found", ErrSubnetGroupNotFound, name)
-		}
-
-		return []ClusterSubnetGroup{*cloneSubnetGroup(sg)}, nil
-	}
-
-	result := make([]ClusterSubnetGroup, 0, b.subnetGroups.Len())
-	for _, sg := range b.subnetGroups.All() {
-		result = append(result, *cloneSubnetGroup(sg))
-	}
-
-	return result, nil
+	return describeTaggedGroup(
+		b.subnetGroups, name, marker, maxRecords, tagKeys, tagValues,
+		func(name string) error {
+			return fmt.Errorf("%w: subnet group %s not found", ErrSubnetGroupNotFound, name)
+		},
+		func(sg *ClusterSubnetGroup) ClusterSubnetGroup { return *cloneSubnetGroup(sg) },
+		func(sg *ClusterSubnetGroup) map[string]string { return sg.Tags },
+		func(sg *ClusterSubnetGroup) string { return sg.ClusterSubnetGroupName },
+	)
 }
 
 // ModifyClusterSubnetGroup updates the description or subnets of a cluster subnet group.
@@ -130,6 +134,7 @@ func cloneSubnetGroup(sg *ClusterSubnetGroup) *ClusterSubnetGroup {
 	cp := *sg
 	cp.Subnets = make([]Subnet, len(sg.Subnets))
 	copy(cp.Subnets, sg.Subnets)
+	cp.Tags = maps.Clone(sg.Tags)
 
 	return &cp
 }

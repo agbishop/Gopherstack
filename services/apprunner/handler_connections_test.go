@@ -142,3 +142,45 @@ func TestConnectionDeleteList(t *testing.T) { //nolint:paralleltest // existing 
 		})
 	}
 }
+
+// TestDeleteConnection_RejectsWhenServiceUsesIt verifies DeleteConnection
+// fails while a service's CodeRepository authentication still references the
+// connection (api_op_DeleteConnection.go: "You must first ensure that there
+// are no running App Runner services that use this connection. If there are
+// any, the DeleteConnection action fails."), and succeeds once that service
+// no longer references it.
+func TestDeleteConnection_RejectsWhenServiceUsesIt(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, "CreateConnection", map[string]any{"ConnectionName": "gh-conn", "ProviderType": "GITHUB"})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var connResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &connResp))
+	connArn := connResp["Connection"].(map[string]any)["ConnectionArn"].(string)
+
+	rec = doRequest(t, h, "CreateService", map[string]any{
+		"ServiceName": "code-svc",
+		"SourceConfiguration": map[string]any{
+			"AuthenticationConfiguration": map[string]any{"ConnectionArn": connArn},
+			"CodeRepository": map[string]any{
+				"RepositoryUrl":     "https://github.com/example/repo",
+				"SourceCodeVersion": map[string]any{"Type": "BRANCH", "Value": "main"},
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var svcResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &svcResp))
+	svcArn := svcResp["Service"].(map[string]any)["ServiceArn"].(string)
+
+	rec = doRequest(t, h, "DeleteConnection", map[string]any{"ConnectionArn": connArn})
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "connection still referenced by code-svc must not be deletable")
+
+	rec = doRequest(t, h, "DeleteService", map[string]any{"ServiceArn": svcArn})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "DeleteConnection", map[string]any{"ConnectionArn": connArn})
+	assert.Equal(t, http.StatusOK, rec.Code, "connection must be deletable once no service references it")
+}

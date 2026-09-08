@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v5"
 
@@ -57,6 +58,7 @@ var (
 // Handler is the HTTP handler for the RDS Data REST API.
 type Handler struct {
 	Backend   StorageBackend
+	janitor   *Janitor
 	AccountID string
 	Region    string
 }
@@ -68,6 +70,32 @@ func NewHandler(backend StorageBackend) *Handler {
 		AccountID: backend.AccountID(),
 		Region:    backend.Region(),
 	}
+}
+
+// WithJanitor attaches a background Janitor that expires transactions per
+// BeginTransaction's documented lifetime (see janitor.go). backend must be
+// the same *InMemoryBackend passed to NewHandler -- the Janitor needs direct
+// map access the StorageBackend interface doesn't expose.
+func (h *Handler) WithJanitor(backend *InMemoryBackend, interval, idleTimeout, maxLifetime time.Duration,
+	taskTimeout ...time.Duration,
+) *Handler {
+	j := NewJanitor(backend, interval, idleTimeout, maxLifetime)
+	if len(taskTimeout) > 0 {
+		j.TaskTimeout = taskTimeout[0]
+	}
+
+	h.janitor = j
+
+	return h
+}
+
+// StartWorker starts the background janitor if configured.
+func (h *Handler) StartWorker(ctx context.Context) error {
+	if h.janitor != nil {
+		go h.janitor.Run(ctx)
+	}
+
+	return nil
 }
 
 // Reset clears all handler and backend state. Useful for test isolation.

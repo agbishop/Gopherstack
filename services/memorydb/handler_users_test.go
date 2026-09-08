@@ -618,7 +618,8 @@ func TestHandler_CreateUser_AuthTypes(t *testing.T) {
 	}
 }
 
-// TestHandler_DeleteUser_InACL tests that deleting a user that is in an ACL returns conflict.
+// TestHandler_DeleteUser_InACL tests that deleting a user that is in an ACL
+// succeeds (cascade), per api_op_DeleteUser.go's doc comment.
 func TestHandler_DeleteUser_InACL(t *testing.T) {
 	t.Parallel()
 
@@ -626,7 +627,7 @@ func TestHandler_DeleteUser_InACL(t *testing.T) {
 		name       string
 		wantStatus int
 	}{
-		{name: "delete user in ACL returns 400", wantStatus: http.StatusBadRequest},
+		{name: "delete user in ACL cascades", wantStatus: http.StatusOK},
 	}
 
 	for _, tt := range tests {

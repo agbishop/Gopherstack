@@ -289,8 +289,13 @@ func inlineEntries(m map[string]string) []InlinePolicyEntry {
 //   - arn:aws:iam::<account>:user/<name>
 //   - arn:aws:iam::<account>:role/<name>
 //
-// Permission boundaries are enforced: effective permissions = identity policies ∩ boundary.
-// An allow is only returned if both the identity policies allow AND the boundary allows.
+// Permission boundaries narrow only the identity-policy result (effective
+// identity permissions = identity policies ∩ boundary) before it is combined
+// with any resource-based policy, mirroring the live enforcement path in
+// middleware.go. A resource-policy Allow can still return "allowed" even
+// when the boundary does not cover the action, per the AWS IAM User Guide.
+// An explicit Deny from either the boundary, identity policy, or resource
+// policy always wins.
 func (b *InMemoryBackend) SimulatePrincipalPolicy(
 	principalArn, callerArn, resourceOwner string,
 	resourcePolicyList, actionNames, resourceArns []string, ctx ConditionContext,
@@ -351,8 +356,20 @@ func (b *InMemoryBackend) evaluateSingleSimulation(
 	namedPolicies []namedPolicyDoc,
 	isCrossAccount bool,
 ) SimulationResult {
-	// Identity Policies evaluation
+	// Identity Policies evaluation, boundary-limited the same way the live
+	// enforcement path does (applyPermissionsBoundary in middleware.go):
+	// the boundary narrows only the identity-policy result, before it is
+	// combined with any resource-based policy below. Per the AWS IAM User
+	// Guide, a resource-based policy Allow for an IAM user is not limited by
+	// an implicit deny in an identity-based policy or permissions boundary.
 	idResult := EvaluatePolicies(docs, action, resource, ctx)
+
+	var boundaryDocs []string
+	if boundaryDoc != "" {
+		boundaryDocs = []string{boundaryDoc}
+	}
+
+	idResult, boundaryExplicitDeny, _ := applyPermissionsBoundary(boundaryDocs, action, resource, ctx, idResult)
 
 	// Resource Policies evaluation
 	var resDocs []string
@@ -372,6 +389,9 @@ func (b *InMemoryBackend) evaluateSingleSimulation(
 
 	// Combine logic (Intra-account vs Cross-account)
 	evalResult := combineSimulationResults(idResult, resResult, isCrossAccount)
+	if boundaryExplicitDeny {
+		evalResult = EvalExplicitDeny
+	}
 
 	// Per-policy detail map.
 	detail := make(map[string]string, len(namedPolicies))
@@ -380,23 +400,11 @@ func (b *InMemoryBackend) evaluateSingleSimulation(
 		detail[np.SourceID] = evalDecisionStr(r)
 	}
 
-	// Boundary enforcement.
 	var allowedByBoundary *bool
 
 	if hasBoundary {
-		boundaryResult := EvaluatePolicies(
-			[]string{boundaryDoc},
-			action,
-			resource,
-			ctx,
-		)
-		allowed := boundaryResult == EvalAllow
-
+		allowed := EvaluatePolicies([]string{boundaryDoc}, action, resource, ctx) == EvalAllow
 		allowedByBoundary = &allowed
-
-		if evalResult == EvalAllow && !allowed {
-			evalResult = EvalImplicitDeny
-		}
 	}
 
 	return SimulationResult{

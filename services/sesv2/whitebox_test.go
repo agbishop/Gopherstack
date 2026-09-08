@@ -259,3 +259,82 @@ func TestCreateOps_AllCategorized(t *testing.T) {
 			"knownGapWithTags/untaggable in whitebox_test.go's TestCreateOps_AllCategorized", m.Name)
 	}
 }
+
+// TestDeleteOps_ResourceTagsCleanedUp proves that deleting a resource
+// removes its entry from the shared b.resourceTags store, for every
+// resource kind fixedWithTags (above) routes creation-time tags into it.
+// DeleteConfigurationSet and DeleteEmailIdentity already did this;
+// DeleteContactList, DeleteDedicatedIPPool, DeleteEmailTemplate and
+// DeleteTenant did not, leaving a ghost resourceTags[arn] entry behind --
+// visible via ListTagsForResource on the deleted resource's ARN, and liable
+// to leak stale tags onto a same-named resource created afterward.
+func TestDeleteOps_ResourceTagsCleanedUp(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		create func(b *InMemoryBackend) string
+		delete func(b *InMemoryBackend) error
+		name   string
+	}{
+		{
+			name: "contact_list",
+			create: func(b *InMemoryBackend) string {
+				_, err := b.CreateContactList("cl", "", map[string]string{"Env": wantCreationTimeTagValue})
+				require.NoError(t, err)
+
+				return b.contactListARN("cl")
+			},
+			delete: func(b *InMemoryBackend) error { return b.DeleteContactList("cl") },
+		},
+		{
+			name: "dedicated_ip_pool",
+			create: func(b *InMemoryBackend) string {
+				_, err := b.CreateDedicatedIPPool("pool", "", map[string]string{"Env": wantCreationTimeTagValue})
+				require.NoError(t, err)
+
+				return b.dedicatedIPPoolARN("pool")
+			},
+			delete: func(b *InMemoryBackend) error { return b.DeleteDedicatedIPPool("pool") },
+		},
+		{
+			name: "email_template",
+			create: func(b *InMemoryBackend) string {
+				_, err := b.CreateEmailTemplate("tmpl", &EmailTemplateContent{Subject: "s"},
+					map[string]string{"Env": wantCreationTimeTagValue})
+				require.NoError(t, err)
+
+				return b.emailTemplateARN("tmpl")
+			},
+			delete: func(b *InMemoryBackend) error { return b.DeleteEmailTemplate("tmpl") },
+		},
+		{
+			name: "tenant_resource",
+			create: func(b *InMemoryBackend) string {
+				out, err := b.CreateTenant("ghost-tag-tenant", map[string]string{"Env": wantCreationTimeTagValue})
+				require.NoError(t, err)
+
+				return out.TenantARN
+			},
+			delete: func(b *InMemoryBackend) error { return b.DeleteTenant("ghost-tag-tenant") },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := NewInMemoryBackend()
+			resourceARN := tt.create(b)
+
+			before, err := b.ListTagsForResource(resourceARN)
+			require.NoError(t, err)
+			require.Equal(t, wantCreationTimeTagValue, before["Env"], "tags must be set before delete")
+
+			require.NoError(t, tt.delete(b))
+
+			after, err := b.ListTagsForResource(resourceARN)
+			require.NoError(t, err)
+			assert.Empty(t, after, "resourceTags must not retain a ghost entry for a deleted resource's ARN")
+		})
+	}
+}

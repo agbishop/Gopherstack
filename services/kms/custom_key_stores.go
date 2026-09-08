@@ -64,10 +64,6 @@ func (b *InMemoryBackend) DeleteCustomKeyStore(
 	ctx context.Context,
 	input *DeleteCustomKeyStoreInput,
 ) error {
-	if input.CustomKeyStoreID == "" {
-		return fmt.Errorf("%w: CustomKeyStoreId must not be empty", ErrValidation)
-	}
-
 	b.mu.Lock("DeleteCustomKeyStore")
 	defer b.mu.Unlock()
 
@@ -85,8 +81,19 @@ func (b *InMemoryBackend) DeleteCustomKeyStore(
 	if ks.ConnectionState != ConnectionStateDisconnected {
 		return fmt.Errorf(
 			"%w: custom key store must be DISCONNECTED before deletion; current state: %s",
-			ErrKeyInvalidState, ks.ConnectionState,
+			ErrCustomKeyStoreInvalidState, ks.ConnectionState,
 		)
+	}
+
+	// "The custom key store that you delete cannot contain any KMS keys" (real SDK:
+	// api_op_DeleteCustomKeyStore.go doc comment; CustomKeyStoreHasCMKsException).
+	for _, k := range b.keysStore(region).All() {
+		if k.CustomKeyStoreID == input.CustomKeyStoreID {
+			return fmt.Errorf(
+				"%w: custom key store %q still contains KMS keys",
+				ErrCustomKeyStoreHasKeys, input.CustomKeyStoreID,
+			)
+		}
 	}
 
 	b.customKeyStoresStore(region).Delete(input.CustomKeyStoreID)
@@ -153,10 +160,6 @@ func (b *InMemoryBackend) ConnectCustomKeyStore(
 	ctx context.Context,
 	input *ConnectCustomKeyStoreInput,
 ) error {
-	if input.CustomKeyStoreID == "" {
-		return fmt.Errorf("%w: CustomKeyStoreId must not be empty", ErrValidation)
-	}
-
 	b.mu.Lock("ConnectCustomKeyStore")
 	defer b.mu.Unlock()
 
@@ -174,7 +177,7 @@ func (b *InMemoryBackend) ConnectCustomKeyStore(
 	if ks.ConnectionState == ConnectionStateConnected {
 		return fmt.Errorf(
 			"%w: custom key store %q is already connected",
-			ErrKeyInvalidState, input.CustomKeyStoreID,
+			ErrCustomKeyStoreInvalidState, input.CustomKeyStoreID,
 		)
 	}
 
@@ -188,10 +191,6 @@ func (b *InMemoryBackend) DisconnectCustomKeyStore(
 	ctx context.Context,
 	input *DisconnectCustomKeyStoreInput,
 ) error {
-	if input.CustomKeyStoreID == "" {
-		return fmt.Errorf("%w: CustomKeyStoreId must not be empty", ErrValidation)
-	}
-
 	b.mu.Lock("DisconnectCustomKeyStore")
 	defer b.mu.Unlock()
 
@@ -209,7 +208,7 @@ func (b *InMemoryBackend) DisconnectCustomKeyStore(
 	if ks.ConnectionState == ConnectionStateDisconnected {
 		return fmt.Errorf(
 			"%w: custom key store %q is already disconnected",
-			ErrKeyInvalidState, input.CustomKeyStoreID,
+			ErrCustomKeyStoreInvalidState, input.CustomKeyStoreID,
 		)
 	}
 
@@ -223,10 +222,6 @@ func (b *InMemoryBackend) UpdateCustomKeyStore(
 	ctx context.Context,
 	input *UpdateCustomKeyStoreInput,
 ) error {
-	if strings.TrimSpace(input.CustomKeyStoreID) == "" {
-		return fmt.Errorf("%w: CustomKeyStoreId must not be empty", ErrValidation)
-	}
-
 	b.mu.Lock("UpdateCustomKeyStore")
 	defer b.mu.Unlock()
 

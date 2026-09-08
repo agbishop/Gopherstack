@@ -11,7 +11,7 @@ var (
 	ErrNotFound = awserr.New("UnknownResourceFault", awserr.ErrNotFound)
 	// ErrAlreadyExists is returned when a resource already exists.
 	ErrAlreadyExists = awserr.New("DomainAlreadyExistsFault", awserr.ErrAlreadyExists)
-	// ErrDeprecated is returned when trying to re-register a deprecated domain.
+	// ErrDeprecated is returned when deprecating an already-deprecated domain.
 	ErrDeprecated = errors.New("DomainDeprecatedFault")
 	// ErrTypeAlreadyExists is returned when a workflow or activity type already exists.
 	ErrTypeAlreadyExists = errors.New("TypeAlreadyExistsFault")

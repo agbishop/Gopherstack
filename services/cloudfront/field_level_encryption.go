@@ -88,6 +88,20 @@ func cloneEncryptionEntities(in []EncryptionEntity) []EncryptionEntity {
 	return out
 }
 
+// fleNameInUse reports whether any existing FLE config already uses name as its
+// CallerReference. Two configs may legitimately share a CallerReference after an
+// UpdateFieldLevelEncryption rename (gopherstack-kpk5), so this cannot be a unique
+// name->ID index -- it scans the table instead. Must be called with the lock held.
+func (b *InMemoryBackend) fleNameInUse(name string) bool {
+	for _, fle := range b.fieldLevelEncryptions.All() {
+		if fle.Name == name {
+			return true
+		}
+	}
+
+	return false
+}
+
 // CreateFieldLevelEncryption creates a new Field Level Encryption config. Every
 // referenced FLE profile ID must exist (referential integrity).
 func (b *InMemoryBackend) CreateFieldLevelEncryption(
@@ -100,7 +114,7 @@ func (b *InMemoryBackend) CreateFieldLevelEncryption(
 		return nil, fmt.Errorf("%w: Name must not be empty", ErrValidation)
 	}
 
-	if _, exists := b.fieldLevelEncryptionByName[name]; exists {
+	if b.fleNameInUse(name) {
 		return nil, fmt.Errorf(
 			"%w: field level encryption with name %q already exists",
 			ErrFLEAlreadyExists,
@@ -121,7 +135,6 @@ func (b *InMemoryBackend) CreateFieldLevelEncryption(
 		QueryArgProfiles: cloneQueryArgProfiles(queryArgProfiles),
 	}
 	b.fieldLevelEncryptions.Put(fle)
-	b.fieldLevelEncryptionByName[name] = id
 	cp := *fle
 	cp.QueryArgProfiles = cloneQueryArgProfiles(fle.QueryArgProfiles)
 
@@ -178,11 +191,14 @@ func (b *InMemoryBackend) UpdateFieldLevelEncryption(
 		return nil, err
 	}
 
-	if !renameInIndex(b.fieldLevelEncryptionByName, id, fle.Name, name) {
-		return nil, fmt.Errorf(
-			"%w: field level encryption with name %q already exists", ErrFLEAlreadyExists, name)
-	}
-
+	// Unlike CreateFieldLevelEncryptionConfig, real UpdateFieldLevelEncryptionConfig's
+	// declared error set has no FieldLevelEncryptionConfigAlreadyExists (cloudfront@
+	// v1.67.4 deserializers.go:24068 awsRestxml_deserializeOpErrorUpdateFieldLevelEncryptionConfig)
+	// -- same Create-only/Update-silent split as DistributionAlreadyExists and
+	// StreamingDistributionAlreadyExists -- so a CallerReference collision on Update is not
+	// rejected here; gopherstack-kpk5. That means two configs can legitimately share a
+	// name, so there is no unique index to update -- fleNameInUse (gopherstack-lt9v) scans
+	// the table directly at Create time instead.
 	fle.Name = name
 	fle.Comment = comment
 	fle.QueryArgProfiles = cloneQueryArgProfiles(queryArgProfiles)
@@ -198,12 +214,10 @@ func (b *InMemoryBackend) DeleteFieldLevelEncryption(id string) error {
 	b.mu.Lock("DeleteFieldLevelEncryption")
 	defer b.mu.Unlock()
 
-	fle, ok := b.fieldLevelEncryptions.Get(id)
-	if !ok {
+	if _, ok := b.fieldLevelEncryptions.Get(id); !ok {
 		return fmt.Errorf("%w: field level encryption %s not found", ErrFLENotFound, id)
 	}
 
-	delete(b.fieldLevelEncryptionByName, fle.Name)
 	b.fieldLevelEncryptions.Delete(id)
 
 	return nil

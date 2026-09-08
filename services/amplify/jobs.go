@@ -112,7 +112,10 @@ func (b *InMemoryBackend) jobARN(appID, branchName, jobID string) string {
 	)
 }
 
-// StopJob cancels a running job.
+// StopJob cancels a running job. Real Amplify's StopJob "[s]tops a job that
+// is in progress" (aws-sdk-go-v2/service/amplify api_op_StopJob.go); a job
+// already in a terminal state (SUCCEED/FAILED/CANCELLED) is not in progress,
+// so stopping it is rejected rather than silently overwriting its outcome.
 func (b *InMemoryBackend) StopJob(appID, branchName, jobID string) (*Job, error) {
 	b.mu.Lock("StopJob")
 	defer b.mu.Unlock()
@@ -120,6 +123,12 @@ func (b *InMemoryBackend) StopJob(appID, branchName, jobID string) (*Job, error)
 	job, err := b.findJob(appID, branchName, jobID)
 	if err != nil {
 		return nil, err
+	}
+
+	if isTerminalJobStatus(job.Status) {
+		return nil, fmt.Errorf(
+			"%w: job %s is not in progress (status %s)", ErrValidation, jobID, job.Status,
+		)
 	}
 
 	job.Status = JobStatusCancelled

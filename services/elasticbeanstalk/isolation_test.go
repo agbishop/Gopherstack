@@ -73,7 +73,7 @@ func TestEBRegionIsolation(t *testing.T) {
 	assert.Equal(t, "us-west-2", westEnvs[0].Region)
 
 	// 5. Deleting the application in us-east-1 must not affect us-west-2.
-	require.NoError(t, backend.DeleteApplication(ctxEast, "shared-app"))
+	require.NoError(t, backend.DeleteApplication(ctxEast, "shared-app", true))
 
 	eastGone := backend.DescribeApplications(ctxEast, []string{"shared-app"})
 	assert.Empty(t, eastGone)

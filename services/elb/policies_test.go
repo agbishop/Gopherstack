@@ -225,6 +225,23 @@ func TestCreateLoadBalancerPolicy(t *testing.T) {
 			wantStatus: http.StatusOK,
 		},
 		{
+			name: "unknown_attribute_name_rejected",
+			setup: func(t *testing.T, h *elb.Handler) {
+				t.Helper()
+				mustCreateLB(t, h, "policy-badattr-lb")
+			},
+			vals: url.Values{
+				"Action":           {"CreateLoadBalancerPolicy"},
+				"Version":          {"2012-06-01"},
+				"LoadBalancerName": {"policy-badattr-lb"},
+				"PolicyName":       {"my-badattr-policy"},
+				"PolicyTypeName":   {"ProxyProtocolPolicyType"},
+				"PolicyAttributes.member.1.AttributeName":  {"NotARealAttribute"},
+				"PolicyAttributes.member.1.AttributeValue": {"true"},
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name: "duplicate_policy_returns_conflict",
 			setup: func(t *testing.T, h *elb.Handler) {
 				t.Helper()
@@ -1138,6 +1155,14 @@ func TestSetLoadBalancerPoliciesOfListener(t *testing.T) {
 }
 
 // TestPolicyNotFoundReturns400 verifies ErrPolicyNotFound maps to HTTP 400.
+//
+// gopherstack-5gfl: pins existing (possibly wrong) behavior, not endorsed --
+// DeleteLoadBalancerPolicy's real typed-error switch doesn't declare
+// PolicyNotFound at all (only InvalidConfigurationRequest/LoadBalancerNotFound),
+// so a real client would get an untyped error here, not
+// *types.PolicyNotFoundException. Left as-is: no AWS documentation confirms
+// what the correct behavior actually is (unlike DeleteLoadBalancer, which is
+// documented idempotent for a missing target).
 func TestPolicyNotFoundReturns400(t *testing.T) {
 	t.Parallel()
 

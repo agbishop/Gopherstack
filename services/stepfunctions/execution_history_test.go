@@ -619,3 +619,36 @@ func TestExecutionHistory_ReverseOrder(t *testing.T) {
 		assert.Less(t, reverse[i].ID, reverse[i-1].ID)
 	}
 }
+
+// TestResourceTypeFromResource verifies TaskScheduled/TaskSucceeded/TaskFailed's
+// ResourceType is derived from the actual service-integration resource, not
+// hardcoded to "lambda" for every service this emulator doesn't special-case.
+func TestResourceTypeFromResource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resource string
+		want     string
+	}{
+		{"lambda direct arn", "arn:aws:lambda:us-east-1:000000000000:function:fn", "lambda"},
+		{"activity", "arn:aws:states:us-east-1:000000000000:activity:act", "activity"},
+		{"sqs", "arn:aws:states:::sqs:sendMessage", "sqs"},
+		{"sns", "arn:aws:states:::sns:publish", "sns"},
+		{"dynamodb", "arn:aws:states:::dynamodb:putItem", "dynamodb"},
+		{"ecs sync", "arn:aws:states:::ecs:runTask.sync", "ecs"},
+		{"glue sync", "arn:aws:states:::glue:startJobRun.sync", "glue"},
+		{"eventbridge", "arn:aws:states:::events:putEvents", "events"},
+		{"apigateway", "arn:aws:states:::apigateway:invoke", "apigateway"},
+		{"aws-sdk prefixed", "arn:aws:states:::aws-sdk:sqs:sendMessage", "sqs"},
+		{"empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, stepfunctions.ResourceTypeFromResourceForTest(tt.resource))
+		})
+	}
+}

@@ -107,6 +107,9 @@ func (h *Handler) deleteCacheSubnetGroup(ctx context.Context, c *echo.Context, f
 		if errors.Is(err, ErrSubnetGroupNotFound) {
 			return xmlError(c, http.StatusBadRequest, "CacheSubnetGroupNotFoundFault", "Cache subnet group not found")
 		}
+		if errors.Is(err, ErrSubnetGroupInUse) {
+			return xmlError(c, http.StatusBadRequest, "CacheSubnetGroupInUse", err.Error())
+		}
 
 		return xmlError(c, http.StatusInternalServerError, "InternalFailure", err.Error())
 	}

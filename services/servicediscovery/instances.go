@@ -40,6 +40,8 @@ func (b *InMemoryBackend) RegisterInstance(serviceID, instanceID string, attrs m
 		}
 	}
 
+	b.resyncServiceDNS(svc)
+
 	b.instanceRevision++
 
 	now := time.Now()
@@ -68,6 +70,10 @@ func (b *InMemoryBackend) DeregisterInstance(serviceID, instanceID string) (stri
 
 	b.instances.Delete(key)
 	delete(b.instanceHealthStatuses, key)
+
+	if svc, ok := b.services.Get(serviceID); ok {
+		b.resyncServiceDNS(svc)
+	}
 
 	b.instanceRevision++
 
@@ -218,4 +224,50 @@ func (b *InMemoryBackend) UpdateInstanceCustomHealthStatus(serviceID, instanceID
 	b.instanceHealthStatuses[key] = status
 
 	return nil
+}
+
+// dnsHostname returns the resolvable DNS name for a Cloud Map service --
+// "<service-name>.<namespace-name>", matching real Cloud Map's generated
+// resource record name. HTTP namespaces have no DNS at all (only
+// DiscoverInstances), so ns being nil or of type HTTP yields "".
+func dnsHostname(svcName string, ns *Namespace) string {
+	if ns == nil || ns.Type == namespaceTypeHTTP {
+		return ""
+	}
+
+	return svcName + "." + ns.Name
+}
+
+// resyncServiceDNS re-derives svc's DNS registration in the embedded DNS
+// server from every currently registered instance's AWS_INSTANCE_IPV4/IPV6/
+// CNAME attributes. It deregisters first and rebuilds from scratch -- like
+// route53.resyncDNSName -- because pkgs/dns.RegisterRecord only appends
+// values and never replaces or removes a single one. Caller must hold b.mu.
+func (b *InMemoryBackend) resyncServiceDNS(svc *Service) {
+	if b.dns == nil {
+		return
+	}
+
+	ns, _ := b.namespaces.Get(svc.NamespaceID)
+
+	hostname := dnsHostname(svc.Name, ns)
+	if hostname == "" {
+		return
+	}
+
+	b.dns.Deregister(hostname)
+
+	for _, inst := range b.instancesByService.Get(svc.ID) {
+		if ip4 := inst.Attributes[instanceAttrIPv4]; ip4 != "" {
+			b.dns.RegisterRecord(hostname, "A", []string{ip4})
+		}
+
+		if ip6 := inst.Attributes[instanceAttrIPv6]; ip6 != "" {
+			b.dns.RegisterRecord(hostname, "AAAA", []string{ip6})
+		}
+
+		if cname := inst.Attributes[instanceAttrCNAME]; cname != "" {
+			b.dns.RegisterRecord(hostname, "CNAME", []string{cname})
+		}
+	}
 }

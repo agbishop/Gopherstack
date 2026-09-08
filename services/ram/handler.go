@@ -698,6 +698,7 @@ var errCodeLookup = []struct {
 	{ErrOperationNotPermitted, "OperationNotPermittedException"},
 	{ErrInvalidParameter, codeInvalidParameter},
 	{ErrValidation, codeInvalidParameter},
+	{ErrMalformedArn, "MalformedArnException"},
 }
 
 func (h *Handler) handleError(c *echo.Context, err error) error {

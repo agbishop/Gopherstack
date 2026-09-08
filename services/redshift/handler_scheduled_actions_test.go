@@ -441,3 +441,35 @@ func TestHandler_ScheduledAction_Enable(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "<State>ACTIVE</State>")
 }
+
+// TestHandler_DescribeScheduledActions_TargetActionTypeFilter locks in
+// DescribeScheduledActionsInput.TargetActionType (api_op_DescribeScheduledActions.go:
+// "The type of the scheduled actions to retrieve."), which was parsed nowhere in the
+// handler and so never narrowed results.
+func TestHandler_DescribeScheduledActions_TargetActionTypeFilter(t *testing.T) {
+	t.Parallel()
+
+	h := newRedshiftHandler()
+
+	postRedshiftForm(t, h, "Action=CreateScheduledAction&Version=2012-12-01"+
+		"&ScheduledActionName=resize-action&Schedule=cron(0+12+*+*+?+*)"+
+		"&TargetAction.ResizeCluster.ClusterIdentifier=my-cluster"+
+		"&TargetAction.ResizeCluster.NumberOfNodes=3")
+	postRedshiftForm(t, h, "Action=CreateScheduledAction&Version=2012-12-01"+
+		"&ScheduledActionName=pause-action&Schedule=cron(0+12+*+*+?+*)"+
+		"&TargetAction.PauseCluster.ClusterIdentifier=my-cluster")
+
+	rec := postRedshiftForm(t, h, "Action=DescribeScheduledActions&Version=2012-12-01"+
+		"&TargetActionType=ResizeCluster")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	body := rec.Body.String()
+	assert.Contains(t, body, "resize-action")
+	assert.NotContains(t, body, "pause-action")
+
+	rec = postRedshiftForm(t, h, "Action=DescribeScheduledActions&Version=2012-12-01"+
+		"&TargetActionType=PauseCluster")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	body = rec.Body.String()
+	assert.Contains(t, body, "pause-action")
+	assert.NotContains(t, body, "resize-action")
+}

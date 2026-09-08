@@ -129,6 +129,68 @@ func TestWAF_GeoMatchSet_CreateGetUpdateDeleteList(t *testing.T) {
 	assert.Equal(t, 0, waf.GeoMatchSetCount(h.Backend.(*waf.InMemoryBackend)))
 }
 
+func wafCreateGeoMatchSet(t *testing.T, h *waf.Handler, name string) string {
+	t.Helper()
+
+	token := wafGetToken(t, h)
+	rec := wafDo(t, h, "CreateGeoMatchSet", map[string]any{"ChangeToken": token, "Name": name})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	m := resp["GeoMatchSet"].(map[string]any)
+	id := m["GeoMatchSetId"].(string)
+	require.NotEmpty(t, id)
+
+	return id
+}
+
+func TestWAF_GeoMatchSet_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	constraint := map[string]any{"Type": "Country", "Value": "CN"}
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateGeoMatchSet(t, h, "noop-insert-geo")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateGeoMatchSet", map[string]any{
+			"ChangeToken":   token,
+			"GeoMatchSetId": id,
+			"Updates":       []map[string]any{{"Action": "INSERT", "GeoMatchConstraint": constraint}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateGeoMatchSet", map[string]any{
+			"ChangeToken":   token,
+			"GeoMatchSetId": id,
+			"Updates":       []map[string]any{{"Action": "INSERT", "GeoMatchConstraint": constraint}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateGeoMatchSet(t, h, "noop-delete-geo")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateGeoMatchSet", map[string]any{
+			"ChangeToken":   token,
+			"GeoMatchSetId": id,
+			"Updates":       []map[string]any{{"Action": "DELETE", "GeoMatchConstraint": constraint}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestWAF_GeoMatchSet_NotFound(t *testing.T) {
 	t.Parallel()
 

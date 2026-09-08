@@ -316,6 +316,92 @@ func TestProxy_UsagePlan_UnassociatedKeyNotThrottled(t *testing.T) {
 	}
 }
 
+// setStageMethodSettings replaces the "prod" stage's MethodSettings map.
+func setStageMethodSettings(
+	t *testing.T, b *apigateway.InMemoryBackend, apiID string, settings map[string]apigateway.MethodSetting,
+) {
+	t.Helper()
+
+	_, err := b.UpdateStage(apiID, "prod", apigateway.UpdateStageInput{MethodSettings: settings})
+	require.NoError(t, err)
+}
+
+// TestProxy_StageMethodSettings_ThrottleEnforced_Wildcard verifies gopherstack-91f2: a
+// stage's "*/*" MethodSettings throttle now fires on the data plane even when the method
+// doesn't require an API key (previously the only throttle path was gated on
+// APIKeyRequired, so this traffic was never throttled at all).
+func TestProxy_StageMethodSettings_ThrottleEnforced_Wildcard(t *testing.T) {
+	t.Parallel()
+
+	h, e, backend, apiID := buildDeepAPI(t, deepAPIOpts{httpMethod: http.MethodGet})
+
+	setStageMethodSettings(t, backend, apiID, map[string]apigateway.MethodSetting{
+		"*/*": {ThrottlingRateLimit: 1, ThrottlingBurstLimit: 2},
+	})
+
+	assert.Equal(t, http.StatusOK, deepReq(t, h, e, http.MethodGet, apiID, "", "", nil).Code)
+	assert.Equal(t, http.StatusOK, deepReq(t, h, e, http.MethodGet, apiID, "", "", nil).Code)
+
+	over := deepReq(t, h, e, http.MethodGet, apiID, "", "", nil)
+	assert.Equal(t, http.StatusTooManyRequests, over.Code)
+	assert.Equal(t, "TooManyRequestsException", over.Header().Get("X-Amzn-Errortype"))
+	assert.Contains(t, over.Body.String(), "Too Many Requests")
+}
+
+// TestProxy_StageMethodSettings_SpecificOverridesWildcard verifies a specific
+// "{resourcePath}/{httpMethod}" MethodSettings entry replaces the "*/*" default for that
+// method rather than being throttled cumulatively with it: a tight wildcard burst of 1
+// would throttle the second request if it were still consulted, but the looser
+// "/items/GET" override (burst 3) governs instead.
+func TestProxy_StageMethodSettings_SpecificOverridesWildcard(t *testing.T) {
+	t.Parallel()
+
+	h, e, backend, apiID := buildDeepAPI(t, deepAPIOpts{httpMethod: http.MethodGet})
+
+	setStageMethodSettings(t, backend, apiID, map[string]apigateway.MethodSetting{
+		"*/*":        {ThrottlingRateLimit: 1, ThrottlingBurstLimit: 1},
+		"/items/GET": {ThrottlingRateLimit: 1, ThrottlingBurstLimit: 3},
+	})
+
+	assert.Equal(t, http.StatusOK, deepReq(t, h, e, http.MethodGet, apiID, "", "", nil).Code)
+	assert.Equal(t, http.StatusOK, deepReq(t, h, e, http.MethodGet, apiID, "", "", nil).Code)
+	assert.Equal(t, http.StatusOK, deepReq(t, h, e, http.MethodGet, apiID, "", "", nil).Code)
+
+	over := deepReq(t, h, e, http.MethodGet, apiID, "", "", nil)
+	assert.Equal(t, http.StatusTooManyRequests, over.Code)
+}
+
+// TestProxy_StageMethodSettings_UnconfiguredNotThrottled verifies unthrottled traffic
+// still passes: a stage with no MethodSettings at all never throttles.
+func TestProxy_StageMethodSettings_UnconfiguredNotThrottled(t *testing.T) {
+	t.Parallel()
+
+	h, e, _, apiID := buildDeepAPI(t, deepAPIOpts{httpMethod: http.MethodGet})
+
+	for range 5 {
+		assert.Equal(t, http.StatusOK, deepReq(t, h, e, http.MethodGet, apiID, "", "", nil).Code)
+	}
+}
+
+// TestProxy_StageMethodSettings_ZeroRateLimitMeansUnlimited verifies an explicit zero
+// ThrottlingRateLimit is treated as "not configured" (unlimited), not "reject
+// everything" -- MethodSetting.ThrottlingRateLimit is `omitempty`, so the zero value is
+// indistinguishable from an unset field, matching this package's existing usage-plan
+// Throttle convention (effectiveThrottle/enforce's "RateLimit > 0" gate in usage.go).
+func TestProxy_StageMethodSettings_ZeroRateLimitMeansUnlimited(t *testing.T) {
+	t.Parallel()
+
+	h, e, backend, apiID := buildDeepAPI(t, deepAPIOpts{httpMethod: http.MethodGet})
+
+	setStageMethodSettings(t, backend, apiID, map[string]apigateway.MethodSetting{
+		"*/*": {ThrottlingRateLimit: 0, ThrottlingBurstLimit: 0, LoggingLevel: "INFO"},
+	})
+
+	for range 5 {
+		assert.Equal(t, http.StatusOK, deepReq(t, h, e, http.MethodGet, apiID, "", "", nil).Code)
+	}
+}
+
 func TestProxy_TrieCache_InvalidatesOnNewResource(t *testing.T) {
 	t.Parallel()
 
@@ -337,7 +423,9 @@ func TestProxy_TrieCache_InvalidatesOnNewResource(t *testing.T) {
 
 	// Prime the trie cache.
 	assert.Equal(t, http.StatusOK, rawProxyGet(t, h, e, api.ID, "/first").Code)
-	assert.Equal(t, http.StatusNotFound, rawProxyGet(t, h, e, api.ID, "/second").Code)
+	// Unmatched resource path on a deployed stage: AWS returns 403 "Missing
+	// Authentication Token", not 404.
+	assert.Equal(t, http.StatusForbidden, rawProxyGet(t, h, e, api.ID, "/second").Code)
 
 	// Add a new resource; the cached trie must be invalidated by the version bump.
 	second, err := backend.CreateResource(api.ID, rootID, "second")

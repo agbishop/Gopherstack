@@ -26,8 +26,53 @@ type certMetadata struct {
 	subjectCommonName  string
 	issuerCommonName   string
 	signatureAlgorithm string
+	keyAlgorithm       string
 	keyUsage           []string
 	extKeyUsage        []string
+}
+
+// deriveKeyAlgorithm maps a parsed certificate's public key to the AWS ACM
+// KeyAlgorithm enum value it actually represents (types.KeyAlgorithm,
+// enums.go:416-427, v1.43.4: RSA_1024/2048/3072/4096, EC_prime256v1/
+// secp384r1/secp521r1) -- CertificateDetail.KeyAlgorithm is documented as
+// "The algorithm that was used to generate the public-private key pair", so
+// an imported certificate's real key must be reflected here, not a fixed
+// default. Non-standard RSA bit lengths round up to the nearest supported
+// bucket; unrecognized key types fall back to the RSA_2048 default rather
+// than silently claiming an EC key.
+func deriveKeyAlgorithm(pub any) string {
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		return rsaKeyAlgorithm(k.N.BitLen())
+	case *ecdsa.PublicKey:
+		switch k.Curve {
+		case elliptic.P256():
+			return keyAlgorithmEC
+		case elliptic.P384():
+			return keyAlgorithmECSecp384r1
+		case elliptic.P521():
+			return keyAlgorithmECSecp521r1
+		default:
+			return keyAlgorithmEC
+		}
+	default:
+		return keyAlgorithmRSA2048
+	}
+}
+
+// rsaKeyAlgorithm maps an RSA key's bit length to the nearest AWS
+// KeyAlgorithm bucket, rounding up for non-standard sizes.
+func rsaKeyAlgorithm(bits int) string {
+	switch {
+	case bits <= 1024: //nolint:mnd // RSA key-size buckets, not magic numbers
+		return keyAlgorithmRSA1024
+	case bits <= 2048: //nolint:mnd // RSA key-size bucket boundary, not a magic number
+		return keyAlgorithmRSA2048
+	case bits <= 3072: //nolint:mnd // RSA key-size bucket boundary, not a magic number
+		return keyAlgorithmRSA3072
+	default:
+		return keyAlgorithmRSA4096
+	}
 }
 
 // generateSelfSignedCert generates a self-signed ECDSA P-256 certificate for
@@ -131,6 +176,7 @@ func extractCertMetadataFull(certPEM string) (string, certMetadata, time.Time, t
 		subjectCommonName:  cert.Subject.CommonName,
 		issuerCommonName:   cert.Issuer.CommonName,
 		signatureAlgorithm: cert.SignatureAlgorithm.String(),
+		keyAlgorithm:       deriveKeyAlgorithm(cert.PublicKey),
 		keyUsage:           x509KeyUsageToAWS(cert.KeyUsage),
 		extKeyUsage:        x509ExtKeyUsageToAWS(cert.ExtKeyUsage),
 	}

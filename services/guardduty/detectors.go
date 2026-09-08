@@ -223,6 +223,17 @@ func (b *InMemoryBackend) DeleteDetector(detectorID string) error {
 		b.investigations.Delete(detectorKey(detectorID, inv.InvestigationID))
 	}
 
+	// malwareScans has no byDetector index (it's keyed by ScanID, not a
+	// composite key), so filter b.malwareScans.All() directly -- All()
+	// returns a fresh slice, safe to range over while deleting.
+	for _, s := range b.malwareScans.All() {
+		if s.DetectorID == detectorID {
+			b.malwareScans.Delete(s.ScanID)
+		}
+	}
+
+	b.malwareScanSettings.Delete(detectorID)
+
 	delete(b.tags, b.detectorARN(detectorID))
 
 	return nil

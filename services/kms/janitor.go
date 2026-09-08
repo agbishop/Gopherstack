@@ -236,6 +236,7 @@ func (j *Janitor) purgeKey(region, keyID string) {
 	for _, alias := range j.Backend.aliasesStore(region).All() {
 		if alias.TargetKeyID == keyID {
 			j.Backend.keyIDResolutionCache.Delete(alias.AliasName)
+			j.Backend.keyIDResolutionCache.Delete(alias.AliasArn)
 			j.Backend.aliasesStore(region).Delete(alias.AliasName)
 		}
 	}
@@ -248,6 +249,15 @@ func (j *Janitor) purgeKey(region, keyID string) {
 		if grant.KeyID == keyID {
 			j.Backend.grantsStore(region).Delete(grant.GrantID)
 		}
+	}
+
+	// A purged key's UUID is never reused, so its own ARN-keyed cache entry
+	// (populated whenever a caller resolved it via ARN, not just its alias)
+	// cannot become stale like the alias case above -- but it would still sit
+	// in keyIDResolutionCache forever, unbounded, without this eviction.
+	if key, ok := j.Backend.keysStore(region).Get(keyID); ok {
+		j.Backend.keyIDResolutionCache.Delete(key.Arn)
+		j.Backend.promoteMultiRegionPrimaryAfterReplicaPurgeLocked(key)
 	}
 
 	j.Backend.keysStore(region).Delete(keyID)

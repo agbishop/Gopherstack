@@ -115,12 +115,27 @@ func (b *InMemoryBackend) DescribeScheduledQuery(_ context.Context, arnStr strin
 
 // DeleteScheduledQuery deletes a scheduled query by ARN.
 // The ARN self-encodes the region, so no separate region resolution is needed.
+// Any tags CreateScheduledQuery mirrored into the shared TimestreamWrite tag
+// store (tagWriteBackend) are removed too, so a deleted ARN doesn't leave
+// ghost tags behind for a later ListTagsForResource to surface.
 func (b *InMemoryBackend) DeleteScheduledQuery(_ context.Context, arnStr string) error {
 	b.mu.Lock("DeleteScheduledQuery")
 	defer b.mu.Unlock()
 
-	if !b.scheduledQueries.Delete(arnStr) {
+	sq, ok := b.scheduledQueries.Get(arnStr)
+	if !ok {
 		return fmt.Errorf("%w: scheduled query %q not found", ErrNotFound, arnStr)
+	}
+
+	tagKeys := make([]string, 0, len(sq.Tags))
+	for k := range sq.Tags {
+		tagKeys = append(tagKeys, k)
+	}
+
+	b.scheduledQueries.Delete(arnStr)
+
+	if len(tagKeys) > 0 && b.tagWriteBackend != nil {
+		_ = b.tagWriteBackend.UntagResource(arnStr, tagKeys)
 	}
 
 	return nil

@@ -74,6 +74,8 @@ func cloneCapacityLimits(limits []CapacityLimit) []CapacityLimit {
 }
 
 // DeleteServiceEnvironment removes a service environment by name or ARN.
+// Requires DISABLED state and no referencing job queue first, via
+// UpdateServiceEnvironment/UpdateJobQueue (api_op_DeleteServiceEnvironment.go).
 func (b *InMemoryBackend) DeleteServiceEnvironment(ctx context.Context, nameOrARN string) error {
 	region := getRegion(ctx, b.region)
 
@@ -83,6 +85,26 @@ func (b *InMemoryBackend) DeleteServiceEnvironment(ctx context.Context, nameOrAR
 	se, ok := b.lookupServiceEnvironmentByNameOrARN(region, nameOrARN)
 	if !ok {
 		return fmt.Errorf("%w: service environment %s not found", ErrNotFound, nameOrARN)
+	}
+
+	if se.State != stateDisabled {
+		return fmt.Errorf(
+			"%w: service environment %s must be DISABLED before it can be deleted",
+			ErrValidation, nameOrARN,
+		)
+	}
+
+	for _, jq := range b.jobQueuesByRegion.Get(region) {
+		for _, seOrder := range jq.ServiceEnvironmentOrder {
+			refersToSE := seOrder.ServiceEnvironment == se.ServiceEnvironmentName ||
+				seOrder.ServiceEnvironment == se.ServiceEnvironmentArn
+			if refersToSE {
+				return fmt.Errorf(
+					"%w: service environment %s is referenced by job queue %s",
+					ErrValidation, nameOrARN, jq.JobQueueName,
+				)
+			}
+		}
 	}
 
 	b.serviceEnvironments.Delete(regionKey(region, se.ServiceEnvironmentName))

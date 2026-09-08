@@ -3,6 +3,7 @@ package verifiedpermissions
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // cedarVersion is the Cedar language version gopherstack's cedar-go
@@ -213,9 +214,19 @@ func (h *Handler) handleUpdatePolicyStore(
 	}, nil
 }
 
+// handleDeletePolicyStore does not resolve policyStoreId through
+// resolvePolicyStoreID: the real SDK's DeletePolicyStoreInput.PolicyStoreId
+// doc is explicit that this operation is the exception to the usual
+// ID-or-alias rule -- "the alias name cannot be used. Only the ID can be
+// used." An alias-shaped value is rejected outright, distinct from
+// DeletePolicyStore's own idempotent-on-missing-ID behavior.
 func (h *Handler) handleDeletePolicyStore(_ context.Context, in *policyStoreIDInput) (*struct{}, error) {
 	if in.PolicyStoreID == "" {
 		return nil, fmt.Errorf("%w: policyStoreId is required", errInvalidRequest)
+	}
+
+	if strings.HasPrefix(in.PolicyStoreID, policyStoreAliasPrefix) {
+		return nil, fmt.Errorf("%w: policyStoreId must be a policy store ID, not an alias name", errInvalidRequest)
 	}
 
 	if err := h.Backend.DeletePolicyStore(in.PolicyStoreID); err != nil {

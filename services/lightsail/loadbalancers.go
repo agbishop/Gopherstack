@@ -9,6 +9,7 @@ package lightsail
 // GetLoadBalancerTlsPolicies).
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/page"
@@ -166,7 +167,11 @@ func (b *InMemoryBackend) GetLoadBalancers(token string) (page.Page[*LoadBalance
 // AttachInstancesToLoadBalancer attaches instanceNames to the named load
 // balancer, seeding each attached instance's InstanceHealthSummary
 // "initial" (mirroring real target-health onboarding, PARITY.md 4.4) then
-// advancing it to "healthy" after asyncTransitionDelay.
+// advancing it to "healthy" after asyncTransitionDelay. Every instance must
+// already be running (api_op_AttachInstancesToLoadBalancer.go's
+// InstanceNames doc: "An instance must be running before you can attach it
+// to your load balancer."); checked for all instanceNames before attaching
+// any, so a rejected name leaves the load balancer untouched.
 func (b *InMemoryBackend) AttachInstancesToLoadBalancer(name string, instanceNames []string) ([]Operation, error) {
 	b.mu.Lock("AttachInstancesToLoadBalancer")
 	defer b.mu.Unlock()
@@ -177,10 +182,19 @@ func (b *InMemoryBackend) AttachInstancesToLoadBalancer(name string, instanceNam
 	}
 
 	for _, in := range instanceNames {
-		if _, instOK := b.instances.Get(in); !instOK {
+		inst, instOK := b.instances.Get(in)
+		if !instOK {
 			return nil, notFoundError("Instance", in)
 		}
 
+		if inst.StateName != InstanceStateNameRunning {
+			return nil, validationError(
+				fmt.Sprintf("instance %s must be running before you can attach it to a load balancer", in),
+			)
+		}
+	}
+
+	for _, in := range instanceNames {
 		lb.AttachedInstances = append(lb.AttachedInstances, in)
 		lb.InstanceHealth[in] = instanceHealth{State: InstanceHealthInitial, Reason: "Lb.RegistrationInProgress"}
 	}

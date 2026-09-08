@@ -257,7 +257,8 @@ func (b *InMemoryBackend) DescribeFileSystems(
 }
 
 // DeleteFileSystem deletes a file system by ID.
-// Returns ErrFileSystemInUse if any mount targets exist.
+// Returns ErrFileSystemInUse if mount targets, access points, or a
+// replication configuration exist for it.
 func (b *InMemoryBackend) DeleteFileSystem(ctx context.Context, fileSystemID string) error {
 	region := getRegion(ctx, b.region)
 
@@ -286,6 +287,15 @@ func (b *InMemoryBackend) DeleteFileSystem(ctx context.Context, fileSystemID str
 		)
 	}
 
+	if _, exists := b.replicationConfigs.Get(regionKey(region, fileSystemID)); exists {
+		return fmt.Errorf(
+			"%w: file system %s is part of an EFS replication configuration; delete the replication "+
+				"configuration first",
+			ErrFileSystemInUse,
+			fileSystemID,
+		)
+	}
+
 	b.fileSystemsByARN.Delete(regionKey(region, fs.FileSystemArn))
 	// Remove from creation-token index so the token can be reused.
 	if b.creationTokenIdx[region] != nil {
@@ -297,13 +307,14 @@ func (b *InMemoryBackend) DeleteFileSystem(ctx context.Context, fileSystemID str
 	delete(b.lifecycleStore(region), fileSystemID)
 	delete(b.backupStore(region), fileSystemID)
 	delete(b.fsPolicyStore(region), fileSystemID)
-	b.replicationConfigs.Delete(regionKey(region, fileSystemID))
 
 	return nil
 }
 
 // applyThroughputModeChange validates and applies a throughput mode change to
-// a file system. Must be called under b.mu write lock.
+// a file system. Must be called under b.mu write lock. UpdateFileSystem (this
+// helper's only caller) declares BadRequest, never ValidationException, for
+// malformed input (efs@v1.44.4 deserializers.go).
 func (b *InMemoryBackend) applyThroughputModeChange(
 	fs *FileSystem,
 	req UpdateFileSystemRequest,
@@ -313,7 +324,7 @@ func (b *InMemoryBackend) applyThroughputModeChange(
 		req.ThroughputMode != throughputModeElastic {
 		return fmt.Errorf(
 			"%w: invalid ThroughputMode %q, must be bursting, provisioned, or elastic",
-			ErrValidation,
+			ErrBadRequest,
 			req.ThroughputMode,
 		)
 	}
@@ -331,7 +342,7 @@ func (b *InMemoryBackend) applyThroughputModeChange(
 		if req.ProvisionedThroughputMib < 1 || req.ProvisionedThroughputMib > 1024 {
 			return fmt.Errorf(
 				"%w: ProvisionedThroughputInMibps must be between 1 and 1024 when ThroughputMode is provisioned, got %g",
-				ErrValidation,
+				ErrBadRequest,
 				req.ProvisionedThroughputMib,
 			)
 		}
@@ -339,6 +350,24 @@ func (b *InMemoryBackend) applyThroughputModeChange(
 
 	fs.ThroughputMode = req.ThroughputMode
 	fs.LastThroughputChange = time.Now().UTC()
+
+	return nil
+}
+
+// checkFileSystemAvailable returns ErrIncorrectFileSystemLifeCycleState unless fs is in
+// the "available" state, per the CreateMountTarget precondition
+// (api_op_CreateMountTarget.go:29-30) shared by every op that declares the same error.
+// Callers must hold b.mu.
+func checkFileSystemAvailable(fs *FileSystem) error {
+	if fs.LifeCycleState != statusAvailable {
+		return fmt.Errorf(
+			"%w: file system %s is in lifecycle state %q, not %q",
+			ErrIncorrectFileSystemLifeCycleState,
+			fs.FileSystemID,
+			fs.LifeCycleState,
+			statusAvailable,
+		)
+	}
 
 	return nil
 }
@@ -359,6 +388,9 @@ func (b *InMemoryBackend) UpdateFileSystem(
 	if !ok {
 		return nil, fmt.Errorf("%w: file system %s not found", ErrNotFound, fileSystemID)
 	}
+	if err := checkFileSystemAvailable(fs); err != nil {
+		return nil, err
+	}
 
 	if req.ThroughputMode != "" {
 		if err := b.applyThroughputModeChange(fs, req); err != nil {
@@ -370,13 +402,13 @@ func (b *InMemoryBackend) UpdateFileSystem(
 		if fs.ThroughputMode != throughputModeProvisioned {
 			return nil, fmt.Errorf(
 				"%w: ProvisionedThroughputInMibps is only valid when ThroughputMode is provisioned",
-				ErrValidation,
+				ErrBadRequest,
 			)
 		}
 		if req.ProvisionedThroughputMib < 1 || req.ProvisionedThroughputMib > 1024 {
 			return nil, fmt.Errorf(
 				"%w: ProvisionedThroughputInMibps must be between 1 and 1024, got %g",
-				ErrValidation,
+				ErrBadRequest,
 				req.ProvisionedThroughputMib,
 			)
 		}

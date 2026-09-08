@@ -519,7 +519,8 @@ func TestAWSConfigHandler_DescribeConfigurationRecorders_NameFilter(t *testing.T
 
 			h := newTestAWSConfigHandler(t)
 			require.NoError(t, h.Backend.PutConfigurationRecorder("rec-a", "arn:aws:iam::123:role/r", nil))
-			require.NoError(t, h.Backend.PutConfigurationRecorder("rec-b", "arn:aws:iam::123:role/r", nil))
+			_, _, err := h.Backend.PutServiceLinkedConfigurationRecorder("guardduty.amazonaws.com", nil)
+			require.NoError(t, err)
 
 			rec := doAWSConfigRequest(t, h, "DescribeConfigurationRecorders", tt.body)
 			assert.Equal(t, tt.wantCode, rec.Code)

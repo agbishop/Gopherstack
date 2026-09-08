@@ -3,6 +3,7 @@ package codestarconnections_test
 import (
 	"context"
 	"net/http"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -449,6 +450,56 @@ func TestListConnections_Sorted(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestListConnections_OrdersTiedNamesByArn verifies that when two connections
+// share a ConnectionName (allowed -- CreateConnection has no
+// ResourceAlreadyExistsException for a duplicate name, see errors.go),
+// ListConnections still returns a deterministic total order between them,
+// broken by ConnectionArn. Connections are seeded via AddConnectionInternal
+// in descending-ARN insertion order: without a secondary sort key, tied-name
+// connections are left in insertion order, the reverse of the ascending-ARN
+// order this test asserts.
+func TestListConnections_OrdersTiedNamesByArn(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	arns := []string{
+		"arn:aws:codestar-connections:us-east-1:000000000000:connection/c-third",
+		"arn:aws:codestar-connections:us-east-1:000000000000:connection/b-second",
+		"arn:aws:codestar-connections:us-east-1:000000000000:connection/a-first",
+	}
+
+	for _, connArn := range arns {
+		h.Backend.AddConnectionInternal(&codestarconnections.Connection{
+			ConnectionArn:    connArn,
+			ConnectionName:   "dup-name",
+			ProviderType:     "GitHub",
+			ConnectionStatus: "AVAILABLE",
+			OwnerAccountID:   "000000000000",
+		})
+	}
+
+	rec := doRequest(t, h, "ListConnections", map[string]any{})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	resp := parseResp(t, rec)
+	conns, ok := resp["Connections"].([]any)
+	require.True(t, ok)
+	require.Len(t, conns, 3)
+
+	gotArns := make([]string, 0, len(conns))
+	for _, c := range conns {
+		item, isMap := c.(map[string]any)
+		require.True(t, isMap)
+		gotArns = append(gotArns, item["ConnectionArn"].(string))
+	}
+
+	wantArns := append([]string(nil), arns...)
+	sort.Strings(wantArns)
+
+	assert.Equal(t, wantArns, gotArns)
 }
 
 // TestListConnections_HostArnFilter verifies filtering by HostArn.

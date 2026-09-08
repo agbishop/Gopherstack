@@ -110,6 +110,73 @@ func TestWAF_ByteMatchSet_CreateGetUpdateDeleteList(t *testing.T) {
 	assert.Equal(t, 0, waf.ByteMatchSetCount(h.Backend.(*waf.InMemoryBackend)))
 }
 
+func wafCreateByteMatchSet(t *testing.T, h *waf.Handler, name string) string {
+	t.Helper()
+
+	token := wafGetToken(t, h)
+	rec := wafDo(t, h, "CreateByteMatchSet", map[string]any{"ChangeToken": token, "Name": name})
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	m := resp["ByteMatchSet"].(map[string]any)
+	id := m["ByteMatchSetId"].(string)
+	require.NotEmpty(t, id)
+
+	return id
+}
+
+func TestWAF_ByteMatchSet_NoOpUpdatesRejected(t *testing.T) {
+	t.Parallel()
+
+	tuple := map[string]any{
+		"FieldToMatch":         map[string]any{"Type": "URI"},
+		"TargetString":         "/admin",
+		"PositionalConstraint": "STARTS_WITH",
+		"TextTransformation":   "NONE",
+	}
+
+	t.Run("insert_duplicate_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateByteMatchSet(t, h, "noop-insert-bms")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateByteMatchSet", map[string]any{
+			"ChangeToken":    token,
+			"ByteMatchSetId": id,
+			"Updates":        []map[string]any{{"Action": "INSERT", "ByteMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+		token = wafGetToken(t, h)
+		rec = wafDo(t, h, "UpdateByteMatchSet", map[string]any{
+			"ChangeToken":    token,
+			"ByteMatchSetId": id,
+			"Updates":        []map[string]any{{"Action": "INSERT", "ByteMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+
+	t.Run("delete_missing_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newWAFHandler(t)
+		id := wafCreateByteMatchSet(t, h, "noop-delete-bms")
+
+		token := wafGetToken(t, h)
+		rec := wafDo(t, h, "UpdateByteMatchSet", map[string]any{
+			"ChangeToken":    token,
+			"ByteMatchSetId": id,
+			"Updates":        []map[string]any{{"Action": "DELETE", "ByteMatchTuple": tuple}},
+		})
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		assert.Equal(t, "WAFInvalidOperationException", errType(t, rec.Body.Bytes()))
+	})
+}
+
 func TestWAF_ByteMatchSet_NotFound(t *testing.T) {
 	t.Parallel()
 

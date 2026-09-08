@@ -188,41 +188,35 @@ func TestHandler_GetCalculationExecutionCode(t *testing.T) {
 	}
 }
 
-func TestHandler_StopCalculationExecution(t *testing.T) {
+// TestHandler_StopCalculationExecution_TerminalIsNoop guards AWS's documented
+// StopCalculationExecution behavior: "A StopCalculationExecution call on a
+// calculation that is already in a terminal state (for example, STOPPED,
+// FAILED, or COMPLETED) succeeds but has no effect."
+// (aws-sdk-go-v2/service/athena@v1.60.4 api_op_StopCalculationExecution.go).
+// StartCalculationExecution always completes synchronously to COMPLETED, so
+// every calculation is already terminal by the time a client can call Stop.
+func TestHandler_StopCalculationExecution_TerminalIsNoop(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name       string
-		calcID     string
-		wantStatus int
-	}{
-		{
-			name:       "terminal_fails",
-			wantStatus: http.StatusBadRequest,
-		},
-		{
-			name:       "not_found",
-			calcID:     "x",
-			wantStatus: http.StatusBadRequest,
-		},
-	}
+	h := newTestHandler(t)
+	sid := startSession(t, h)
+	calcID := startCalc(t, h, sid)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	rec := doRequest(t, h, "StopCalculationExecution", `{"CalculationExecutionId":"`+calcID+`"}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.Equal(t, "COMPLETED", jsonField(t, rec.Body.Bytes(), "State"),
+		"stopping a terminal calculation must have no effect on its state")
 
-			h := newTestHandler(t)
-			calcID := tt.calcID
+	rec = doRequest(t, h, "GetCalculationExecutionStatus", `{"CalculationExecutionId":"`+calcID+`"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
 
-			if calcID == "" {
-				sid := startSession(t, h)
-				calcID = startCalc(t, h, sid)
-			}
+func TestHandler_StopCalculationExecution_NotFound(t *testing.T) {
+	t.Parallel()
 
-			rec := doRequest(t, h, "StopCalculationExecution", `{"CalculationExecutionId":"`+calcID+`"}`)
-			assert.Equal(t, tt.wantStatus, rec.Code)
-		})
-	}
+	h := newTestHandler(t)
+	rec := doRequest(t, h, "StopCalculationExecution", `{"CalculationExecutionId":"x"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestBackend_StopCalculation_Cancellable(t *testing.T) {

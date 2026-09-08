@@ -313,3 +313,40 @@ func TestCreateOpsWithTags_RoundTrip(t *testing.T) {
 		assert.Equal(t, "env", aws.ToString(got.TagList[0].Key))
 	})
 }
+
+// TestDeleteDocument_TagsDoNotSurviveRecreate: document names are user-chosen
+// (unlike the generated IDs of most other taggable resources), so deleting
+// and recreating a document under the same name is a realistic sequence. A
+// fresh document under a reused name must not inherit tags from the deleted
+// one.
+func TestDeleteDocument_TagsDoNotSurviveRecreate(t *testing.T) {
+	t.Parallel()
+
+	backend := ssm.NewInMemoryBackend()
+	client := newTestSSMClient(t, ssm.NewHandler(backend))
+
+	_, err := client.CreateDocument(t.Context(), &ssmsdk.CreateDocumentInput{
+		Name:    aws.String("reused-doc"),
+		Content: aws.String(`{"schemaVersion":"2.2","mainSteps":[]}`),
+		Tags:    []ssmtypes.Tag{{Key: aws.String("env"), Value: aws.String("old")}},
+	})
+	require.NoError(t, err)
+
+	_, err = client.DeleteDocument(t.Context(), &ssmsdk.DeleteDocumentInput{
+		Name: aws.String("reused-doc"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.CreateDocument(t.Context(), &ssmsdk.CreateDocumentInput{
+		Name:    aws.String("reused-doc"),
+		Content: aws.String(`{"schemaVersion":"2.2","mainSteps":[]}`),
+	})
+	require.NoError(t, err)
+
+	got, err := client.ListTagsForResource(t.Context(), &ssmsdk.ListTagsForResourceInput{
+		ResourceType: ssmtypes.ResourceTypeForTaggingDocument,
+		ResourceId:   aws.String("reused-doc"),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, got.TagList, "recreated document must not inherit tags from the deleted one")
+}

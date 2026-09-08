@@ -9,6 +9,7 @@ import (
 
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
 	"github.com/blackbirdworks/gopherstack/pkgs/collections"
+	"github.com/blackbirdworks/gopherstack/pkgs/logger"
 	"github.com/blackbirdworks/gopherstack/pkgs/tags"
 )
 
@@ -36,11 +37,12 @@ func (b *InMemoryBackend) CreateDeliveryStream(
 	}
 
 	var (
-		region           string
-		result           *DeliveryStream
-		kinesisStreamARN string
-		shouldPoll       bool
-		err              error
+		region                 string
+		result                 *DeliveryStream
+		kinesisStreamARN       string
+		shouldPoll             bool
+		kinesisBackendNotWired bool
+		err                    error
 	)
 
 	func() {
@@ -94,10 +96,12 @@ func (b *InMemoryBackend) CreateDeliveryStream(
 		b.invalidateNamesCacheLocked(region)
 
 		// Collect Kinesis poller info while holding the lock.
-		shouldPoll = streamType == deliveryStreamTypeKinesisSource &&
-			b.kinesisBackend != nil &&
+		wantsKinesisSource := streamType == deliveryStreamTypeKinesisSource &&
 			input.Source != nil &&
 			input.Source.KinesisStreamSourceDescription != nil
+		shouldPoll = wantsKinesisSource && b.kinesisBackend != nil
+		kinesisBackendNotWired = wantsKinesisSource && b.kinesisBackend == nil
+
 		if shouldPoll {
 			kinesisStreamARN = input.Source.KinesisStreamSourceDescription.KinesisStreamARN
 		}
@@ -111,6 +115,11 @@ func (b *InMemoryBackend) CreateDeliveryStream(
 
 	if shouldPoll {
 		b.launchKinesisPoller(region, input.Name, kinesisStreamARN)
+	}
+
+	if kinesisBackendNotWired {
+		logger.Load(ctx).WarnContext(ctx, "firehose: Kinesis source polling skipped, no Kinesis backend wired",
+			"stream", input.Name, "region", region)
 	}
 
 	return result, nil

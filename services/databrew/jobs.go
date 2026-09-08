@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,7 +59,11 @@ func (b *InMemoryBackend) CreateJob(
 		Timeout:                  extra.Timeout,
 	}
 	if recipeName != "" {
-		j.RecipeReference = &RecipeRef{Name: recipeName, RecipeVersion: "LATEST_WORKING"}
+		version := extra.RecipeVersion
+		if version == "" {
+			version = recipeVersionLatestWorking
+		}
+		j.RecipeReference = &RecipeRef{Name: recipeName, RecipeVersion: version}
 	}
 	t.Put(j)
 
@@ -390,9 +395,8 @@ func (b *InMemoryBackend) ListJobRuns(
 
 	// runs are stored in chronological order, ListJobRuns expects reverse chronological
 	var reversed []*JobRun
-	//nolint:modernize // simple loop
-	for i := len(runs) - 1; i >= 0; i-- {
-		cp := *runs[i]
+	for _, run := range slices.Backward(runs) {
+		cp := *run
 		reversed = append(reversed, &cp)
 	}
 

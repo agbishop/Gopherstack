@@ -66,9 +66,9 @@ func TestGetCallerIdentity_AssumedRole_ReturnsAssumedRoleArn(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	accessKeyID := assumeResp.AssumeRoleResult.Credentials.AccessKeyID
+	creds := assumeResp.AssumeRoleResult.Credentials
 
-	ciResp, err := backend.GetCallerIdentity(accessKeyID, "")
+	ciResp, err := backend.GetCallerIdentity(creds.AccessKeyID, creds.SessionToken)
 	require.NoError(t, err)
 
 	assert.Equal(t, "123456789012", ciResp.GetCallerIdentityResult.Account)
@@ -129,9 +129,11 @@ func TestHandler_GetCallerIdentity_WithAssumedRoleCredentials(t *testing.T) {
 
 	var assumeResp sts.AssumeRoleResponse
 	require.NoError(t, xml.Unmarshal(assumeRec.Body.Bytes(), &assumeResp))
-	accessKeyID := assumeResp.AssumeRoleResult.Credentials.AccessKeyID
+	creds := assumeResp.AssumeRoleResult.Credentials
 
-	// Second: GetCallerIdentity with the assumed-role access key in Authorization.
+	// Second: GetCallerIdentity with the assumed-role access key and its session
+	// token in Authorization/X-Amz-Security-Token, as a real SigV4-signed request
+	// for temporary credentials always carries both.
 	ciBody := "Action=GetCallerIdentity&Version=2011-06-15"
 	ciReq := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(ciBody))
 	ciReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -139,9 +141,10 @@ func TestHandler_GetCallerIdentity_WithAssumedRoleCredentials(t *testing.T) {
 		"Authorization",
 		fmt.Sprintf(
 			"AWS4-HMAC-SHA256 Credential=%s/20230101/us-east-1/sts/aws4_request, SignedHeaders=host, Signature=abc",
-			accessKeyID,
+			creds.AccessKeyID,
 		),
 	)
+	ciReq.Header.Set("X-Amz-Security-Token", creds.SessionToken)
 	ciReq = ciReq.WithContext(logger.Save(ciReq.Context(), logger.NewTestLogger()))
 	ciRec := httptest.NewRecorder()
 	require.NoError(t, h.Handler()(e.NewContext(ciReq, ciRec)))
@@ -237,6 +240,26 @@ func TestGetCallerIdentitySessionToken(t *testing.T) {
 		// AWS rejects a mismatched session token with InvalidClientTokenId (HTTP 400),
 		// surfaced here as ErrUnknownAccessKeyID, not AccessDenied.
 		_, err = b.GetCallerIdentity(accessKeyID, "wrong-token")
+		require.ErrorIs(t, err, sts.ErrUnknownAccessKeyID)
+	})
+
+	// TestGetCallerIdentitySessionToken/missing_session_token_rejected guards
+	// against gopherstack-g58j: an absent X-Amz-Security-Token must be rejected
+	// the same way a wrong one is, not treated as an automatic match that lets
+	// the bare ASIA access key ID impersonate the session.
+	t.Run("missing_session_token_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		b := sts.NewInMemoryBackend()
+		assumeResp, err := b.AssumeRole(&sts.AssumeRoleInput{
+			RoleArn:         "arn:aws:iam::123456789012:role/TestRole",
+			RoleSessionName: "my-session",
+		})
+		require.NoError(t, err)
+
+		accessKeyID := assumeResp.AssumeRoleResult.Credentials.AccessKeyID
+
+		_, err = b.GetCallerIdentity(accessKeyID, "")
 		require.ErrorIs(t, err, sts.ErrUnknownAccessKeyID)
 	})
 

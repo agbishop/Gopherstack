@@ -11,6 +11,7 @@ import (
 var (
 	ErrAddressNotFound     = errors.New("InvalidAllocationID.NotFound")
 	ErrAssociationNotFound = errors.New("InvalidAssociationID.NotFound")
+	ErrAddressInUse        = errors.New("InvalidIPAddress.InUse")
 )
 
 const elasticIPOctetRange = 254
@@ -91,11 +92,19 @@ func (b *InMemoryBackend) ReleaseAddress(allocationID string) error {
 	b.mu.Lock("ReleaseAddress")
 	defer b.mu.Unlock()
 
-	if _, ok := b.addresses.Get(allocationID); !ok {
+	addr, ok := b.addresses.Get(allocationID)
+	if !ok {
 		return fmt.Errorf("%w: %s", ErrAddressNotFound, allocationID)
 	}
+
+	if addr.AssociationID != "" {
+		return fmt.Errorf("%w: the address %s is associated (%s) and must be disassociated before release",
+			ErrAddressInUse, addr.PublicIP, addr.AssociationID)
+	}
+
 	b.addresses.Delete(allocationID)
 	delete(b.tags, allocationID)
+	delete(b.addressTransfers, allocationID)
 
 	return nil
 }

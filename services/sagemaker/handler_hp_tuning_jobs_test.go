@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -256,37 +257,80 @@ func TestHandler_HyperParameterTuningJobLifecycle(t *testing.T) {
 func TestHandler_StopHyperParameterTuningJob_ReachesStopped(t *testing.T) {
 	t.Parallel()
 
-	h := newTestHandler(t)
+	// CreateHyperParameterTuningJob schedules its own InProgress->Completed
+	// transition immediately, so the whole body stays in one bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
 
-	doSageMakerRequest(t, h, "CreateHyperParameterTuningJob", map[string]any{
-		"HyperParameterTuningJobName": "hpt-stop-reaches",
-		"HyperParameterTuningJobConfig": map[string]any{
-			"Strategy":       "Bayesian",
-			"ResourceLimits": map[string]any{"MaxParallelTrainingJobs": 1},
-		},
-	})
+		doSageMakerRequest(t, h, "CreateHyperParameterTuningJob", map[string]any{
+			"HyperParameterTuningJobName": "hpt-stop-reaches",
+			"HyperParameterTuningJobConfig": map[string]any{
+				"Strategy":       "Bayesian",
+				"ResourceLimits": map[string]any{"MaxParallelTrainingJobs": 1},
+			},
+		})
 
-	rec := doSageMakerRequest(t, h, "StopHyperParameterTuningJob", map[string]any{
-		"HyperParameterTuningJobName": "hpt-stop-reaches",
-	})
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	rec = doSageMakerRequest(t, h, "DescribeHyperParameterTuningJob", map[string]any{
-		"HyperParameterTuningJobName": "hpt-stop-reaches",
-	})
-	var descResp map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
-	assert.Equal(t, "Stopping", descResp["HyperParameterTuningJobStatus"])
-
-	require.Eventually(t, func() bool {
-		descRec := doSageMakerRequest(t, h, "DescribeHyperParameterTuningJob", map[string]any{
+		rec := doSageMakerRequest(t, h, "StopHyperParameterTuningJob", map[string]any{
 			"HyperParameterTuningJobName": "hpt-stop-reaches",
 		})
-		var out map[string]any
-		require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &out))
+		require.Equal(t, http.StatusOK, rec.Code)
 
-		return out["HyperParameterTuningJobStatus"] == "Stopped"
-	}, 2*time.Second, 10*time.Millisecond)
+		rec = doSageMakerRequest(t, h, "DescribeHyperParameterTuningJob", map[string]any{
+			"HyperParameterTuningJobName": "hpt-stop-reaches",
+		})
+		var descResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "Stopping", descResp["HyperParameterTuningJobStatus"])
+
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		rec = doSageMakerRequest(t, h, "DescribeHyperParameterTuningJob", map[string]any{
+			"HyperParameterTuningJobName": "hpt-stop-reaches",
+		})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "Stopped", descResp["HyperParameterTuningJobStatus"])
+	})
+}
+
+// TestHandler_CreateHyperParameterTuningJob_ReachesCompleted asserts
+// HyperParameterTuningJobStatus advances InProgress -> Completed, matching
+// every sibling job family's own FSM (TrainingJob, ProcessingJob,
+// TransformJob, InferenceRecommendationsJob, CompilationJob, ...). Previously
+// nothing ever advanced it off InProgress -- only Stop's Stopping -> Stopped
+// leg had an FSM -- so a job left running showed InProgress forever.
+func TestHandler_CreateHyperParameterTuningJob_ReachesCompleted(t *testing.T) {
+	t.Parallel()
+
+	// CreateHyperParameterTuningJob schedules its own InProgress->Completed
+	// transition immediately, so the whole body stays in one bubble.
+	synctest.Test(t, func(t *testing.T) {
+		h := newTestHandler(t)
+
+		doSageMakerRequest(t, h, "CreateHyperParameterTuningJob", map[string]any{
+			"HyperParameterTuningJobName": "hpt-create-reaches-completed",
+			"HyperParameterTuningJobConfig": map[string]any{
+				"Strategy":       "Bayesian",
+				"ResourceLimits": map[string]any{"MaxParallelTrainingJobs": 1},
+			},
+		})
+
+		rec := doSageMakerRequest(t, h, "DescribeHyperParameterTuningJob", map[string]any{
+			"HyperParameterTuningJobName": "hpt-create-reaches-completed",
+		})
+		var descResp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "InProgress", descResp["HyperParameterTuningJobStatus"])
+
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		rec = doSageMakerRequest(t, h, "DescribeHyperParameterTuningJob", map[string]any{
+			"HyperParameterTuningJobName": "hpt-create-reaches-completed",
+		})
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
+		assert.Equal(t, "Completed", descResp["HyperParameterTuningJobStatus"])
+	})
 }
 
 // TestHandler_CreateHyperParameterTuningJob_ExtrasRoundTrip_RealClient

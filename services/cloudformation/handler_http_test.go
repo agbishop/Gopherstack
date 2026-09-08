@@ -582,10 +582,22 @@ func TestHandler_ContinueUpdateRollback_HTTP(t *testing.T) {
 func TestHandler_CancelUpdateStack_HTTP(t *testing.T) {
 	t.Parallel()
 
-	h := newHandler()
+	b := newBackend()
+	h := cloudformation.NewHandler(b)
 	postFormValues(t, h, url.Values{
 		"Action": {"CreateStack"}, "StackName": {"cancel-http"}, "TemplateBody": {simpleTemplate},
 	})
+
+	// Real AWS: "You can cancel only stacks that are in the
+	// UPDATE_IN_PROGRESS state." -- a freshly created (CREATE_COMPLETE)
+	// stack is rejected.
+	rejected := postFormValues(t, h, url.Values{
+		"Action":    {"CancelUpdateStack"},
+		"StackName": {"cancel-http"},
+	})
+	assert.NotEqual(t, http.StatusOK, rejected.Status)
+
+	b.ForceStackStatus("cancel-http", "UPDATE_IN_PROGRESS")
 
 	resp := postFormValues(t, h, url.Values{
 		"Action":    {"CancelUpdateStack"},

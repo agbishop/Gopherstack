@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/labstack/echo/v5"
@@ -40,6 +41,23 @@ func (m *mockLambdaInvoker) InvokeFunction(
 	return b, 200, nil
 }
 
+// ensureDefaultStage creates the API's $default stage if it doesn't already
+// exist. The data plane requires a deployed Stage before it will route a
+// request (see the stage-gating fix in proxy.go's handleProxy), so every test
+// that hits the proxy endpoint needs one; a 409 from a stage created earlier
+// in the same test (e.g. via quick create) is expected, not a failure.
+func ensureDefaultStage(t *testing.T, h *apigatewayv2.Handler, apiID string) {
+	t.Helper()
+
+	rr := doRequest(t, h, http.MethodPost, "/v2/apis/"+apiID+"/stages", map[string]any{
+		"stageName":  "$default",
+		"autoDeploy": true,
+	})
+	if rr.Code != http.StatusCreated && rr.Code != http.StatusConflict {
+		t.Fatalf("ensureDefaultStage: unexpected status %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // doProxyRequest sends an HTTP request to the v2proxy data plane.
 func doProxyRequest(
 	t *testing.T,
@@ -49,7 +67,24 @@ func doProxyRequest(
 ) *httptest.ResponseRecorder {
 	t.Helper()
 
-	proxyPath := fmt.Sprintf("/v2proxy/%s/$default%s", apiID, path)
+	ensureDefaultStage(t, h, apiID)
+
+	return doProxyRequestToStage(t, h, method, apiID, "$default", path, headers)
+}
+
+// doProxyRequestToStage sends an HTTP request to the v2proxy data plane
+// against an explicit, already-created stage (unlike doProxyRequest, it does
+// not provision "$default" itself, since callers need a specific stage with
+// its own autoDeploy setting).
+func doProxyRequestToStage(
+	t *testing.T,
+	h *apigatewayv2.Handler,
+	method, apiID, stageName, path string,
+	headers map[string]string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+
+	proxyPath := fmt.Sprintf("/v2proxy/%s/%s%s", apiID, stageName, path)
 	req := httptest.NewRequest(method, proxyPath, strings.NewReader(""))
 
 	for k, v := range headers {
@@ -232,6 +267,42 @@ func TestHTTPAPIProxy_RouteMatching(t *testing.T) {
 	}
 }
 
+// TestHTTPAPIProxy_NonexistentStage_NotFound proves the data plane requires a
+// deployed Stage before it will route a request. Before this fix,
+// handleProxy never checked stageName against the backend at all -- any
+// string in the URL's stage-name slot, including one that was never created
+// via CreateStage, still routed through to the live route/integration.
+func TestHTTPAPIProxy_NonexistentStage_NotFound(t *testing.T) {
+	t.Parallel()
+
+	const lambdaURI = "arn:aws:lambda:us-east-1:123456789012:function:undeployed-fn/invocations"
+
+	h := newTestHandler()
+
+	lambdaCalled := false
+	h.SetLambdaInvoker(&mockLambdaInvoker{
+		fn: func(_ context.Context, _, _ string, _ []byte) ([]byte, int, error) {
+			lambdaCalled = true
+
+			return nil, 0, errShouldNotBeCalled
+		},
+	})
+
+	// Deliberately skip doProxyRequest/ensureDefaultStage: the API has a
+	// route and integration but no $default stage was ever created.
+	apiID := buildHTTPAPIWithLambda(t, h, "GET /hello", lambdaURI)
+
+	req := httptest.NewRequest(http.MethodGet, "/v2proxy/"+apiID+"/$default/hello", strings.NewReader(""))
+	rr := httptest.NewRecorder()
+	e := echo.New()
+	c := e.NewContext(req, rr)
+
+	require.NoError(t, h.Handler()(c))
+
+	assert.Equal(t, http.StatusNotFound, rr.Code)
+	assert.False(t, lambdaCalled, "an undeployed stage must not reach the integration")
+}
+
 // TestHTTPAPIProxy_PayloadFormat verifies both format 1.0 and 2.0 payloads are built correctly.
 func TestHTTPAPIProxy_PayloadFormat(t *testing.T) {
 	t.Parallel()
@@ -370,12 +441,29 @@ func TestHTTPAPIProxy_CORSPreflight(t *testing.T) {
 }
 
 // TestHTTPAPIProxy_JWTAuthorizer verifies that JWT authorization blocks requests
-// without a valid token.
+// without a valid token, and that a blocked request never reaches the
+// integration (gopherstack-wsvb: enforceRouteAuth wrote the 401 for a failed
+// enforceJWTAuthorizer check and returned nil, so applyRouteControls'
+// `if throttleErr/ctrlErr != nil` never fired and the request was forwarded
+// anyway). A status-only assertion would still pass under that bug, since
+// c.JSON's first WriteHeader call wins the response and the integration's
+// later write only corrupts the body underneath the 401 -- hence the
+// integrationCalls assertions below.
 func TestHTTPAPIProxy_JWTAuthorizer(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler()
-	h.SetLambdaInvoker(&mockLambdaInvoker{})
+
+	var integrationCalls atomic.Int64
+	h.SetLambdaInvoker(&mockLambdaInvoker{
+		fn: func(_ context.Context, _, _ string, _ []byte) ([]byte, int, error) {
+			integrationCalls.Add(1)
+
+			b, _ := json.Marshal(map[string]any{"statusCode": 200, "body": "ok"})
+
+			return b, 200, nil
+		},
+	})
 
 	// Create API.
 	rr := doRequest(t, h, http.MethodPost, "/v2/apis", map[string]any{
@@ -419,14 +507,72 @@ func TestHTTPAPIProxy_JWTAuthorizer(t *testing.T) {
 	})
 	require.Equal(t, http.StatusCreated, rr.Code)
 
-	// Request without Authorization header → 401.
+	// Request without Authorization header → 401, integration never invoked.
 	rr = doProxyRequest(t, h, http.MethodGet, api.APIID, "/secure", nil)
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, int64(0), integrationCalls.Load(), "a missing JWT must not reach the integration")
 
-	// Request with a garbage token → 401.
+	// Request with a garbage token → 401, integration never invoked.
 	rr = doProxyRequest(t, h, http.MethodGet, api.APIID, "/secure",
 		map[string]string{"Authorization": "Bearer not-a-jwt"})
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, int64(0), integrationCalls.Load(), "an invalid JWT must not reach the integration")
+}
+
+// TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration proves a JWT
+// route whose authorizerId does not resolve to a stored authorizer is
+// rejected with 401 and never reaches the integration (gopherstack-wsvb: the
+// same enforceRouteAuth branch that handles a failed JWT check also writes a
+// 401 for h.Backend.GetAuthorizer failing and returned nil, defeating the
+// applyRouteControls/handleHTTPAPIProxy checks the same way).
+func TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+
+	var integrationCalls atomic.Int64
+	h.SetLambdaInvoker(&mockLambdaInvoker{
+		fn: func(_ context.Context, _, _ string, _ []byte) ([]byte, int, error) {
+			integrationCalls.Add(1)
+
+			b, _ := json.Marshal(map[string]any{"statusCode": 200, "body": "ok"})
+
+			return b, 200, nil
+		},
+	})
+
+	rr := doRequest(t, h, http.MethodPost, "/v2/apis", map[string]any{
+		"name": "jwt-missing-authorizer-api", "protocolType": "HTTP",
+	})
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	var api apigatewayv2.API
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &api))
+
+	rr = doRequest(t, h, http.MethodPost, "/v2/apis/"+api.APIID+"/integrations", map[string]any{
+		"integrationType": "AWS_PROXY",
+		"integrationUri":  "arn:aws:lambda:us-east-1:123456789012:function:fn/invocations",
+	})
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	var integ apigatewayv2.Integration
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &integ))
+
+	// authorizerId names an authorizer that was never created.
+	rr = doRequest(t, h, http.MethodPost, "/v2/apis/"+api.APIID+"/routes", map[string]any{
+		"routeKey":          "GET /secure",
+		"authorizationType": "JWT",
+		"authorizerId":      "does-not-exist",
+		"target":            "integrations/" + integ.IntegrationID,
+	})
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	rr = doProxyRequest(t, h, http.MethodGet, api.APIID, "/secure",
+		map[string]string{"Authorization": "Bearer whatever"})
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, int64(0), integrationCalls.Load(),
+		"a JWT route with an unresolvable authorizerId must not reach the integration (gopherstack-wsvb)")
 }
 
 // TestHTTPAPIProxy_JWTAuthorizer_ValidCognitoToken verifies that a token issued and
@@ -617,4 +763,128 @@ func TestHTTPAPIProxy_PathParameters(t *testing.T) {
 	require.NotNil(t, capturedPathParams)
 	assert.Equal(t, "acme", capturedPathParams["orgId"])
 	assert.Equal(t, "99", capturedPathParams["userId"])
+}
+
+// TestHTTPAPIProxy_DeploymentSnapshot proves the data plane routes through a
+// stage's pinned deployment snapshot instead of the API's live route and
+// integration state (gopherstack-cfr1). Before this fix, handleHTTPAPIProxy
+// called h.Backend.GetRoutes/GetIntegration on every request regardless of
+// stage, so an autoDeploy=false stage saw an edited integration immediately,
+// with no new deployment required -- indistinguishable from autoDeploy=true.
+func TestHTTPAPIProxy_DeploymentSnapshot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		wantAfterEdit string
+		autoDeploy    bool
+	}{
+		{name: "auto_deploy_false_serves_frozen_snapshot", autoDeploy: false, wantAfterEdit: "from-a"},
+		{name: "auto_deploy_true_serves_live_state", autoDeploy: true, wantAfterEdit: "from-b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler()
+			h.SetLambdaInvoker(&mockLambdaInvoker{
+				fn: func(_ context.Context, name, _ string, _ []byte) ([]byte, int, error) {
+					body := "from-a"
+					if strings.Contains(name, "fn-b") {
+						body = "from-b"
+					}
+
+					b, _ := json.Marshal(map[string]any{"statusCode": 200, "body": body})
+
+					return b, 200, nil
+				},
+			})
+
+			apiID := createAPI(t, h, "snapshot-api")
+			createStageAutoDeploy(t, h, apiID, "prod", tt.autoDeploy)
+
+			rr := doRequest(t, h, http.MethodPost, "/v2/apis/"+apiID+"/integrations", map[string]any{
+				"integrationType":      "AWS_PROXY",
+				"integrationUri":       "arn:aws:lambda:us-east-1:123456789012:function:fn-a/invocations",
+				"payloadFormatVersion": "2.0",
+			})
+			require.Equal(t, http.StatusCreated, rr.Code)
+
+			var integ apigatewayv2.Integration
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &integ))
+
+			rr = doRequest(t, h, http.MethodPost, "/v2/apis/"+apiID+"/routes", map[string]any{
+				"routeKey": "GET /a",
+				"target":   "integrations/" + integ.IntegrationID,
+			})
+			require.Equal(t, http.StatusCreated, rr.Code)
+
+			// Pin "prod" to a deployment covering integration A. Needed for
+			// the autoDeploy=false case; a harmless re-pin to an equivalent
+			// snapshot for autoDeploy=true, whose CreateRoute above already
+			// auto-deployed it.
+			rr = doRequest(t, h, http.MethodPost, "/v2/apis/"+apiID+"/deployments", map[string]any{
+				"stageName": "prod",
+			})
+			require.Equal(t, http.StatusCreated, rr.Code)
+
+			rr = doProxyRequestToStage(t, h, http.MethodGet, apiID, "prod", "/a", nil)
+			require.Equal(t, http.StatusOK, rr.Code)
+			require.Equal(t, "from-a", rr.Body.String())
+
+			// Mutate: repoint integration A at a different backend. For the
+			// autoDeploy=true stage this fires autoDeployLocked and repoints
+			// the stage at a fresh deployment; for autoDeploy=false nothing
+			// deploys.
+			updatePath := "/v2/apis/" + apiID + "/integrations/" + integ.IntegrationID
+			rr = doRequest(t, h, http.MethodPatch, updatePath, map[string]any{
+				"integrationUri": "arn:aws:lambda:us-east-1:123456789012:function:fn-b/invocations",
+			})
+			require.Equal(t, http.StatusOK, rr.Code)
+
+			rr = doProxyRequestToStage(t, h, http.MethodGet, apiID, "prod", "/a", nil)
+			require.Equal(t, http.StatusOK, rr.Code)
+			assert.Equal(t, tt.wantAfterEdit, rr.Body.String(),
+				"proxy response right after editing the integration, no new deployment yet")
+
+			if tt.autoDeploy {
+				return
+			}
+
+			// A fresh CreateDeployment must pick up the edit for the
+			// autoDeploy=false stage.
+			rr = doRequest(t, h, http.MethodPost, "/v2/apis/"+apiID+"/deployments", map[string]any{
+				"stageName": "prod",
+			})
+			require.Equal(t, http.StatusCreated, rr.Code)
+
+			rr = doProxyRequestToStage(t, h, http.MethodGet, apiID, "prod", "/a", nil)
+			require.Equal(t, http.StatusOK, rr.Code)
+			assert.Equal(t, "from-b", rr.Body.String(), "proxy response after a fresh deployment")
+		})
+	}
+}
+
+// TestHTTPAPIProxy_NoDeploymentYet_ServesLiveState proves a stage that exists
+// but has never been deployed (stage.DeploymentID == "") still serves
+// traffic against the API's current live routes, rather than 500ing because
+// it has no pinned snapshot to fall back to (gopherstack-cfr1 negative case).
+func TestHTTPAPIProxy_NoDeploymentYet_ServesLiveState(t *testing.T) {
+	t.Parallel()
+
+	const lambdaURI = "arn:aws:lambda:us-east-1:123456789012:function:fn/invocations"
+
+	h := newTestHandler()
+	h.SetLambdaInvoker(&mockLambdaInvoker{})
+
+	apiID := buildHTTPAPIWithLambda(t, h, "GET /a", lambdaURI)
+	createStageAutoDeploy(t, h, apiID, "prod", false)
+
+	stage := getStage(t, h, apiID, "prod")
+	require.Empty(t, stage.DeploymentID, "stage must not have a deployment yet for this test")
+
+	rr := doProxyRequestToStage(t, h, http.MethodGet, apiID, "prod", "/a", nil)
+	require.Equal(t, http.StatusOK, rr.Code, "an undeployed stage must fall back to live state, not 500")
+	assert.Equal(t, "ok", rr.Body.String())
 }

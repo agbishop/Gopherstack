@@ -123,6 +123,41 @@ func TestHandler_GetLifecyclePolicies_ResourceTypesQueryFilter(t *testing.T) {
 	assert.Equal(t, "instance", policies[0]["Description"])
 }
 
+// TestHandler_GetLifecyclePolicies_DefaultPolicyTypeQueryFilter drives the
+// defaultPolicyType filter through the full HTTP path. Before this fix,
+// handleGetLifecyclePolicies never read the "defaultPolicyType" query
+// parameter, so it was silently dropped and every policy matched regardless
+// of the filter.
+func TestHandler_GetLifecyclePolicies_DefaultPolicyTypeQueryFilter(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	createPolicyWithDetails(t, h, "custom", map[string]any{"ResourceTypes": []any{"VOLUME"}})
+
+	volRec := doRequest(t, h, http.MethodPost, "/policies", map[string]any{
+		"Description":      "volume-default",
+		"ExecutionRoleArn": "arn:aws:iam::000000000000:role/dlm-role",
+		"State":            "ENABLED",
+		"DefaultPolicy":    "VOLUME",
+	})
+	require.Equal(t, http.StatusCreated, volRec.Code)
+
+	instRec := doRequest(t, h, http.MethodPost, "/policies", map[string]any{
+		"Description":      "instance-default",
+		"ExecutionRoleArn": "arn:aws:iam::000000000000:role/dlm-role",
+		"State":            "ENABLED",
+		"DefaultPolicy":    "INSTANCE",
+	})
+	require.Equal(t, http.StatusCreated, instRec.Code)
+
+	rec := doRequest(t, h, http.MethodGet, "/policies?defaultPolicyType=VOLUME", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	policies := getPoliciesResp(t, rec)
+	require.Len(t, policies, 1)
+	assert.Equal(t, "volume-default", policies[0]["Description"])
+}
+
 // TestHandler_GetLifecyclePolicies_TargetTagsQueryFilter drives the
 // targetTags filter (format key=value) through the full HTTP path.
 func TestHandler_GetLifecyclePolicies_TargetTagsQueryFilter(t *testing.T) {

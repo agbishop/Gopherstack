@@ -66,7 +66,12 @@ func (b *InMemoryBackend) CreateSequenceStore(
 	return &result, nil
 }
 
-// DeleteSequenceStore deletes a sequence store by ID.
+// DeleteSequenceStore deletes a sequence store by ID. Real AWS only permits
+// this when the store contains no read sets
+// (api_op_DeleteSequenceStore.go: "You can only delete a sequence store when
+// it does not contain any read sets. Use the BatchDeleteReadSet API
+// operation to ensure that all read sets in the sequence store are
+// deleted.").
 func (b *InMemoryBackend) DeleteSequenceStore(id string) error {
 	b.mu.Lock("DeleteSequenceStore")
 	defer b.mu.Unlock()
@@ -74,6 +79,13 @@ func (b *InMemoryBackend) DeleteSequenceStore(id string) error {
 	ss, ok := b.sequenceStores.Get(id)
 	if !ok {
 		return fmt.Errorf("%w: sequence store %s not found", ErrNotFound, id)
+	}
+
+	if readSets := b.readSetsByStore.Get(id); len(readSets) > 0 {
+		return fmt.Errorf(
+			"%w: sequence store %s still contains %d read set(s), delete them first",
+			ErrInvalidState, id, len(readSets),
+		)
 	}
 
 	delete(b.tags, ss.Arn)

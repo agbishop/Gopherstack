@@ -151,8 +151,11 @@ func (b *InMemoryBackend) UpdateApplicationResourceLifecycle(
 	return cloneApplication(app), nil
 }
 
-// DeleteApplication removes an application and all associated environments and versions.
-func (b *InMemoryBackend) DeleteApplication(ctx context.Context, name string) error {
+// DeleteApplication removes an application and all associated versions and
+// configuration templates. Real AWS: "You cannot delete an application that
+// has a running environment" -- unless terminateEnvByForce is set, in which
+// case running environments are terminated first.
+func (b *InMemoryBackend) DeleteApplication(ctx context.Context, name string, terminateEnvByForce bool) error {
 	b.mu.Lock("DeleteApplication")
 	defer b.mu.Unlock()
 
@@ -162,12 +165,23 @@ func (b *InMemoryBackend) DeleteApplication(ctx context.Context, name string) er
 		return fmt.Errorf("%w: application %s not found", ErrNotFound, name)
 	}
 
-	// Cascade: remove all environments belonging to this application. The
-	// index result is cloned before the delete loop since store.Index
-	// slices mutate under Delete (see pkgs/store gotcha).
+	// The index result is cloned before the loop since store.Index slices
+	// mutate under Delete (see pkgs/store gotcha).
+	var running []*Environment
+
 	for _, env := range slices.Clone(b.environmentsInRegion(region)) {
 		if env.ApplicationName == name {
-			b.environmentDeleteKey(region, env.ApplicationName, env.EnvironmentName)
+			running = append(running, env)
+		}
+	}
+
+	if len(running) > 0 {
+		if !terminateEnvByForce {
+			return fmt.Errorf("%w: application %s has a running environment", ErrInvalidParameter, name)
+		}
+
+		for _, env := range running {
+			b.terminateEnvironmentLocked(region, env)
 		}
 	}
 

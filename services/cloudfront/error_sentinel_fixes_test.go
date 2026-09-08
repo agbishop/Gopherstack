@@ -159,6 +159,64 @@ func TestUpdateDomainAssociation_UnknownTargetDistribution_EntityNotFound(t *tes
 	require.ErrorAsf(t, err, &enf, "expected a real EntityNotFound from the SDK deserializer, got %v", err)
 }
 
+// TestGetAnycastIpList_UnknownID_EntityNotFound proves GetAnycastIpList
+// reports an unknown ID via EntityNotFound, not a fabricated
+// "NoSuchAnycastIPList" -- confirmed against
+// awsRestxml_deserializeOpErrorGetAnycastIpList, whose switch has no case
+// for that code (it does not exist anywhere in the pinned SDK).
+func TestGetAnycastIpList_UnknownID_EntityNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newSentinelTestHandler(t)
+	client := newTestCloudFrontClient(t, h)
+
+	_, err := client.GetAnycastIpList(t.Context(), &cfsdk.GetAnycastIpListInput{
+		Id: aws.String("no-such-anycast-ip-list"),
+	})
+	require.Error(t, err)
+
+	var enf *types.EntityNotFound
+	require.ErrorAsf(t, err, &enf, "expected a real EntityNotFound from the SDK deserializer, got %v", err)
+}
+
+// TestUpdateAnycastIpList_UnknownID_EntityNotFound is
+// TestGetAnycastIpList_UnknownID_EntityNotFound's sibling for Update --
+// confirmed against awsRestxml_deserializeOpErrorUpdateAnycastIpList.
+func TestUpdateAnycastIpList_UnknownID_EntityNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newSentinelTestHandler(t)
+	client := newTestCloudFrontClient(t, h)
+
+	_, err := client.UpdateAnycastIpList(t.Context(), &cfsdk.UpdateAnycastIpListInput{
+		Id:      aws.String("no-such-anycast-ip-list"),
+		IfMatch: aws.String("any-etag"),
+	})
+	require.Error(t, err)
+
+	var enf *types.EntityNotFound
+	require.ErrorAsf(t, err, &enf, "expected a real EntityNotFound from the SDK deserializer, got %v", err)
+}
+
+// TestDeleteAnycastIpList_UnknownID_EntityNotFound is
+// TestGetAnycastIpList_UnknownID_EntityNotFound's sibling for Delete --
+// confirmed against awsRestxml_deserializeOpErrorDeleteAnycastIpList.
+func TestDeleteAnycastIpList_UnknownID_EntityNotFound(t *testing.T) {
+	t.Parallel()
+
+	h := newSentinelTestHandler(t)
+	client := newTestCloudFrontClient(t, h)
+
+	_, err := client.DeleteAnycastIpList(t.Context(), &cfsdk.DeleteAnycastIpListInput{
+		Id:      aws.String("no-such-anycast-ip-list"),
+		IfMatch: aws.String("any-etag"),
+	})
+	require.Error(t, err)
+
+	var enf *types.EntityNotFound
+	require.ErrorAsf(t, err, &enf, "expected a real EntityNotFound from the SDK deserializer, got %v", err)
+}
+
 // TestCreateKeyGroup_UnknownPublicKey_InvalidArgument proves CreateKeyGroup
 // reports a nonexistent referenced public key via InvalidArgument, the only
 // client-fault code its own deserializer models -- not a fabricated

@@ -225,6 +225,69 @@ func TestQuickSight_UserCustomPermission_Errors(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, deleteMissingRec.Code)
 }
 
+// TestQuickSight_UserCustomPermission_ReflectedInReads is a regression test
+// for gopherstack-rt14: UpdateUserCustomPermission wrote to
+// userCustomPermissions but DescribeUser/ListUsers never read it back, so a
+// value set on a user was never observable. types.User.CustomPermissionsName
+// (aws-sdk-go-v2/service/quicksight/types/types.go:23202) is the read shape.
+// Subtests share and mutate one user's state, so they run sequentially.
+func TestQuickSight_UserCustomPermission_ReflectedInReads(t *testing.T) { //nolint:paralleltest // sequential
+	h := newTestHandler(t)
+
+	registerRec := doRequest(t, h, http.MethodPost, nsPath("/users"), map[string]any{
+		"UserName": "u1", "Email": "u1@example.com", "IdentityType": "QUICKSIGHT", "UserRole": "READER",
+	})
+	require.Equal(t, http.StatusOK, registerRec.Code)
+
+	cpRec := doRequest(t, h, http.MethodPost, accountPath("/custom-permissions"), map[string]any{
+		"CustomPermissionsName": "cp1",
+	})
+	require.Equal(t, http.StatusOK, cpRec.Code)
+
+	t.Run("absent before update", func(t *testing.T) { //nolint:paralleltest // sequential
+		rec := doRequest(t, h, http.MethodGet, nsPath("/users/u1"), nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		user, ok := parseBody(t, rec)["User"].(map[string]any)
+		require.True(t, ok)
+		assert.NotContains(t, user, "CustomPermissionsName")
+	})
+
+	updateRec := doRequest(t, h, http.MethodPut, nsPath("/users/u1/custom-permission"), map[string]any{
+		"CustomPermissionsName": "cp1",
+	})
+	require.Equal(t, http.StatusOK, updateRec.Code)
+
+	t.Run("describe user surfaces it", func(t *testing.T) { //nolint:paralleltest // sequential
+		rec := doRequest(t, h, http.MethodGet, nsPath("/users/u1"), nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		user, ok := parseBody(t, rec)["User"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "cp1", user["CustomPermissionsName"])
+	})
+
+	t.Run("list users surfaces it", func(t *testing.T) { //nolint:paralleltest // sequential
+		rec := doRequest(t, h, http.MethodGet, nsPath("/users"), nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		list, ok := parseBody(t, rec)["UserList"].([]any)
+		require.True(t, ok)
+		require.Len(t, list, 1)
+		user, ok := list[0].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "cp1", user["CustomPermissionsName"])
+	})
+
+	deleteRec := doRequest(t, h, http.MethodDelete, nsPath("/users/u1/custom-permission"), nil)
+	require.Equal(t, http.StatusOK, deleteRec.Code)
+
+	t.Run("absent again after delete", func(t *testing.T) { //nolint:paralleltest // sequential
+		rec := doRequest(t, h, http.MethodGet, nsPath("/users/u1"), nil)
+		require.Equal(t, http.StatusOK, rec.Code)
+		user, ok := parseBody(t, rec)["User"].(map[string]any)
+		require.True(t, ok)
+		assert.NotContains(t, user, "CustomPermissionsName")
+	})
+}
+
 // ---- Custom Permissions tests ---- //nolint:godot // existing issue.
 func TestQuickSight_CustomPermissions(t *testing.T) { //nolint:paralleltest // existing issue.
 	h := newTestHandler(t)

@@ -265,6 +265,15 @@ func (h *Handler) startSpeechSynthesisStream(c *echo.Context) error {
 		VoiceID:      c.Request().Header.Get(headerStreamVoiceID),
 	}
 
+	// AWS: "Currently, only the generative engine is supported" for this op
+	// (api_op_StartSpeechSynthesisStream.go's Engine doc comment) -- unlike
+	// SynthesizeSpeech/StartSpeechSynthesisTask, which accept all 4 Engine
+	// values and default an unset one to "standard".
+	if options.Engine != engineGenerative {
+		return fmt.Errorf("%w: engine %q is not supported; StartSpeechSynthesisStream requires generative",
+			ErrStreamValidation, options.Engine)
+	}
+
 	text, textType, err := decodeStreamText(c.Request().Body)
 	if err != nil {
 		return fmt.Errorf("%w: invalid synthesis stream: %w", ErrStreamValidation, err)

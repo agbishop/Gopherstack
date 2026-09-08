@@ -54,7 +54,7 @@ func (h *Handler) handleCreateConfigurationProfile(c *echo.Context, applicationI
 		return internalServerErrorResponse(c, err)
 	}
 
-	return c.JSON(http.StatusCreated, profile)
+	return c.JSON(http.StatusCreated, configurationProfileToOutput(*profile))
 }
 
 func (h *Handler) handleGetConfigurationProfile(
@@ -70,7 +70,7 @@ func (h *Handler) handleGetConfigurationProfile(
 		return internalServerErrorResponse(c, err)
 	}
 
-	return c.JSON(http.StatusOK, profile)
+	return c.JSON(http.StatusOK, configurationProfileToOutput(*profile))
 }
 
 func (h *Handler) handleListConfigurationProfiles(c *echo.Context, applicationID string) error {
@@ -138,16 +138,25 @@ func (h *Handler) handleUpdateConfigurationProfile(
 		return internalServerErrorResponse(c, err)
 	}
 
-	return c.JSON(http.StatusOK, profile)
+	return c.JSON(http.StatusOK, configurationProfileToOutput(*profile))
 }
 
 func (h *Handler) handleDeleteConfigurationProfile(
 	c *echo.Context,
 	applicationID, profileID string,
 ) error {
-	if err := h.Backend.DeleteConfigurationProfile(applicationID, profileID); err != nil {
+	if rejected, err := rejectInvalidDeletionProtectionCheck(c); rejected {
+		return err
+	}
+
+	check := c.Request().Header.Get(deletionProtectionCheckHeader)
+	if err := h.Backend.DeleteConfigurationProfile(applicationID, profileID, check); err != nil {
 		if errors.Is(err, awserr.ErrNotFound) {
 			return notFoundResponse(c, err)
+		}
+
+		if errors.Is(err, awserr.ErrConflict) {
+			return conflictResponse(c, err)
 		}
 
 		return internalServerErrorResponse(c, err)

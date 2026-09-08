@@ -2,6 +2,7 @@ package redshift
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -125,10 +126,22 @@ func (b *InMemoryBackend) CreateClusterParameterGroup(
 	return &cp, nil
 }
 
-// DeleteClusterParameterGroup removes a cluster parameter group.
+// defaultParameterGroupPrefix names the auto-provisioned parameter groups
+// every account has, one per parameter group family (e.g.
+// "default.redshift-1.0"). Real AWS: DeleteClusterParameterGroupInput's own
+// doc comment, "Cannot delete a default cluster parameter group".
+const defaultParameterGroupPrefix = "default."
+
+// DeleteClusterParameterGroup removes a cluster parameter group. Real AWS:
+// "You cannot delete a parameter group if it is associated with a cluster,"
+// and its own ParameterGroupName cannot name a default parameter group.
 func (b *InMemoryBackend) DeleteClusterParameterGroup(name string) error {
 	if name == "" {
 		return fmt.Errorf("%w: ParameterGroupName is required", ErrInvalidParameter)
+	}
+
+	if strings.HasPrefix(name, defaultParameterGroupPrefix) {
+		return fmt.Errorf("%w: cannot delete a default parameter group", ErrParameterGroupInvalidState)
 	}
 
 	b.mu.Lock("DeleteClusterParameterGroup")
@@ -136,6 +149,15 @@ func (b *InMemoryBackend) DeleteClusterParameterGroup(name string) error {
 
 	if _, exists := b.parameterGroups.Get(name); !exists {
 		return fmt.Errorf("%w: parameter group %s not found", ErrParameterGroupNotFound, name)
+	}
+
+	for _, c := range b.clusters.All() {
+		if c.ClusterParameterGroupName == name {
+			return fmt.Errorf(
+				"%w: parameter group %s is associated with cluster %s",
+				ErrParameterGroupInvalidState, name, c.ClusterIdentifier,
+			)
+		}
 	}
 
 	b.parameterGroups.Delete(name)

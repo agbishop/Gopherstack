@@ -1,8 +1,8 @@
 ---
 service: cloudfrontkeyvaluestore
 sdk_module: aws-sdk-go-v2/service/cloudfrontkeyvaluestore@v1.15.4
-last_audit_commit: 1e78b7ca4
-last_audit_date: 2026-08-13
+last_audit_commit: 37229aaf1
+last_audit_date: 2026-09-04
 overall: B
 ops:
   DescribeKeyValueStore: {wire: ok, errors: ok, state: ok, persist: ok, note: "ItemCount/TotalSizeInBytes computed from real per-store data; see gaps for the byte-accounting approximation"}
@@ -14,7 +14,7 @@ ops:
 gaps:
   - "TotalSizeInBytes is len(key)+len(value) summed per item. AWS's real byte accounting includes undocumented per-item overhead this emulator cannot replicate exactly; the number is real and deterministic (derived from actual stored data, not fabricated) but will not byte-for-byte match a real account. (bd: gopherstack-4ara)"
   - "UpdateKeys is not transactional: puts and deletes apply sequentially against the shared InMemoryBackend lock rather than as a single all-or-nothing batch. A backend error partway through (never currently possible, since PutKVSValue/DeleteKVSValue on an already-validated store/ETag cannot fail mid-batch) would leave a partial result. (bd: gopherstack-4ara)"
-  - "No per-store size quota (AWS documents ~5MB/store, 1KB/value limits) and no AccessDeniedException path (no IAM enforcement in this emulator) -- see errors.go's doc comment. ServiceQuotaExceededException/AccessDeniedException are therefore never returned, though both are in the real client's exception set for several ops. (bd: gopherstack-4ara)"
+  - "No per-store size/count quotas enforced and no AccessDeniedException path (no IAM enforcement in this emulator) -- see errors.go's doc comment. The AWS Developer Guide's 'Quotas on key value stores' table (docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/cloudfront-limits.html#limits-keyvaluestores; not stated in the SDK doc comments themselves) documents: max key size 512 Bytes, max value size 1 KB, max UpdateKeys batch 50 keys or 3 MB payload, max individual store size 5 MB, max key value stores per account 200. None of these are enforced here, so ServiceQuotaExceededException/AccessDeniedException are never returned, though both are in the real client's exception set for several ops. (bd: gopherstack-4ara)"
 structural_gaps:
   - "None. Every op here reads or mutates real per-KVS-store key/value state (services/cloudfront's keyValueStoreData/keyValueDataETags) -- there is no billing/ML/hardware dependency that would make any of these ops structurally unimplementable."
 deferred: []
@@ -136,3 +136,30 @@ header unconditionally on all four ops, and the backing
 header is never actually absent or empty on a real client's request. No
 code changes; see `services/_REQUIRED_OUTPUT_CANDIDATES.md`'s
 settled-services table.
+
+## 2026-09-04: parity sweep -- missing IfMatch silently bypassed the ETag check
+
+`IfMatch` is a required member on `PutKeyInput`/`DeleteKeyInput`/
+`UpdateKeysInput` (validators.go's
+`validateOp{PutKey,DeleteKey,UpdateKeys}Input` in
+cloudfrontkeyvaluestore@v1.15.4 each add
+`smithy.NewErrParamRequired("IfMatch")` when unset; the field's own doc
+comment says "This member is required."). `services/cloudfront`'s
+`PutKVSValue`/`DeleteKVSValue`/`UpdateKVSValues` implement the comparison as
+`if ifMatch != "" && ifMatch != currentETag`, which means an absent
+If-Match header was treated as "skip the check" rather than "reject the
+request" -- the same silently-bypassed-when-omitted bug class this
+campaign found in wafv2's LockToken, codeartifact's policyRevision, and
+s3tables's versionToken. A raw HTTP client (or any non-generated-SDK
+caller) could mutate a store with no concurrency token at all.
+
+Fixed in this package's handler.go (not services/cloudfront, since that
+backend's relaxed contract is only ever reached via this package's three
+mutating handlers in production -- `PutKVSValue`/`DeleteKVSValue`/
+`UpdateKVSValues` have no other callers, confirmed by grep): added
+`requireIfMatch`, called before each of `handlePutKey`/`handleDeleteKey`/
+`handleUpdateKeys` invokes the backend, returning `ValidationException`
+(400) when the `If-Match` header is empty. Regression test
+`TestHandler_MutationsRequireIfMatch` in handler_test.go drives the
+handler directly with raw HTTP requests (not the SDK client, which
+validates this client-side and would never send such a request).

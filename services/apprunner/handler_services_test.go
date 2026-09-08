@@ -986,3 +986,43 @@ func TestListOperations_UpdatedAtPresent(t *testing.T) {
 	assert.NotEmpty(t, op["UpdatedAt"])
 	assert.InDelta(t, op["StartedAt"], op["UpdatedAt"], 1)
 }
+
+// TestDeleteService_RejectsWhenActiveVpcIngressConnectionExists verifies
+// DeleteService fails while a VPC ingress connection still references the
+// service (api_op_DeleteService.go: "Make sure that you don't have any
+// active VPCIngressConnections associated with the service you want to
+// delete."), and succeeds once that VPC ingress connection is deleted.
+func TestDeleteService_RejectsWhenActiveVpcIngressConnectionExists(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	svcArn := createTestService(t, h)
+
+	rec := doRequest(t, h, "CreateVpcIngressConnection", map[string]any{
+		"VpcIngressConnectionName": "vic1",
+		"ServiceArn":               svcArn,
+		"IngressVpcConfiguration": map[string]any{
+			"VpcId":         "vpc-1",
+			"VpcEndpointId": "vpce-1",
+		},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+	var vicResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &vicResp))
+	vicArn := vicResp["VpcIngressConnection"].(map[string]any)["VpcIngressConnectionArn"].(string)
+
+	rec = doRequest(t, h, "DeleteService", map[string]any{"ServiceArn": svcArn})
+	assert.Equal(
+		t, http.StatusBadRequest, rec.Code, "service with an active VPC ingress connection must not be deletable",
+	)
+
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "InvalidStateException", body["__type"])
+
+	rec = doRequest(t, h, "DeleteVpcIngressConnection", map[string]any{"VpcIngressConnectionArn": vicArn})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "DeleteService", map[string]any{"ServiceArn": svcArn})
+	assert.Equal(t, http.StatusOK, rec.Code, "service must be deletable once its VPC ingress connection is gone")
+}

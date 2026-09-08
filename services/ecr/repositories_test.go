@@ -284,7 +284,7 @@ func TestDeleteRepository_Cascade(t *testing.T) {
 
 			assert.Equal(t, 1, b.LifecyclePolicyCount())
 
-			_, err := b.DeleteRepository(context.Background(), tt.repoName)
+			_, err := b.DeleteRepository(context.Background(), tt.repoName, false)
 			require.NoError(t, err)
 
 			assert.Equal(t, 0, b.RepositoryCount())
@@ -384,7 +384,7 @@ func TestRepositoryCRUD_EncryptionVariants(t *testing.T) {
 			}
 			assert.True(t, found, "created repo must appear in DescribeRepositories")
 
-			_, err = b.DeleteRepository(context.Background(), tt.repoName)
+			_, err = b.DeleteRepository(context.Background(), tt.repoName, false)
 			require.NoError(t, err)
 			assert.Equal(t, 0, b.RepositoryCount())
 		})
@@ -464,7 +464,7 @@ func TestDeleteRepository_CleansUpLayerUploads(t *testing.T) {
 			}
 			require.Equal(t, tt.uploadsBefore, b.LayerUploadCount())
 
-			_, err = b.DeleteRepository(ctx, "myrepo")
+			_, err = b.DeleteRepository(ctx, "myrepo", false)
 			require.NoError(t, err)
 
 			assert.Equal(t, 0, b.LayerUploadCount(),
@@ -647,6 +647,54 @@ func TestDeleteRepository_Force_False_ExplicitlySet(t *testing.T) {
 		"explicit force=false must still block non-empty repo deletion")
 }
 
+// TestDeleteRepository_BackendEnforcesForceCheck calls the backend directly,
+// bypassing the handler, to prove the empty/force check now lives inside
+// DeleteRepository's own write-lock acquisition rather than in a separate
+// pre-check (gopherstack-e4qn: the old handler-side DescribeImages/Delete
+// split left a TOCTOU window for a concurrent PutImage).
+func TestDeleteRepository_BackendEnforcesForceCheck(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		pushImage bool
+		force     bool
+		wantErr   bool
+	}{
+		{name: "nonempty_rejected_without_force", pushImage: true, force: false, wantErr: true},
+		{name: "empty_succeeds_without_force", pushImage: false, force: false, wantErr: false},
+		{name: "nonempty_succeeds_with_force", pushImage: true, force: true, wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newAccuracyBackend()
+			ctx := context.Background()
+
+			_, err := b.CreateRepository(ctx, "toctou-repo", "MUTABLE", false, "", "")
+			require.NoError(t, err)
+
+			if tt.pushImage {
+				_, err = b.PutImage(ctx, "toctou-repo", ecr.Image{
+					ImageManifest: `{"schemaVersion":2}`,
+					ImageID:       ecr.ImageIdentifier{ImageTag: "v1"},
+				})
+				require.NoError(t, err)
+			}
+
+			_, err = b.DeleteRepository(ctx, "toctou-repo", tt.force)
+			if tt.wantErr {
+				require.ErrorIs(t, err, ecr.ErrRepositoryNotEmpty)
+
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestDeleteRepository_Cascades_LayerUploads(t *testing.T) {
 	t.Parallel()
 
@@ -663,7 +711,7 @@ func TestDeleteRepository_Cascades_LayerUploads(t *testing.T) {
 	assert.Equal(t, 1, b.LayerUploadCount(), "one in-progress upload expected before delete")
 
 	// Delete the repository.
-	_, err = b.DeleteRepository(context.Background(), "cascade-repo-2")
+	_, err = b.DeleteRepository(context.Background(), "cascade-repo-2", false)
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, b.LayerUploadCount(),
@@ -1168,7 +1216,7 @@ func TestDeleteRepository_Clears_TagIndex(t *testing.T) {
 
 	assert.Equal(t, 1, b.RepoTagCount("del-idx"))
 
-	_, err = b.DeleteRepository(context.Background(), "del-idx")
+	_, err = b.DeleteRepository(context.Background(), "del-idx", true)
 	require.NoError(t, err)
 
 	assert.Equal(t, 0, b.RepoTagCount("del-idx"),

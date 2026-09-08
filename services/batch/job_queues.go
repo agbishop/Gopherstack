@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"slices"
 	"sort"
 	"time"
 
@@ -227,7 +226,11 @@ func (b *InMemoryBackend) UpdateJobQueue(
 	return &cp, nil
 }
 
-// DeleteJobQueue removes a job queue and all associated jobs.
+// DeleteJobQueue removes a job queue. Jobs still in the queue are terminated
+// (transitioned to FAILED), not deleted -- api_op_DeleteJobQueue.go: "All
+// jobs in the queue are eventually terminated when you delete a job queue."
+// Job history remains describable by ID afterward, same as TerminateJob;
+// the janitor's normal CompletedJobTTL sweep evicts it later.
 // The queue must be in DISABLED state before deletion.
 func (b *InMemoryBackend) DeleteJobQueue(ctx context.Context, nameOrARN string) error {
 	region := getRegion(ctx, b.region)
@@ -246,12 +249,18 @@ func (b *InMemoryBackend) DeleteJobQueue(ctx context.Context, nameOrARN string) 
 
 	queueName := jq.JobQueueName
 
-	// The byQueue index's slice mutates under Table.Delete, so clone before looping.
 	// jobsByQueueIdx is keyed by the job's JobQueue field, which stores the
 	// queue's ARN (see the JobQueue field comment on jobs.go's SubmitJob).
-	queuedJobs := slices.Clone(b.jobsByQueueIdx.Get(regionKey(region, jq.JobQueueArn)))
-	for _, j := range queuedJobs {
-		b.jobs.Delete(regionKey(region, j.JobID))
+	now := time.Now().UnixMilli()
+	for _, j := range b.jobsByQueueIdx.Get(regionKey(region, jq.JobQueueArn)) {
+		if isTerminalJobStatus(j.Status) {
+			continue
+		}
+
+		j.Status = jobStatusFailed
+		j.StatusReason = "job queue deleted"
+		j.StoppedAt = &now
+		j.IsTerminated = true
 	}
 
 	delete(b.jqsByARN, jq.JobQueueArn)

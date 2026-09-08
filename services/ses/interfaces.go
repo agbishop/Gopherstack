@@ -6,6 +6,14 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/page"
 )
 
+// SNSPublisher can publish a message to an SNS topic by ARN. Mirrors the
+// SNSPublisher interface already declared by cloudwatch, eventbridge, pipes,
+// s3, and scheduler (see services/cloudwatch/interfaces.go) -- same
+// consuming-service-declares-the-interface convention, wired in cli.go.
+type SNSPublisher interface {
+	PublishToTopic(topicARN, message string) error
+}
+
 // StorageBackend defines the persistence contract for the SES service.
 type StorageBackend interface {
 	VerifyEmailIdentity(identity string) error

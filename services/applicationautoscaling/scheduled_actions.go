@@ -36,10 +36,6 @@ func (b *InMemoryBackend) PutScheduledAction(
 		return nil, fmt.Errorf("%w: ScheduledActionName is required", ErrValidation)
 	}
 
-	if schedule == "" {
-		return nil, fmt.Errorf("%w: Schedule is required", ErrValidation)
-	}
-
 	b.mu.Lock("PutScheduledAction")
 	defer b.mu.Unlock()
 
@@ -60,19 +56,22 @@ func (b *InMemoryBackend) PutScheduledAction(
 
 	if group := b.actionsByName.Get(key); len(group) > 0 {
 		a := group[0]
-		a.Schedule = schedule
+		if schedule != "" {
+			a.Schedule = schedule
+		}
+
 		a.LastModifiedTime = now
 		if scalableTargetAction != nil {
 			a.ScalableTargetAction = scalableTargetAction
 		}
 
-		if startTime != nil {
-			a.StartTime = startTime
-		}
-
-		if endTime != nil {
-			a.EndTime = endTime
-		}
+		// "To update a scheduled action, specify the parameters that you
+		// want to change. If you don't specify start and end times, the old
+		// values are deleted." (api_op_PutScheduledAction.go doc) -- unlike
+		// Schedule/Timezone/ScalableTargetAction, start/end are always
+		// overwritten with whatever the caller sent, nil included.
+		a.StartTime = startTime
+		a.EndTime = endTime
 
 		if timezone != "" {
 			a.Timezone = timezone
@@ -81,6 +80,16 @@ func (b *InMemoryBackend) PutScheduledAction(
 		cp := *a
 
 		return &cp, nil
+	}
+
+	// Schedule is not marked "This member is required" on
+	// PutScheduledActionInput -- only ResourceId/ScalableDimension/
+	// ScheduledActionName/ServiceNamespace are -- and the operation doc's
+	// "specify the parameters that you want to change" confirms it's
+	// optional on update (handled above). It has no meaning for a brand-new
+	// action, though, so it's required here.
+	if schedule == "" {
+		return nil, fmt.Errorf("%w: Schedule is required", ErrValidation)
 	}
 
 	// A brand-new scheduled action counts against the per-target quota;

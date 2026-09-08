@@ -3,6 +3,7 @@ package cloudtrail_test
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -68,6 +69,32 @@ func TestCloudTrailCRUD(t *testing.T) {
 					"Name": "my-trail",
 				})
 				assert.Equal(t, http.StatusBadRequest, rec.Code)
+			},
+		},
+		{
+			name: "create_trail_s3_key_prefix_at_max_length",
+			ops: func(t *testing.T, h *cloudtrail.Handler) {
+				t.Helper()
+				rec := doCloudTrailOp(t, h, "CreateTrail", map[string]any{
+					"Name":         "my-trail",
+					"S3BucketName": "my-bucket",
+					"S3KeyPrefix":  strings.Repeat("a", 200),
+				})
+				assert.Equal(t, http.StatusOK, rec.Code)
+			},
+		},
+		{
+			name: "create_trail_s3_key_prefix_over_max_length",
+			ops: func(t *testing.T, h *cloudtrail.Handler) {
+				t.Helper()
+				rec := doCloudTrailOp(t, h, "CreateTrail", map[string]any{
+					"Name":         "my-trail",
+					"S3BucketName": "my-bucket",
+					"S3KeyPrefix":  strings.Repeat("a", 201),
+				})
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				resp := parseCloudTrailResp(t, rec)
+				assert.Equal(t, "InvalidS3PrefixException", resp["__type"])
 			},
 		},
 		{
@@ -167,6 +194,40 @@ func TestCloudTrailCRUD(t *testing.T) {
 					"Name": "missing-trail",
 				})
 				assert.Equal(t, http.StatusNotFound, rec.Code)
+			},
+		},
+		{
+			name: "update_trail_s3_key_prefix_at_max_length",
+			ops: func(t *testing.T, h *cloudtrail.Handler) {
+				t.Helper()
+				doCloudTrailOp(t, h, "CreateTrail", map[string]any{
+					"Name":         "my-trail",
+					"S3BucketName": "my-bucket",
+				})
+				rec := doCloudTrailOp(t, h, "UpdateTrail", map[string]any{
+					"Name":        "my-trail",
+					"S3KeyPrefix": strings.Repeat("a", 200),
+				})
+				assert.Equal(t, http.StatusOK, rec.Code)
+				resp := parseCloudTrailResp(t, rec)
+				assert.Equal(t, strings.Repeat("a", 200), resp["S3KeyPrefix"])
+			},
+		},
+		{
+			name: "update_trail_s3_key_prefix_over_max_length",
+			ops: func(t *testing.T, h *cloudtrail.Handler) {
+				t.Helper()
+				doCloudTrailOp(t, h, "CreateTrail", map[string]any{
+					"Name":         "my-trail",
+					"S3BucketName": "my-bucket",
+				})
+				rec := doCloudTrailOp(t, h, "UpdateTrail", map[string]any{
+					"Name":        "my-trail",
+					"S3KeyPrefix": strings.Repeat("a", 201),
+				})
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				resp := parseCloudTrailResp(t, rec)
+				assert.Equal(t, "InvalidS3PrefixException", resp["__type"])
 			},
 		},
 		{

@@ -99,6 +99,34 @@ func TestSupport_DescribeAttachment_LimitExceeded(t *testing.T) {
 	require.ErrorIs(t, err, ErrDescribeAttachmentLimitExceeded)
 }
 
+// TestSupport_ConsumeAttachmentSet_DanglingAttachmentID verifies that
+// consuming an attachment set referencing an attachment ID no longer present
+// in the attachments table (e.g. restored from a hand-edited or
+// cross-version snapshot) does not panic on a nil *Attachment dereference --
+// the public API can never produce this state itself, since an attachment
+// and its owning set are always added together and swept together
+// (janitor.go), but persisted state is not guaranteed to preserve that
+// invariant.
+func TestSupport_ConsumeAttachmentSet_DanglingAttachmentID(t *testing.T) {
+	t.Parallel()
+
+	b := NewInMemoryBackend()
+	b.attachmentSets.Put(&AttachmentSet{
+		ID:            "orphan-set",
+		Expiry:        time.Now().Add(time.Hour),
+		AttachmentIDs: []string{"missing-attachment"},
+	})
+
+	require.NotPanics(t, func() {
+		c, err := b.CreateCaseWithOptions(CreateCaseOptions{
+			Subject: "dangling attachment", CommunicationBody: "body",
+			AttachmentSetID: "orphan-set",
+		})
+		require.NoError(t, err)
+		assert.NotEmpty(t, c.CaseID)
+	})
+}
+
 // TestSupport_CreateCase_CaseCreationLimitExceeded verifies that
 // CreateCase rejects new cases once the account-wide open-case cap is
 // reached, and that resolving one open case frees a slot.

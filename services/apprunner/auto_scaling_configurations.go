@@ -82,8 +82,6 @@ func (b *InMemoryBackend) DescribeAutoScalingConfiguration(asgArn string) (*Auto
 }
 
 // DeleteAutoScalingConfiguration deletes an ASG config.
-//
-//nolint:dupl // mirrors DeleteObservabilityConfiguration's revision-list bookkeeping by design.
 func (b *InMemoryBackend) DeleteAutoScalingConfiguration(asgArn string) (*AutoScalingConfiguration, error) {
 	b.mu.Lock("DeleteAutoScalingConfiguration")
 	defer b.mu.Unlock()
@@ -91,6 +89,21 @@ func (b *InMemoryBackend) DeleteAutoScalingConfiguration(asgArn string) (*AutoSc
 	cfg, ok := b.autoScalingConfigs.Get(asgArn)
 	if !ok {
 		return nil, fmt.Errorf("auto scaling configuration %s not found: %w", asgArn, ErrNotFound)
+	}
+
+	// DeleteAutoScalingConfiguration doc (api_op_DeleteAutoScalingConfiguration.go):
+	// "You can't delete the default auto scaling configuration or a
+	// configuration that's used by one or more App Runner services."
+	if cfg.IsDefault {
+		return nil, fmt.Errorf(
+			"auto scaling configuration %s is the default and cannot be deleted: %w", asgArn, ErrInvalidParameter,
+		)
+	}
+
+	if cfg.HasAssociatedService {
+		return nil, fmt.Errorf(
+			"auto scaling configuration %s is used by one or more services: %w", asgArn, ErrInvalidParameter,
+		)
 	}
 
 	cfg.Status = asgStatusInactive
@@ -119,6 +132,8 @@ func (b *InMemoryBackend) DeleteAutoScalingConfiguration(asgArn string) (*AutoSc
 }
 
 // ListAutoScalingConfigurations returns ASG configs with optional name filter.
+//
+//nolint:dupl // mirrors ListObservabilityConfigurations's latest-only filtering by design.
 func (b *InMemoryBackend) ListAutoScalingConfigurations(
 	nameFilter string,
 	latestOnly bool,

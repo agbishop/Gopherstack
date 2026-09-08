@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -43,6 +44,40 @@ func doRequest(t *testing.T, handler *appsync.Handler, method, path string, body
 
 	req := httptest.NewRequest(method, path, buf)
 	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	e := echo.New()
+	c := e.NewContext(req, rec)
+	err := handler.Handler()(c)
+	require.NoError(t, err)
+
+	return rec
+}
+
+// doRequestWithHeaders is doRequest plus caller-supplied headers (e.g.
+// x-api-key), for endpoints -- like /graphql -- that check auth. Every
+// current caller POSTs, so the method isn't parameterized.
+func doRequestWithHeaders(
+	t *testing.T, handler *appsync.Handler, path string, body any, headers map[string]string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+
+	var buf *bytes.Buffer
+
+	if body != nil {
+		b, _ := json.Marshal(body)
+		buf = bytes.NewBuffer(b)
+	} else {
+		buf = bytes.NewBuffer(nil)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, path, buf)
+	req.Header.Set("Content-Type", "application/json")
+
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
 	rec := httptest.NewRecorder()
 
 	e := echo.New()

@@ -178,6 +178,46 @@ func TestDescribeRepositoryCreationTemplates_FilterByPrefix(t *testing.T) {
 	assert.Equal(t, "infra/", tmpl["prefix"])
 }
 
+func TestDescribeRepositoryCreationTemplates_UnmatchedPrefix_FilteredNotError(t *testing.T) {
+	t.Parallel()
+
+	h := newAccuracyHandler()
+	doAccuracy(t, h, "CreateRepositoryCreationTemplate", map[string]any{
+		"prefix": "exists/",
+	})
+
+	// DescribeRepositoryCreationTemplates declares no TemplateNotFoundException
+	// (unlike Delete/UpdateRepositoryCreationTemplate, per
+	// deserializeOpErrorDescribeRepositoryCreationTemplates); an unmatched
+	// prefix must be silently omitted, not rejected.
+	rec := doAccuracy(t, h, "DescribeRepositoryCreationTemplates", map[string]any{
+		"prefixes": []string{"exists/", "does-not-exist/"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	out := parseAccuracy(t, rec)
+	assert.NotEqual(t, "TemplateNotFoundException", out["__type"])
+	tmpls, _ := out["repositoryCreationTemplates"].([]any)
+	require.Len(t, tmpls, 1, "unmatched prefix must be filtered out, matching prefix must still be returned")
+	tmpl := tmpls[0].(map[string]any)
+	assert.Equal(t, "exists/", tmpl["prefix"])
+}
+
+func TestDescribeRepositoryCreationTemplates_AllPrefixesUnmatched_ReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	h := newAccuracyHandler()
+
+	rec := doAccuracy(t, h, "DescribeRepositoryCreationTemplates", map[string]any{
+		"prefixes": []string{"does-not-exist/"},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	out := parseAccuracy(t, rec)
+	tmpls, _ := out["repositoryCreationTemplates"].([]any)
+	assert.Empty(t, tmpls)
+}
+
 func TestDescribeRepositoryCreationTemplates_NoFilter_ReturnsAll(t *testing.T) {
 	t.Parallel()
 

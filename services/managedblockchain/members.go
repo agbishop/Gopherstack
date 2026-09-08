@@ -97,6 +97,10 @@ func (b *InMemoryBackend) CreateMember(
 	b.mu.Lock("CreateMember")
 	defer b.mu.Unlock()
 
+	if err := checkTagLimit(nil, tags); err != nil {
+		return nil, err
+	}
+
 	if _, exists := b.networks.Get(networkID); !exists {
 		return nil, ErrNetworkNotFound
 	}
@@ -194,12 +198,18 @@ func (b *InMemoryBackend) ListMembers(networkID string, filter ListMembersFilter
 	return all, nil
 }
 
-// DeleteMember removes a member from a network, cascading the delete to all of its nodes.
+// DeleteMember removes a member from a network, cascading the delete to all of its
+// nodes. If memberID is the network's last member, the network is deleted too:
+// "If MemberId is the last member in a network specified by the last Amazon Web
+// Services account, the network is deleted also." (aws-sdk-go-v2 managedblockchain
+// api_op_DeleteMember.go doc comment, v1.34.4). gopherstack has no multi-account
+// model, so every network's only account is trivially "the last" one.
 func (b *InMemoryBackend) DeleteMember(networkID, memberID string) error {
 	b.mu.Lock("DeleteMember")
 	defer b.mu.Unlock()
 
-	if _, exists := b.networks.Get(networkID); !exists {
+	network, exists := b.networks.Get(networkID)
+	if !exists {
 		return ErrNetworkNotFound
 	}
 
@@ -212,6 +222,8 @@ func (b *InMemoryBackend) DeleteMember(networkID, memberID string) error {
 	b.members.Delete(memberKey(networkID, memberID))
 
 	b.deleteNodesForMemberLocked(networkID, memberID)
+
+	deleteNetworkIfEmptyLocked(b, network)
 
 	return nil
 }

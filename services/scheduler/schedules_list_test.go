@@ -52,9 +52,9 @@ func TestListSchedules_FilterByGroupName(t *testing.T) {
 	h := newTestSchedulerHandler(t)
 	b := h.Backend.(*scheduler.InMemoryBackend)
 
-	_, err := b.CreateScheduleGroup(context.Background(), "g1", "", nil)
+	_, err := b.CreateScheduleGroup(context.Background(), "g1", nil)
 	require.NoError(t, err)
-	_, err = b.CreateScheduleGroup(context.Background(), "g2", "", nil)
+	_, err = b.CreateScheduleGroup(context.Background(), "g2", nil)
 	require.NoError(t, err)
 
 	createScheduleViaHandler(t, h, "in-g1", "g1", "rate(1 minute)")
@@ -143,7 +143,7 @@ func TestListSchedules_IncludesGroupNameAndDates(t *testing.T) {
 	h := newTestSchedulerHandler(t)
 	b := h.Backend.(*scheduler.InMemoryBackend)
 
-	_, err := b.CreateScheduleGroup(context.Background(), "custom-g", "", nil)
+	_, err := b.CreateScheduleGroup(context.Background(), "custom-g", nil)
 	require.NoError(t, err)
 
 	createScheduleViaHandler(t, h, "dated-sched", "custom-g", "rate(1 minute)")

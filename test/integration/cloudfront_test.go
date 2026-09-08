@@ -12,6 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// remain the only way to build the legacy DistributionConfig this test exercises.
+//
+//nolint:staticcheck // ForwardedValues/MinTTL are deprecated for CachePolicyId, but
 func minimalCFDistributionConfig(callerRef, comment string) *cftypes.DistributionConfig {
 	return &cftypes.DistributionConfig{
 		CallerReference: aws.String(callerRef),

@@ -161,11 +161,14 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	assert.Equal(t, persistTestAccountID, fresh.AccountID())
 }
 
-// TestInMemoryBackend_DeleteTableBucketCascade_PostRestore verifies that
-// DeleteTableBucket's cascade (which walks the tablesByBucket and
-// namespacesByBucket secondary indexes) still works correctly against
-// indexes rebuilt by Restore, not just ones populated by live Put calls.
-func TestInMemoryBackend_DeleteTableBucketCascade_PostRestore(t *testing.T) {
+// TestInMemoryBackend_DeleteTableBucketPrecondition_PostRestore verifies
+// that DeleteTableBucket's and DeleteNamespace's non-empty preconditions
+// (which query the tablesByBucket and namespacesByBucket secondary
+// indexes) still work correctly against indexes rebuilt by Restore, not
+// just ones populated by live Put calls. Real S3 Tables requires deleting
+// children before their parent (see DeleteTable/DeleteNamespace/
+// DeleteTableBucket doc comments); this backend no longer cascade-deletes.
+func TestInMemoryBackend_DeleteTableBucketPrecondition_PostRestore(t *testing.T) {
 	t.Parallel()
 
 	original, ids := newFullyPopulatedBackend(t)
@@ -177,13 +180,21 @@ func TestInMemoryBackend_DeleteTableBucketCascade_PostRestore(t *testing.T) {
 	fresh := s3tables.NewInMemoryBackend(persistTestAccountID, persistTestRegion)
 	require.NoError(t, fresh.Restore(ctx, snap))
 
+	err := fresh.DeleteTableBucket(ids.bucketARN)
+	require.ErrorIs(t, err, s3tables.ErrTableBucketNotEmpty)
+
+	err = fresh.DeleteNamespace(ids.bucketARN, []string{"acme_ns"})
+	require.ErrorIs(t, err, s3tables.ErrNamespaceNotEmpty)
+
+	require.NoError(t, fresh.DeleteTable(ids.bucketARN, []string{"acme_ns"}, "acme_table", ""))
+	require.NoError(t, fresh.DeleteNamespace(ids.bucketARN, []string{"acme_ns"}))
 	require.NoError(t, fresh.DeleteTableBucket(ids.bucketARN))
 
 	assert.Equal(t, 0, s3tables.BucketCount(fresh))
 	assert.Equal(t, 0, s3tables.NamespaceCount(fresh))
 	assert.Equal(t, 0, s3tables.TableCount(fresh))
 
-	_, err := fresh.GetTable(ids.bucketARN, []string{"acme_ns"}, "acme_table")
+	_, err = fresh.GetTable(ids.bucketARN, []string{"acme_ns"}, "acme_table")
 	require.Error(t, err)
 }
 

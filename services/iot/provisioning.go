@@ -123,6 +123,7 @@ func (b *InMemoryBackend) DeleteRoleAlias(alias string) error {
 		return fmt.Errorf("role alias %q not found: %w", alias, ErrResourceNotFound)
 	}
 	b.roleAliases.Delete(alias)
+	delete(b.resourceTags, b.roleAliasARN(alias))
 
 	return nil
 }
@@ -242,6 +243,7 @@ func (b *InMemoryBackend) DeleteDomainConfiguration(name string) error {
 		return fmt.Errorf("domain configuration %q not found: %w", name, ErrResourceNotFound)
 	}
 	b.domainConfigs.Delete(name)
+	delete(b.resourceTags, b.domainConfigARN(name))
 
 	return nil
 }
@@ -408,6 +410,7 @@ func (b *InMemoryBackend) DeleteProvisioningTemplate(name string) error {
 	}
 	b.provTemplates.Delete(name)
 	delete(b.provTemplateVersions, name)
+	delete(b.resourceTags, b.provTemplateARN(name))
 
 	return nil
 }

@@ -2,6 +2,7 @@ package codeartifact
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/lockmetrics"
 	"github.com/blackbirdworks/gopherstack/pkgs/store"
@@ -17,6 +18,20 @@ func getRegion(ctx context.Context, defaultRegion string) string {
 	}
 
 	return defaultRegion
+}
+
+// checkPolicyRevision enforces the optimistic-locking contract documented on
+// PolicyRevision across Put/DeleteDomainPermissionsPolicy and Put/
+// DeleteRepositoryPermissionsPolicy: "This revision is used for optimistic
+// locking, which prevents others from overwriting your changes to the ...
+// resource policy." want is empty when the caller omitted PolicyRevision,
+// which real AWS accepts unconditionally.
+func checkPolicyRevision(want, current string) error {
+	if want != "" && want != current {
+		return fmt.Errorf("%w: policy revision %s does not match current revision %s", ErrAlreadyExists, want, current)
+	}
+
+	return nil
 }
 
 // InMemoryBackend is the in-memory store for CodeArtifact resources.

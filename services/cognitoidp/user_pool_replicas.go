@@ -118,6 +118,7 @@ func (b *InMemoryBackend) DeleteUserPoolReplica(userPoolID, regionName string) (
 	cp.Status = replicaStatusDeleting
 
 	b.userPoolReplicas.Delete(replicaKey(userPoolID, regionName))
+	delete(b.resourceTags, replica.ARN)
 
 	return &cp, nil
 }

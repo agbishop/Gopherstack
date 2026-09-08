@@ -168,6 +168,7 @@ func TestHandler_DescribeWorkflowType(t *testing.T) {
 			t.Parallel()
 
 			h := newTestSWFHandler(t)
+			doSWFRequest(t, h, "RegisterDomain", map[string]any{"name": "d1"})
 			for _, s := range tt.setup {
 				doSWFRequest(t, h, s.action, s.body)
 			}
@@ -240,6 +241,7 @@ func TestHandler_DeprecateWorkflowType(t *testing.T) {
 			t.Parallel()
 
 			h := newTestSWFHandler(t)
+			doSWFRequest(t, h, "RegisterDomain", map[string]any{"name": "d1"})
 			for _, s := range tt.setup {
 				doSWFRequest(t, h, s.action, s.body)
 			}
@@ -261,6 +263,7 @@ func TestHandler_DeprecateWorkflowType_ThenDescribeShowsDeprecated(t *testing.T)
 
 	h := newTestSWFHandler(t)
 
+	doSWFRequest(t, h, "RegisterDomain", map[string]any{"name": "d1"})
 	doSWFRequest(t, h, "RegisterWorkflowType", map[string]any{
 		"domain": "d1", "name": "wf1", "version": "1.0",
 	})
@@ -319,6 +322,7 @@ func TestHandler_UndeprecateWorkflowType(t *testing.T) {
 			t.Parallel()
 
 			h := newTestSWFHandler(t)
+			doSWFRequest(t, h, "RegisterDomain", map[string]any{"name": "d1"})
 			for _, s := range tt.setup {
 				doSWFRequest(t, h, s.action, s.body)
 			}

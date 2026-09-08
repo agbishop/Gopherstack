@@ -89,6 +89,7 @@ func (j *Janitor) sweepStoppedTasks(ctx context.Context) {
 			}
 
 			b.tasks.Delete(task.TaskArn)
+			b.deleteResourceTagsLocked(task.TaskArn)
 			evicted++
 		}
 	}()

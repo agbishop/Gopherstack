@@ -419,6 +419,29 @@ func TestCreateSecret_ReplicaRegionsAddedWithValueSyncsInSync(t *testing.T) {
 	assert.Equal(t, "InSync", desc.ReplicationStatus[0].Status)
 }
 
+// TestCreateSecret_ReplicaRegionsAddedIsReadableInReplicaRegion confirms
+// CreateSecret's AddReplicaRegions goes through the same real-replica path as
+// ReplicateSecretToRegions -- the region is not just bookkept as InSync while
+// leaving GetSecretValue in that region 404ing.
+func TestCreateSecret_ReplicaRegionsAddedIsReadableInReplicaRegion(t *testing.T) {
+	t.Parallel()
+
+	h := newSMHandler()
+
+	createRec := doSMRequest(t, h, "secretsmanager.CreateSecret",
+		`{"Name":"replica-created-readable","SecretString":"secret-value",`+
+			`"AddReplicaRegions":[{"Region":"us-west-2"}]}`)
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	getRec := doSMRequestInRegion(t, h, "us-west-2", "secretsmanager.GetSecretValue",
+		`{"SecretId":"replica-created-readable"}`)
+	require.Equal(t, http.StatusOK, getRec.Code)
+
+	var out secretsmanager.GetSecretValueOutput
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &out))
+	assert.Equal(t, "secret-value", out.SecretString)
+}
+
 // TestCreateSecret_ReplicaRegionsAddedNoValue replication status stays InProgress / Failed
 // when the secret has no initial value.
 func TestCreateSecret_ReplicaRegionsAddedNoValue(t *testing.T) {

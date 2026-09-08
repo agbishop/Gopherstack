@@ -151,7 +151,17 @@ func buildTimeBuckets(start, end, granularity string) []timeBucket {
 			})
 			cur = next
 		}
-	default: // DAILY (HOURLY treated as DAILY for simplicity)
+	case granularityHourly:
+		cur := startT
+		for cur.Before(endT) {
+			next := cur.Add(time.Hour)
+			buckets = append(buckets, timeBucket{
+				start: cur.Format("2006-01-02T15:04:05Z"),
+				end:   next.Format("2006-01-02T15:04:05Z"),
+			})
+			cur = next
+		}
+	default: // DAILY
 		cur := startT
 		for cur.Before(endT) {
 			next := cur.AddDate(0, 0, 1)
@@ -169,13 +179,35 @@ func buildTimeBuckets(start, end, granularity string) []timeBucket {
 // filterEntriesByService narrows entries to those whose Service is in
 // serviceFilter, giving GetCostAndUsageInput.Filter's SERVICE dimension a
 // real, non-fabricated effect (same pattern as
-// GetReservationCoverageFiltered/GetReservationUtilizationFiltered). Other
-// documented Filter dimensions have no per-entry breakdown to narrow.
+// GetReservationCoverageFiltered/GetReservationUtilizationFiltered). Callers
+// that need the full Filter expression -- REGION/USAGE_TYPE/LINKED_ACCOUNT/Tags,
+// which extractGroupKeys below proves do have a per-entry breakdown, plus
+// And/Or/Not composition -- use filterEntriesByExpression instead.
 func filterEntriesByService(entries []CostEntry, serviceFilter []string) []CostEntry {
 	kept := make([]CostEntry, 0, len(entries))
 
 	for _, e := range entries {
 		if stringSliceContainsFold(serviceFilter, e.Service) {
+			kept = append(kept, e)
+		}
+	}
+
+	return kept
+}
+
+// filterEntriesByExpression narrows entries to those matching the full Filter
+// expression tree (see matchesExpression), giving GetCostAndUsageInput.Filter's
+// non-SERVICE dimensions, Tags, and And/Or/Not composition a real effect instead
+// of silently matching everything.
+func filterEntriesByExpression(entries []CostEntry, filter *ceExpression) []CostEntry {
+	if filter == nil {
+		return entries
+	}
+
+	kept := make([]CostEntry, 0, len(entries))
+
+	for _, e := range entries {
+		if matchesExpression(e, filter) {
 			kept = append(kept, e)
 		}
 	}
@@ -333,11 +365,43 @@ func aggregateTotals(entries []CostEntry, metrics []string) map[string]MetricVal
 }
 
 // GetCostAndUsage aggregates cost ledger entries by granularity, applying optional GroupBy.
+// serviceFilter only narrows by the SERVICE dimension; callers that need the full
+// Filter expression (Dimensions on any modeled dimension, Tags, And/Or/Not) must use
+// GetCostAndUsageFiltered instead.
 func (b *InMemoryBackend) GetCostAndUsage(
 	start, end, granularity string,
 	metrics []string,
 	groupBy []GroupBySpec,
 	serviceFilter []string,
+) []ResultByTime {
+	return b.getCostAndUsage(start, end, granularity, metrics, groupBy, func(entries []CostEntry) []CostEntry {
+		if len(serviceFilter) == 0 {
+			return entries
+		}
+
+		return filterEntriesByService(entries, serviceFilter)
+	})
+}
+
+// GetCostAndUsageFiltered is GetCostAndUsage with the full Filter expression
+// (Dimensions on any modeled dimension, Tags, And/Or/Not) applied via
+// matchesExpression, instead of GetCostAndUsage's SERVICE-only narrowing.
+func (b *InMemoryBackend) GetCostAndUsageFiltered(
+	start, end, granularity string,
+	metrics []string,
+	groupBy []GroupBySpec,
+	filter *ceExpression,
+) []ResultByTime {
+	return b.getCostAndUsage(start, end, granularity, metrics, groupBy, func(entries []CostEntry) []CostEntry {
+		return filterEntriesByExpression(entries, filter)
+	})
+}
+
+func (b *InMemoryBackend) getCostAndUsage(
+	start, end, granularity string,
+	metrics []string,
+	groupBy []GroupBySpec,
+	filterFn func([]CostEntry) []CostEntry,
 ) []ResultByTime {
 	b.mu.RLock("GetCostAndUsage")
 	defer b.mu.RUnlock()
@@ -351,10 +415,7 @@ func (b *InMemoryBackend) GetCostAndUsage(
 	now := time.Now().UTC().Format("2006-01-02")
 
 	for _, bucket := range buckets {
-		entries := b.costLedgerInBucket(bucket.start, bucket.end)
-		if len(serviceFilter) > 0 {
-			entries = filterEntriesByService(entries, serviceFilter)
-		}
+		entries := filterFn(b.costLedgerInBucket(bucket.start, bucket.end))
 
 		r := ResultByTime{
 			TimePeriod: map[string]string{timePeriodKeyStart: bucket.start, timePeriodKeyEnd: bucket.end},

@@ -10,6 +10,9 @@ import (
 func (b *InMemoryBackend) DeriveSharedSecret(
 	ctx context.Context, input *DeriveSharedSecretInput,
 ) (*DeriveSharedSecretOutput, error) {
+	// DeriveSharedSecret's own doc quotes a live wire ValidationException for a
+	// malformed PublicKey, unmodeled per-op -- confirmed real for KMS at the
+	// protocol level (gopherstack-q9bs), so ErrValidation below is correct.
 	if input.KeyAgreementAlgorithm != "" && input.KeyAgreementAlgorithm != algoECDH {
 		return nil, fmt.Errorf(
 			"%w: KeyAgreementAlgorithm must be ECDH, got %q",
@@ -26,7 +29,7 @@ func (b *InMemoryBackend) DeriveSharedSecret(
 
 	region := getRegion(ctx, b.defaultRegion)
 
-	key, err := b.lookupKey(ctx, input.KeyID)
+	key, err := b.lookupKey(ctx, input.KeyID, ErrKeyNotFound)
 	if err != nil {
 		return nil, err
 	}
@@ -42,11 +45,11 @@ func (b *InMemoryBackend) DeriveSharedSecret(
 		)
 	}
 
-	if err = b.validateGrantTokenPresence(input.GrantTokens); err != nil {
+	if err = b.validateGrantTokenPresence(input.GrantTokens, "DeriveSharedSecret"); err != nil {
 		return nil, err
 	}
 
-	km, err := b.requireKeyMaterial(region, key.KeyID)
+	km, err := b.requireKeyMaterial(region, key)
 	if err != nil {
 		return nil, err
 	}

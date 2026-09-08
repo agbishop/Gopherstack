@@ -20,6 +20,83 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/logger"
 )
 
+// TestHandler_CreateKey_DescriptionTooLong_ViaHTTP is a regression test for
+// gopherstack-i4q8: CreateKey declares LimitExceededException for exactly
+// this condition ("a length constraint or quota was exceeded"), not the
+// fabricated ValidationException.
+func TestHandler_CreateKey_DescriptionTooLong_ViaHTTP(t *testing.T) {
+	t.Parallel()
+	h := b2newHandler(t)
+	b := h.Backend.(*kms.InMemoryBackend)
+
+	longDescription := strings.Repeat("x", 8193)
+	body, err := json.Marshal(map[string]string{"Description": longDescription})
+	require.NoError(t, err)
+
+	rec := b2postKMSOp(t, h, "CreateKey", string(body))
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp kms.ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "LimitExceededException", errResp.Type)
+	assert.NotEqual(t, "ValidationException", errResp.Type)
+
+	listOut, err := b.ListKeys(context.Background(), &kms.ListKeysInput{})
+	require.NoError(t, err)
+	assert.Empty(t, listOut.Keys, "rejected CreateKey must not create a key")
+}
+
+// TestHandler_CreateKey_KeySpecKeyUsageMismatch_ViaHTTP is a regression test for
+// gopherstack-5rjn: CreateKey declares no key-usage-shaped error, so an
+// incompatible KeySpec/KeyUsage pairing (e.g. RSA_2048 + GENERATE_VERIFY_MAC)
+// must surface UnsupportedOperationException, not the fabricated
+// InvalidKeyUsageException (which CreateKey's deserializeOpError does not
+// recognize, and whose own doc describes an existing key's KeyUsage being
+// wrong for a different API call, not this creation-time pairing).
+func TestHandler_CreateKey_KeySpecKeyUsageMismatch_ViaHTTP(t *testing.T) {
+	t.Parallel()
+	h := b2newHandler(t)
+	b := h.Backend.(*kms.InMemoryBackend)
+
+	rec := b2postKMSOp(t, h, "CreateKey", `{"KeySpec":"RSA_2048","KeyUsage":"GENERATE_VERIFY_MAC"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+
+	var errResp kms.ErrorResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+	assert.Equal(t, "UnsupportedOperationException", errResp.Type)
+	assert.NotEqual(t, "InvalidKeyUsageException", errResp.Type)
+
+	listOut, err := b.ListKeys(context.Background(), &kms.ListKeysInput{})
+	require.NoError(t, err)
+	assert.Empty(t, listOut.Keys, "rejected CreateKey must not create a key")
+}
+
+// TestHandler_CreateKey_HMACMultiRegion_ViaHTTP is a regression test for
+// gopherstack-5rjn: HMAC KMS keys DO support MultiRegion per kms@v1.55.4's
+// own api_op_CreateKey.go doc ("You can create multi-Region KMS keys for
+// all supported KMS key types: symmetric encryption KMS keys, HMAC KMS
+// keys, ..."). This replaces the prior TestHandlerCreateKeyHMACMultiRegionRejected,
+// which asserted the opposite (400) based on an unverified assumption.
+func TestHandler_CreateKey_HMACMultiRegion_ViaHTTP(t *testing.T) {
+	t.Parallel()
+	h := b2newHandler(t)
+
+	rec := b2postKMSOp(t, h, "CreateKey", `{"KeySpec":"HMAC_256","KeyUsage":"GENERATE_VERIFY_MAC","MultiRegion":true}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var out struct {
+		KeyMetadata struct {
+			KeySpec     string `json:"KeySpec"`
+			KeyUsage    string `json:"KeyUsage"`
+			MultiRegion bool   `json:"MultiRegion"`
+		} `json:"KeyMetadata"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+	assert.Equal(t, "HMAC_256", out.KeyMetadata.KeySpec)
+	assert.Equal(t, "GENERATE_VERIFY_MAC", out.KeyMetadata.KeyUsage)
+	assert.True(t, out.KeyMetadata.MultiRegion)
+}
+
 func TestHandler_ScheduleKeyDeletion_ViaHTTP(t *testing.T) {
 	t.Parallel()
 	h := b2newHandler(t)

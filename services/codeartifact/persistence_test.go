@@ -129,6 +129,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 		"domain-1",
 		"repo-1",
 		`{"Version":"2012-10-17"}`,
+		"",
 	)
 	require.NoError(t, err)
 
@@ -136,6 +137,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 		ctx,
 		"domain-1",
 		`{"Version":"2012-10-17"}`,
+		"",
 	)
 	require.NoError(t, err)
 
@@ -212,11 +214,18 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	assert.Equal(t, domainPol.Document, gotDomainPol.Document)
 	assert.Equal(t, domainPol.ResourceARN, gotDomainPol.ResourceARN)
 
-	// DeleteDomain cascade still works post-restore -- proves the byRegion
+	// DeleteDomain rejects a domain that still contains a repository
+	// (api_op_DeleteDomain.go: "You cannot delete a domain that contains
+	// repositories."); proves the restored repositoriesByRegion index is
+	// intact post-restore, not just the primary domains lookup.
+	_, err = fresh.DeleteDomain(ctx, "domain-1")
+	require.ErrorIs(t, err, codeartifact.ErrAlreadyExists)
+
+	// Remove the repository, then prove the domain-delete cascade (byRegion
 	// indexes and hidden region/domainName/repoName fields on the restored
-	// values were rebuilt correctly, not just the primary lookup. (Package
-	// groups are not part of AWS's own domain-delete cascade, so
-	// DescribePackageGroup deliberately isn't asserted here.)
+	// values rebuilt correctly, not just the primary lookup).
+	_, err = fresh.DeleteRepository(ctx, "domain-1", "repo-1")
+	require.NoError(t, err)
 	_, err = fresh.DeleteDomain(ctx, "domain-1")
 	require.NoError(t, err)
 	_, err = fresh.DescribeRepository(ctx, "domain-1", "repo-1")

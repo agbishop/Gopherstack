@@ -126,6 +126,10 @@ func (rc *ResourceCreator) createWAFv2RuleGroup(
 	return rg.ID, nil
 }
 
-func (rc *ResourceCreator) deleteWAFv2RuleGroup(_ string) error {
-	return nil
+func (rc *ResourceCreator) deleteWAFv2RuleGroup(ctx context.Context, id string) error {
+	if rc.backends.WAFv2 == nil {
+		return nil
+	}
+
+	return rc.backends.WAFv2.Backend.DeleteRuleGroup(ctx, id, "")
 }

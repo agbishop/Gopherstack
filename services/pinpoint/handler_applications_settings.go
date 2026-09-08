@@ -60,6 +60,10 @@ func (h *Handler) handleUpdateApplicationSettings(c *echo.Context, appID string)
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	var incoming struct {
 		CampaignHook        map[string]any `json:"CampaignHook"`
 		Limits              map[string]any `json:"Limits"`

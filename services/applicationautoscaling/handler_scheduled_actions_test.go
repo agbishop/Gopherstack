@@ -470,3 +470,95 @@ func TestScheduledActionCRUD(t *testing.T) {
 	require.NoError(t, json.Unmarshal(afterRec.Body.Bytes(), &afterOut))
 	assert.Empty(t, afterOut["ScheduledActions"])
 }
+
+// TestHandler_PutScheduledAction_UpdateClearsOmittedStartEndTime verifies
+// that updating an existing scheduled action without resending
+// StartTime/EndTime clears them, per api_op_PutScheduledAction.go's doc: "To
+// update a scheduled action, specify the parameters that you want to change.
+// If you don't specify start and end times, the old values are deleted".
+func TestHandler_PutScheduledAction_UpdateClearsOmittedStartEndTime(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	seedTarget(t, h, "service/default/my-svc", 1, 10)
+
+	rec := doRequest(t, h, "PutScheduledAction", map[string]any{
+		"ServiceNamespace":    "ecs",
+		"ResourceId":          "service/default/my-svc",
+		"ScalableDimension":   "ecs:service:DesiredCount",
+		"ScheduledActionName": "morning-scale",
+		"Schedule":            "cron(0 8 * * ? *)",
+		"StartTime":           1704096000,
+		"EndTime":             1735632000,
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Update without StartTime/EndTime: real AWS deletes the old values.
+	rec2 := doRequest(t, h, "PutScheduledAction", map[string]any{
+		"ServiceNamespace":    "ecs",
+		"ResourceId":          "service/default/my-svc",
+		"ScalableDimension":   "ecs:service:DesiredCount",
+		"ScheduledActionName": "morning-scale",
+		"Schedule":            "cron(0 9 * * ? *)",
+	})
+	require.Equal(t, http.StatusOK, rec2.Code)
+
+	descRec := doRequest(t, h, "DescribeScheduledActions", map[string]any{"ServiceNamespace": "ecs"})
+	require.Equal(t, http.StatusOK, descRec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &resp))
+	actions, ok := resp["ScheduledActions"].([]any)
+	require.True(t, ok)
+	require.Len(t, actions, 1)
+	action := actions[0].(map[string]any)
+
+	assert.Equal(t, "cron(0 9 * * ? *)", action["Schedule"])
+	assert.Nil(t, action["StartTime"], "StartTime must be cleared when omitted on update")
+	assert.Nil(t, action["EndTime"], "EndTime must be cleared when omitted on update")
+}
+
+// TestHandler_PutScheduledAction_UpdateWithoutScheduleKeepsOld verifies that
+// Schedule is not required on an update: PutScheduledActionInput does not mark
+// it "This member is required" (only ResourceId/ScalableDimension/
+// ScheduledActionName/ServiceNamespace are), and the operation doc's
+// "specify the parameters that you want to change" confirms it's left
+// unchanged when omitted -- matching every other optional field on this op.
+func TestHandler_PutScheduledAction_UpdateWithoutScheduleKeepsOld(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	seedTarget(t, h, "service/default/my-svc", 1, 10)
+
+	rec := doRequest(t, h, "PutScheduledAction", map[string]any{
+		"ServiceNamespace":    "ecs",
+		"ResourceId":          "service/default/my-svc",
+		"ScalableDimension":   "ecs:service:DesiredCount",
+		"ScheduledActionName": "morning-scale",
+		"Schedule":            "cron(0 8 * * ? *)",
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	minCap := int32(3)
+	rec2 := doRequest(t, h, "PutScheduledAction", map[string]any{
+		"ServiceNamespace":    "ecs",
+		"ResourceId":          "service/default/my-svc",
+		"ScalableDimension":   "ecs:service:DesiredCount",
+		"ScheduledActionName": "morning-scale",
+		// Schedule intentionally omitted.
+		"ScalableTargetAction": map[string]any{"MinCapacity": minCap},
+	})
+	require.Equal(t, http.StatusOK, rec2.Code, "Schedule must be optional on an update to an existing action")
+
+	descRec := doRequest(t, h, "DescribeScheduledActions", map[string]any{"ServiceNamespace": "ecs"})
+	require.Equal(t, http.StatusOK, descRec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(descRec.Body.Bytes(), &resp))
+	actions, ok := resp["ScheduledActions"].([]any)
+	require.True(t, ok)
+	require.Len(t, actions, 1)
+	action := actions[0].(map[string]any)
+
+	assert.Equal(t, "cron(0 8 * * ? *)", action["Schedule"], "Schedule must be preserved when omitted on update")
+}

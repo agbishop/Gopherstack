@@ -178,3 +178,120 @@ func TestListLocations_NoFabricatedCreationTime(t *testing.T) {
 	assert.Contains(t, resp.Locations[0], "LocationArn")
 	assert.Contains(t, resp.Locations[0], "LocationUri")
 }
+
+// TestStartTaskExecution_Overrides_RoundTrip_RealClient covers a discarded-
+// parameter bug (gopherstack-50h): StartTaskExecutionInput accepts
+// OverrideOptions, Excludes, Includes, ManifestConfig and TaskReportConfig
+// to override the parent task's settings for a single run (datasync@v1.61.4
+// api_op_StartTaskExecution.go: "You also can override your task options for
+// each task execution"), and DescribeTaskExecutionOutput has its own Options,
+// Excludes, Includes, ManifestConfig and TaskReportConfig members
+// (api_op_DescribeTaskExecution.go) to report them back. Before the fix,
+// gopherstack's startTaskExecutionInput struct declared only TaskArn, so
+// every one of those fields was silently dropped by the JSON decode -- never
+// stored, never returned by DescribeTaskExecution.
+func TestStartTaskExecution_Overrides_RoundTrip_RealClient(t *testing.T) {
+	t.Parallel()
+
+	backend := datasync.NewInMemoryBackend("111122223333", "us-east-1")
+	client := newTestDataSyncClient(t, datasync.NewHandler(backend))
+	ctx := t.Context()
+
+	src, err := client.CreateLocationObjectStorage(ctx, &datasyncsdk.CreateLocationObjectStorageInput{
+		ServerHostname: aws.String("src.example.com"),
+		BucketName:     aws.String("src-bucket"),
+	})
+	require.NoError(t, err)
+
+	dst, err := client.CreateLocationObjectStorage(ctx, &datasyncsdk.CreateLocationObjectStorageInput{
+		ServerHostname: aws.String("dst.example.com"),
+		BucketName:     aws.String("dst-bucket"),
+	})
+	require.NoError(t, err)
+
+	createdTask, err := client.CreateTask(ctx, &datasyncsdk.CreateTaskInput{
+		SourceLocationArn:      src.LocationArn,
+		DestinationLocationArn: dst.LocationArn,
+		Name:                   aws.String("override-task"),
+	})
+	require.NoError(t, err)
+
+	started, err := client.StartTaskExecution(ctx, &datasyncsdk.StartTaskExecutionInput{
+		TaskArn: createdTask.TaskArn,
+		OverrideOptions: &types.Options{
+			LogLevel: types.LogLevelTransfer,
+		},
+		Excludes: []types.FilterRule{
+			{FilterType: types.FilterTypeSimplePattern, Value: aws.String("/tmp")},
+		},
+	})
+	require.NoError(t, err)
+
+	described, err := client.DescribeTaskExecution(ctx, &datasyncsdk.DescribeTaskExecutionInput{
+		TaskExecutionArn: started.TaskExecutionArn,
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, described.Options,
+		"DescribeTaskExecution: OverrideOptions must round-trip through Options; pre-fix it was always nil")
+	assert.Equal(t, types.LogLevelTransfer, described.Options.LogLevel)
+	require.Len(t, described.Excludes, 1,
+		"DescribeTaskExecution: Excludes must round-trip; pre-fix it was always dropped")
+	assert.Equal(t, "/tmp", aws.ToString(described.Excludes[0].Value))
+}
+
+// TestTagResource_TaskExecution_RealClient covers a referential-integrity
+// bug (gopherstack-50h): TagResource's doc comment (datasync@v1.61.4
+// api_op_TagResource.go) names task executions as taggable DataSync
+// resources ("These include DataSync resources, such as locations, tasks,
+// and task executions"), but isKnownResource only checked agents, locations,
+// and tasks -- so TagResource/ListTagsForResource on a valid task execution
+// ARN incorrectly failed as ResourceNotFound (InvalidRequestException).
+func TestTagResource_TaskExecution_RealClient(t *testing.T) {
+	t.Parallel()
+
+	backend := datasync.NewInMemoryBackend("444455556666", "us-east-1")
+	client := newTestDataSyncClient(t, datasync.NewHandler(backend))
+	ctx := t.Context()
+
+	src, err := client.CreateLocationObjectStorage(ctx, &datasyncsdk.CreateLocationObjectStorageInput{
+		ServerHostname: aws.String("src.example.com"),
+		BucketName:     aws.String("src-bucket"),
+	})
+	require.NoError(t, err)
+
+	dst, err := client.CreateLocationObjectStorage(ctx, &datasyncsdk.CreateLocationObjectStorageInput{
+		ServerHostname: aws.String("dst.example.com"),
+		BucketName:     aws.String("dst-bucket"),
+	})
+	require.NoError(t, err)
+
+	createdTask, err := client.CreateTask(ctx, &datasyncsdk.CreateTaskInput{
+		SourceLocationArn:      src.LocationArn,
+		DestinationLocationArn: dst.LocationArn,
+		Name:                   aws.String("taggable-task"),
+	})
+	require.NoError(t, err)
+
+	started, err := client.StartTaskExecution(ctx, &datasyncsdk.StartTaskExecutionInput{
+		TaskArn: createdTask.TaskArn,
+	})
+	require.NoError(t, err)
+
+	_, err = client.TagResource(ctx, &datasyncsdk.TagResourceInput{
+		ResourceArn: started.TaskExecutionArn,
+		Tags: []types.TagListEntry{
+			{Key: aws.String("owner"), Value: aws.String("parity-sweep")},
+		},
+	})
+	require.NoError(t, err,
+		"TagResource on a task execution ARN must succeed; pre-fix isKnownResource omitted executions")
+
+	listed, err := client.ListTagsForResource(ctx, &datasyncsdk.ListTagsForResourceInput{
+		ResourceArn: started.TaskExecutionArn,
+	})
+	require.NoError(t, err)
+	require.Len(t, listed.Tags, 1)
+	assert.Equal(t, "owner", aws.ToString(listed.Tags[0].Key))
+	assert.Equal(t, "parity-sweep", aws.ToString(listed.Tags[0].Value))
+}

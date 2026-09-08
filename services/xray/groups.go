@@ -164,6 +164,8 @@ func (b *InMemoryBackend) DeleteGroup(name string) error {
 		return fmt.Errorf("%w: group %s not found", ErrGroupNotFound, name)
 	}
 
+	delete(b.resourceTags, b.groupARN(name))
+
 	return nil
 }
 
@@ -179,6 +181,7 @@ func (b *InMemoryBackend) DeleteGroupByARN(name, arn string) error {
 		}
 
 		b.groups.Delete(list[0].GroupName)
+		delete(b.resourceTags, b.groupARN(list[0].GroupName))
 
 		return nil
 	}
@@ -186,6 +189,8 @@ func (b *InMemoryBackend) DeleteGroupByARN(name, arn string) error {
 	if !b.groups.Delete(name) {
 		return fmt.Errorf("%w: group %s not found", ErrGroupNotFound, name)
 	}
+
+	delete(b.resourceTags, b.groupARN(name))
 
 	return nil
 }

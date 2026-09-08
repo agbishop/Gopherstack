@@ -820,8 +820,13 @@ func TestDescribeScheduledQuery_DeepCopy(t *testing.T) {
 	assert.Equal(t, "prod", sq2.Tags["env"], "mutation of returned copy must not affect stored state")
 }
 
-// TestScheduledQueryToView_IncludesTags verifies Tags appear in DescribeScheduledQuery.
-func TestScheduledQueryToView_IncludesTags(t *testing.T) {
+// TestScheduledQueryToView_OmitsTags verifies DescribeScheduledQuery does NOT
+// echo a Tags field: types.ScheduledQueryDescription (timestreamquery@v1.39.4
+// types/types.go:620) has no Tags member, and
+// awsAwsjson10_deserializeDocumentScheduledQueryDescription's case list
+// (deserializers.go) has no "Tags" case either -- a real client can never
+// receive one on this response.
+func TestScheduledQueryToView_OmitsTags(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler()
@@ -851,15 +856,8 @@ func TestScheduledQueryToView_IncludesTags(t *testing.T) {
 
 	resp := parseResponse(t, rec)
 	sq := resp["ScheduledQuery"].(map[string]any)
-	tags, ok := sq["Tags"].([]any)
-	require.True(t, ok, "Tags should be present in DescribeScheduledQuery response")
-	assert.Len(t, tags, 2)
-
-	// Tags should be sorted by key.
-	tag0 := tags[0].(map[string]any)
-	tag1 := tags[1].(map[string]any)
-	assert.Equal(t, "env", tag0["Key"])
-	assert.Equal(t, "team", tag1["Key"])
+	_, ok := sq["Tags"]
+	assert.False(t, ok, "ScheduledQueryDescription has no Tags member; DescribeScheduledQuery must not echo one")
 }
 
 // TestListScheduledQueries_EnrichedResponse — gaps #18, #19.

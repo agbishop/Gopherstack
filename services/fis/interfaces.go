@@ -14,6 +14,20 @@ import (
 var _ StorageBackend = (*InMemoryBackend)(nil)
 
 // ----------------------------------------
+// AlarmStateSubscriber interface
+// ----------------------------------------
+
+// AlarmStateSubscriber lets FIS subscribe to a CloudWatch alarm's state changes
+// so an "aws:cloudwatch:alarm" stop condition can react directly to it instead
+// of polling (gopherstack-x842, gopherstack-9939). FIS does not import
+// cloudwatch; cli.go wires a collaborator satisfying this interface in.
+type AlarmStateSubscriber interface {
+	// SubscribeAlarmStateChange registers cb to run whenever the alarm
+	// identified by alarmArn changes state, and returns an unsubscribe func.
+	SubscribeAlarmStateChange(alarmArn string, cb func(newState string)) (unsubscribe func())
+}
+
+// ----------------------------------------
 // StorageBackend interface
 // ----------------------------------------
 
@@ -76,4 +90,8 @@ type StorageBackend interface {
 
 	// SetActionProviders registers external service action providers.
 	SetActionProviders(providers []service.FISActionProvider)
+
+	// SetAlarmStateSubscriber registers the CloudWatch alarm-state-change hook
+	// that drives "aws:cloudwatch:alarm" stop conditions.
+	SetAlarmStateSubscriber(sub AlarmStateSubscriber)
 }

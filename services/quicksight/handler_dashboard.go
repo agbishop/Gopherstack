@@ -75,6 +75,8 @@ func (h *Handler) handleCreateDashboard(c *echo.Context) error {
 		accountID,
 		dashboardID,
 		name,
+		strField(body, "ThemeArn"),
+		strField(body, keyVersionDescription),
 		mapField(body, keyDefinition),
 		permissionsField(body, keyPermissions),
 		tagsFromBody(body),
@@ -120,7 +122,14 @@ func (h *Handler) handleUpdateDashboard(c *echo.Context) error {
 		return writeError(c, http.StatusBadRequest, errInvalidParam, errInvalidBody)
 	}
 
-	d, err := h.Backend.UpdateDashboard(accountID, dashboardID, strField(body, "Name"), mapField(body, keyDefinition))
+	d, err := h.Backend.UpdateDashboard(
+		accountID,
+		dashboardID,
+		strField(body, "Name"),
+		strField(body, "ThemeArn"),
+		strField(body, keyVersionDescription),
+		mapField(body, keyDefinition),
+	)
 	if err != nil {
 		return httpErr(c, err)
 	}
@@ -140,7 +149,7 @@ func (h *Handler) handleDeleteDashboard(c *echo.Context) error {
 	accountID := seg(segs, segAccountID)
 	dashboardID := seg(segs, segResID)
 
-	if err := h.Backend.DeleteDashboard(accountID, dashboardID); err != nil {
+	if err := h.Backend.DeleteDashboard(accountID, dashboardID, versionNumberParam(c)); err != nil {
 		return httpErr(c, err)
 	}
 
@@ -161,7 +170,7 @@ func (h *Handler) handleListDashboards(c *echo.Context) error {
 
 	items := make([]map[string]any, 0, len(dashboards))
 	for _, d := range dashboards {
-		items = append(items, dashboardToMap(d))
+		items = append(items, dashboardSummaryToMap(d))
 	}
 
 	resp := map[string]any{
@@ -213,14 +222,63 @@ func (h *Handler) handleListDashboardVersions(c *echo.Context) error {
 	return writeJSON(c, http.StatusOK, resp)
 }
 
+// dashboardToMap builds the shape of types.Dashboard (DescribeDashboardOutput.Dashboard):
+// version-specific fields (Status/ThemeArn/VersionNumber/Description) nest under
+// "Version", confirmed against deserializers.go's awsRestjson1_deserializeDocumentDashboard.
+// It has no top-level PublishedVersionNumber -- that member exists only on
+// types.DashboardSummary (see dashboardSummaryToMap).
 func dashboardToMap(d *Dashboard) map[string]any {
+	linkEntities := d.LinkEntities
+	if linkEntities == nil {
+		linkEntities = []string{}
+	}
+
+	return map[string]any{
+		keyArn:              d.Arn,
+		keyCreatedTime:      d.CreatedTime.Unix(),
+		keyDashboardID:      d.DashboardID,
+		keyLastUpdatedTime:  d.LastUpdatedTime.Unix(),
+		"LastPublishedTime": d.LastPublishedTime.Unix(),
+		keyName:             d.Name,
+		"LinkEntities":      linkEntities,
+		keyVersion:          dashboardCurrentVersionToMap(d),
+	}
+}
+
+// dashboardSummaryToMap builds the shape of types.DashboardSummary
+// (ListDashboardsOutput/SearchDashboardsOutput's DashboardSummaryList item): flat
+// PublishedVersionNumber/LastPublishedTime, no nested Version object.
+func dashboardSummaryToMap(d *Dashboard) map[string]any {
 	return map[string]any{
 		keyArn:                   d.Arn,
 		keyCreatedTime:           d.CreatedTime.Unix(),
 		keyDashboardID:           d.DashboardID,
 		keyLastUpdatedTime:       d.LastUpdatedTime.Unix(),
+		"LastPublishedTime":      d.LastPublishedTime.Unix(),
 		keyName:                  d.Name,
 		"PublishedVersionNumber": d.PublishedVersionNumber,
+	}
+}
+
+// dashboardCurrentVersionToMap approximates DescribeDashboardOutput's nested
+// Version object from this backend's single mutable dashboard record: Definition
+// (see DescribeDashboardDefinition, which already reads d.Definition directly with
+// no draft/published distinction) and Status are likewise only ever tracked as one
+// "latest" value, not per-version history (see ListDashboardVersions), so
+// VersionNumber/ThemeArn/Description are kept internally consistent with that same
+// latest state rather than PublishedVersionNumber. A real client that calls
+// UpdateDashboard without a follow-up UpdateDashboardPublishedVersion will see this
+// reflect its update immediately -- an honest, disclosed limitation of not having
+// real per-version storage (matching this file's Definition precedent), not a new
+// inconsistency introduced here.
+func dashboardCurrentVersionToMap(d *Dashboard) map[string]any {
+	return map[string]any{
+		keyArn:           fmt.Sprintf("%s/version/%d", d.Arn, d.VersionNumber),
+		keyCreatedTime:   d.CreatedTime.Unix(),
+		"Status":         d.Status,
+		"ThemeArn":       d.ThemeArn,
+		keyDescription:   d.VersionDescription,
+		keyVersionNumber: d.VersionNumber,
 	}
 }
 
@@ -239,6 +297,7 @@ func (h *Handler) handleDescribeDashboardDefinition(c *echo.Context) error {
 		keyDashboardID:    d.DashboardID,
 		keyResourceStatus: d.Status,
 		keyDefinition:     d.Definition,
+		"ThemeArn":        d.ThemeArn,
 		keyRequestID:      reqIDPlaceholder,
 		keyStatus:         http.StatusOK,
 	})
@@ -360,7 +419,7 @@ func (h *Handler) handleSearchDashboards(c *echo.Context) error {
 
 	items := make([]map[string]any, 0, len(dashboards))
 	for _, d := range dashboards {
-		items = append(items, dashboardToMap(d))
+		items = append(items, dashboardSummaryToMap(d))
 	}
 
 	resp := map[string]any{

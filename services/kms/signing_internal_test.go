@@ -312,6 +312,13 @@ func TestKMSCreateKeyIncompatibleSpecUsage(t *testing.T) {
 			keySpec:  "SYMMETRIC_DEFAULT",
 			keyUsage: kms.KeyUsageSignVerify,
 		},
+		{
+			// The HMAC branch of validateKeySpecUsage had no coverage, so its
+			// sentinel was unverified by any test (gopherstack-5rjn).
+			name:     "HMAC_256_with_SIGN_VERIFY",
+			keySpec:  "HMAC_256",
+			keyUsage: kms.KeyUsageSignVerify,
+		},
 	}
 
 	for _, tt := range tests {
@@ -323,7 +330,12 @@ func TestKMSCreateKeyIncompatibleSpecUsage(t *testing.T) {
 				KeySpec:  tt.keySpec,
 				KeyUsage: tt.keyUsage,
 			})
-			require.ErrorIs(t, err, kms.ErrInvalidKeyUsage)
+			// gopherstack-5rjn: CreateKey's declared error set has no
+			// key-usage-shaped code (no InvalidKeyUsageException), so this
+			// asserted the wrong sentinel; UnsupportedOperationException is
+			// the code CreateKey actually declares and real AWS uses for a
+			// KeySpec-related CreateKey rejection.
+			require.ErrorIs(t, err, kms.ErrUnsupportedParameter)
 		})
 	}
 }

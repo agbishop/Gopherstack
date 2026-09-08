@@ -16,7 +16,7 @@ ops:
   DeleteIdentityPool: {wire: ok, errors: ok, state: ok, persist: ok, note: "cascades identities/roles/principalTags"}
   DescribeIdentityPool: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed OpenIdConnectProviderARNs JSON key casing (prior pass)"}
   ListIdentityPools: {wire: ok, errors: ok, state: ok, persist: ok, note: "name-cursor pagination verified"}
-  UpdateIdentityPool: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed OpenIdConnectProviderARNs JSON key casing (prior pass); ConcurrentModificationException/LimitExceededException deferred"}
+  UpdateIdentityPool: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed OpenIdConnectProviderARNs JSON key casing (prior pass); ConcurrentModificationException/LimitExceededException deferred. 2026-09-04: fixed DeveloperProviderName immutability -- see body note below"}
   GetId: {wire: ok, errors: ok, state: ok, persist: ok, note: "merges logins into existing identity per AWS semantics; ExternalServiceException/LimitExceededException deferred"}
   GetCredentialsForIdentity: {wire: ok, errors: ok, state: ok, persist: n/a, note: "fixed Expiration epoch-seconds vs epoch-millis bug (prior pass); NEW this pass: InvalidIdentityPoolConfigurationException when the pool has no IAM role for the identity's auth state (real business-logic gap, not just an error-code omission -- GetCredentialsForIdentity previously handed out credentials for pools with zero role configuration)"}
   GetOpenIdToken: {wire: ok, errors: ok, state: ok, persist: n/a, note: "ExternalServiceException deferred"}
@@ -359,6 +359,82 @@ Update `ops.LookupDeveloperIdentity.note` above: now also cross-validates
 `IdentityId` against the supplied `IdentityPoolId`, returning
 `ResourceNotFoundException` on a pool/identity mismatch, matching
 `UnlinkDeveloperIdentity`'s existing behavior.
+
+## 2026-09-04 pass — gopherstack-13d parity sweep
+
+Audited for the standard campaign bug patterns (missing delete preconditions, ghost
+rows after delete, inert config, discarded parameters, unreachable code, fabricated
+values, stale caches, resource leaks), plus the sweep's specific lead: whether the
+cognitoidp "user-pool side maps" ghost-row class (bd gopherstack-cq0z) reproduces here,
+and whether identity pools referencing cognitoidp user pools go stale.
+
+- **Ghost rows: does not reproduce.** All four resource collections (`pools`,
+  `identities`, `roles`, `principalTags`, `store_setup.go`) are `store.Table`-backed,
+  which `pkgs/pkgs-catalog.md` and `parity-principles.md` note is structurally immune to
+  the hand-rolled-map ghost-row class. Grepped every non-test `map[string]` in the
+  package (`credentials.go`, `identities.go`, `identity_pools.go`,
+  `identity_pool_roles.go`, `tags.go`, `models.go`) -- none is a side table outside a
+  `store.Table`; `pool.Tags` and `identity.Logins` are plain fields on the owning struct,
+  deleted with their owner. `DeleteIdentityPool` (`identity_pools.go:78`) cascades
+  `roles`, every identity in the pool, and every principal-tag mapping for the pool --
+  confirmed correct, matches the existing `note`.
+- **Cross-service cognitoidp linkage: does not exist, so nothing to go stale.**
+  `CognitoIdentityProviders`/`IdentityProviders` (`ProviderName`/`ClientId`/
+  `ServerSideTokenCheck`) is stored and echoed verbatim (`identity_pools.go`,
+  `handler_identity_pools.go`) but never dereferenced against `services/cognitoidp`
+  state anywhere in either package (confirmed via
+  `grep -rn cognitoidentity services/cognitoidp` and
+  `grep -rn cognitoidp services/cognitoidentity`, both empty outside this note). Login
+  token validation against a real external/user-pool IdP is the already-documented
+  `ExternalServiceException` gap (deferred above, `GetId`/`GetCredentialsForIdentity`/
+  `GetOpenIdToken`/`UnlinkIdentity`) -- there is no code path here that reads a
+  cognitoidp user pool's existence, so a deleted user pool cannot leave a ghost
+  reference; the field is inert pass-through data end to end, same as the already-known
+  `PrincipalTags`/`TokenDuration` IMPOSSIBLE items above.
+- **Bug fixed -- `UpdateIdentityPool` let `DeveloperProviderName` be silently changed
+  after being set.** `api_op_CreateIdentityPool.go:74`: "Once you have set a developer
+  provider name, you cannot change it. Please take care in setting this parameter."
+  `identity_pools.go:224` (before fix) unconditionally overwrote
+  `pool.DeveloperProviderName` whenever the caller supplied any non-empty value on
+  Update, with no check for whether the pool already had one -- so a second
+  `UpdateIdentityPool` call with a different value silently violated the documented
+  invariant instead of being a no-op. Fixed by additionally requiring
+  `pool.DeveloperProviderName == ""` before accepting the new value, so a value can
+  still be set for the first time via Update (nothing in either op's doc restricts
+  first-set to Create only), but an already-set value can never change -- matching "you
+  cannot change it" literally rather than inventing a specific rejection error code the
+  SDK doesn't name for this case. Proof:
+  `TestInMemoryBackend_UpdateIdentityPool_DeveloperProviderNameImmutable`
+  (`identity_pools_test.go`) creates a pool with `DeveloperProviderName:
+  "developer.myapp.com"`, calls `UpdateIdentityPool` with `"developer.other.com"`, and
+  asserts the value is still `"developer.myapp.com"` both from the Update return value
+  and from a follow-up `DescribeIdentityPool`. Hand-reverted the guard in
+  `identity_pools.go` (confirmed the substitution matched exactly once via a Python
+  `assert count==1`), reran: failed with `expected: "developer.myapp.com", actual:
+  "developer.other.com"` (both assertions), confirming real reproduction; restored the
+  fix and `md5sum`-confirmed the restored file byte-identical to the pre-revert version.
+- **Not fixed / no bug found:** `GetIdentityPoolRoles` (`identity_pool_roles.go:48`)
+  returns `cp := *roles` -- a shallow struct copy that still aliases the backend's live
+  `RoleMappings` map with the caller's returned value, unlike `clonePool`/`cloneIdentity`
+  which deep-clone every mutable field. Traced every current call site
+  (`handler_identity_pool_roles.go`'s `handleGetIdentityPoolRoles`, and every test): none
+  mutates the returned `RoleMappings` map, and `SetIdentityPoolRoles` always replaces the
+  field with a fresh clone (`existing.RoleMappings = cloneRoleMappings(...)`,
+  `identity_pool_roles.go:41`) rather than mutating map contents in place, so this
+  aliasing is not observable through any AWS-wire behavior today. This is a Go-API
+  internal-hygiene inconsistency, not a spec-verifiable AWS parity gap (the SDK has
+  nothing to say about gopherstack's internal aliasing) -- left unfixed per "fix only
+  what the SDK unambiguously specifies," noted here so a future pass doesn't rediscover
+  it from scratch. Filing as a low-priority follow-up is reasonable but out of scope for
+  this pass.
+
+Gates run: `GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/cognitoidentity/...`
+(pass), `GOTOOLCHAIN=go1.26.6 golangci-lint run ./services/cognitoidentity/...` (`0
+issues.`), and the campaign's required dependent-package check
+`GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/cloudformation/...
+./services/cognitoidp/... ./services/sts/...` (all pass). `last_audit_commit` left at
+`81a1aabf0` per this repo's convention of only advancing it alongside a settlement of
+the *entire* file's audit state; the fix is dated in this section instead.
 
 ## Handler-collision determinism sweep (2026-08-31, gopherstack-id70)
 

@@ -8,27 +8,6 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/page"
 )
 
-// validOperations is the set of valid CloudControl operation strings.
-//
-//nolint:gochecknoglobals // lookup set
-var validOperations = map[string]struct{}{
-	"CREATE": {},
-	"DELETE": {},
-	"UPDATE": {},
-}
-
-// validOperationStatuses is the set of valid CloudControl operation status strings.
-//
-//nolint:gochecknoglobals // lookup set
-var validOperationStatuses = map[string]struct{}{
-	"PENDING":              {},
-	"IN_PROGRESS":          {},
-	opStatusSuccess:        {},
-	"FAILED":               {},
-	"CANCEL_IN_PROGRESS":   {},
-	opStatusCancelComplete: {},
-}
-
 // GetResourceRequestStatus returns a copy of the ProgressEvent for the given request token.
 // Events are retained in the map until Reset() is called.
 // An unrecognized requestToken returns ErrRequestTokenNotFound (RequestTokenNotFoundException),
@@ -89,29 +68,12 @@ type ResourceRequestFilter struct {
 	OperationStatuses []string
 }
 
-// validateFilter returns ErrValidation if the filter contains unknown operation or status strings.
-func validateFilter(filter *ResourceRequestFilter) error {
-	if filter == nil {
-		return nil
-	}
-
-	for _, op := range filter.Operations {
-		if _, ok := validOperations[op]; !ok {
-			return ErrValidation
-		}
-	}
-
-	for _, st := range filter.OperationStatuses {
-		if _, ok := validOperationStatuses[st]; !ok {
-			return ErrValidation
-		}
-	}
-
-	return nil
-}
-
 // eventMatchesFilter reports whether event passes the given filter.
-// A nil filter matches every event.
+// A nil filter matches every event. An unrecognized Operations/OperationStatuses
+// value simply never matches any real event's Operation/OperationStatus -- it is
+// NOT rejected as an error, because ListResourceRequests declares zero errors in
+// the real model (confirmed: botocore's service-2.json has an empty "errors" list
+// for this operation, unlike every other CloudControl op).
 func eventMatchesFilter(event *ProgressEvent, filter *ResourceRequestFilter) bool {
 	if filter == nil {
 		return true
@@ -130,15 +92,11 @@ func eventMatchesFilter(event *ProgressEvent, filter *ResourceRequestFilter) boo
 
 // ListResourceRequests returns all tracked resource requests, optionally filtered
 // by operation type, operation status, and/or resource type name. Results are sorted
-// by EventTime descending (most recent first) for deterministic output.
-// Returns ErrValidation if the filter contains unknown operation or status strings.
+// by EventTime descending (most recent first) for deterministic output. Never
+// errors on the filter contents (see eventMatchesFilter).
 func (b *InMemoryBackend) ListResourceRequests(
 	filter *ResourceRequestFilter, maxResults int, nextToken string,
 ) ([]*ProgressEvent, string, error) {
-	if err := validateFilter(filter); err != nil {
-		return nil, "", err
-	}
-
 	b.mu.RLock("ListResourceRequests")
 	defer b.mu.RUnlock()
 

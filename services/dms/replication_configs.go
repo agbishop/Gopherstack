@@ -54,6 +54,9 @@ func (b *InMemoryBackend) CreateReplicationConfig(
 }
 
 // DeleteReplicationConfig deletes a replication config by identifier or ARN.
+// Real AWS: "You can't delete the configuration for an DMS Serverless
+// replication that is ongoing. You can delete the configuration when the
+// replication is in a non-RUNNING and non-STARTING state".
 func (b *InMemoryBackend) DeleteReplicationConfig(ctx context.Context, identifierOrArn string) error {
 	b.mu.Lock("DeleteReplicationConfig")
 	defer b.mu.Unlock()
@@ -61,6 +64,10 @@ func (b *InMemoryBackend) DeleteReplicationConfig(ctx context.Context, identifie
 	region := getRegion(ctx, b.region)
 
 	if rc, ok := b.replicationConfigs.Get(regionKey(region, identifierOrArn)); ok {
+		if rc.Status == statusRunning {
+			return fmt.Errorf("%w: replication config %s is running", ErrInvalidState, identifierOrArn)
+		}
+
 		rc.Tags.Close()
 		b.replicationConfigs.Delete(regionKey(region, identifierOrArn))
 
@@ -68,6 +75,10 @@ func (b *InMemoryBackend) DeleteReplicationConfig(ctx context.Context, identifie
 	}
 
 	if rc, ok := lookupUnique(b.replicationConfigsByARN, regionKey(region, identifierOrArn)); ok {
+		if rc.Status == statusRunning {
+			return fmt.Errorf("%w: replication config %s is running", ErrInvalidState, identifierOrArn)
+		}
+
 		rc.Tags.Close()
 		b.replicationConfigs.Delete(regionKey(region, rc.ReplicationConfigIdentifier))
 

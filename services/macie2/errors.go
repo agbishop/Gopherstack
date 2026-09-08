@@ -38,4 +38,7 @@ var (
 	ErrClassificationScopeNotFound = awserr.New(errResourceNotFound, awserr.ErrNotFound)
 	// ErrSensitivityTemplateNotFound is returned when a sensitivity inspection template does not exist.
 	ErrSensitivityTemplateNotFound = awserr.New(errResourceNotFound, awserr.ErrNotFound)
+	// ErrJobStatusTransition is returned when UpdateClassificationJob's requested
+	// JobStatus isn't valid for the job's current status (api_op_UpdateClassificationJob.go).
+	ErrJobStatusTransition = awserr.New(errConflictException, awserr.ErrConflict)
 )

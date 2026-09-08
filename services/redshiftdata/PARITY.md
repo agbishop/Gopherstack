@@ -6,8 +6,8 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: redshiftdata
 sdk_module: aws-sdk-go-v2/service/redshiftdata@v1.43.4   # version audited against
-last_audit_commit: ee8d5788f                              # HEAD when this audit began (working tree, uncommitted)
-last_audit_date: 2026-08-21
+last_audit_commit: eff9b1496                              # HEAD when this audit began (working tree, uncommitted)
+last_audit_date: 2026-09-04
 overall: A            # genuine wire-shape/field gaps found and fixed this pass
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
@@ -93,7 +93,24 @@ ops:
     ResultFormat/StatementName/SecretArn. FIXED 2026-08-13: deleted the six non-real fields
     (ClusterIdentifier/WorkgroupName/Database/DbUser/HasResultSet/Duration) that were being
     sent beyond StatementData -- see gaps below for the SDK citation. RoleLevel accepted but
-    unused (see gaps).}
+    unused (see gaps). FIXED 2026-09-04 (gopherstack-2v1): ListStatementsInput's
+    ClusterIdentifier/WorkgroupName field docs each unambiguously state "When
+    providing ClusterIdentifier, then WorkgroupName can't be specified" (and the
+    mirrored sentence on WorkgroupName) -- confirmed against
+    aws-sdk-go-v2/service/redshiftdata@v1.43.4's api_op_ListStatements.go -- but
+    handleListStatements never enforced it, silently returning an empty (not
+    matching any statement) 200 for a request specifying both. ListSessions
+    already enforces the identical constraint (ValidateListSessionsRequest,
+    sessions.go) since its ListSessionsInput doc carries the same sentence;
+    ListStatements was the gap. Neither field is required (ListStatementsInput
+    has no "This member is required" trait on either, and no validateOp
+    function exists for it in validators.go at all), so only the both-set case
+    is now rejected, matching ValidateListSessionsRequest's precedent. New
+    ValidateListStatementsConnectionTarget (models.go), wired into
+    handleListStatements (handler_statements.go). Regression test:
+    TestHandler_ListStatements_RejectsBothClusterAndWorkgroup
+    (handler_statements_validation_test.go), hand-reverted to confirm it fails
+    (200 instead of 400) before the fix.}
   ListDatabases: {wire: ok, errors: ok, state: gap, persist: n/a, note: >
     Fixed this pass: (1) Database is a required ExecuteStatementInput-style member on the
     real ListDatabasesInput (confirmed against api_op_ListDatabases.go's "This member is
@@ -171,7 +188,7 @@ families:
     QueryTimeoutException are real modeled exceptions in the SDK but unreachable by design.}
 gaps:
   - CancelStatement can never succeed against this backend: ExecuteStatement/BatchExecuteStatement set Status=FINISHED synchronously, so by the time a client calls CancelStatement the statement is always already terminal and CancelStatement always returns ErrTerminalState (ValidationException). This matches real AWS semantics ("To be canceled, a query must be running") given the backend's synchronous-completion design. Not fixed this pass -- would require modeling async statement execution (a state machine with a delay before reaching FINISHED), which is a larger behavioral change beyond a wire-shape/bug-fix pass.
-  - ValidateConnectionTarget (models.go) enforces "exactly one of ClusterIdentifier/WorkgroupName" per real AWS constraints but is never called from any handler. ExecuteStatement/BatchExecuteStatement handlers are intentionally permissive (see TestHandler_ExecuteStatement_AllowsBothClusterAndWorkgroup / AllowsNeitherClusterNorWorkgroup in handler_statements_validation_test.go) -- this looks like a deliberate relaxation for ease of testing rather than an oversight, so left as-is. Re-review if strict AWS-parity validation becomes a priority.
+  - "STALE ENTRY, superseded 2026-09-04: this used to say ValidateConnectionTarget was never called and the permissive behavior was deliberate. That verdict does not survive gopherstack-2v1's re-check -- commit 448dd7f82 (this same repo, dated 2026-09-04, already an ancestor of the branch this note is being written on) wired ValidateConnectionTarget into ExecuteStatement/BatchExecuteStatement for real (statements.go:32,96) and rewrote the three tests that had asserted the permissive behavior into TestHandler_ExecuteAndBatchExecuteStatement_RejectInvalidConnectionTarget, which now asserts rejection of both-set and neither-set. gopherstack-2v1 re-verified this against the SDK rather than trusting the prior commit's own claim: ExecuteStatementInput/BatchExecuteStatementInput's ClusterIdentifier/WorkgroupName field doc comments (api_op_ExecuteStatement.go/api_op_BatchExecuteStatement.go) only say each is 'required when connecting to a cluster/workgroup and authenticating using...' -- conditional per-field language, never the explicit 'When providing ClusterIdentifier, then WorkgroupName can't be specified' sentence that ListSessionsInput and ListStatementsInput both carry verbatim (confirmed absent via grep across every api_op_*.go in the module for 'can't be specified'/'cannot be specified'/'mutually exclusive'). So the both-set rejection on ExecuteStatement/BatchExecuteStatement is NOT literally spelled out in the SDK the way it is for ListSessions/ListStatements -- it rests on the reasonable but not textually-proven inference that the doc's three enumerated auth combinations (each naming exactly one of ClusterIdentifier/WorkgroupName) implies the pair is exclusive, consistent with every other op in this family that does state it explicitly. Left as-is (not reverted): defensible inference, matches this API family's own established pattern, already has deep test coverage, and was independently verified by 448dd7f82's own author against the unfixed code failing the same regression tests. Flagging the wire-shape distinction here so a future audit doesn't cite it as SDK-unambiguous when re-deriving parity for other services. See the ListStatements row above for a companion case (2026-09-04) where the identical constraint genuinely IS literally stated in the SDK and gopherstack was NOT enforcing it -- that one was a real, unambiguous gap and is now fixed."
   - DescribeStatement does not return RedshiftPid (optional field, always absent instead of 0); DbGroups not returned by ExecuteStatement/BatchExecuteStatement. Both are optional wire fields the real client zero-values when absent, so not a functional gap, just lower fidelity -- no group/pid registry exists in this mock to source real values from.
   - SessionKeepAliveSeconds is accepted on ExecuteStatement/BatchExecuteStatement's wire (unmarshalled into the request struct) but is accepted-then-silently-dropped: it never reaches the backend call and has no effect. Session keep-alive/expiry requires modeling time-bounded session lifetimes this in-memory backend does not have; inventing it risks fabricating undocumented AWS semantics not verifiable without a live cluster (same reasoning as rdsdata's typeHint gap). Relatedly, this mock does NOT mint a fresh SessionId when SessionKeepAliveSeconds>0 and no SessionId is supplied (real AWS would start a new session and return its id) -- SessionId here is pure passthrough of whatever the caller already provided, since there's no session-scoped state (temp tables, transaction visibility, etc.) that a minted id would actually gate. (ClientToken was in this same category through last pass -- now fixed, see ExecuteStatement/BatchExecuteStatement rows and idempotency.go.)
   - RoleLevel is parsed on ListStatements' and ListSessions' request bodies but never applied as a filter (accepted-then-silently-dropped: decoded into the request struct but never placed on ListStatementsFilter/ListSessionsFilter, so it never reaches the backend at all): real semantics are "true (default) = all statements/sessions this IAM role has run, false = only this IAM session's," but this mock has no per-caller-identity or per-IAM-session model, so there is no signal to filter on. All statements/sessions are visible regardless of RoleLevel, matching the "true" default in effect at all times.
@@ -184,6 +201,61 @@ leaks: {status: clean, note: "Janitor uses pkgs/worker.Group with TaskTimeout bo
 ---
 
 ## Notes
+
+### 2026-09-04 pass (gopherstack-2v1, parity sweep): ListStatements connection-target gap found and fixed; ExecuteStatement/BatchExecuteStatement mutual-exclusivity re-verified
+
+Chartered specifically to re-check a prior campaign's "test encoding a bug"
+finding: whether ExecuteStatement/BatchExecuteStatement's permissive
+ClusterIdentifier+WorkgroupName handling was still true, and whether the SDK
+unambiguously requires exactly one of the two. Found that commit 448dd7f82
+(already on this branch, dated the same day) had already wired
+`ValidateConnectionTarget` into both ops and rewritten the permissive tests --
+the finding as originally briefed no longer exists in the tree. Re-derived the
+justification independently against the SDK rather than trusting the prior
+commit's message (see the superseded gaps entry above for the full citation):
+the "not both" constraint is explicit, word-for-word, on `ListSessionsInput`
+and `ListStatementsInput` ("When providing ClusterIdentifier, then
+WorkgroupName can't be specified") but is nowhere in `ExecuteStatementInput`/
+`BatchExecuteStatementInput`'s doc comments -- those only carry the weaker,
+conditional "required when connecting to a cluster/workgroup and
+authenticating using..." per-field language. The already-applied
+ExecuteStatement/BatchExecuteStatement validation is a defensible inference
+(matches the family's established pattern, has real test coverage) but is not
+literally SDK-proven the way ListSessions/ListStatements's is -- left as-is,
+flagged for a future audit's benefit rather than reverted.
+
+That distinction directly located a real, previously undetected bug: despite
+`ListStatementsInput` stating the exact same "can't be specified together"
+sentence that `ListSessionsInput` does (and `ListSessions` already enforcing
+it via `ValidateListSessionsRequest`, sessions.go), `handleListStatements`
+(handler_statements.go) never validated it -- a request with both
+ClusterIdentifier and WorkgroupName silently returned `200 {"Statements":[]}`
+instead of `400 ValidationException`. Added
+`ValidateListStatementsConnectionTarget` (models.go, only rejects both-set,
+since neither field is required per the SDK) and wired it into
+`handleListStatements`. Regression test:
+`TestHandler_ListStatements_RejectsBothClusterAndWorkgroup`
+(handler_statements_validation_test.go) -- hand-reverted the wiring (not the
+validator) to confirm the `both_set_returns_400` subtest fails (200 instead of
+400, `{"Statements":[]}` body) before the fix, then restored.
+
+Also re-confirmed via `awk`-scoped per-op error-code switches in
+`deserializers.go` that all four error codes this backend emits
+(ValidationException/ResourceNotFoundException/InternalServerException,
+already documented; no fourth code found) are present in every one of the 12
+ops' own `awsAwsjson11_deserializeOpError<Op>` functions -- no cross-op
+error-code bug. No cross-service wiring to services/redshift,
+redshiftserverless, or secretsmanager exists for ClusterIdentifier/
+WorkgroupName/SecretArn validation (already documented as accepted-but-unused
+identity fields; confirmed no hook exists rather than assuming one should).
+Janitor/ring-buffer/idempotency-cache leak surface re-read, no new issue
+(matches the existing `leaks: clean` verdict).
+
+Gates: `GOTOOLCHAIN=go1.26.6 go build ./services/redshiftdata/...`,
+`go test -race -count=1 ./services/redshiftdata/...` (ok), `golangci-lint run
+./services/redshiftdata/...` (0 issues), and the mandated dependents check
+`go test -race -count=1 ./services/cloudformation/... ./services/redshift/...`
+(both ok).
 
 ### 2026-08-21 pass (gopherstack-r80d batch 32): required-output-member audit, clean
 

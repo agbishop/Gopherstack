@@ -3,9 +3,11 @@ package eventbridge
 import (
 	"encoding/json"
 	"fmt"
-	"net"
+	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/blackbirdworks/gopherstack/pkgs/eventpattern"
 )
 
 type compiledPattern struct {
@@ -115,10 +117,66 @@ func validateMatcherArray(field string, matchers []any) error {
 
 // validateMatcherObject validates a single matcher object (e.g., {"prefix": "foo"}).
 func validateMatcherObject(field string, m map[string]any) error {
-	for key := range m {
+	for key, val := range m {
 		if !isKnownMatcher(key) {
 			return fmt.Errorf("%w: unknown matcher %q for field %q", ErrInvalidParameter, key, field)
 		}
+
+		if key == "anything-but" {
+			if err := validateAnythingButValue(field, val); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateAnythingButValue validates the value of an "anything-but" matcher.
+// Real AWS only supports scalar string/number exclusion here, not arbitrary
+// JSON values (gopherstack-lrgk): "You can use anything-but matching with
+// strings and numeric values, including lists that contain only strings, or
+// only numbers." (eb-event-patterns-content-based-filtering.html#eb-filtering-anything-but).
+// A map or array element would decode to a non-comparable Go type and panic
+// matchAnythingBut's containment check, so this is also the fix for that.
+func validateAnythingButValue(field string, v any) error {
+	switch ab := v.(type) {
+	case string, float64:
+		return nil
+	case map[string]any:
+		return validateAnythingButObject(field, ab)
+	case []any:
+		for _, elem := range ab {
+			switch elem.(type) {
+			case string, float64:
+			default:
+				return fmt.Errorf(
+					"%w: anything-but list for field %q must contain only strings or only numbers",
+					ErrInvalidParameter, field,
+				)
+			}
+		}
+
+		return nil
+	default:
+		return fmt.Errorf(
+			"%w: anything-but value for field %q must be a string, number, list, or matcher object",
+			ErrInvalidParameter, field,
+		)
+	}
+}
+
+// validateAnythingButObject validates the keys of an object-form anything-but
+// matcher (e.g. {"anything-but": {"prefix": "init"}}). Must match the keys
+// matchAnythingButObject recognizes, so an unrecognized key is rejected at
+// compile time instead of silently never matching.
+func validateAnythingButObject(field string, ab map[string]any) error {
+	for key := range ab {
+		if key == "numeric" || slices.Contains(anythingButStringMatcherKeys(), key) {
+			continue
+		}
+
+		return fmt.Errorf("%w: unknown anything-but matcher %q for field %q", ErrInvalidParameter, key, field)
 	}
 
 	return nil
@@ -398,40 +456,12 @@ func matchNumeric(rules any, eventVal any) bool {
 		return false
 	}
 
-	num, ok := toFloat64(eventVal)
+	num, ok := eventpattern.ToFloat64(eventVal)
 	if !ok {
 		return false
 	}
 
-	const pairSize = 2
-	for i := 0; i+1 < len(ruleList); i += pairSize {
-		op, opOk := ruleList[i].(string)
-		val, valOk := toFloat64(ruleList[i+1])
-
-		if !opOk || !valOk || !compareNumeric(op, num, val) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// compareNumeric returns true if the comparison "num op val" holds.
-func compareNumeric(op string, num, val float64) bool {
-	switch op {
-	case ">":
-		return num > val
-	case ">=":
-		return num >= val
-	case "<":
-		return num < val
-	case "<=":
-		return num <= val
-	case "=":
-		return num == val
-	default:
-		return false
-	}
+	return eventpattern.MatchNumericRules(num, ruleList)
 }
 
 // matchAnythingBut matches when the event value does NOT satisfy the negated rule.
@@ -448,12 +478,36 @@ func compareNumeric(op string, num, val float64) bool {
 func matchAnythingBut(v, eventVal any) bool {
 	switch ab := v.(type) {
 	case []any:
-		return !slices.Contains(ab, eventVal)
+		return !anySliceContains(ab, eventVal)
 	case map[string]any:
 		return !matchAnythingButObject(ab, eventVal)
 	default:
 		return eventVal != v
 	}
+}
+
+// anySliceContains reports whether eventVal appears in ab. It uses
+// reflect.DeepEqual rather than == because validateAnythingButValue only
+// constrains patterns compiled through compilePattern; eventVal (always) and,
+// in principle, ab's elements (if that validation is ever bypassed or
+// loosened) can be non-comparable dynamic types like map[string]any or
+// []any, and == panics comparing two such values (gopherstack-lrgk). Same
+// fix as services/pipes/filter.go's matchesExactRule.
+func anySliceContains(ab []any, eventVal any) bool {
+	for _, item := range ab {
+		if reflect.DeepEqual(item, eventVal) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// anythingButStringMatcherKeys returns the string-based matcher keys valid
+// inside an object-form anything-but rule, shared with
+// validateAnythingButObject so the two stay in sync.
+func anythingButStringMatcherKeys() []string {
+	return []string{"prefix", "suffix", "wildcard", "equals-ignore-case"}
 }
 
 // matchAnythingButObject reports whether eventVal satisfies the inner matcher of an
@@ -464,7 +518,7 @@ func matchAnythingButObject(ab map[string]any, eventVal any) bool {
 		return matchNumeric(numericRules, eventVal)
 	}
 
-	for _, key := range []string{"prefix", "suffix", "wildcard", "equals-ignore-case"} {
+	for _, key := range anythingButStringMatcherKeys() {
 		inner, ok := ab[key]
 		if !ok {
 			continue
@@ -486,20 +540,6 @@ func matchAnythingButObject(ab map[string]any, eventVal any) bool {
 	return false
 }
 
-// toFloat64 converts a numeric value to float64.
-func toFloat64(v any) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case int:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	default:
-		return 0, false
-	}
-}
-
 // matchCIDR returns true when the event value is an IP address that falls within the CIDR range.
 func matchCIDR(cidrVal, eventVal any) bool {
 	cidrStr, ok := cidrVal.(string)
@@ -512,17 +552,7 @@ func matchCIDR(cidrVal, eventVal any) bool {
 		return false
 	}
 
-	_, ipNet, err := net.ParseCIDR(cidrStr)
-	if err != nil {
-		return false
-	}
-
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		return false
-	}
-
-	return ipNet.Contains(ip)
+	return eventpattern.MatchCIDR(cidrStr, ipStr)
 }
 
 // wildcardToken is one unit of a tokenized wildcard pattern: either a

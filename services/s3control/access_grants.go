@@ -345,8 +345,22 @@ func (b *InMemoryBackend) GetAccessGrantsLocation(
 	return loc, nil
 }
 
+// errAccessGrantsLocationNotEmpty is returned when DeleteAccessGrantsLocation
+// is called while grants still reference the location -- per
+// DeleteAccessGrantsLocation's doc comment (api_op_DeleteAccessGrantsLocation.go,
+// aws-sdk-go-v2/service/s3control@v1.73.4): "You can only delete a location
+// registration from an S3 Access Grants instance if there are no grants
+// associated with this location." No typed exception exists for this
+// conflict (types/errors.go's full list has none), so this reuses the
+// generic "BadRequestException" sentinel (ErrValidation), matching
+// errAccessGrantsInstanceNotEmpty's precedent for the sibling instance
+// precondition.
+var errAccessGrantsLocationNotEmpty = ErrValidation
+
 // DeleteAccessGrantsLocation removes an access grants location and
-// cascade-cleans its generic resource tags.
+// cascade-cleans its generic resource tags. Rejects the delete instead of
+// silently succeeding while any access grant still references the location
+// (see errAccessGrantsLocationNotEmpty).
 func (b *InMemoryBackend) DeleteAccessGrantsLocation(accountID, locationID string) error {
 	b.mu.Lock("DeleteAccessGrantsLocation")
 	defer b.mu.Unlock()
@@ -356,6 +370,12 @@ func (b *InMemoryBackend) DeleteAccessGrantsLocation(accountID, locationID strin
 	loc, ok := b.accessGrantsLocations.Get(key)
 	if !ok {
 		return awserr.New("NoSuchAccessGrantsLocation", awserr.ErrNotFound)
+	}
+
+	for _, g := range b.accessGrants.All() {
+		if g.AccountID == accountID && g.AccessGrantsLocationID == locationID {
+			return errAccessGrantsLocationNotEmpty
+		}
 	}
 
 	arn := loc.AccessGrantsLocationArn

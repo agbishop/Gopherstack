@@ -525,6 +525,10 @@ func (h *Handler) handleCreateNamedAppResource(c *echo.Context, appID string, cr
 		return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 	}
 
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
+		return nil
+	}
+
 	region := httputils.ExtractRegionFromRequest(c.Request(), h.DefaultRegion)
 
 	resp, creationErr := creator(body, region, appID)
@@ -639,6 +643,10 @@ func unmarshalBody(c *echo.Context, dst any) bool {
 	if err != nil {
 		_ = writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", "failed to read request body")
 
+		return false
+	}
+
+	if !checkPayloadSize(c, body, maxInvocationPayloadBytes) {
 		return false
 	}
 

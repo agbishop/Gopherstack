@@ -160,10 +160,11 @@ func TestInMemoryBackend_UpdateSubscription(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		setup     func(*shield.InMemoryBackend)
-		name      string
-		autoRenew string
-		wantErr   bool
+		setup         func(*shield.InMemoryBackend)
+		name          string
+		autoRenew     string
+		wantAutoRenew string
+		wantErr       bool
 	}{
 		{
 			name: "set_disabled",
@@ -185,6 +186,17 @@ func TestInMemoryBackend_UpdateSubscription(t *testing.T) {
 			autoRenew: shield.AutoRenewDisabled,
 			wantErr:   true,
 		},
+		{
+			// api_op_UpdateSubscription.go: an omitted AutoRenew leaves the existing value
+			// unchanged.
+			name: "omit_preserves_existing_value",
+			setup: func(b *shield.InMemoryBackend) {
+				require.NoError(t, b.CreateSubscription())
+				require.NoError(t, b.UpdateSubscription(shield.AutoRenewDisabled))
+			},
+			autoRenew:     "",
+			wantAutoRenew: shield.AutoRenewDisabled,
+		},
 	}
 
 	for _, tt := range tests {
@@ -204,9 +216,14 @@ func TestInMemoryBackend_UpdateSubscription(t *testing.T) {
 
 			require.NoError(t, err)
 
+			want := tt.wantAutoRenew
+			if want == "" {
+				want = tt.autoRenew
+			}
+
 			sub, err := b.DescribeSubscription()
 			require.NoError(t, err)
-			assert.Equal(t, tt.autoRenew, sub.AutoRenew)
+			assert.Equal(t, want, sub.AutoRenew)
 		})
 	}
 }

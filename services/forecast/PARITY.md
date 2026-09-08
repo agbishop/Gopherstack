@@ -8,7 +8,30 @@ service: forecast
 sdk_module: aws-sdk-go-v2/service/forecast@v1.44.4
 last_audit_commit: 80757023
 last_audit_date: 2026-08-13
-overall: A            # 2026-08-14: closed part of gopherstack-dv4s (over-wide List responses):
+overall: A            # 2026-09-06: gopherstack-jrhh (LimitExceededException never returned) --
+                       # PARTIALLY IMPLEMENTABLE. https://docs.aws.amazon.com/forecast/latest/dg/limits.html
+                       # has an explicit Adjustable column; only TagResource's row is both
+                       # non-adjustable and a per-resource, already-observable-state check:
+                       # "Maximum number of tags you can add to a resource | 50 | No". Now
+                       # enforced (maxTagsPerResource, tags.go) against the resource's resulting
+                       # tag set (existing + incoming, re-tagging a key is not an addition), via
+                       # a new ErrTagLimitExceeded sentinel mapped to LimitExceededException in
+                       # handleError. DOCUMENTATION-SOURCED, not SDK-verified (LimitExceededException
+                       # is declared in types/errors.go with no numeric field to check against).
+                       # NOT enforced, left for a future decision: CreateAutoPredictor (500) and
+                       # CreateExplainability/CreateExplainabilityExport (1000 each, plus parallel-
+                       # task caps of 3) are marked non-adjustable but are account-wide
+                       # resource-count ceilings, not per-resource attribute counts -- closer to
+                       # the adjustable-quota shape already declined at services/efs/PARITY.md:76,80
+                       # than to TagResource's shape, and needs an explicit call before hardcoding.
+                       # Most other Create ops (CreateDataset, CreateDatasetGroup,
+                       # CreateDatasetImportJob, CreatePredictor, CreateForecast,
+                       # CreateForecastExportJob, CreatePredictorBacktestExportJob,
+                       # CreateWhatIfAnalysis, CreateWhatIfForecast, CreateWhatIfForecastExport)
+                       # are explicitly "Adjustable: Yes" -- the EFS-declined shape, left alone.
+                       # CreateMonitor and ResumeResource have no published number anywhere on the
+                       # quotas page; durably blocked, recorded so nobody re-searches.
+                       # 2026-08-14: closed part of gopherstack-dv4s (over-wide List responses):
                        # every family note below claiming "List verified" had only checked that
                        # the shared generic listOutput()/resourceOutput() round-tripped required
                        # fields correctly -- never that a real List op's response omits members
@@ -58,7 +81,7 @@ overall: A            # 2026-08-14: closed part of gopherstack-dv4s (over-wide L
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
 ops:
-  TagResource: {wire: ok, errors: ok, state: ok, persist: ok}
+  TagResource: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-jrhh (2026-09-06): enforces the documented 50-tags-per-resource maximum (maxTagsPerResource, tags.go) against the resource's resulting tag set, not the incoming request size; re-tagging an existing key does not count as an addition. LimitExceededException, documentation-sourced -- see header note."}
   UntagResource: {wire: ok, errors: ok, state: ok, persist: ok}
   ListTagsForResource: {wire: ok, errors: ok, state: ok, persist: ok}
   GetAccuracyMetrics: {wire: fixed, errors: ok, state: ok, persist: n/a, note: "deterministic synthetic metrics. gopherstack-g479 (2026-08-21): WeightedQuantileLoss.Quantile emitted the raw ForecastType label string (e.g. \"0.1\"), but real Quantile deserializes as a json.Number, or one of the Smithy-special \"NaN\"/\"Infinity\"/\"-Infinity\" strings -- any other string fails with 'unknown JSON number value' (deserializers.go, awsAwsjson11_deserializeDocumentWeightedQuantileLoss). Now parsed to float64, filtering out non-quantile ForecastTypes like \"mean\" (no WeightedQuantileLosses entry in the real API). TestWindowStart/TestWindowEnd emitted RFC3339 strings; real member deserializes epoch seconds the same way -- now awstime.Epoch. Found via a new go/types-based map-literal kind scanner."}
@@ -92,7 +115,7 @@ families:
     status: ok
     note: "generic addCRUD-driven lifecycle (Create/Describe/List/Delete) shares the same describe()/list()/delete() backend paths already verified for the higher-traffic families; every family's required ARN-reference field is now FK-validated (see ops table); Delete* status-gated per family (see ops table). 2026-08-14 (gopherstack-dv4s): CORRECTED -- \"shares the same ... paths already verified\" was true for Describe but the claim never distinguished List, which AWS narrows and this emulator did not: listOutput() called the identical resourceOutput() Describe uses, so every op in this family leaked its full create-request body on List. Verified each real Summary type separately rather than by analogy (types.go): PredictorBacktestExportJobSummary/ForecastExportJobSummary/ExplainabilityExportSummary/WhatIfForecastExportSummary all declare only {Kind}Arn/{Kind}Name/Destination/Status/Message/CreationTime/LastModificationTime (WhatIfForecastExportSummary additionally WhatIfForecastArns) -- Format leaked on all four export-job kinds. WhatIfAnalysisSummary/WhatIfForecastSummary add only ForecastArn/WhatIfAnalysisArn respectively -- Tags leaked on both (every Create*Input in this family accepts Tags, no Summary type declares it). MonitorSummary adds ResourceArn, no Message field (unlike its siblings) -- Tags leaked. ExplainabilitySummary adds ResourceArn and ExplainabilityConfig -- EnableVisualization/EndDateTime/StartDateTime/Schema/DataSource leaked. Every op in this family now scoped via summaryOutput with its own per-kind summaryFields (see forecastOperations in handler.go)."
   ListOperations_Pagination: {status: ok, note: "malformed NextToken returns InvalidNextTokenException (page.ValidateToken wired into listOutput); not touched this pass"}
-  Tags: {status: ok, note: "Tag/Untag/ListTagsForResource validate the ARN exists via arnIndex before mutating/reading tag state; not touched this pass"}
+  Tags: {status: ok, note: "Tag/Untag/ListTagsForResource validate the ARN exists via arnIndex before mutating/reading tag state. 2026-09-06 (gopherstack-jrhh): TagResource now enforces the documented 50-tags-per-resource maximum -- see ops table."}
 gaps:                     # known divergences NOT fixed — link bd issue ids
   - >-
     gopherstack-dv4s (found 2026-08-14): PredictorSummary's DatasetGroupArn,
@@ -490,3 +513,74 @@ Gates: `go build ./services/forecast/...`, `go vet ./services/forecast/...`,
 `go test ./services/forecast/... -race -count=1`, `golangci-lint run ./services/forecast/...` -- all
 clean. `go vet ./...` repo-wide also clean (both changed `InMemoryBackend` methods are unexported and
 called only from within this package). Work left uncommitted per this session's hard constraints.
+
+## 2026-09-07 (gopherstack-ejfu: 127 findings from commit adbe69143, triaged -- not a defect, a 4th shape)
+
+adbe69143 (gopherstack-sgbw) taught `cmd/errtargetaudit` to trace forecast's
+`map[string]operationSpec` dispatch through `addCRUD`/`h.execute` (63/63
+resolved, up from 6/63), surfacing 217 raw rows that collapse, by (op, code)
+pair, to 127 class A findings across 5 codes: `InvalidNextTokenException`
+(42 ops), `ResourceAlreadyExistsException` (41), `ResourceInUseException`
+(28), `ResourceNotFoundException` (14), `InvalidInputException` (2) -- that
+127 total already equals 42+41+28+14+2, confirming the tool's own count is
+per-(op,code)-pair, not per raw row. The 14 raw site rows this produces
+collapse further to **11 genuine physical sites**: `store.go:189/190/191`
+are not independent emission points at all -- they are the Go *builtin*
+`delete(map, key)` statements a few lines inside `InMemoryBackend`'s own
+`delete` *method* (store.go:188-191), evidently misattributed by the
+classifier via the shared name `delete`; the one real raise for that path is
+`store.go:181`. Distinct SITE count: 11. Distinct (op, code) pairs: 127.
+
+**Verdict: a 4th shape, none of the prior three (mq6m shared-helper,
+jpfk idiomatic-guard, 03rb wire-shape-absent) exactly, but closest to 03rb --
+provably unreachable given forecast's own dispatch table. No code change.**
+
+Every one of the 5 codes is the SAME root cause: `h.ops[action]` (built by
+`addCRUD`/`withMode`, handler.go:782-804) binds each op to an
+`operationSpec` whose `mode` field is a **fixed constant set once at
+map-construction time**, never derived from request input. `h.execute`
+(handler.go:169-219) switches on that fixed `spec.mode`, and each backend
+method it calls (`create`/`describe`/`update`/`delete`/`list`, store.go) is
+called from **exactly one** call site in that switch (confirmed:
+`grep -n "\.describe(\|\.delete(\|\.update(\|\.create(\|\.list("
+services/forecast/*.go` finds each verb exactly once, all inside
+`execute`). So a `CreateDataset` call, whose spec is permanently
+`mode: modeCreate`, can never take the `modeList` branch and therefore can
+never reach `listOutput`'s `InvalidNextTokenException` at handler.go:447 --
+and symmetrically for every other mode/code pair (`store.go:104`
+`ResourceAlreadyExistsException` only from `create`; `store.go:141`/`:159`/
+`:181` `ResourceNotFoundException` only from `describe`/`update`/`delete`
+respectively; `store.go:184` `ResourceInUseException` only from `delete`;
+`store.go:77`/`:81`/`:88` `InvalidInputException` only from `create`).
+Verified the counts are exactly consistent with this: `h.ops` has 55 entries
+(create=14, describe=14, list=13, delete=13, update=1 --
+`TestCountModes`, scratch, not committed). `create+describe+update =
+14+14+1 = 42` matches the `InvalidNextTokenException` finding count
+exactly (every non-`list` op); `55-14=41` matches
+`ResourceAlreadyExistsException` (every non-`create` op); the
+`ResourceInUseException` findings list (`CreateDataset` + all 14
+`Describe*` + all 13 `List*` = 28) matches every op that is neither
+`delete` nor one of the 13 other `create` ops. `handler.go:217` (the
+switch's `default:` case, `InvalidInputException`) is dead code by the
+same argument: every spec built by `addCRUD`/`withMode` has one of the 5
+known `mode` constants, so `default` can never execute. The other 8 ops
+(`ListMonitorEvaluations`,
+`DeleteResourceTree`, `StopResource`, `ResumeResource`,
+`GetAccuracyMetrics`, `ListTagsForResource`, `TagResource`,
+`UntagResource`) bypass `h.ops`/`execute` entirely (dispatched directly,
+handler.go:130-154) and are absent from both the findings and the
+"declared correctly" sets, consistent with this.
+
+This is the tool's own documented tradeoff, not a bug in it:
+`dispatch_datamap.go`'s `collectSharedExecutorFallback` binds every
+data-typed dispatch-map key to the single shared root function "over-inclusively",
+deliberately unable to narrow by a struct field's per-key constant value --
+the same mechanism, applied to a compile-time-fixed enum field instead of a
+wire-shape-absent one, that produced this pass's comprehend verdict
+(gopherstack-ejfu, comprehend PARITY.md) and gopherstack-03rb before it.
+
+Not fixed: nothing is broken. No regression test added -- there is no
+observable client-facing behavior to pin; a test asserting these codes are
+never returned would just restate the dispatch table already enforcing it.
+Gates: `golangci-lint run ./services/forecast/...` (0 issues),
+`go test -race ./services/forecast/...` (pass) -- no source changed.

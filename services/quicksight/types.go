@@ -28,15 +28,16 @@ type GroupMember struct {
 
 // User represents a QuickSight user.
 type User struct {
-	UserName     string
-	Arn          string
-	Email        string
-	Role         string
-	IdentityType string
-	Namespace    string
-	PrincipalID  string
-	SessionName  string
-	Active       bool
+	UserName              string
+	Arn                   string
+	Email                 string
+	Role                  string
+	IdentityType          string
+	Namespace             string
+	PrincipalID           string
+	SessionName           string
+	CustomPermissionsName string
+	Active                bool
 }
 
 // DataSource represents a QuickSight data source.
@@ -202,11 +203,14 @@ type Ingestion struct {
 type Dashboard struct {
 	CreatedTime            time.Time
 	LastUpdatedTime        time.Time
+	LastPublishedTime      time.Time
 	Definition             map[string]any
 	DashboardID            string
 	Arn                    string
 	Name                   string
 	Status                 string
+	ThemeArn               string
+	VersionDescription     string
 	Permissions            []ResourcePermission
 	LinkEntities           []string
 	VersionNumber          int64
@@ -218,6 +222,8 @@ type DashboardVersion struct {
 	CreatedTime   time.Time
 	Arn           string
 	Status        string
+	ThemeArn      string
+	Description   string
 	VersionNumber int64
 }
 

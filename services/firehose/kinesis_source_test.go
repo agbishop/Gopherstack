@@ -1,8 +1,10 @@
 package firehose_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/blackbirdworks/gopherstack/pkgs/logger"
 	"github.com/blackbirdworks/gopherstack/services/firehose"
 )
 
@@ -211,6 +214,60 @@ func TestFirehose_KinesisSource_NoBackendDoesNotStart(t *testing.T) {
 
 	// Stream is created successfully, no goroutine started, no panic.
 	assert.Equal(t, int64(0), totalRecords(t, b, "no-backend-stream"))
+}
+
+func TestFirehose_KinesisSource_ResetCancelsPoller(t *testing.T) {
+	t.Parallel()
+
+	b := newFirehoseBackend(t)
+	kinesis := &mockKinesisReader{} // no records, infinite polling
+
+	b.SetKinesisBackend(kinesis)
+
+	streamARN := "arn:aws:kinesis:us-east-1:123456789012:stream/reset-stream"
+	_, err := b.CreateDeliveryStream(context.TODO(), firehose.CreateDeliveryStreamInput{
+		Name:               "reset-poll-stream",
+		DeliveryStreamType: "KinesisStreamAsSource",
+		Source: &firehose.SourceDescription{
+			KinesisStreamSourceDescription: &firehose.KinesisStreamSourceDescription{
+				KinesisStreamARN: streamARN,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, firehose.PollerCount(b), "poller must be tracked immediately after CreateDeliveryStream")
+
+	b.Reset()
+
+	assert.Equal(t, 0, firehose.PollerCount(b),
+		"Reset must cancel and forget every running Kinesis source poller, not just clear the streams table")
+}
+
+func TestFirehose_KinesisSource_NoBackendLogsWarning(t *testing.T) {
+	t.Parallel()
+
+	b := newFirehoseBackend(t)
+	// no kinesis backend wired
+
+	var logBuf bytes.Buffer
+	testLogger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx := logger.Save(context.TODO(), testLogger)
+
+	streamARN := "arn:aws:kinesis:us-east-1:123456789012:stream/no-backend-logged"
+	_, err := b.CreateDeliveryStream(ctx, firehose.CreateDeliveryStreamInput{
+		Name:               "no-backend-logged-stream",
+		DeliveryStreamType: "KinesisStreamAsSource",
+		Source: &firehose.SourceDescription{
+			KinesisStreamSourceDescription: &firehose.KinesisStreamSourceDescription{
+				KinesisStreamARN: streamARN,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, logBuf.String(), "no Kinesis backend wired",
+		"a stream created without a wired Kinesis backend must warn, not silently drop ingestion forever")
 }
 
 func TestFirehose_KinesisSource_DirectPutUnaffected(t *testing.T) {

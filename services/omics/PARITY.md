@@ -7,7 +7,7 @@
 service: omics
 sdk_module: aws-sdk-go-v2/service/omics@v1.49.5
 last_audit_commit:                                # unknown: pass ran without git access at write time, never backfilled -- gopherstack-33in
-last_audit_date: 2026-08-07
+last_audit_date: 2026-09-04
 overall: A            # 2026-08-07 (gopherstack-hnhk): RunBatch's real body shape is now modeled.
                        # StartRunBatch takes real BatchRunSettings (inlineSettings, field-diffed
                        # against awsRestjson1_serializeDocumentBatchRunSettings/InlineSetting) +
@@ -37,17 +37,17 @@ overall: A            # 2026-08-07 (gopherstack-hnhk): RunBatch's real body shap
                        # missing entirely, and a wrong JSON key on S3AccessPolicy's policy document
                        # (policy -> s3AccessPolicy, the key real SDK clients actually read).
 families:
-  ReferenceStore: {status: ok, note: "CRUD + List; pagination now reads maxResults/nextToken from the query string (was body)"}
-  Reference: {status: ok, note: "Get/List/Delete + GetReferenceBytes/GetReferenceMetadata; pagination fixed same as ReferenceStore"}
+  ReferenceStore: {status: ok, note: "CRUD + List; pagination now reads maxResults/nextToken from the query string (was body). FIXED 2026-09-04 (gopherstack-42g): DeleteReferenceStore deleted a store unconditionally even when it still contained references, contradicting its own doc comment (\"You can only delete a reference store when it does not contain any reference genomes.\", api_op_DeleteReferenceStore.go). Now rejects with ConflictException (ErrInvalidState) when referencesByStore is non-empty."}
+  Reference: {status: ok, note: "Get/List/Delete + GetReferenceBytes/GetReferenceMetadata; pagination fixed same as ReferenceStore. FIXED 2026-09-04 (gopherstack-42g): DeleteReference deleted a reference even when a read set's ReferenceARN pointed to it, contradicting its own doc comment (\"The read set associated with the reference genome must first be deleted before deleting the reference genome.\", api_op_DeleteReference.go). Now rejects with ConflictException when any ReadSet.ReferenceARN matches the reference's ARN."}
   ReferenceImportJob: {status: ok, note: "completes synchronously (Status=COMPLETED at creation) -- no waiter-hang risk since Get never needs to transition; pagination fixed; ListReferenceImportJobs now applies its status body filter (was gap jxc5)"}
-  SequenceStore: {status: ok, note: "CRUD + List; created ACTIVE immediately (no CREATING phase in the real API for this resource); pagination fixed. FIXED (gopherstack-5wj0): CreateSequenceStore accepted no eTagAlgorithmFamily/s3AccessConfig fields at all even though the SequenceStore struct already reserved ETagAlgorithm/S3Access fields for them -- both were always zero-valued. eTagAlgorithmFamily now defaults to MD5up (real API default) when omitted and is stored as given otherwise; s3AccessConfig.accessLogLocation is echoed into the response's s3Access object. s3Access.s3Uri/s3AccessPointArn (server-synthesized, no honest source in this in-memory backend) remain absent rather than fabricated"}
+  SequenceStore: {status: ok, note: "CRUD + List; created ACTIVE immediately (no CREATING phase in the real API for this resource); pagination fixed. FIXED (gopherstack-5wj0): CreateSequenceStore accepted no eTagAlgorithmFamily/s3AccessConfig fields at all even though the SequenceStore struct already reserved ETagAlgorithm/S3Access fields for them -- both were always zero-valued. eTagAlgorithmFamily now defaults to MD5up (real API default) when omitted and is stored as given otherwise; s3AccessConfig.accessLogLocation is echoed into the response's s3Access object. s3Access.s3Uri/s3AccessPointArn (server-synthesized, no honest source in this in-memory backend) remain absent rather than fabricated. FIXED 2026-09-04 (gopherstack-42g): DeleteSequenceStore deleted a store unconditionally even when it still contained read sets, contradicting its own doc comment (\"You can only delete a sequence store when it does not contain any read sets.\", api_op_DeleteSequenceStore.go). Now rejects with ConflictException when readSetsByStore is non-empty."}
   ReadSet: {status: ok, note: "Get/List/BatchDelete/GetReadSetBytes; pagination fixed; ListReadSets already filtered by name/status. FIXED wire bug: ReadSetMetadata's file-type field was serialized as the invented key \"sequenceType\" (appears nowhere in GetReadSetMetadataOutput/ReadSetListItem) -- renamed to \"fileType\", the real key confirmed against the SDK deserializer. Files/CreationJobId/CreationType/Etag/SequenceInformation sub-objects remain unpopulated (deferred, optional/pointer-safe)"}
   ReadSetActivationJob: {status: ok, note: "completes synchronously; pagination fixed"}
   ReadSetExportJob: {status: ok, note: "completes synchronously; pagination fixed"}
   ReadSetImportJob: {status: ok, note: "completes synchronously; pagination fixed"}
   MultipartReadSetUpload: {status: ok, note: "FIXED (field-diffed against CreateMultipartReadSetUploadInput/Output and MultipartReadSetUploadListItem): the file-type field was serialized as the invented key \"sequenceType\" -- renamed to the real key \"sourceFileType\"; SampleID/SubjectID are real required fields that were missing entirely -- added and threaded through CreateMultipartReadSetUpload's signature; there is no real \"status\" field on this resource at all -- the invented one was deleted. GeneratedFrom/ReferenceARN/Description (real optional fields) also added. 2026-08-14 (gopherstack-7185, mutating-op sweep): CompleteMultipartReadSetUploadOutput's real (and only) member is \"readSetId\" (deserializers.go's awsRestjson1_deserializeOpDocumentCompleteMultipartReadSetUploadOutput) -- a different key from GetReadSetMetadataOutput's \"id\" for the same resource, same split-response class as the AnnotationImportJob/VariantImportJob start-vs-get bugs fixed elsewhere in this file. The handler previously marshaled the full ReadSetMetadata struct (tagged \"id\") as the Complete response, so a real client's ReadSetId was always nil -- the next call in the natural create-then-GetReadSetMetadata chain would silently receive a zero-value ID. Fixed to emit the dedicated {\"readSetId\": ...} shape. FIXED 2026-08-21 (gopherstack-r80d batch 7): CreateMultipartReadSetUploadOutput requires \"referenceArn\" (api_op_CreateMultipartReadSetUpload.go:82-85) despite CreateMultipartReadSetUploadInput.ReferenceArn being optional -- the struct field was tagged \"referenceArn,omitempty\", so an upload created without a reference dropped the key entirely instead of emitting an empty string; a real client's *string decodes nil for a field the wire contract says is always present. Removed omitempty (present-but-empty is correct for a required field with nothing to report, same convention as StatusMessage elsewhere in this file). Also removed omitempty from GeneratedFrom, which MultipartReadSetUploadListItem (the List element, types.go) requires too even though CreateMultipartReadSetUploadOutput itself does not -- same struct backs both Create and List responses, so the fix closes both. Proven via Test_SDKRoundTrip_CreateMultipartReadSetUpload_ReferenceArn (wire_field_additions_test.go); hand-reverted/confirmed-failing/restored, md5sum-verified byte-identical."}
   RunGroup: {status: ok, note: "CRUD + List; already used correct maxResults+startingToken query params; ListRunGroups now applies its name query filter (bonus find alongside gap jxc5, real AWS ListRunGroupsInput has a \"name\" query param the backend previously ignored)"}
-  Run: {status: ok, note: "FIXED: GetRun advances PENDING->RUNNING->COMPLETED across polls (waiter-hang fix, prior pass). This pass: (1) ListRuns now applies its name/runGroupId/batchId/status query filters (gap jxc5); (2) the run's batch association was serialized under the invented JSON key \"runBatchId\" -- real GetRunOutput/RunListItem use \"batchId\" (confirmed against the SDK deserializer) -- renamed; (3) added the real (previously entirely absent) RunGroupID field, threaded through StartRun so ListRuns' runGroupId filter has something real to match against; (4) StartRun/GetRun responses now include the optional uuid/networkingMode/runOutputUri/configuration fields real StartRunOutput/GetRunOutput have (gap fedo) -- networkingMode/outputUri are accepted from the request body (real StartRunInput field names, note outputUri on input vs runOutputUri on output)"}
+  Run: {status: ok, note: "FIXED: GetRun advances PENDING->RUNNING->COMPLETED across polls (waiter-hang fix, prior pass). This pass: (1) ListRuns now applies its name/runGroupId/batchId/status query filters (gap jxc5); (2) the run's batch association was serialized under the invented JSON key \"runBatchId\" -- real GetRunOutput/RunListItem use \"batchId\" (confirmed against the SDK deserializer) -- renamed; (3) added the real (previously entirely absent) RunGroupID field, threaded through StartRun so ListRuns' runGroupId filter has something real to match against; (4) StartRun/GetRun responses now include the optional uuid/networkingMode/runOutputUri/configuration fields real StartRunOutput/GetRunOutput have (gap fedo) -- networkingMode/outputUri are accepted from the request body (real StartRunInput field names, note outputUri on input vs runOutputUri on output). FIXED 2026-09-04 (gopherstack-42g): DeleteRun deleted a run unconditionally regardless of Status, contradicting its own doc comment (\"You can only delete a run that has reached a COMPLETED, FAILED, or CANCELLED stage.\", api_op_DeleteRun.go) -- the exact same precondition class this file's own DeleteRunBatch (DeleteBatch semantics, ErrInvalidState/isRunBatchTerminal) already enforced correctly, just missed on Run itself. Now rejects with ConflictException via a new runDeletableStatuses set, mirroring the existing DeleteRunBatch pattern."}
   RunTask: {status: ok, note: "FIXED: GetRunTask advances PENDING->RUNNING->COMPLETED across polls, same waiter-hang fix as Run. This pass: ListRunTasks now applies its status query filter (gap jxc5)"}
   Workflow: {status: ok, note: "FIXED: GetWorkflow advances CREATING->ACTIVE on first poll (waiter-hang fix, prior pass). This pass: (1) ListWorkflows now applies its name/type query filters (gap jxc5); (2) CreateWorkflow's response now includes the optional uuid field real CreateWorkflowOutput has (gap fedo)"}
   WorkflowVersion: {status: ok, note: "FIXED: GetWorkflowVersion advances CREATING->ACTIVE on first poll (waiter-hang fix, prior pass); pagination already correct. This pass: ListWorkflowVersions now applies its type query filter (gap jxc5)"}
@@ -72,6 +72,66 @@ leaks: {status: clean, note: "pure synchronous in-memory backend -- no goroutine
 ---
 
 ## Notes
+
+**2026-09-04 (gopherstack-42g, missing-delete-precondition sweep):** read
+every `Delete*` op's full doc comment in `omics@v1.49.5` looking for a
+documented precondition the handler didn't enforce (the "highest-yield
+pattern" per this campaign's own tracking). Four of the eleven `Delete*`/
+`BatchDeleteReadSet` ops document one; the other seven (`DeleteRunGroup`,
+`DeleteWorkflow`, `DeleteWorkflowVersion`, `DeleteVariantStore`,
+`DeleteAnnotationStore`, `DeleteAnnotationStoreVersions`, `DeleteRunCache`,
+`DeleteShare`, `BatchDeleteReadSet`) state no precondition and were correctly
+left alone. All four documented preconditions were entirely unenforced:
+
+- `DeleteReferenceStore` -- "You can only delete a reference store when it
+  does not contain any reference genomes." (api_op_DeleteReferenceStore.go)
+  -- deleted the store (and cascade-deleted its references) unconditionally.
+- `DeleteReference` -- "The read set associated with the reference genome
+  must first be deleted before deleting the reference genome."
+  (api_op_DeleteReference.go) -- deleted the reference even while a read
+  set's `ReferenceARN` (populated by `StartReadSetImportJob`/
+  `CompleteMultipartReadSetUpload`, `read_sets.go`) still pointed at it.
+- `DeleteSequenceStore` -- "You can only delete a sequence store when it
+  does not contain any read sets." (api_op_DeleteSequenceStore.go) --
+  deleted the store (and cascade-deleted its read sets) unconditionally.
+- `DeleteRun` -- "You can only delete a run that has reached a COMPLETED,
+  FAILED, or CANCELLED stage." (api_op_DeleteRun.go) -- deleted a run in any
+  status, including PENDING/RUNNING. Notably this file's own `DeleteRunBatch`
+  (real `DeleteBatch` semantics, `runs.go`) already enforces the identical
+  precondition class correctly via `ErrInvalidState`/`isRunBatchTerminal` --
+  `DeleteRun` itself was the miss, not the pattern.
+
+All four confirmed against the per-op error switch in `deserializers.go`
+(`awsRestjson1_deserializeOpError<Op>`): each op's error set includes
+`ConflictException`, matching the existing `ErrInvalidState` sentinel
+(`store.go`, wraps `awserr.ErrConflict`, already used by `DeleteRunBatch`).
+Fixed by adding a precondition check to each backend method before the
+delete proceeds: `DeleteReferenceStore`/`DeleteSequenceStore` check their
+respective by-store index is empty; `DeleteReference` scans `b.readSets.All()`
+for a matching `ReferenceARN`; `DeleteRun` checks `run.Status` against a new
+`runDeletableStatuses` set (COMPLETED/FAILED/CANCELLED), mirroring
+`DeleteRunBatch`'s existing `runBatchDeletableStatuses`/`isRunBatchTerminal`
+pattern rather than inventing a new one.
+
+Four new tests in `delete_precondition_test.go`
+(`TestDeleteRun_RequiresTerminalState`,
+`TestDeleteReferenceStore_RequiresEmpty`,
+`TestDeleteSequenceStore_RequiresEmpty`,
+`TestDeleteReference_RequiresNoAssociatedReadSet`), each asserting the
+precondition is rejected (409/ConflictException), the resource survives the
+rejected delete, and the delete succeeds once the precondition is satisfied.
+Each fix was hand-neutered (guard clause removed, package rebuilt, test
+re-run to confirm the expected failure, source restored and `md5sum`-verified
+byte-identical) independently -- including cross-checking that neutering only
+`DeleteReference`'s guard failed only
+`TestDeleteReference_RequiresNoAssociatedReadSet` while
+`TestDeleteReferenceStore_RequiresEmpty` (a similarly-shaped adjacent guard)
+stayed green, guarding against the near-duplicate-guard false-negative trap.
+
+Gates: `go build`, `go vet` (default/e2e/integration), `gofmt -l` (clean),
+`go test -race -count=1` (pass), `golangci-lint run` (0 issues) --
+`./services/omics/...`; `go test -race -count=1 ./services/cloudformation/...`
+(dependent service, pass, unaffected).
 
 **2026-08-21 (gopherstack-r80d batch 7):** required-response-member sweep
 (inverted from required-INPUT-member sweeps elsewhere in this file: is the

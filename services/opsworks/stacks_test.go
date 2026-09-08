@@ -557,7 +557,11 @@ func TestDescribeStackProvisioningParameters(t *testing.T) {
 	}
 }
 
-// TestDeleteStackCascade verifies DeleteStack removes child resources.
+// TestDeleteStackCascade verifies DeleteStack's delete precondition
+// (api_op_DeleteStack.go: "You must first delete all instances, layers, and
+// apps or deregister registered instances.") -- refused with
+// ValidationException while any of the three exist, and succeeding once
+// they are all gone.
 func TestDeleteStackCascade(t *testing.T) {
 	t.Parallel()
 
@@ -566,21 +570,118 @@ func TestDeleteStackCascade(t *testing.T) {
 		name  string
 	}{
 		{
-			name: "DeleteStack removes layers and instances",
+			name: "DeleteStack with a layer, instance, and app returns ValidationException",
 			check: func(t *testing.T, h *opsworks.Handler, b *opsworks.InMemoryBackend) {
 				t.Helper()
 				stackID := createTestStack(t, h)
 				layerID := createTestLayer(t, h, stackID)
 				createTestInstance(t, h, stackID, layerID)
 
-				assert.Equal(t, 1, opsworks.LayerCount(b))
-				assert.Equal(t, 1, opsworks.InstanceCount(b))
-
-				rec := doTarget(t, h, "DeleteStack", map[string]any{"StackId": stackID})
+				rec := doTarget(t, h, "CreateApp", map[string]any{
+					"StackId": stackID,
+					"Name":    "occupied-app",
+					"Type":    "other",
+				})
 				require.Equal(t, http.StatusOK, rec.Code)
 
+				rec = doTarget(t, h, "DeleteStack", map[string]any{"StackId": stackID})
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+
+				assert.Equal(t, 1, opsworks.StackCount(b))
+				assert.Equal(t, 1, opsworks.LayerCount(b))
+				assert.Equal(t, 1, opsworks.InstanceCount(b))
+				assert.Equal(t, 1, opsworks.AppCount(b))
+			},
+		},
+		{
+			name: "DeleteStack with only a layer returns ValidationException",
+			check: func(t *testing.T, h *opsworks.Handler, b *opsworks.InMemoryBackend) {
+				t.Helper()
+				stackID := createTestStack(t, h)
+				createTestLayer(t, h, stackID)
+
+				rec := doTarget(t, h, "DeleteStack", map[string]any{"StackId": stackID})
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+
+				assert.Equal(t, 1, opsworks.StackCount(b))
+				assert.Equal(t, 1, opsworks.LayerCount(b))
+			},
+		},
+		{
+			// RegisterInstance (unlike CreateInstance) takes no LayerId, so
+			// this is a genuinely layer-free instance -- confirmed against
+			// its backend signature (stackID, hostname only).
+			name: "DeleteStack with only an instance returns ValidationException",
+			check: func(t *testing.T, h *opsworks.Handler, b *opsworks.InMemoryBackend) {
+				t.Helper()
+				stackID := createTestStack(t, h)
+
+				rec := doTarget(t, h, "RegisterInstance", map[string]any{
+					"StackId":  stackID,
+					"Hostname": "registered-only",
+				})
+				require.Equal(t, http.StatusOK, rec.Code)
+
+				rec = doTarget(t, h, "DeleteStack", map[string]any{"StackId": stackID})
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+
+				assert.Equal(t, 1, opsworks.StackCount(b))
+				assert.Equal(t, 0, opsworks.LayerCount(b))
+				assert.Equal(t, 1, opsworks.InstanceCount(b))
+			},
+		},
+		{
+			name: "DeleteStack with only an app returns ValidationException",
+			check: func(t *testing.T, h *opsworks.Handler, b *opsworks.InMemoryBackend) {
+				t.Helper()
+				stackID := createTestStack(t, h)
+
+				rec := doTarget(t, h, "CreateApp", map[string]any{
+					"StackId": stackID,
+					"Name":    "app-only",
+					"Type":    "other",
+				})
+				require.Equal(t, http.StatusOK, rec.Code)
+
+				rec = doTarget(t, h, "DeleteStack", map[string]any{"StackId": stackID})
+				assert.Equal(t, http.StatusBadRequest, rec.Code)
+				assert.Contains(t, rec.Body.String(), "ValidationException")
+
+				assert.Equal(t, 1, opsworks.StackCount(b))
 				assert.Equal(t, 0, opsworks.LayerCount(b))
 				assert.Equal(t, 0, opsworks.InstanceCount(b))
+				assert.Equal(t, 1, opsworks.AppCount(b))
+			},
+		},
+		{
+			name: "DeleteStack succeeds once the layer, instance, and app are removed",
+			check: func(t *testing.T, h *opsworks.Handler, b *opsworks.InMemoryBackend) {
+				t.Helper()
+				stackID := createTestStack(t, h)
+				layerID := createTestLayer(t, h, stackID)
+				instanceID := createTestInstance(t, h, stackID, layerID)
+
+				rec := doTarget(t, h, "CreateApp", map[string]any{
+					"StackId": stackID,
+					"Name":    "removable-app",
+					"Type":    "other",
+				})
+				require.Equal(t, http.StatusOK, rec.Code)
+				appID := parseJSON(t, rec.Body.Bytes())["AppId"].(string)
+
+				rec = doTarget(t, h, "DeleteInstance", map[string]any{"InstanceId": instanceID})
+				require.Equal(t, http.StatusOK, rec.Code)
+				rec = doTarget(t, h, "DeleteLayer", map[string]any{"LayerId": layerID})
+				require.Equal(t, http.StatusOK, rec.Code)
+				rec = doTarget(t, h, "DeleteApp", map[string]any{"AppId": appID})
+				require.Equal(t, http.StatusOK, rec.Code)
+
+				rec = doTarget(t, h, "DeleteStack", map[string]any{"StackId": stackID})
+				require.Equal(t, http.StatusOK, rec.Code)
+
 				assert.Equal(t, 0, opsworks.StackCount(b))
 			},
 		},

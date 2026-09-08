@@ -170,6 +170,34 @@ func TestDeleteProject_NotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestDeleteProject_UsedByJob verifies a project still referenced by a job's
+// ProjectName cannot be deleted, mirroring DeleteDataset's referential-
+// integrity check (see its doc comment): CreateRecipeJobInput.ProjectName
+// lets a job reference a project instead of a dataset+recipe pair, and
+// CreateJob's own validateJobResourceRefs already refuses to create a job
+// naming a nonexistent project. ConflictException is modeled for
+// DeleteProject (aws-sdk-go-v2/service/databrew's
+// awsRestjson1_deserializeOpErrorDeleteProject).
+func TestDeleteProject_UsedByJob(t *testing.T) {
+	t.Parallel()
+	b := newTestBackend()
+	ctx := context.Background()
+	_, err := b.CreateProject(ctx, "p-used-job", "", "", "", databrew.Sample{}, nil)
+	require.NoError(t, err)
+	_, err = b.CreateJob(
+		ctx, "j-used-proj", "RECIPE", "", "p-used-job", "", "",
+		nil, nil, databrew.JobExtras{},
+	)
+	require.NoError(t, err)
+
+	err = b.DeleteProject(ctx, "p-used-job")
+	require.Error(t, err)
+	require.ErrorIs(t, err, databrew.ErrConflict)
+
+	_, err = b.DescribeProject(ctx, "p-used-job")
+	require.NoError(t, err, "project must still exist")
+}
+
 // ---- Project handler ----
 
 func TestHandlerCreateProject(t *testing.T) {

@@ -126,6 +126,74 @@ func TestFSx_DataRepositoryTaskLifecycle(t *testing.T) {
 	})
 }
 
+// TestFSx_CreateDataRepositoryTask_RejectsConcurrentExecuting verifies the
+// real DataRepositoryTaskExecuting exception (fsx@v1.68.4 types/errors.go:
+// "An existing data repository task is currently executing on the file
+// system. Wait until the existing task has completed, then create the new
+// task."): a second CreateDataRepositoryTask on a file system that already
+// has an EXECUTING task must be rejected; a different file system's own
+// EXECUTING task must not block it (the guard is per-file-system, not
+// global); and cancelling the blocking task must free the file system up
+// for a new one.
+func TestFSx_CreateDataRepositoryTask_RejectsConcurrentExecuting(t *testing.T) {
+	t.Parallel()
+
+	newTaskBody := func(fsID string) map[string]any {
+		return map[string]any{
+			"FileSystemId": fsID,
+			"Type":         "EXPORT_TO_REPOSITORY",
+			"Report":       map[string]any{"Enabled": false},
+		}
+	}
+
+	t.Run("second task on same file system rejected", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandler(t)
+		fsID := createFS(t, h, "LUSTRE")
+
+		rec1 := doFSxRequest(t, h, "CreateDataRepositoryTask", newTaskBody(fsID))
+		require.Equal(t, http.StatusOK, rec1.Code)
+
+		rec2 := doFSxRequest(t, h, "CreateDataRepositoryTask", newTaskBody(fsID))
+		require.Equal(t, http.StatusBadRequest, rec2.Code)
+
+		var out map[string]any
+		require.NoError(t, json.Unmarshal(rec2.Body.Bytes(), &out))
+		assert.Equal(t, "DataRepositoryTaskExecuting", out["__type"])
+	})
+
+	t.Run("other file system unaffected", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandler(t)
+		fs1 := createFS(t, h, "LUSTRE")
+		fs2 := createFS(t, h, "LUSTRE")
+
+		rec1 := doFSxRequest(t, h, "CreateDataRepositoryTask", newTaskBody(fs1))
+		require.Equal(t, http.StatusOK, rec1.Code)
+
+		rec2 := doFSxRequest(t, h, "CreateDataRepositoryTask", newTaskBody(fs2))
+		assert.Equal(t, http.StatusOK, rec2.Code, "an EXECUTING task on a different file system must not block")
+	})
+
+	t.Run("freed up after cancel", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandler(t)
+		fsID := createFS(t, h, "LUSTRE")
+
+		rec1 := doFSxRequest(t, h, "CreateDataRepositoryTask", newTaskBody(fsID))
+		require.Equal(t, http.StatusOK, rec1.Code)
+		var cr map[string]any
+		require.NoError(t, json.Unmarshal(rec1.Body.Bytes(), &cr))
+		taskID := cr["DataRepositoryTask"].(map[string]any)["TaskId"].(string)
+
+		cancelRec := doFSxRequest(t, h, "CancelDataRepositoryTask", map[string]any{"TaskId": taskID})
+		require.Equal(t, http.StatusOK, cancelRec.Code)
+
+		rec2 := doFSxRequest(t, h, "CreateDataRepositoryTask", newTaskBody(fsID))
+		assert.Equal(t, http.StatusOK, rec2.Code, "a CANCELING task must not block a new one")
+	})
+}
+
 // TestDataRepositoryTask_TagsStoredAtCreation verifies that tags passed
 // to CreateDataRepositoryTask are persisted and retrievable via ListTagsForResource.
 // Previously CreateDataRepositoryTask did not populate b.tags[arn], so creation-time

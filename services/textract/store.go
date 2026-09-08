@@ -58,6 +58,7 @@ const defaultAsyncJobDelay = 200 * time.Millisecond
 // store.Table's keyed-by-identity-value shape.
 type InMemoryBackend struct {
 	svcCtx                    context.Context
+	s3                        S3Backend
 	adapterClientTokenToID    map[string]map[string]string // region → clientToken → adapterID
 	clientTokenToJobID        map[string]map[string]string // region → clientToken → jobID
 	expenseClientTokenToJobID map[string]map[string]string // region → clientToken → expense jobID
@@ -115,6 +116,12 @@ func NewInMemoryBackendWithContext(svcCtx context.Context, accountID, region str
 	registerAllTables(b)
 
 	return b
+}
+
+// SetS3Backend wires S3 so a Document/DocumentLocation's S3Object is
+// validated against real S3 state instead of only being stored/echoed.
+func (b *InMemoryBackend) SetS3Backend(s3 S3Backend) {
+	b.s3 = s3
 }
 
 // runDelayed runs fn after delay, unless the backend's lifecycle context is

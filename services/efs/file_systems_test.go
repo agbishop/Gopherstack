@@ -355,6 +355,28 @@ func TestDeleteFileSystem_RequiresEmptyState(t *testing.T) {
 	}
 }
 
+func TestDeleteFileSystem_RejectedWhileReplicating(t *testing.T) {
+	t.Parallel()
+
+	b := newTestEFSBackend()
+	fs, err := b.CreateFileSystem(context.Background(), fsReq("tok-del-repl"))
+	require.NoError(t, err)
+
+	_, err = b.CreateReplicationConfiguration(
+		context.Background(),
+		fs.FileSystemID,
+		[]efs.ReplicationDestination{{Region: "us-west-2", Status: "ENABLED"}},
+	)
+	require.NoError(t, err)
+
+	err = b.DeleteFileSystem(context.Background(), fs.FileSystemID)
+	require.ErrorIs(t, err, efs.ErrFileSystemInUse)
+
+	require.NoError(t, b.DeleteReplicationConfiguration(context.Background(), fs.FileSystemID))
+
+	require.NoError(t, b.DeleteFileSystem(context.Background(), fs.FileSystemID))
+}
+
 // TestCreationTokenIdempotency verifies identical args return 200, different args return 409.
 func TestCreationTokenIdempotency(t *testing.T) {
 	t.Parallel()
@@ -641,6 +663,10 @@ func TestThroughputCooldown(t *testing.T) {
 }
 
 // TestUpdateFileSystem_ProvisionedThroughput verifies throughput updates are validated.
+//
+// wantErrIs was efs.ErrValidation until this pass; UpdateFileSystem declares
+// BadRequest, never ValidationException (efs@v1.44.4 deserializers.go) -- the
+// old assertion locked in the exact wire-code defect this pass fixed.
 func TestUpdateFileSystem_ProvisionedThroughput(t *testing.T) {
 	t.Parallel()
 
@@ -662,7 +688,7 @@ func TestUpdateFileSystem_ProvisionedThroughput(t *testing.T) {
 				ProvisionedThroughputMib: 2048,
 			},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 		{
 			name: "provisioned_throughput_on_bursting_invalid",
@@ -671,7 +697,7 @@ func TestUpdateFileSystem_ProvisionedThroughput(t *testing.T) {
 				ProvisionedThroughputMib: 100,
 			},
 			wantErr:   true,
-			wantErrIs: efs.ErrValidation,
+			wantErrIs: efs.ErrBadRequest,
 		},
 	}
 
@@ -696,6 +722,44 @@ func TestUpdateFileSystem_ProvisionedThroughput(t *testing.T) {
 
 			if tt.wantErr {
 				require.ErrorIs(t, err, tt.wantErrIs)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestUpdateFileSystem_RequiresAvailableFileSystem verifies UpdateFileSystem
+// rejects requests while the file system's lifecycle state is not "available"
+// (efs@v1.44.4 types/errors.go: IncorrectFileSystemLifeCycleState, "Returned if
+// the file system's lifecycle state is not \"available\"").
+func TestUpdateFileSystem_RequiresAvailableFileSystem(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		wantErr       error
+		name          string
+		activateDelay time.Duration
+	}{
+		{name: "creating_state_rejected", activateDelay: time.Hour, wantErr: efs.ErrIncorrectFileSystemLifeCycleState},
+		{name: "available_state_allowed", activateDelay: 0, wantErr: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := newTestEFSBackend()
+			efs.SetFSActivationDelay(b, tt.activateDelay)
+
+			fs, err := b.CreateFileSystem(context.Background(), fsReq("tok-ufs-lifecycle-"+tt.name))
+			require.NoError(t, err)
+
+			_, err = b.UpdateFileSystem(context.Background(), fs.FileSystemID, efs.UpdateFileSystemRequest{
+				ThroughputMode: "elastic",
+			})
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
 			} else {
 				require.NoError(t, err)
 			}

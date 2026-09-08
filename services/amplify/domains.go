@@ -107,13 +107,21 @@ func resolveCertificateSettings(certSettings *domainCertificateSettings) (string
 	return certSettings.CertificateType, certSettings.CustomCertificateARN
 }
 
-// UpdateDomainAssociation updates a domain association.
+// UpdateDomainAssociation updates a domain association. Real Amplify's
+// UpdateDomainAssociationInput makes SubDomainSettings, EnableAutoSubDomain,
+// AutoSubDomainCreationPatterns and AutoSubDomainIAMRole all optional (none
+// carry "This member is required"), so a caller updating one field (e.g.
+// just AutoSubDomainIAMRole) must not have the others reset to zero values --
+// a nil subDomains/autoSubDomainCreationPatterns or nil
+// enableAutoSubDomain/autoSubDomainIAMRole pointer leaves the existing value
+// unchanged, matching the nil-means-unchanged convention AppOptions/
+// BranchOptions already use for their own partial updates.
 func (b *InMemoryBackend) UpdateDomainAssociation(
 	appID, domainName string,
 	subDomains []SubDomainSetting,
-	enableAutoSubDomain bool,
+	enableAutoSubDomain *bool,
 	autoSubDomainCreationPatterns []string,
-	autoSubDomainIAMRole string,
+	autoSubDomainIAMRole *string,
 	certSettings *domainCertificateSettings,
 ) (*DomainAssociation, error) {
 	b.mu.Lock("UpdateDomainAssociation")
@@ -124,20 +132,31 @@ func (b *InMemoryBackend) UpdateDomainAssociation(
 		return nil, err
 	}
 
-	subs := make([]SubDomain, 0, len(subDomains))
+	if subDomains != nil {
+		subs := make([]SubDomain, 0, len(subDomains))
 
-	for _, s := range subDomains {
-		subs = append(subs, SubDomain{
-			SubDomainSetting: s,
-			Verified:         false,
-			DNSRecord:        s.Prefix + "." + domainName + " CNAME " + appID + ".amplifyapp.com",
-		})
+		for _, s := range subDomains {
+			subs = append(subs, SubDomain{
+				SubDomainSetting: s,
+				Verified:         false,
+				DNSRecord:        s.Prefix + "." + domainName + " CNAME " + appID + ".amplifyapp.com",
+			})
+		}
+
+		da.SubDomains = subs
 	}
 
-	da.SubDomains = subs
-	da.EnableAutoSubDomain = enableAutoSubDomain
-	da.AutoSubDomainCreationPatterns = autoSubDomainCreationPatterns
-	da.AutoSubDomainIAMRole = autoSubDomainIAMRole
+	if enableAutoSubDomain != nil {
+		da.EnableAutoSubDomain = *enableAutoSubDomain
+	}
+
+	if autoSubDomainCreationPatterns != nil {
+		da.AutoSubDomainCreationPatterns = autoSubDomainCreationPatterns
+	}
+
+	if autoSubDomainIAMRole != nil {
+		da.AutoSubDomainIAMRole = *autoSubDomainIAMRole
+	}
 
 	if certSettings != nil {
 		da.CertificateType = certSettings.CertificateType

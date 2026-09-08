@@ -7,6 +7,26 @@ import (
 	"github.com/google/uuid"
 )
 
+// orpConfigPartial reports whether cfg sets some but not all of the three
+// sub-configs. The real UpdateOriginRequestPolicy requires the entire config
+// on every call (aws-sdk-go-v2 api_op_UpdateOriginRequestPolicy.go: "You
+// cannot update some fields independent of others"), so a partial config is
+// invalid rather than a partial update.
+func orpConfigPartial(cfg *OriginRequestPolicyConfig) bool {
+	set := 0
+	if cfg.HeadersConfig != nil {
+		set++
+	}
+	if cfg.CookiesConfig != nil {
+		set++
+	}
+	if cfg.QueryStringsConfig != nil {
+		set++
+	}
+
+	return set > 0 && set < 3
+}
+
 // CreateOriginRequestPolicy creates a new Origin Request Policy.
 func (b *InMemoryBackend) CreateOriginRequestPolicy(
 	name, comment string,
@@ -37,6 +57,12 @@ func (b *InMemoryBackend) CreateOriginRequestPolicy(
 
 	if len(opts) > 0 && opts[0] != nil {
 		cfg := opts[0]
+		if orpConfigPartial(cfg) {
+			return nil, fmt.Errorf(
+				"%w: HeadersConfig, CookiesConfig, and QueryStringsConfig must all be provided together",
+				ErrValidation,
+			)
+		}
 		p.HeadersConfig = cfg.HeadersConfig
 		p.CookiesConfig = cfg.CookiesConfig
 		p.QueryStringsConfig = cfg.QueryStringsConfig
@@ -110,6 +136,13 @@ func (b *InMemoryBackend) UpdateOriginRequestPolicy(
 
 	if name == "" {
 		return nil, fmt.Errorf("%w: Name must not be empty", ErrValidation)
+	}
+
+	if len(opts) > 0 && opts[0] != nil && orpConfigPartial(opts[0]) {
+		return nil, fmt.Errorf(
+			"%w: HeadersConfig, CookiesConfig, and QueryStringsConfig must all be provided together",
+			ErrValidation,
+		)
 	}
 
 	if name != p.Name {

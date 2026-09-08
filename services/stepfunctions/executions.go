@@ -97,6 +97,12 @@ func (b *InMemoryBackend) StartSyncExecution(
 	}
 	sm := resolved.SM
 
+	if sm.Status == statusDeleting {
+		b.mu.RUnlock()
+
+		return nil, fmt.Errorf("%w: %s", ErrStateMachineDeleting, stateMachineArn)
+	}
+
 	if sm.Type != "EXPRESS" {
 		b.mu.RUnlock()
 
@@ -110,15 +116,7 @@ func (b *InMemoryBackend) StartSyncExecution(
 
 	smName := sm.Name
 	definition := sm.Definition
-	lambdaInvoker := b.lambdaInvoker
-	sqsIntegration := b.sqsIntegration
-	snsIntegration := b.snsIntegration
-	ddbIntegration := b.ddbIntegration
-	ecsIntegration := b.ecsIntegration
-	glueIntegration := b.glueIntegration
-	ebIntegration := b.ebIntegration
-	s3Reader := b.s3Reader
-	s3ResultWriter := b.s3ResultWriter
+	integrations := b.snapshotIntegrationsLocked()
 	b.mu.RUnlock()
 
 	parsedSM, parseErr := asl.Parse(definition)
@@ -146,15 +144,8 @@ func (b *InMemoryBackend) StartSyncExecution(
 	defer syncCancel()
 
 	// Run synchronously with nil history recorder (sync executions are ephemeral).
-	executor := asl.NewExecutor(parsedSM, lambdaInvoker, nil)
-	executor.SetSQSIntegration(sqsIntegration)
-	executor.SetSNSIntegration(snsIntegration)
-	executor.SetDynamoDBIntegration(ddbIntegration)
-	executor.SetECSIntegration(ecsIntegration)
-	executor.SetGlueIntegration(glueIntegration)
-	executor.SetEventBridgeIntegration(ebIntegration)
-	executor.SetS3Reader(s3Reader)
-	executor.SetS3ResultWriter(s3ResultWriter)
+	executor := asl.NewExecutor(parsedSM, integrations.lambdaInvoker, nil)
+	applyIntegrations(executor, integrations)
 	executor.SetActivityInvoker(b)
 	executor.SetTaskTokenCallbackInvoker(b)
 	executor.SetMapRunNotifier(
@@ -263,15 +254,7 @@ func (b *InMemoryBackend) initializeExecutionRecord(
 // machine, the integration set to attach to the executor, and the context to
 // run the ASL interpreter goroutine under).
 type startedExecution struct {
-	lambdaInvoker   asl.LambdaInvoker
-	sqsIntegration  asl.SQSIntegration
-	snsIntegration  asl.SNSIntegration
-	ddbIntegration  asl.DynamoDBIntegration
-	ecsIntegration  asl.ECSIntegration
-	glueIntegration asl.GlueIntegration
-	ebIntegration   asl.EventBridgeIntegration
-	s3Reader        asl.S3Reader
-	s3ResultWriter  asl.S3Writer
+	integrations    integrationsSnapshot
 	ctx             context.Context
 	activityInvoker asl.ActivityInvoker
 	exec            *Execution
@@ -306,6 +289,10 @@ func (b *InMemoryBackend) startExecutionLocked(
 	}
 	sm := resolved.SM
 
+	if sm.Status == statusDeleting {
+		return nil, fmt.Errorf("%w: %s", ErrStateMachineDeleting, stateMachineArn)
+	}
+
 	// AWS allows StartExecution (asynchronous execution) on EXPRESS state
 	// machines too -- only StartSyncExecution is restricted to EXPRESS.
 	// See "Asynchronous Express Workflows" in the AWS Step Functions docs.
@@ -339,7 +326,6 @@ func (b *InMemoryBackend) startExecutionLocked(
 	// The context is derived from b.svcCtx so that all active executions are
 	// also cancelled when the server shuts down.
 
-	//nolint:gosec // cancel is stored in b.cancelFns for StopExecution/DeleteStateMachine
 	ctx, cancel := context.WithCancel(b.svcCtx)
 	b.cancelFns[execArn] = cancel
 
@@ -347,15 +333,7 @@ func (b *InMemoryBackend) startExecutionLocked(
 		exec:            exec,
 		execArn:         execArn,
 		parsedSM:        parsedSM,
-		lambdaInvoker:   b.lambdaInvoker,
-		sqsIntegration:  b.sqsIntegration,
-		snsIntegration:  b.snsIntegration,
-		ddbIntegration:  b.ddbIntegration,
-		ecsIntegration:  b.ecsIntegration,
-		glueIntegration: b.glueIntegration,
-		ebIntegration:   b.ebIntegration,
-		s3Reader:        b.s3Reader,
-		s3ResultWriter:  b.s3ResultWriter,
+		integrations:    b.snapshotIntegrationsLocked(),
 		ctx:             ctx,
 		activityInvoker: b,
 	}, nil
@@ -399,15 +377,7 @@ func (b *InMemoryBackend) StartExecutionWithTrace(
 		started.execArn,
 		started.parsedSM,
 		input,
-		started.lambdaInvoker,
-		started.sqsIntegration,
-		started.snsIntegration,
-		started.ddbIntegration,
-		started.ecsIntegration,
-		started.glueIntegration,
-		started.ebIntegration,
-		started.s3Reader,
-		started.s3ResultWriter,
+		started.integrations,
 		started.activityInvoker,
 	)
 
@@ -455,27 +425,12 @@ func (b *InMemoryBackend) runParsedExecution(
 	execARN string,
 	sm *asl.StateMachine,
 	input string,
-	lambdaInvoker asl.LambdaInvoker,
-	sqsIntegration asl.SQSIntegration,
-	snsIntegration asl.SNSIntegration,
-	ddbIntegration asl.DynamoDBIntegration,
-	ecsIntegration asl.ECSIntegration,
-	glueIntegration asl.GlueIntegration,
-	ebIntegration asl.EventBridgeIntegration,
-	s3Reader asl.S3Reader,
-	s3ResultWriter asl.S3Writer,
+	integrations integrationsSnapshot,
 	activityInvoker asl.ActivityInvoker,
 ) {
 	rec := &historyRecorder{backend: b}
-	executor := asl.NewExecutor(sm, lambdaInvoker, rec)
-	executor.SetSQSIntegration(sqsIntegration)
-	executor.SetSNSIntegration(snsIntegration)
-	executor.SetDynamoDBIntegration(ddbIntegration)
-	executor.SetECSIntegration(ecsIntegration)
-	executor.SetGlueIntegration(glueIntegration)
-	executor.SetEventBridgeIntegration(ebIntegration)
-	executor.SetS3Reader(s3Reader)
-	executor.SetS3ResultWriter(s3ResultWriter)
+	executor := asl.NewExecutor(sm, integrations.lambdaInvoker, rec)
+	applyIntegrations(executor, integrations)
 	executor.SetActivityInvoker(activityInvoker)
 	executor.SetTaskTokenCallbackInvoker(b)
 	executor.SetMapRunNotifier(b)
@@ -694,15 +649,7 @@ func (b *InMemoryBackend) resetExecutionForRedrive(exec *Execution, executionARN
 // redrivenExecution carries the state produced under lock by redriveExecutionLocked
 // that the caller needs once the lock has been released, mirroring startedExecution.
 type redrivenExecution struct {
-	lambdaInvoker   asl.LambdaInvoker
-	sqsIntegration  asl.SQSIntegration
-	snsIntegration  asl.SNSIntegration
-	ddbIntegration  asl.DynamoDBIntegration
-	ecsIntegration  asl.ECSIntegration
-	glueIntegration asl.GlueIntegration
-	ebIntegration   asl.EventBridgeIntegration
-	s3Reader        asl.S3Reader
-	s3ResultWriter  asl.S3Writer
+	integrations    integrationsSnapshot
 	ctx             context.Context
 	activityInvoker asl.ActivityInvoker
 	parsedSM        *asl.StateMachine
@@ -757,7 +704,6 @@ func (b *InMemoryBackend) redriveExecutionLocked(executionARN string) (*redriven
 	// Snapshot the (possibly-updated) definition.
 	b.executionDefinitions[executionARN] = definition
 
-	//nolint:gosec // cancel is stored in b.cancelFns for StopExecution/DeleteStateMachine
 	ctx, cancel := context.WithCancel(b.svcCtx)
 	b.cancelFns[executionARN] = cancel
 
@@ -770,15 +716,7 @@ func (b *InMemoryBackend) redriveExecutionLocked(executionARN string) (*redriven
 	return &redrivenExecution{
 		originalInput:   originalInput,
 		parsedSM:        parsedSM,
-		lambdaInvoker:   b.lambdaInvoker,
-		sqsIntegration:  b.sqsIntegration,
-		snsIntegration:  b.snsIntegration,
-		ddbIntegration:  b.ddbIntegration,
-		ecsIntegration:  b.ecsIntegration,
-		glueIntegration: b.glueIntegration,
-		ebIntegration:   b.ebIntegration,
-		s3Reader:        b.s3Reader,
-		s3ResultWriter:  b.s3ResultWriter,
+		integrations:    b.snapshotIntegrationsLocked(),
 		ctx:             ctx,
 		activityInvoker: b,
 	}, nil
@@ -816,15 +754,7 @@ func (b *InMemoryBackend) RedriveExecution(executionARN string) (*Execution, err
 		executionARN,
 		redrive.parsedSM,
 		redrive.originalInput,
-		redrive.lambdaInvoker,
-		redrive.sqsIntegration,
-		redrive.snsIntegration,
-		redrive.ddbIntegration,
-		redrive.ecsIntegration,
-		redrive.glueIntegration,
-		redrive.ebIntegration,
-		redrive.s3Reader,
-		redrive.s3ResultWriter,
+		redrive.integrations,
 		redrive.activityInvoker,
 	)
 
@@ -851,6 +781,16 @@ func (b *InMemoryBackend) DescribeStateMachineForExecution(
 		// Fall back to the current definition if no snapshot was taken (pre-snapshot executions).
 		sm, smExists := b.stateMachines.Get(exec.StateMachineArn)
 		if !smExists {
+			// BUG: DescribeStateMachineForExecution's deserializer declares no
+			// StateMachineDoesNotExist (only ExecutionDoesNotExist/InvalidArn/Kms*/
+			// UnknownError) -- this leaks an undeclared code. !hasSnapshot fires on any
+			// execution started before the last persistence restore (executionDefinitions
+			// is deliberately not persisted, see persistence.go's Phase 3.3 comment), so
+			// this is reachable, not just theoretical. No declared code fits "execution
+			// exists, SM gone." The smExists==false branch below (hasSnapshot==true)
+			// answers the identical real condition with a synthetic 200 -- candidate fix:
+			// return &StateMachine{StateMachineArn: exec.StateMachineArn} here too instead
+			// of erroring. Left unfixed pending evidence for that remedy (gopherstack-2hdk).
 			return nil, fmt.Errorf(
 				"%w: state machine %s no longer exists",
 				ErrStateMachineDoesNotExist,

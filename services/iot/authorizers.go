@@ -160,6 +160,7 @@ func (b *InMemoryBackend) DeleteAuthorizer(name string) error {
 		return fmt.Errorf("authorizer %q not found: %w", name, ErrResourceNotFound)
 	}
 	b.authorizers.Delete(name)
+	delete(b.resourceTags, b.authorizerARN(name))
 
 	return nil
 }

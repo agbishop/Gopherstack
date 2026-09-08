@@ -221,7 +221,7 @@ func TestStopWorkspaces_TransitionsToStopped(t *testing.T) {
 
 	backend := workspaces.NewInMemoryBackend("000000000000", "us-east-1")
 	h := workspaces.NewHandler(backend)
-	wsID := createWorkspace(t, h)
+	wsID := createStartStopEligibleWorkspace(t, h)
 
 	assert.Equal(
 		t,
@@ -250,11 +250,17 @@ func TestStopWorkspaces_StateVisibleInDescribe(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	wsID := createWorkspace(t, h)
+	wsID := createStartStopEligibleWorkspace(t, h)
 
-	doTargetRequest(t, h, "StopWorkspaces", map[string]any{
+	stopRec := doTargetRequest(t, h, "StopWorkspaces", map[string]any{
 		"StopWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
 	})
+	require.Equal(t, http.StatusOK, stopRec.Code)
+
+	var stopResp map[string]any
+	require.NoError(t, json.Unmarshal(stopRec.Body.Bytes(), &stopResp))
+	stopFailures, _ := stopResp["FailedRequests"].([]any)
+	require.Empty(t, stopFailures, "StopWorkspaces must succeed to reach STOPPED")
 
 	rec := doTargetRequest(t, h, "DescribeWorkspaces", map[string]any{
 		"WorkspaceIds": []string{wsID},
@@ -280,7 +286,7 @@ func TestStartWorkspaces_ResumesFromStopped(t *testing.T) {
 
 	backend := workspaces.NewInMemoryBackend("000000000000", "us-east-1")
 	h := workspaces.NewHandler(backend)
-	wsID := createWorkspace(t, h)
+	wsID := createStartStopEligibleWorkspace(t, h)
 
 	doTargetRequest(t, h, "StopWorkspaces", map[string]any{
 		"StopWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
@@ -302,20 +308,29 @@ func TestStartWorkspaces_ResumesFromStopped(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Stop/Start idempotency
+// Stop/Start state preconditions
 // ---------------------------------------------------------------------------
 
-// TestStopWorkspaces_AlreadyStopped_Succeeds verifies that stopping an
-// already-STOPPED workspace succeeds with no failures.
-func TestStopWorkspaces_AlreadyStopped_Succeeds(t *testing.T) {
+// TestStopWorkspaces_AlreadyStopped_Fails verifies real AWS's documented
+// precondition ("You cannot stop a WorkSpace unless ... a state of AVAILABLE,
+// IMPAIRED, UNHEALTHY, or ERROR", api_op_StopWorkspaces.go doc comment):
+// STOPPED is not in that list, so stopping an already-STOPPED workspace must
+// report a per-item failure, not silently succeed.
+func TestStopWorkspaces_AlreadyStopped_Fails(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
-	wsID := createWorkspace(t, h)
+	wsID := createStartStopEligibleWorkspace(t, h)
 
-	doTargetRequest(t, h, "StopWorkspaces", map[string]any{
+	firstStopRec := doTargetRequest(t, h, "StopWorkspaces", map[string]any{
 		"StopWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
 	})
+	require.Equal(t, http.StatusOK, firstStopRec.Code)
+
+	var firstStopResp map[string]any
+	require.NoError(t, json.Unmarshal(firstStopRec.Body.Bytes(), &firstStopResp))
+	firstStopFailures, _ := firstStopResp["FailedRequests"].([]any)
+	require.Empty(t, firstStopFailures, "first StopWorkspaces call must succeed to reach STOPPED")
 
 	rec := doTargetRequest(t, h, "StopWorkspaces", map[string]any{
 		"StopWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
@@ -325,12 +340,17 @@ func TestStopWorkspaces_AlreadyStopped_Succeeds(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	failures, _ := resp["FailedRequests"].([]any)
-	assert.Empty(t, failures, "stopping an already-STOPPED workspace must succeed")
+	require.Len(t, failures, 1, "stopping an already-STOPPED workspace must fail")
+	failed := failures[0].(map[string]any)
+	assert.Equal(t, wsID, failed["WorkspaceId"])
+	assert.Equal(t, "InvalidResourceStateException", failed["ErrorCode"])
 }
 
-// TestStartWorkspaces_AlreadyAvailable_Succeeds verifies that starting an
-// already-AVAILABLE workspace succeeds with no failures.
-func TestStartWorkspaces_AlreadyAvailable_Succeeds(t *testing.T) {
+// TestStartWorkspaces_AlreadyAvailable_Fails verifies real AWS's documented
+// precondition ("You cannot start a WorkSpace unless ... a state of STOPPED",
+// api_op_StartWorkspaces.go doc comment): starting an already-AVAILABLE
+// workspace must report a per-item failure, not silently succeed.
+func TestStartWorkspaces_AlreadyAvailable_Fails(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
@@ -344,7 +364,115 @@ func TestStartWorkspaces_AlreadyAvailable_Succeeds(t *testing.T) {
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	failures, _ := resp["FailedRequests"].([]any)
-	assert.Empty(t, failures, "starting an already-AVAILABLE workspace must succeed")
+	require.Len(t, failures, 1, "starting an already-AVAILABLE workspace must fail")
+	failed := failures[0].(map[string]any)
+	assert.Equal(t, wsID, failed["WorkspaceId"])
+	assert.Equal(t, "InvalidResourceStateException", failed["ErrorCode"])
+}
+
+// ---------------------------------------------------------------------------
+// Stop/Start running-mode precondition (gopherstack-3b8k)
+// ---------------------------------------------------------------------------
+
+// TestStopWorkspaces_AlwaysOnRunningMode_Fails verifies the running-mode half
+// of StopWorkspaces's documented precondition ("You cannot stop a WorkSpace
+// unless it has a running mode of AutoStop or Manual and a state of
+// AVAILABLE, IMPAIRED, UNHEALTHY, or ERROR", api_op_StopWorkspaces.go doc
+// comment): an ALWAYS_ON workspace is in an accepted state (AVAILABLE) but
+// the wrong running mode, so StopWorkspaces must still report a per-item
+// failure and leave the workspace running.
+func TestStopWorkspaces_AlwaysOnRunningMode_Fails(t *testing.T) {
+	t.Parallel()
+
+	h, backend := newTestHandlerWithBackend(t)
+	wsID := createWorkspaceWithRunningMode(t, h, "ALWAYS_ON")
+
+	rec := doTargetRequest(t, h, "StopWorkspaces", map[string]any{
+		"StopWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	failures, _ := resp["FailedRequests"].([]any)
+	require.Len(t, failures, 1,
+		"stopping an ALWAYS_ON workspace must fail even though its state is AVAILABLE")
+	failed := failures[0].(map[string]any)
+	assert.Equal(t, wsID, failed["WorkspaceId"])
+	assert.Equal(t, "InvalidResourceStateException", failed["ErrorCode"])
+
+	assert.Equal(t, "AVAILABLE", workspaces.WorkspaceState(backend, wsID),
+		"a rejected StopWorkspaces call must not change workspace state")
+}
+
+// TestStartWorkspaces_AlwaysOnRunningMode_Fails verifies the running-mode
+// half of StartWorkspaces's documented precondition ("You cannot start a
+// WorkSpace unless it has a running mode of AutoStop or Manual and a state
+// of STOPPED", api_op_StartWorkspaces.go doc comment): an ALWAYS_ON
+// workspace forced into STOPPED state (via the test-only SetWorkspaceState,
+// since a real ALWAYS_ON workspace can never reach STOPPED through
+// StopWorkspaces itself, and ModifyWorkspaceState only supports
+// AVAILABLE/ADMIN_MAINTENANCE) is in an accepted state but the wrong running
+// mode, so StartWorkspaces must still report a per-item failure and leave it
+// stopped.
+func TestStartWorkspaces_AlwaysOnRunningMode_Fails(t *testing.T) {
+	t.Parallel()
+
+	h, backend := newTestHandlerWithBackend(t)
+	wsID := createWorkspaceWithRunningMode(t, h, "ALWAYS_ON")
+
+	workspaces.SetWorkspaceState(backend, wsID, "STOPPED")
+	require.Equal(t, "STOPPED", workspaces.WorkspaceState(backend, wsID))
+
+	rec := doTargetRequest(t, h, "StartWorkspaces", map[string]any{
+		"StartWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
+	})
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+	failures, _ := resp["FailedRequests"].([]any)
+	require.Len(t, failures, 1,
+		"starting an ALWAYS_ON workspace must fail even though its state is STOPPED")
+	failed := failures[0].(map[string]any)
+	assert.Equal(t, wsID, failed["WorkspaceId"])
+	assert.Equal(t, "InvalidResourceStateException", failed["ErrorCode"])
+
+	assert.Equal(t, "STOPPED", workspaces.WorkspaceState(backend, wsID),
+		"a rejected StartWorkspaces call must not change workspace state")
+}
+
+// TestStopStartWorkspaces_AutoStopRunningMode_Succeeds verifies that an
+// AUTO_STOP workspace -- one of the two documented eligible running modes --
+// can actually be stopped and started, pinning the success side of the same
+// precondition the two tests above pin the failure side of.
+func TestStopStartWorkspaces_AutoStopRunningMode_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	h, backend := newTestHandlerWithBackend(t)
+	wsID := createWorkspaceWithRunningMode(t, h, "AUTO_STOP")
+
+	stopRec := doTargetRequest(t, h, "StopWorkspaces", map[string]any{
+		"StopWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
+	})
+	require.Equal(t, http.StatusOK, stopRec.Code)
+
+	var stopResp map[string]any
+	require.NoError(t, json.Unmarshal(stopRec.Body.Bytes(), &stopResp))
+	stopFailures, _ := stopResp["FailedRequests"].([]any)
+	assert.Empty(t, stopFailures, "AUTO_STOP workspace must be stoppable")
+	require.Equal(t, "STOPPED", workspaces.WorkspaceState(backend, wsID))
+
+	startRec := doTargetRequest(t, h, "StartWorkspaces", map[string]any{
+		"StartWorkspaceRequests": []map[string]any{{"WorkspaceId": wsID}},
+	})
+	require.Equal(t, http.StatusOK, startRec.Code)
+
+	var startResp map[string]any
+	require.NoError(t, json.Unmarshal(startRec.Body.Bytes(), &startResp))
+	startFailures, _ := startResp["FailedRequests"].([]any)
+	assert.Empty(t, startFailures, "AUTO_STOP workspace must be startable")
+	assert.Equal(t, "AVAILABLE", workspaces.WorkspaceState(backend, wsID))
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +532,10 @@ func TestModifyWorkspaceProperties_Persisted(t *testing.T) {
 	h := workspaces.NewHandler(backend)
 	wsID := createWorkspace(t, h)
 
-	assert.Nil(t, workspaces.WorkspaceProps(backend, wsID), "properties must be nil before modify")
+	preModify := workspaces.WorkspaceProps(backend, wsID)
+	require.NotNil(t, preModify, "CreateWorkspaces must default RunningMode, not leave properties nil")
+	assert.Equal(t, "ALWAYS_ON", preModify.RunningMode, "unspecified RunningMode must default to ALWAYS_ON")
+	assert.Empty(t, preModify.ComputeTypeName, "ComputeTypeName must stay unset before modify")
 
 	rec := doTargetRequest(t, h, "ModifyWorkspaceProperties", map[string]any{
 		"WorkspaceId": wsID,
@@ -459,9 +590,11 @@ func TestModifyWorkspaceProperties_VisibleInDescribe(t *testing.T) {
 	assert.Equal(t, "VALUE", props["ComputeTypeName"])
 }
 
-// TestWorkspaceProperties_AbsentBeforeModify verifies that WorkspaceProperties
-// is absent from DescribeWorkspaces before any modify.
-func TestWorkspaceProperties_AbsentBeforeModify(t *testing.T) {
+// TestWorkspaceProperties_DefaultRunningModeBeforeModify verifies that
+// DescribeWorkspaces reports WorkspaceProperties.RunningMode as ALWAYS_ON
+// (CreateWorkspace's default) before any ModifyWorkspaceProperties call,
+// not an absent WorkspaceProperties block.
+func TestWorkspaceProperties_DefaultRunningModeBeforeModify(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
@@ -478,8 +611,10 @@ func TestWorkspaceProperties_AbsentBeforeModify(t *testing.T) {
 	require.Len(t, wsList, 1)
 
 	ws := wsList[0].(map[string]any)
-	_, hasProps := ws["WorkspaceProperties"]
-	assert.False(t, hasProps, "WorkspaceProperties must be absent when never set")
+	propsRaw, hasProps := ws["WorkspaceProperties"]
+	require.True(t, hasProps, "WorkspaceProperties must be present with the defaulted RunningMode")
+	props := propsRaw.(map[string]any)
+	assert.Equal(t, "ALWAYS_ON", props["RunningMode"])
 }
 
 // ---------------------------------------------------------------------------

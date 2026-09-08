@@ -3,6 +3,9 @@ package redshift
 import (
 	"encoding/xml"
 	"net/url"
+	"strconv"
+
+	svcTags "github.com/blackbirdworks/gopherstack/pkgs/tags"
 )
 
 // ---- Subnet group XML types ----
@@ -22,6 +25,7 @@ type xmlClusterSubnetGroup struct {
 	VpcID                  string        `xml:"VpcId,omitempty"`
 	SubnetGroupStatus      string        `xml:"SubnetGroupStatus,omitempty"`
 	Subnets                xmlSubnetList `xml:"Subnets"`
+	Tags                   []svcTags.KV  `xml:"Tags>Tag,omitempty"`
 }
 
 type xmlClusterSubnetGroupList struct {
@@ -40,6 +44,7 @@ func subnetGroupToXML(sg *ClusterSubnetGroup) xmlClusterSubnetGroup {
 		VpcID:                  sg.VpcID,
 		SubnetGroupStatus:      sg.SubnetGroupStatus,
 		Subnets:                xmlSubnetList{Members: subnets},
+		Tags:                   tagMapToKVList(sg.Tags),
 	}
 }
 
@@ -64,7 +69,7 @@ func (h *Handler) handleCreateClusterSubnetGroup(vals url.Values) (any, error) {
 	description := vals.Get("Description")
 	subnetIDs := parseStringList(vals, "SubnetIds.SubnetIdentifier.")
 
-	sg, err := h.Backend.CreateClusterSubnetGroup(name, description, "", subnetIDs)
+	sg, err := h.Backend.CreateClusterSubnetGroup(name, description, "", subnetIDs, parseRedshiftTags(vals))
 	if err != nil {
 		return nil, err
 	}
@@ -97,13 +102,24 @@ func (h *Handler) handleDeleteClusterSubnetGroup(vals url.Values) (any, error) {
 type describeClusterSubnetGroupsResponse struct {
 	XMLName      xml.Name                  `xml:"DescribeClusterSubnetGroupsResponse"`
 	Xmlns        string                    `xml:"xmlns,attr"`
+	Marker       string                    `xml:"DescribeClusterSubnetGroupsResult>Marker,omitempty"`
 	SubnetGroups xmlClusterSubnetGroupList `xml:"DescribeClusterSubnetGroupsResult>ClusterSubnetGroups"`
 }
 
 func (h *Handler) handleDescribeClusterSubnetGroups(vals url.Values) (any, error) {
 	name := vals.Get("ClusterSubnetGroupName")
+	tagKeys := parseRedshiftTagKeysAt(vals, "TagKeys.TagKey.")
+	tagValues := parseRedshiftTagKeysAt(vals, "TagValues.TagValue.")
+	marker := vals.Get("Marker")
 
-	groups, err := h.Backend.DescribeClusterSubnetGroups(name)
+	maxRecords := 0
+	if s := vals.Get("MaxRecords"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			maxRecords = n
+		}
+	}
+
+	groups, nextMarker, err := h.Backend.DescribeClusterSubnetGroups(name, marker, maxRecords, tagKeys, tagValues)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +133,7 @@ func (h *Handler) handleDescribeClusterSubnetGroups(vals url.Values) (any, error
 	return &describeClusterSubnetGroupsResponse{
 		Xmlns:        redshiftXMLNS,
 		SubnetGroups: xmlClusterSubnetGroupList{Members: members},
+		Marker:       nextMarker,
 	}, nil
 }
 

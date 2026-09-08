@@ -108,7 +108,7 @@ func toUserObject(u *User, aclNames []string) userObject {
 	auth := &authenticationObject{Type: u.AuthType}
 	if u.AuthType == "password" && len(u.Passwords) > 0 {
 		count := min(len(u.Passwords), math.MaxInt32)
-		auth.PasswordCount = int32(count) //nolint:gosec // count is clamped to math.MaxInt32 above
+		auth.PasswordCount = int32(count)
 	}
 
 	names := aclNames

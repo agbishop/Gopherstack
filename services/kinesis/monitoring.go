@@ -63,6 +63,7 @@ func (b *InMemoryBackend) EnableEnhancedMonitoring(
 
 	return &EnableEnhancedMonitoringOutput{
 		StreamName:               stream.Name,
+		StreamARN:                stream.ARN,
 		CurrentShardLevelMetrics: current,
 		DesiredShardLevelMetrics: desired,
 	}, nil
@@ -93,6 +94,7 @@ func (b *InMemoryBackend) DisableEnhancedMonitoring(
 
 	return &DisableEnhancedMonitoringOutput{
 		StreamName:               stream.Name,
+		StreamARN:                stream.ARN,
 		CurrentShardLevelMetrics: current,
 		DesiredShardLevelMetrics: desired,
 	}, nil

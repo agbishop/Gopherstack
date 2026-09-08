@@ -342,7 +342,7 @@ func TestHandler_JobQueueByARN(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestHandler_DeleteJobQueue_CleansUpJobs(t *testing.T) {
+func TestHandler_DeleteJobQueue_TerminatesJobs(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler(t)
@@ -381,7 +381,10 @@ func TestHandler_DeleteJobQueue_CleansUpJobs(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &submitResp))
 	jobID := submitResp["jobId"].(string)
 
-	// Delete the queue — should also clean up associated jobs.
+	// Delete the queue — associated jobs must be terminated (FAILED), not
+	// vanish. AWS: "All jobs in the queue are eventually terminated when you
+	// delete a job queue" (api_op_DeleteJobQueue.go) -- job history stays
+	// describable by ID, same as a real TerminateJob.
 	rec = post(t, h, "/v1/updatejobqueue", map[string]any{
 		"jobQueue": "q1",
 		"state":    "DISABLED",
@@ -393,7 +396,6 @@ func TestHandler_DeleteJobQueue_CleansUpJobs(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	// The job should no longer be found.
 	rec = post(t, h, "/v1/describejobs", map[string]any{
 		"jobs": []string{jobID},
 	})
@@ -402,7 +404,9 @@ func TestHandler_DeleteJobQueue_CleansUpJobs(t *testing.T) {
 	var descResp map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &descResp))
 	jobs := descResp["jobs"].([]any)
-	assert.Empty(t, jobs, "jobs should have been cleaned up when queue was deleted")
+	require.Len(t, jobs, 1, "job history must survive job queue deletion")
+	job, _ := jobs[0].(map[string]any)
+	assert.Equal(t, "FAILED", job["status"])
 }
 
 func TestHandler_GetJobQueueSnapshot(t *testing.T) {
@@ -807,11 +811,35 @@ func TestHandler_QuotaShare_Lifecycle(t *testing.T) {
 		mustUnmarshal(t, rec, &created)
 		arnStr := created["quotaShareArn"].(string)
 
+		// AWS requires DISABLED before delete (api_op_DeleteQuotaShare.go).
+		recU := post(t, h, "/v1/updatequotashare", map[string]any{
+			"quotaShareArn": arnStr,
+			"state":         "DISABLED",
+		})
+		require.Equal(t, http.StatusOK, recU.Code)
+
 		recDel := post(t, h, "/v1/deletequotashare", map[string]any{"quotaShareArn": arnStr})
 		assert.Equal(t, http.StatusOK, recDel.Code)
 
 		recD := post(t, h, "/v1/describequotashare", map[string]any{"quotaShareArn": arnStr})
 		assert.Equal(t, http.StatusBadRequest, recD.Code)
+	})
+
+	t.Run("delete_enabled_rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h := newTestHandler(t)
+		qName := createTestServiceJobQueue(t, h, "qs-delete-enabled")
+
+		rec := post(t, h, "/v1/createquotashare", quotaShareCreateInput("qs-delete-enabled", qName))
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var created map[string]any
+		mustUnmarshal(t, rec, &created)
+		arnStr := created["quotaShareArn"].(string)
+
+		recDel := post(t, h, "/v1/deletequotashare", map[string]any{"quotaShareArn": arnStr})
+		assert.Equal(t, http.StatusBadRequest, recDel.Code)
 	})
 
 	t.Run("delete_not_found", func(t *testing.T) {

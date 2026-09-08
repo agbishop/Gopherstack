@@ -1019,7 +1019,7 @@ func TestWireResourceGroupsTagging_CrossServiceResources(t *testing.T) {
 				t.Helper()
 
 				redshiftBk := redshiftbackend.NewInMemoryBackend(accountID, region)
-				_, err := redshiftBk.CreateCluster("wiring-test-cluster", "dc2.large", "dev", "admin")
+				_, err := redshiftBk.CreateCluster("wiring-test-cluster", "dc2.large", "dev", "admin", nil, "")
 				require.NoError(t, err)
 				require.NoError(t, redshiftBk.CreateTags(
 					"wiring-test-cluster", map[string]string{wantTagKey: wantTagValue},
@@ -2010,9 +2010,10 @@ func TestWireResourceGroupsTagging_CrossServiceResources(t *testing.T) {
 				t.Helper()
 
 				aasBk := applicationautoscalingbackend.NewInMemoryBackend(accountID, region)
+				minCap, maxCap := int32(1), int32(10)
 				target, err := aasBk.RegisterScalableTarget(
 					"ecs", "service/wiring-cluster/wiring-svc", "ecs:service:DesiredCount",
-					1, 10, map[string]string{wantTagKey: wantTagValue}, "", nil,
+					&minCap, &maxCap, map[string]string{wantTagKey: wantTagValue}, "", nil,
 				)
 				require.NoError(t, err)
 
@@ -2149,7 +2150,7 @@ func TestWireResourceGroupsTagging_CrossServiceResources(t *testing.T) {
 
 				schBk := schedulerbackend.NewInMemoryBackend(accountID, region)
 				g, err := schBk.CreateScheduleGroup(
-					context.Background(), "wiring-test-group", "", map[string]string{wantTagKey: wantTagValue},
+					context.Background(), "wiring-test-group", map[string]string{wantTagKey: wantTagValue},
 				)
 				require.NoError(t, err)
 
@@ -2478,7 +2479,7 @@ func TestWireResourceGroupsTagging_TagResourcesRoundTrip(t *testing.T) {
 				t.Helper()
 
 				redshiftBk := redshiftbackend.NewInMemoryBackend(accountID, region)
-				_, err := redshiftBk.CreateCluster("roundtrip-cluster", "dc2.large", "dev", "admin")
+				_, err := redshiftBk.CreateCluster("roundtrip-cluster", "dc2.large", "dev", "admin", nil, "")
 				require.NoError(t, err)
 
 				wireTaggingRedshift(bk, redshiftbackend.NewHandler(redshiftBk))

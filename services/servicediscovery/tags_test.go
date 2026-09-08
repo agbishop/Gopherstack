@@ -127,6 +127,57 @@ func TestHandler_TagResource_TooManyTags(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "TooManyTagsException")
 }
 
+// TestHandler_TagResource_TooManyTags_Merged verifies TagResource rejects a
+// call that would push an EXISTING resource's total tag count over the
+// 50-tag quota, even though each individual TagResource call stays under the
+// limit -- per TooManyTagsException's doc comment ("The maximum number of
+// tags that can be applied to a resource is 50"), the quota is on the
+// resource, not the request.
+func TestHandler_TagResource_TooManyTags_Merged(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	createRec := doSDRequest(t, h, "CreateHttpNamespace", map[string]any{"Name": "merged-tags-ns"})
+	require.Equal(t, http.StatusOK, createRec.Code)
+
+	var createResp map[string]any
+	require.NoError(t, json.Unmarshal(createRec.Body.Bytes(), &createResp))
+	opID := createResp["OperationId"].(string)
+
+	opRec := doSDRequest(t, h, "GetOperation", map[string]any{"OperationId": opID})
+	require.Equal(t, http.StatusOK, opRec.Code)
+
+	var opResp map[string]any
+	require.NoError(t, json.Unmarshal(opRec.Body.Bytes(), &opResp))
+	nsID := opResp["Operation"].(map[string]any)["Targets"].(map[string]any)["NAMESPACE"].(string)
+
+	getRec := doSDRequest(t, h, "GetNamespace", map[string]any{"Id": nsID})
+	require.Equal(t, http.StatusOK, getRec.Code)
+
+	var getResp map[string]any
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &getResp))
+	arn := getResp["Namespace"].(map[string]any)["Arn"].(string)
+
+	firstBatch := make([]map[string]string, 0, 40)
+	for i := range 40 {
+		firstBatch = append(firstBatch, map[string]string{"Key": fmt.Sprintf("a%d", i), "Value": "v"})
+	}
+
+	tagRec := doSDRequest(t, h, "TagResource", map[string]any{"ResourceARN": arn, "Tags": firstBatch})
+	require.Equal(t, http.StatusOK, tagRec.Code, "first 40-tag batch should succeed: %s", tagRec.Body.String())
+
+	secondBatch := make([]map[string]string, 0, 20)
+	for i := range 20 {
+		secondBatch = append(secondBatch, map[string]string{"Key": fmt.Sprintf("b%d", i), "Value": "v"})
+	}
+
+	rec := doSDRequest(t, h, "TagResource", map[string]any{"ResourceARN": arn, "Tags": secondBatch})
+	assert.Equal(t, http.StatusBadRequest, rec.Code,
+		"40 existing + 20 new tags exceeds the 50-tag resource quota: %s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "TooManyTagsException")
+}
+
 // TestMapToTagEntriesSorted verifies that tag entries are sorted
 // deterministically in ListTagsForResource -- the only op that returns tags
 // (real ListServices/CreateService never include a Tags field).

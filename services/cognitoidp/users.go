@@ -107,11 +107,31 @@ func (b *InMemoryBackend) AdminDeleteUser(userPoolID, username string) error {
 		return fmt.Errorf("%w: user %q not found", ErrUserNotFound, username)
 	}
 
-	b.users.Delete(userKey(userPoolID, username))
-
-	b.deleteRefreshTokensForUserLocked(userPoolID, username)
+	b.deleteUserStateLocked(userPoolID, username)
 
 	return nil
+}
+
+// deleteUserStateLocked removes the user record for poolID:username and every
+// piece of per-user state that would otherwise outlive it: refresh tokens,
+// devices, auth events, WebAuthn credentials, and group memberships. Shared
+// by AdminDeleteUser, DeleteUser, and DeleteUserPool's cascade so a cleanup
+// added to one path can't drift from the others -- DeleteUserPool's cascade
+// was already fixed once to repeat this list by hand and missed groupMembers
+// and webauthnCredentials in the repeat (gopherstack-tq5q/-ljak). Caller must
+// hold b.mu in write mode.
+func (b *InMemoryBackend) deleteUserStateLocked(poolID, username string) {
+	b.users.Delete(userKey(poolID, username))
+	b.deleteRefreshTokensForUserLocked(poolID, username)
+
+	key := userStateKey(poolID, username)
+	delete(b.devices, key)
+	delete(b.authEvents, key)
+	delete(b.webauthnCredentials, key)
+
+	for _, members := range b.groupMembers[poolID] {
+		delete(members, username)
+	}
 }
 
 // ListUsers returns all users in a pool sorted by username.
@@ -219,11 +239,7 @@ func (b *InMemoryBackend) DeleteUser(accessToken string) error {
 		return err
 	}
 
-	poolID := u.UserPoolID
-	username := u.Username
-
-	b.users.Delete(userKey(poolID, username))
-	b.deleteRefreshTokensForUserLocked(poolID, username)
+	b.deleteUserStateLocked(u.UserPoolID, u.Username)
 
 	return nil
 }
@@ -292,19 +308,29 @@ func parseListUsersFilter(filter string) (string, [2]string) {
 }
 
 // userMatchesFilter returns true if the user satisfies the filter criteria.
+// AttributeName cognito:user_status, status, and sub are not stored in
+// u.Attributes (they're dedicated User fields), so they need their own cases;
+// AWS documents all three as searchable ListUsers attributes alongside the
+// generic standard/custom ones (api_op_ListUsers.go).
 func userMatchesFilter(u *User, usernamePrefix string, attrFilter [2]string) bool {
 	if usernamePrefix != "" && !strings.HasPrefix(u.Username, usernamePrefix) {
 		return false
 	}
 
-	if attrFilter[0] != "" {
+	switch attrFilter[0] {
+	case "":
+		return true
+	case "cognito:user_status":
+		return strings.EqualFold(u.Status, attrFilter[1])
+	case "status":
+		return u.Enabled == (attrFilter[1] == "Enabled")
+	case "sub":
+		return u.Sub == attrFilter[1]
+	default:
 		attrVal, exists := u.Attributes[attrFilter[0]]
-		if !exists || attrVal != attrFilter[1] {
-			return false
-		}
-	}
 
-	return true
+		return exists && attrVal == attrFilter[1]
+	}
 }
 
 // AddUserInternal seeds a user directly into the backend, bypassing normal sign-up.
@@ -407,18 +433,20 @@ func (b *InMemoryBackend) buildAndStoreUserLocked(
 		return nil, err
 	}
 
+	now := time.Now()
 	user := &User{
-		Sub:          uuid.New().String(),
-		Username:     username,
-		UserPoolID:   userPoolID,
-		PasswordHash: hash,
-		SRPSalt:      saltHex,
-		SRPVerifier:  verifierHex,
-		Status:       UserStatusForceChangePassword,
-		Attributes:   attrs,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
-		Enabled:      true,
+		Sub:                  uuid.New().String(),
+		Username:             username,
+		UserPoolID:           userPoolID,
+		PasswordHash:         hash,
+		SRPSalt:              saltHex,
+		SRPVerifier:          verifierHex,
+		Status:               UserStatusForceChangePassword,
+		Attributes:           attrs,
+		CreatedAt:            now,
+		UpdatedAt:            now,
+		TempPasswordIssuedAt: now,
+		Enabled:              true,
 	}
 
 	b.users.Put(user)
@@ -592,6 +620,7 @@ func (b *InMemoryBackend) AdminSetUserPasswordFull(userPoolID, username, passwor
 		user.Status = UserStatusConfirmed
 	} else {
 		user.Status = UserStatusForceChangePassword
+		user.TempPasswordIssuedAt = user.UpdatedAt
 		user.Attributes["custom:temporaryPassword"] = password
 	}
 

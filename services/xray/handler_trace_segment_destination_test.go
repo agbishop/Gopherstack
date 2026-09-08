@@ -38,3 +38,17 @@ func TestTraceSegmentDestination_RoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestTraceSegmentDestination_InvalidEnumRejected verifies UpdateTraceSegmentDestination
+// rejects a Destination outside the two values aws-sdk-go-v2/service/xray/types/enums.go
+// declares for TraceSegmentDestination (XRay, CloudWatchLogs), matching the
+// InvalidRequestException the op models (deserializers.go:
+// awsRestjson1_deserializeOpErrorUpdateTraceSegmentDestination).
+func TestTraceSegmentDestination_InvalidEnumRejected(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doXrayRequest(t, h, "/UpdateTraceSegmentDestination", map[string]any{"Destination": "Foo"})
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}

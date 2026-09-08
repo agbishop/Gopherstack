@@ -653,6 +653,132 @@ func TestListWorkGroups_Pagination_StaleTokenResumesStably(t *testing.T) {
 		"must resume after the deleted boundary, not restart from offset 0")
 }
 
+// TestHandler_DeleteWorkGroup_RecursiveDeleteOption guards
+// DeleteWorkGroupInput.RecursiveDeleteOption: "The option to delete the
+// workgroup and its contents even if the workgroup contains any named
+// queries, query executions, or notebooks." Without it, deleting a
+// non-empty workgroup must be rejected instead of silently orphaning its
+// named queries/query executions/notebooks (they would otherwise reference
+// a workgroup that no longer exists).
+func TestHandler_DeleteWorkGroup_RecursiveDeleteOption(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		seed       func(t *testing.T, h *athena.Handler, wg string)
+		name       string
+		wantStatus int
+		recursive  bool
+	}{
+		{
+			name: "named_query_blocks_delete",
+			seed: func(t *testing.T, h *athena.Handler, wg string) {
+				t.Helper()
+				rec := doRequest(t, h, "CreateNamedQuery",
+					`{"Name":"nq","Database":"db","QueryString":"SELECT 1","WorkGroup":"`+wg+`"}`)
+				require.Equal(t, http.StatusOK, rec.Code)
+			},
+			recursive:  false,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "named_query_recursive_delete_succeeds",
+			seed: func(t *testing.T, h *athena.Handler, wg string) {
+				t.Helper()
+				rec := doRequest(t, h, "CreateNamedQuery",
+					`{"Name":"nq","Database":"db","QueryString":"SELECT 1","WorkGroup":"`+wg+`"}`)
+				require.Equal(t, http.StatusOK, rec.Code)
+			},
+			recursive:  true,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "query_execution_blocks_delete",
+			seed: func(t *testing.T, h *athena.Handler, wg string) {
+				t.Helper()
+				rec := doRequest(t, h, "StartQueryExecution",
+					`{"QueryString":"SELECT 1","WorkGroup":"`+wg+`"}`)
+				require.Equal(t, http.StatusOK, rec.Code)
+			},
+			recursive:  false,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "notebook_blocks_delete",
+			seed: func(t *testing.T, h *athena.Handler, wg string) {
+				t.Helper()
+				rec := doRequest(t, h, "CreateNotebook", `{"WorkGroup":"`+wg+`","Name":"nb"}`)
+				require.Equal(t, http.StatusOK, rec.Code)
+			},
+			recursive:  false,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "empty_workgroup_deletes_without_recursive",
+			seed:       func(t *testing.T, _ *athena.Handler, _ string) { t.Helper() },
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			const wg = "recursive-wg"
+			rec := doRequest(t, h, "CreateWorkGroup", `{"Name":"`+wg+`"}`)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			tt.seed(t, h, wg)
+
+			body := `{"WorkGroup":"` + wg + `"}`
+			if tt.recursive {
+				body = `{"WorkGroup":"` + wg + `","RecursiveDeleteOption":true}`
+			}
+
+			rec = doRequest(t, h, "DeleteWorkGroup", body)
+			assert.Equal(t, tt.wantStatus, rec.Code, rec.Body.String())
+
+			if tt.wantStatus == http.StatusOK {
+				rec = doRequest(t, h, "GetWorkGroup", `{"WorkGroup":"`+wg+`"}`)
+				assert.Equal(t, http.StatusBadRequest, rec.Code, "workgroup must be gone")
+			} else {
+				rec = doRequest(t, h, "GetWorkGroup", `{"WorkGroup":"`+wg+`"}`)
+				assert.Equal(t, http.StatusOK, rec.Code, "workgroup must survive a rejected delete")
+			}
+		})
+	}
+}
+
+// TestHandler_DeleteWorkGroup_RecursiveDeleteCascadesContents locks in that a
+// recursive DeleteWorkGroup does not leave the named query/query execution it
+// contained behind as a ghost row pointing at a now-nonexistent workgroup.
+func TestHandler_DeleteWorkGroup_RecursiveDeleteCascadesContents(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	const wg = "cascade-wg"
+	rec := doRequest(t, h, "CreateWorkGroup", `{"Name":"`+wg+`"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, "CreateNamedQuery",
+		`{"Name":"nq","Database":"db","QueryString":"SELECT 1","WorkGroup":"`+wg+`"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	nqID := jsonField(t, rec.Body.Bytes(), "NamedQueryId")
+
+	rec = doRequest(t, h, "StartQueryExecution", `{"QueryString":"SELECT 1","WorkGroup":"`+wg+`"}`)
+	require.Equal(t, http.StatusOK, rec.Code)
+	qeID := jsonField(t, rec.Body.Bytes(), "QueryExecutionId")
+
+	rec = doRequest(t, h, "DeleteWorkGroup", `{"WorkGroup":"`+wg+`","RecursiveDeleteOption":true}`)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	rec = doRequest(t, h, "GetNamedQuery", `{"NamedQueryId":"`+nqID+`"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "named query must not survive a recursive delete")
+
+	rec = doRequest(t, h, "GetQueryExecution", `{"QueryExecutionId":"`+qeID+`"}`)
+	assert.Equal(t, http.StatusBadRequest, rec.Code, "query execution must not survive a recursive delete")
+}
+
 // TestHandler_UpdateWorkGroup_PreservesUnmentionedConfiguration guards
 // against gopherstack-1vv2: UpdateWorkGroupInput.ConfigurationUpdates is
 // types.WorkGroupConfigurationUpdates, a partial-update shape -- a real

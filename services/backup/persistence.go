@@ -179,6 +179,13 @@ func (b *InMemoryBackend) rebuildARNIndexes() {
 	for _, rp := range reportPlans {
 		b.reportPlanARNIndex[rp.ReportPlanArn] = rp.ReportPlanName
 	}
+
+	restoreAccessVaults := b.restoreAccessVaults.All()
+	b.restoreAccessVaultARNIndex = make(map[string]string, len(restoreAccessVaults))
+
+	for _, rav := range restoreAccessVaults {
+		b.restoreAccessVaultARNIndex[rav.RestoreAccessBackupVaultArn] = rav.RestoreAccessBackupVaultName
+	}
 }
 
 // Snapshot implements persistence.Persistable by delegating to the backend.

@@ -1,5 +1,17 @@
 package managedblockchain
 
+import "time"
+
+// SetProposalExpiration overwrites a proposal's ExpirationDate (for test use only).
+func SetProposalExpiration(b *InMemoryBackend, networkID, proposalID string, expiration time.Time) {
+	b.mu.Lock("export_test")
+	defer b.mu.Unlock()
+
+	if p, exists := b.proposals.Get(proposalKey(networkID, proposalID)); exists {
+		p.ExpirationDate = &expiration
+	}
+}
+
 // NetworkCount returns the number of networks stored in b (for test use only).
 func NetworkCount(b *InMemoryBackend) int {
 	b.mu.RLock("export_test")

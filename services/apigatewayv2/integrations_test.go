@@ -386,7 +386,7 @@ func Test_Integration_CredentialsArn(t *testing.T) {
 
 	b := apigatewayv2.NewInMemoryBackend()
 
-	api, err := b.CreateAPI(context.Background(), apigatewayv2.CreateAPIInput{Name: "api", ProtocolType: "HTTP"})
+	api, err := b.CreateAPI(context.Background(), apigatewayv2.CreateAPIInput{Name: "api", ProtocolType: "WEBSOCKET"})
 	require.NoError(t, err)
 
 	const roleARN = "arn:aws:iam::123456789012:role/apigw-role"

@@ -42,6 +42,55 @@ func TestNetwork_CRUD(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+// TestNetwork_AssociatedClusterIDsAndDeleteGuard locks in a fix for
+// gopherstack-1um: DescribeNetworkOutput's "associatedClusterIds" was
+// hardcoded to an always-empty slice regardless of which Clusters actually
+// referenced the network via NetworkSettings.InterfaceMappings, and
+// DeleteNetwork had no guard at all -- real DeleteNetwork requires the
+// Network have no resources associated with it
+// (api_op_DeleteNetwork.go: "The Network must have no resources associated
+// with it.").
+func TestNetwork_AssociatedClusterIDsAndDeleteGuard(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	rec := doRequest(t, h, http.MethodPost, "/prod/networks", map[string]any{"name": "net-assoc"})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	networkID := decodeBody(t, rec.Body.Bytes())["id"].(string)
+	assert.Equal(t, []any{}, decodeBody(t, rec.Body.Bytes())["associatedClusterIds"])
+
+	rec = doRequest(t, h, http.MethodPost, "/prod/clusters", map[string]any{
+		"name": "net-assoc-cluster",
+		"networkSettings": map[string]any{
+			"interfaceMappings": []map[string]any{
+				{"logicalInterfaceName": "if-a", "networkId": networkID},
+			},
+		},
+	})
+	require.Equal(t, http.StatusCreated, rec.Code)
+	clusterID := decodeBody(t, rec.Body.Bytes())["id"].(string)
+
+	// Describe now reports the live association.
+	rec = doRequest(t, h, http.MethodGet, "/prod/networks/"+networkID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, []any{clusterID}, decodeBody(t, rec.Body.Bytes())["associatedClusterIds"])
+
+	// Delete is rejected while a cluster is associated.
+	rec = doRequest(t, h, http.MethodDelete, "/prod/networks/"+networkID, nil)
+	assert.Equal(t, http.StatusConflict, rec.Code)
+
+	rec = doRequest(t, h, http.MethodGet, "/prod/networks/"+networkID, nil)
+	assert.Equal(t, http.StatusOK, rec.Code, "network must still exist after the rejected delete")
+
+	// Removing the cluster clears the association and allows delete.
+	rec = doRequest(t, h, http.MethodDelete, "/prod/clusters/"+clusterID, nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doRequest(t, h, http.MethodDelete, "/prod/networks/"+networkID, nil)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
 func TestNetwork_Errors(t *testing.T) {
 	t.Parallel()
 

@@ -6,15 +6,15 @@
 # trust rows marked ok whose files are unchanged since last_audit_commit.
 service: polly
 sdk_module: aws-sdk-go-v2/service/polly@v1.60.4   # version audited against
-last_audit_commit: 68ca109b                       # HEAD when this manifest was written
-last_audit_date: 2026-08-20
-overall: A            # one real bug found and fixed this pass (ListLexicons Attributes nesting); no other gaps
+last_audit_commit: eb5faf60f                      # HEAD when this manifest was written
+last_audit_date: 2026-09-04
+overall: A            # two real bugs found and fixed this pass (StartSpeechSynthesisStream accepted non-generative Engine values; StartSpeechSynthesisTask shared SynthesizeSpeech's wider mp3/ogg_vorbis SampleRate set)
 # Per-op or per-op-family status. Values: ok | partial | gap | deferred.
 # wire=response/request shape vs SDK; errors=code+HTTP status; state=real mutate/read; persist=in backendSnapshot.
 ops:
   SynthesizeSpeech: {wire: ok, errors: ok, state: ok, persist: n/a, note: "OutputFormat coverage complete (ogg_opus/mulaw/alaw); full op-specific error taxonomy; SSML well-formedness now validated (InvalidSsmlException)"}
-  StartSpeechSynthesisStream: {wire: ok, errors: ok, state: n/a, persist: n/a, note: "FIXED: error taxonomy now the real op-specific set -- every client validation failure remaps to the generic ValidationException (never SynthesizeSpeech's op-specific exception names), matching the real deserializer's error switch (ServiceFailureException/ServiceQuotaExceededException/ThrottlingException/ValidationException). ServiceQuotaExceededException/ThrottlingException remain unimplemented -- see items_still_open equivalent in Notes."}
-  StartSpeechSynthesisTask: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED: removed fabricated SnsRoleArn request/response field (not a real Polly API field -- see Notes); added real OutputS3KeyPrefix request field wired into OutputUri; added S3 bucket/key and SNS topic ARN format validation; SSML-vs-plain-text length limit now correctly differentiated (100000 billed / 200000 total, was flat 100000 for both)"}
+  StartSpeechSynthesisStream: {wire: ok, errors: ok, state: n/a, persist: n/a, note: "FIXED 2026-09-04: Engine was validated against SynthesizeSpeech's full 4-value set (standard/neural/long-form/generative) and defaulted an unset value to standard, but api_op_StartSpeechSynthesisStream.go's Engine doc comment says 'Currently, only the generative engine is supported' -- any other value (including unset) is now rejected as ValidationException before the shared SynthesizeSpeech validation path runs. OutputFormat=json (the doc's other stated restriction, 'does not support JSON speech marks') was already rejected, coincidentally: this op never reads SpeechMarkTypes from headers, so validateSpeechMarks' 'json requires SpeechMarkTypes' rule always fires for it -- confirmed, not changed. Error taxonomy (from prior pass) remains correct: every client validation failure remaps to the generic ValidationException, matching the real deserializer's error switch (ServiceFailureException/ServiceQuotaExceededException/ThrottlingException/ValidationException). ServiceQuotaExceededException/ThrottlingException remain unimplemented -- see Notes."}
+  StartSpeechSynthesisTask: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED: removed fabricated SnsRoleArn request/response field (not a real Polly API field -- see Notes); added real OutputS3KeyPrefix request field wired into OutputUri; added S3 bucket/key and SNS topic ARN format validation; SSML-vs-plain-text length limit now correctly differentiated (100000 billed / 200000 total, was flat 100000 for both). FIXED 2026-09-04: SampleRate for mp3/ogg_vorbis now correctly narrower than SynthesizeSpeech's (8000/16000/22050/24000 only, no 44100/48000) per this op's own SampleRate doc comment, which was previously sharing SynthesizeSpeech's 6-value set via the common validateOptions helper."}
   GetSpeechSynthesisTask: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED: added InvalidTaskIdException for syntactically invalid (non-UUID) TaskId, distinct from SynthesisTaskNotFoundException for a well-formed-but-unknown one -- both are real, separately-modeled exceptions for this op"}
   ListSpeechSynthesisTasks: {wire: ok, errors: ok, state: ok, persist: ok, note: "MaxResults out-of-range left generic (unlisted in the real service model -- confirmed via deserializer's error switch, which lists only InvalidNextTokenException/ServiceFailureException)"}
   PutLexicon: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED: implemented LexiconSizeExceededException (>40000 chars), MaxLexemeLengthExceededException (>100 char <phoneme>/<alias> replacement), MaxLexiconsNumberExceededException (>100 lexicons/account), UnsupportedPlsAlphabetException (alphabet not ipa/x-sampa), UnsupportedPlsLanguageException (xml:lang outside the 42-value LanguageCode enum) -- all quota numbers sourced from docs.aws.amazon.com/polly/latest/dg/limits.html#limits-lexicons"}
@@ -306,3 +306,127 @@ golangci-lint run ./services/polly/... -> 0 issues
 `services/polly/wire_sdk_roundtrip_test.go` (new) as my changes; other dirty files
 (`services/applicationautoscaling/*`) belong to a concurrent, unrelated sweep session and were not
 touched by me.
+
+## polly (this session, 2026-09-04, gopherstack-22s)
+
+Parity-bug hunt against the bug patterns list (missing delete preconditions, enum/input
+validation, inert config, ghost rows, resource leaks, discarded parameters, fabricated
+values, stale cache). Re-verified the prior audit's claims independently rather than trusting
+them: error taxonomy for all 10 ops re-derived from `deserializers.go`'s
+`awsRestjson1_deserializeOpError<Op>` switches (exact match to `errors.go`/`handler.go`'s
+`onceErrorTable`); every exception's `httpStatusCode` re-derived from `botocore`'s
+`polly` service model (`ServiceModel.shape_for(name).metadata['error']`, since the Go SDK
+itself doesn't carry the trait) -- all 23 statuses match `onceErrorTable` exactly, including the
+two non-default ones (`LexiconNotFoundException` 404, `SynthesisTaskNotFoundException` 400);
+`VoiceId` (106) and `LanguageCode` (42) enum coverage re-diffed programmatically against
+`types/enums.go` -- both exact matches, zero missing/extra. Lexicon storage confirmed
+`store.Table`-backed (structurally immune to ghost-row-after-delete). Sample-rate-per-format and
+Content-Type-per-format tables in `speech.go` cross-checked line-by-line against
+`api_op_SynthesizeSpeech.go`'s doc comment -- exact match.
+
+**BUG FOUND AND FIXED: `StartSpeechSynthesisStream` accepted every `Engine` value.**
+`api_op_StartSpeechSynthesisStream.go`'s `Engine` field doc comment: "Specifies the engine for
+Amazon Polly to use when processing input text for speech synthesis. **Currently, only the
+generative engine is supported.** If you specify a voice that the selected engine doesn't
+support, Amazon Polly returns an error." This is a real, per-operation-specific restriction: the
+same struct's `SynthesizeSpeech`/`StartSpeechSynthesisTask` inputs document all 4 Engine values as
+valid, and an unset one there defaults to standard. gopherstack's `startSpeechSynthesisStream`
+built its `SynthesisOptions.Engine` from the raw `X-Amzn-Engine` header and then fed it straight
+into the shared `SynthesizeSpeech`-path `validateOptions`, which accepts all 4 values -- so a
+stream request with Engine=standard/neural/long-form/unset for a voice that supports that engine
+synthesized normally instead of failing. Fixed in `handler.go`'s `startSpeechSynthesisStream`:
+reject any Engine other than exactly `"generative"` up front, before the shared validation path,
+returning `ErrStreamValidation` (this op's real, sole client-error type per its deserializer's
+error switch -- see the existing `EngineNotSupportedException`-vs-`ValidationException` taxonomy
+note above). Not client-side-SDK-enforced (`validators.go`'s
+`validateOpStartSpeechSynthesisStreamInput` only checks Engine is non-empty, not which value), so
+this is reachable by any real HTTP client, not just a hand-rolled one -- a genuine server-side gap,
+not a documentation nuance. New regression test
+`TestStartSpeechSynthesisStreamRequiresGenerativeEngine` (`speech_test.go`) covers
+standard/neural/long-form/unset, using voices (Joanna, Danielle) that legitimately support each
+rejected engine so the only possible cause of a 400 is the new Engine gate, not
+`EngineNotSupportedException`. Verified failing pre-fix (all 4 subtests returned HTTP 200 instead
+of 400 when the fix's 9 added lines were removed and restored via `cp`, diff-counted before restore)
+and passing post-fix.
+
+**Also checked, not a bug (documented for the next auditor):** the same doc comment's other
+stated restriction -- "Currently, Amazon Polly does not support JSON speech marks" -- is already
+correctly rejected, coincidentally: `StartSpeechSynthesisStreamInput` has no `SpeechMarkTypes`
+field, so gopherstack's header-parsing never populates `SynthesisOptions.SpeechMarkTypes` for this
+op, meaning `validateSpeechMarks`'s existing "OutputFormat=json requires non-empty
+SpeechMarkTypes" rule always fires for OutputFormat=json on this path. Net behavior is already
+correct; no code change made for this half of the doc comment.
+
+**Also checked, not a bug:** `listLexicons` reads and honors a `MaxResults` query parameter, but
+the real `ListLexiconsInput` (`api_op_ListLexicons.go`) has no `MaxResults` field at all (only
+`NextToken`) -- a genuine SDK client can never send it, so this is unreachable-but-harmless code,
+not a wire bug; confirmed the default page size (100) can never truncate a real response since
+`maxLexiconsPerAccount` is also 100, so real client behavior is unaffected either way. Left
+unchanged (removing it is a separate, non-bug cleanup decision, not a parity fix).
+
+**Also checked, not a bug:** `SpeechSynthesisTask.polls` (`models.go`) is incremented in
+`advanceTask` (`speech_synthesis_tasks.go`) but never read anywhere. Dead state, not a wire or
+persistence bug (nothing observable depends on it) -- flagged for a future cleanup pass, not fixed
+here since it's out of this campaign's "AWS parity bug" scope.
+
+**SECOND BUG FOUND AND FIXED: `StartSpeechSynthesisTask` shared `SynthesizeSpeech`'s wider
+mp3/ogg_vorbis `SampleRate` set.** Both ops' `SampleRate` doc comments were read in full (not
+grepped) since they're line-wrapped across several `//` lines each.
+`api_op_SynthesizeSpeech.go`: "The valid values for mp3 and ogg_vorbis are \"8000\", \"16000\",
+\"22050\", \"24000\", \"44100\" and \"48000\"." `api_op_StartSpeechSynthesisTask.go`: "The valid
+values for mp3 and ogg_vorbis are \"8000\", \"16000\", \"22050\", and \"24000\"." -- 4 values, not
+6; 44100/48000 are absent. Every other format's valid set (pcm/ogg_opus/mulaw/alaw) is worded
+identically in both files, so this narrowing is specific to mp3/ogg_vorbis on the task op. Both
+ops funneled through one shared `validateOptions`/`validSampleRate` in `speech.go`, so
+`StartSpeechSynthesisTask` was wrongly accepting SampleRate=44100/48000 for mp3/ogg_vorbis (a real
+client would get an unexpected 200 where AWS returns `InvalidSampleRateException`, which this op's
+error switch does model -- confirmed reachable, not just a docs nuance). Fixed by adding a
+`forTask bool` parameter to `validateOptions`/`validSampleRate` (`speech.go`), threaded from each
+call site: `SynthesizeSpeech` passes `false` (unchanged 6-value behavior),
+`StartSpeechSynthesisTask` passes `true` (new 4-value behavior for mp3/ogg_vorbis only). New
+regression test `TestStartSpeechSynthesisTaskSampleRateNarrowerThanSynthesizeSpeech`
+(`speech_synthesis_tasks_test.go`) asserts both halves of the contrast per case: the same
+SampleRate/OutputFormat pair that `SynthesizeSpeech` accepts, `StartSpeechSynthesisTask` must
+reject with `ErrInvalidSampleRate`. Verified failing pre-fix (`_ = forTask` neutering restored via
+`cp`, diff-counted before restore; all 3 subtests got `nil` instead of the expected error) and
+passing post-fix.
+
+**Gates** (from `services/polly/`, GOTOOLCHAIN=go1.26.6):
+```
+go build ./services/polly/...            -> ok
+go vet ./services/polly/...              -> clean
+go test -race -count=1 ./services/polly/... -> ok
+golangci-lint run ./services/polly/...   -> 0 issues
+go test -race -count=1 ./services/cloudformation/... -> ok (dependent-package check)
+```
+
+## 2026-09-08: writeError nil-on-write fall-through audit (gopherstack-246v) -- clean
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `writeError`
+(`handler.go:638`) wraps `c.JSON`, which returns nil on a successful write, so a helper
+that rejects via `return writeError(...)` and is called by code storing and checking
+its result would get a silent nil back and fall through past the rejection.
+
+**Method (mechanical).** A `go/parser`/`go/ast` fixed-point closure over every non-test
+file in this flat package, seeded with `writeError` and `writeBackendError` (the two
+local response-writer helpers found by grepping for `func writeError`/`func .*writeError`
+in the package). The closure only added one function, `Handler` (`handler.go:123`), whose
+`echo.HandlerFunc` closure has a `return writeError(...)` fallback for an unrecognized
+route -- final sink set: `{writeError, writeBackendError, Handler}`.
+
+polly's dispatch shape differs from elasticache/cloudfront/mwaa: `Handler()`'s closure
+calls `h.dispatch(c, route)`, which returns *raw, unwritten* Go errors from every one of
+its 10 handler targets (`synthesizeSpeech`, `startSpeechSynthesisStream`, etc. -- none of
+them call `writeError`/`writeBackendError` at all, confirmed by grep: 0 hits outside
+`Handler()` and `writeBackendError` itself). `Handler()` then does
+`err := h.dispatch(...); if err == nil { return nil }; return h.writeBackendError(c, err)`
+-- a store-then-check on `err`, but a safe one: `dispatch` never itself writes a response,
+so a non-nil `err` here is always a genuine unwritten error, and the single translation to
+a written response (`h.writeBackendError`) happens exactly once, directly returned. This is
+already the sentinel-style fix pattern the issue prescribes, just pre-existing.
+
+All 10 production call sites of `{writeError, writeBackendError}` (`handler.go:127,135,
+631,635` plus none elsewhere) are `return`-direct. **No instance of the broken shape
+exists in polly.** No code changed. Gates:
+`GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/polly/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/polly/...` ok.

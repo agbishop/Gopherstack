@@ -70,7 +70,9 @@ func (b *InMemoryBackend) DescribeDatasetGroup(nameOrArn string) (*DatasetGroup,
 	return nil, fmt.Errorf("%w: dataset group %q not found", ErrNotFound, nameOrArn)
 }
 
-// DeleteDatasetGroup removes a dataset group.
+// DeleteDatasetGroup removes a dataset group. Per api_op_DeleteDatasetGroup.go's
+// doc comment, the caller must first delete all associated event trackers,
+// solutions, and datasets.
 func (b *InMemoryBackend) DeleteDatasetGroup(nameOrArn string) error {
 	b.mu.Lock("DeleteDatasetGroup")
 	defer b.mu.Unlock()
@@ -78,6 +80,21 @@ func (b *InMemoryBackend) DeleteDatasetGroup(nameOrArn string) error {
 	dg := b.findDatasetGroup(nameOrArn)
 	if dg == nil {
 		return fmt.Errorf("%w: dataset group %q not found", ErrNotFound, nameOrArn)
+	}
+	for _, et := range b.eventTrackers.All() {
+		if et.DatasetGroupArn == dg.DatasetGroupArn {
+			return fmt.Errorf("%w: dataset group %q still has event trackers", ErrInUse, nameOrArn)
+		}
+	}
+	for _, sol := range b.solutions.All() {
+		if sol.DatasetGroupArn == dg.DatasetGroupArn {
+			return fmt.Errorf("%w: dataset group %q still has solutions", ErrInUse, nameOrArn)
+		}
+	}
+	for _, ds := range b.datasets.All() {
+		if ds.DatasetGroupArn == dg.DatasetGroupArn {
+			return fmt.Errorf("%w: dataset group %q still has datasets", ErrInUse, nameOrArn)
+		}
 	}
 	b.datasetGroups.Delete(dg.Name)
 	delete(b.tags, dg.DatasetGroupArn)

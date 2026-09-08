@@ -202,6 +202,44 @@ func TestCloudTrailEventConfiguration(t *testing.T) {
 				assert.Equal(t, http.StatusNotFound, rec.Code)
 			},
 		},
+		{
+			// A trail's ARN is deterministic from its user-chosen name
+			// (arn.Build includes "trail/"+name), so deleting and
+			// recreating a trail with the same name reuses the exact same
+			// ARN. eventConfigs is keyed by that ARN and DeleteTrail never
+			// purges it, so the recreated trail must not inherit the
+			// deleted trail's configuration.
+			name: "recreated_trail_does_not_inherit_deleted_trails_config",
+			ops: func(t *testing.T, h *cloudtrail.Handler) {
+				t.Helper()
+				doCloudTrailOp(t, h, "CreateTrail", map[string]any{
+					"Name":         "evtcfg-reused-name",
+					"S3BucketName": "bucket",
+				})
+				putRec := doCloudTrailOp(t, h, "PutEventConfiguration", map[string]any{
+					"TrailName":    "evtcfg-reused-name",
+					"MaxEventSize": "Large",
+				})
+				require.Equal(t, http.StatusOK, putRec.Code)
+
+				delRec := doCloudTrailOp(t, h, "DeleteTrail", map[string]any{
+					"Name": "evtcfg-reused-name",
+				})
+				require.Equal(t, http.StatusOK, delRec.Code)
+
+				doCloudTrailOp(t, h, "CreateTrail", map[string]any{
+					"Name":         "evtcfg-reused-name",
+					"S3BucketName": "bucket",
+				})
+				getRec := doCloudTrailOp(t, h, "GetEventConfiguration", map[string]any{
+					"TrailName": "evtcfg-reused-name",
+				})
+				require.Equal(t, http.StatusOK, getRec.Code)
+				getResp := parseCloudTrailResp(t, getRec)
+				_, hasMaxSize := getResp["MaxEventSize"]
+				assert.False(t, hasMaxSize, "recreated trail must not inherit the deleted trail's event configuration")
+			},
+		},
 	}
 
 	for _, tt := range tests {
