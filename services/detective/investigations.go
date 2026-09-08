@@ -89,47 +89,6 @@ func builtInIndicators(inv *storedInvestigation) []*Indicator {
 		},
 	}
 
-	// Higher-severity investigations include richer indicator sets.
-	if inv.Severity == severityMedium || inv.Severity == severityHigh || inv.Severity == severityCritical {
-		indicators = append(indicators,
-			&Indicator{
-				IndicatorType: indicatorFlaggedIPAddress,
-				Detail: IndicatorDetail{
-					FlaggedIPAddress: &FlaggedIPAddressDetail{
-						Reason: "AWS_THREAT_INTELLIGENCE",
-					},
-				},
-			},
-			&Indicator{
-				IndicatorType: indicatorImpossibleTravel,
-				Detail: IndicatorDetail{
-					ImpossibleTravel: &ImpossibleTravelDetail{},
-				},
-			},
-		)
-	}
-
-	if inv.Severity == severityHigh || inv.Severity == severityCritical {
-		indicators = append(indicators,
-			&Indicator{
-				IndicatorType: indicatorRelatedFinding,
-				Detail: IndicatorDetail{
-					RelatedFinding: &RelatedFindingDetail{
-						Type: "Recon:IAMUser/MaliciousIPCaller",
-					},
-				},
-			},
-			&Indicator{
-				IndicatorType: indicatorRelatedFindingGroup,
-				Detail: IndicatorDetail{
-					RelatedFindingGroup: &RelatedFindingGroupDetail{
-						ID: inv.InvestigationID,
-					},
-				},
-			},
-		)
-	}
-
 	return indicators
 }
 
