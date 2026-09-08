@@ -214,23 +214,23 @@ func TestIntegration_Account_SingletonLifecycle(t *testing.T) {
 
 	t.Run("enable and disable opt-in region", func(t *testing.T) { //nolint:paralleltest // sequential by design
 		_, err := client.DisableRegion(ctx, &accountsdk.DisableRegionInput{
-			RegionName: aws.String("ap-northeast-1"),
+			RegionName: aws.String("af-south-1"),
 		})
 		require.NoError(t, err, "DisableRegion should succeed")
 
 		statusOut, err := client.GetRegionOptStatus(ctx, &accountsdk.GetRegionOptStatusInput{
-			RegionName: aws.String("ap-northeast-1"),
+			RegionName: aws.String("af-south-1"),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, accounttypes.RegionOptStatusDisabled, statusOut.RegionOptStatus)
 
 		_, err = client.EnableRegion(ctx, &accountsdk.EnableRegionInput{
-			RegionName: aws.String("ap-northeast-1"),
+			RegionName: aws.String("af-south-1"),
 		})
 		require.NoError(t, err, "EnableRegion should succeed")
 
 		statusOut, err = client.GetRegionOptStatus(ctx, &accountsdk.GetRegionOptStatusInput{
-			RegionName: aws.String("ap-northeast-1"),
+			RegionName: aws.String("af-south-1"),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, accounttypes.RegionOptStatusEnabled, statusOut.RegionOptStatus)

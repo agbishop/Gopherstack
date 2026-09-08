@@ -173,7 +173,7 @@ func seedFullState(t *testing.T, b *account.InMemoryBackend) seedState {
 
 	// Mutate the raw regions slice away from its post-construction defaults:
 	// disable an opt-in region that starts ENABLED.
-	require.NoError(t, b.DisableRegion("ap-northeast-1"))
+	require.NoError(t, b.DisableRegion("af-south-1"))
 
 	require.NoError(t, b.PutAccountName("My Company"))
 
@@ -256,7 +256,7 @@ func assertContactInformationRestored(t *testing.T, fresh *account.InMemoryBacke
 func assertRegionsRestored(t *testing.T, fresh *account.InMemoryBackend) {
 	t.Helper()
 
-	status, err := fresh.GetRegionOptStatus("ap-northeast-1")
+	status, err := fresh.GetRegionOptStatus("af-south-1")
 	require.NoError(t, err)
 	assert.Equal(t, account.RegionOptStatusDisabled, status)
 
