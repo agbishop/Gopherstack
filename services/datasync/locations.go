@@ -188,7 +188,7 @@ func extractBucketName(s3BucketArn string) string {
 	// S3 ARNs: arn:aws:s3:::bucket-name
 	parts := strings.SplitN(s3BucketArn, ":::", arnSplitParts)
 	if len(parts) == arnSplitParts {
-		name := strings.SplitN(parts[1], "/", arnSplitParts)[0]
+		name, _, _ := strings.Cut(parts[1], "/")
 		if name != "" {
 			return name
 		}

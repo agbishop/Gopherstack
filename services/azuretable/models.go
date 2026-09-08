@@ -51,8 +51,6 @@ const (
 // property in Properties, falling back to the wrong (default reflection)
 // encoding with no error. This mixed-receiver shape is required, not an
 // oversight.
-//
-//nolint:recvcheck // see above
 type EntityProperty struct {
 	Value any
 	Type  EdmType

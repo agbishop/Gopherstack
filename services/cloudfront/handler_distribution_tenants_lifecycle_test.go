@@ -54,8 +54,8 @@ func TestGetManagedCertificateDetails_StableACrossCalls(t *testing.T) {
 	second := doXML(t, h, http.MethodGet, path, nil)
 	require.Equal(t, http.StatusOK, second.Code)
 
-	firstARN := strings.SplitN(strings.SplitN(first.Body.String(), "<CertificateArn>", 2)[1], "</CertificateArn>", 2)[0]
-	secondARN := strings.SplitN(strings.SplitN(second.Body.String(), "<CertificateArn>", 2)[1], "</CertificateArn>", 2)[0]
+	firstARN, _, _ := strings.Cut(strings.SplitN(first.Body.String(), "<CertificateArn>", 2)[1], "</CertificateArn>")
+	secondARN, _, _ := strings.Cut(strings.SplitN(second.Body.String(), "<CertificateArn>", 2)[1], "</CertificateArn>")
 	assert.Equal(t, firstARN, secondARN)
 	assert.Contains(t, first.Body.String(), "parity-cert-test.example.com")
 }

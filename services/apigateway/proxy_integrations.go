@@ -209,8 +209,7 @@ func (h *Handler) buildAWSIntegrationPayload(
 // writeAWSIntegrationReadError writes the appropriate error response for a
 // buildAWSIntegrationPayload failure.
 func writeAWSIntegrationReadError(ctx context.Context, w http.ResponseWriter, readErr error) {
-	var maxErr *http.MaxBytesError
-	if errors.As(readErr, &maxErr) {
+	if _, ok := errors.AsType[*http.MaxBytesError](readErr); ok {
 		http.Error(w, "Request entity too large", http.StatusRequestEntityTooLarge)
 
 		return

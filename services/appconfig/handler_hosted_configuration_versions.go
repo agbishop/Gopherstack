@@ -41,8 +41,7 @@ func (h *Handler) handleCreateHostedConfigurationVersion(
 
 	content, err := io.ReadAll(http.MaxBytesReader(c.Response(), c.Request().Body, maxHostedConfigurationVersionBytes))
 	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			return payloadTooLargeResponse(c, errContentTooLarge)
 		}
 

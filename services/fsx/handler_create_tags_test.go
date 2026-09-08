@@ -178,7 +178,7 @@ func TestCreateOpsWithTags_RoundTrip(t *testing.T) {
 					VolumeType: types.VolumeTypeOntap,
 					OntapConfiguration: &types.CreateOntapVolumeConfiguration{
 						JunctionPath:            aws.String("/snap-source"),
-						SizeInMegabytes:         aws.Int32(1024),
+						SizeInBytes:             aws.Int64(1024 * 1024 * 1024),
 						StorageVirtualMachineId: svmOut.StorageVirtualMachine.StorageVirtualMachineId,
 					},
 				})
@@ -226,7 +226,7 @@ func TestCreateOpsWithTags_RoundTrip(t *testing.T) {
 					VolumeType: types.VolumeTypeOntap,
 					OntapConfiguration: &types.CreateOntapVolumeConfiguration{
 						JunctionPath:            aws.String("/tagged-vol"),
-						SizeInMegabytes:         aws.Int32(1024),
+						SizeInBytes:             aws.Int64(1024 * 1024 * 1024),
 						StorageVirtualMachineId: svmOut.StorageVirtualMachine.StorageVirtualMachineId,
 					},
 					Tags: []types.Tag{{Key: aws.String("env"), Value: aws.String("prod")}},

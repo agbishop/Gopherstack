@@ -141,7 +141,7 @@ func TestBackend_TruncateToken(t *testing.T) {
 	assert.Less(t, len(safe[0].TokenPrefix), len(full[0].Token),
 		"safe token must be shorter than full token")
 	// Full token must start with the same prefix shown in safe token.
-	prefix := strings.Split(safe[0].TokenPrefix, "…")[0]
+	prefix, _, _ := strings.Cut(safe[0].TokenPrefix, "…")
 	assert.True(t, strings.HasPrefix(full[0].Token, prefix),
 		"full token must start with the safe prefix")
 }

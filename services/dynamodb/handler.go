@@ -915,8 +915,7 @@ func (h *DynamoDBHandler) classifyError(reqErr error) (int, *Error) {
 	// But our internal implementation returns native go errors or custom structs.
 	// We need to map them to Wire Error struct.
 
-	var wireErr *Error
-	if errors.As(reqErr, &wireErr) {
+	if wireErr, ok := errors.AsType[*Error](reqErr); ok {
 		// Map type to status code. Most DynamoDB errors return 400.
 		if wireErr.Type == errInternalServerErrorType {
 			return http.StatusInternalServerError, wireErr

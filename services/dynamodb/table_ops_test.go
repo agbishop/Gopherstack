@@ -209,8 +209,7 @@ func TestTableOperations(t *testing.T) {
 				t.Helper()
 				require.Error(t, err)
 				// Verify it's a ResourceNotFoundException (returns as HTTP 400, not 404)
-				var ddbErr *dynamodb.Error
-				if errors.As(err, &ddbErr) {
+				if ddbErr, ok := errors.AsType[*dynamodb.Error](err); ok {
 					assert.Contains(t, ddbErr.Type, "ResourceNotFoundException")
 				}
 			},

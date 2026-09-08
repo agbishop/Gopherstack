@@ -412,7 +412,7 @@ func TestApplyIntegrationResponseParams(t *testing.T) {
 			},
 			checkResult: func(t *testing.T, w *httptest.ResponseRecorder) {
 				t.Helper()
-				assert.Equal(t, "X-Amzn-Requestid", w.Header().Get("X-Request-Id"))
+				assert.Equal(t, "X-Amzn-Requestid", w.Header().Get("X-Request-ID"))
 			},
 		},
 		{
