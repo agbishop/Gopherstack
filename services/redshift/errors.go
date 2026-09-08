@@ -131,6 +131,16 @@ var (
 	// access it, and other accounts' authorizations must be revoked before
 	// the snapshot can be deleted.
 	ErrSnapshotHasAuthorizedAccounts = errors.New("InvalidClusterSnapshotState")
+	// ErrClusterInvalidState is returned by ModifyCluster when the target
+	// cluster is not in the "available" state (ErrorCode() "InvalidClusterState",
+	// verified against InvalidClusterStateFault in types/errors.go -- "The
+	// specified cluster is not in the available state" -- and this op's own
+	// declared error switch, awsAwsquery_deserializeOpErrorModifyCluster in
+	// deserializers.go). Deliberately distinct from ErrResizeNotCancellable and
+	// ErrNamespaceRegistrationInvalidClusterState, which carry the same wire
+	// text for unrelated call sites -- see errCodeSentinels, where resolveErrCode
+	// only needs the sentinel's Error() text to match.
+	ErrClusterInvalidState = errors.New("InvalidClusterState")
 	// ErrInvalidS3KeyPrefix is returned by EnableLogging when S3KeyPrefix
 	// contains a character outside the set documented on
 	// EnableLoggingInput.S3KeyPrefix (ErrorCode() "InvalidS3KeyPrefixFault",

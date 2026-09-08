@@ -1781,3 +1781,129 @@ and the remaining IDC-application/lakehouse/advisor families).
 Gates: `go build ./services/redshift/...`, `go vet ./...` (repo-wide, clean),
 `go test -race -count=1 ./services/redshift/...` (pass, no test changes needed
 since no code changed), `golangci-lint run ./services/redshift/...` (0 issues).
+
+## 2026-09-08 delete/modify precondition sweep (gopherstack-d1xc, partial)
+
+Scope per gopherstack-d1xc: delete/modify preconditions beyond
+DeleteClusterSnapshot (subnet/security/parameter-group in-use checks on
+delete, cluster-state preconditions on Modify ops), ghost rows after delete,
+performance, resource leaks. This pass did NOT finish the list -- see NOT
+COVERED below.
+
+**nil-on-write fall-through (elasticache-class bug) checked first, NOT
+PRESENT here.** `writeError`/`handleOpError` (`handler.go:882-903`) return a
+value the caller returns directly (`return h.handleOpError(c, action, opErr)`
+at `handler.go:547`, `dispatch`'s only caller), and are used in only 8 call
+sites total across the whole package, all direct-return. Individual op
+handlers (`handleModifyCluster` etc.) never touch `echo.Context` at all --
+they return `(any, error)` to `dispatch`, which is the sole place an error is
+turned into a wire response. There is no intermediate site where a rejection
+write's return value is stored and re-checked, so the bug class this campaign
+keeps finding elsewhere cannot occur in this package's current shape.
+
+**In-use preconditions on delete (priority 1):**
+- `DeleteClusterSecurityGroup` (`security_groups.go:44`) and
+  `DeleteClusterParameterGroup` (`param_groups.go:138`) ALREADY had correct
+  in-use checks (loop over `b.clusters.All()`, reject with
+  `ErrSecurityGroupInvalidState`/`ErrParameterGroupInvalidState` if any
+  cluster references the group) with existing tests
+  (`handler_security_groups_test.go`/`handler_param_groups_test.go`,
+  `associated_with_cluster_rejected` cases) asserting the 400 + wire code. Not
+  modified this pass; not a defect.
+- `DeleteClusterSubnetGroup` (`subnet_groups.go:60`) has NO in-use check at
+  all, and real `DeleteClusterSubnetGroup` declares
+  `InvalidClusterSubnetGroupStateFault` ("The cluster subnet group cannot be
+  deleted because it is in use", confirmed against botocore
+  redshift/2012-12-01/service-2.json). **This is structurally blocked, not a
+  quick fix**: `Cluster` (`models.go:346`) has no `ClusterSubnetGroupName`
+  field at all -- `CreateCluster` (`handler.go:553`,`store.go:211`) never
+  reads or stores a subnet group reference, so there is nothing to check
+  in-use against. This gap was already flagged (not fixed) in the
+  2026-08-29 PARITY.md entry above ("missing-feature gap, not a wrong-key
+  bug"). Fixing it for real means adding the field to `Cluster` (persisted
+  type change), parsing `ClusterSubnetGroupName` in `handleCreateCluster`,
+  validating it against `ClusterSubnetGroupNotFoundFault` (also declared on
+  `CreateClusterInput`), and only then adding the in-use check -- and
+  `Backend.CreateCluster`'s signature is called at 84 sites across this
+  package's test files alone, so a signature change ripples everywhere. Left
+  unfixed this pass as out of budget for a P3 sweep; flagging it explicitly
+  rather than leaving it silently unaudited.
+
+**Cluster-state preconditions on Modify ops (priority 3) -- two fixed, rest
+surveyed but not fixed:**
+
+1. **`ModifyCluster` accepted modification of a non-`available` cluster.**
+   Real `ModifyCluster` declares `InvalidClusterStateFault` ("The specified
+   cluster is not in the available state", confirmed against
+   `InvalidClusterStateFault`'s botocore doc and its presence in
+   `awsAwsquery_deserializeOpErrorModifyCluster`,
+   aws-sdk-go-v2/service/redshift@v1.65.4/deserializers.go). `PauseCluster`
+   (`cluster_mgmt.go`) sets `Status="paused"` with no reconciler transition
+   back, so a paused cluster is a real, reachable, indefinite non-available
+   state (no activation-delay config needed). Before the fix, `ModifyCluster`
+   on a paused cluster silently applied the change and left the cluster
+   `paused` with a mutated `NodeType` -- a real client would see 200 OK and a
+   changed cluster where AWS would 400. Regression test
+   `TestModifyCluster_RejectsWhenClusterNotAvailable`
+   (`handler_cluster_mgmt_test.go`) confirmed failing pre-fix (asserted 400,
+   got 200 with `NodeType` changed to `ra3.xlplus`); fix adds the same
+   available-state guard `namespace_registration.go:132` already uses for
+   `RegisterNamespace`, via a new sentinel `ErrClusterInvalidState`
+   (`errors.go`, wired into `errCodeSentinels`). Test asserts the emitted
+   wire code AND that a follow-up `DescribeClusters` shows the original
+   `NodeType`/status unchanged (not just that some error occurred).
+2. **`ModifyClusterIamRoles` had the same gap** -- its declared error set is
+   `[InvalidClusterStateFault, ClusterNotFoundFault]` only (botocore), i.e.
+   the state check is essentially the entire precondition surface this op
+   has beyond existence. Regression test
+   `TestModifyClusterIamRoles_RejectsWhenClusterNotAvailable` confirmed
+   failing pre-fix (200, role silently added to a paused cluster); fixed
+   with the same `ErrClusterInvalidState` guard in
+   `ModifyClusterIamRoles` (`cluster_mgmt.go:302`).
+
+Both new tests run under `-race -count=10` (10/10 pass); neither touches
+global/shared state (each spins up its own `InMemoryBackend`/`Handler`), so
+no `synctest` or parallelism-flake concern applies.
+
+**NOT COVERED this pass** (confirmed missing the same class of guard by
+reading each function body, not fixed -- flagging honestly rather than
+silently skipping): `ModifyClusterMaintenance` (`cluster_mgmt.go:343`),
+`ModifyClusterDBRevision`, `ModifyAquaConfiguration`,
+`ModifyLakehouseConfiguration`, `RebootCluster`, `PauseCluster` itself (can a
+non-`available` cluster be paused?), `ResumeCluster` (must the cluster be
+`paused`, not just non-available, to resume?), `ResizeCluster` -- all declare
+`InvalidClusterStateFault` per botocore (`ModifyClusterDbRevision` additionally
+`ClusterOnLatestRevisionFault`) but none were checked against the backend
+code in this pass. Also not covered: `DeleteCluster`'s own state precondition
+(can you delete a cluster mid-resize/reboot?), and the ~130 remaining ops in
+this package's Delete/Modify surface not named above.
+
+**Ghost rows after delete:** spot-checked `DescribeClusters` (lazily calls
+`advanceClusterStates` before reading, `store.go:337-343`, so a
+reconciler-pending delete is never stale-visible) and `DeleteEndpointAccess`
+(`endpoint_access.go:70`, deletes from the map before returning, ephemeral
+"deleting" status only on the returned copy, not stored) -- both clean, no
+defect. The other ~27 `Delete*`/`Deregister*` backend methods in this package
+(listed by `grep -n "^func (b \*InMemoryBackend) Delete"`) were NOT
+individually re-verified for ghost-row correctness this pass.
+
+**Resource leaks:** the package has exactly one ticker/background goroutine
+(`reconciler.go`'s `reconcileLoop`, via `time.NewTicker`). Read in full:
+`StartReconciler`/`StopReconciler` are wired to `service.BackgroundWorker`/
+`service.Shutdowner` (`handler.go:74-86`) with the framework's real ctx (not
+`context.Background()`), the loop selects on both `ctx.Done()` and an
+explicit stop channel, `ticker.Stop()` is deferred, and `StopReconciler`
+blocks on a `WaitGroup` until the goroutine actually exits. No leak found --
+confirmed by reading the full lifecycle, not by grep absence.
+
+**Performance:** not audited this pass beyond what the above reading surfaced
+(no O(n^2) or obviously pathological pattern noticed in the functions read,
+but no dedicated pass was made).
+
+No persisted-type field was added (only a new error sentinel and status
+checks), so `pkgs/persistence` golden data needed no `-update`; ran
+`go test ./pkgs/persistence/...` anyway to confirm (pass).
+
+Gates this pass: `golangci-lint run ./services/redshift/...` (0 issues),
+`go test -race ./services/redshift/...` (pass), plus the two new tests
+individually under `-race -count=10` (10/10 pass each).

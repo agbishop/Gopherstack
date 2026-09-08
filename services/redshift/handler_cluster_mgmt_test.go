@@ -677,6 +677,34 @@ func TestModifyClusterIamRoles_Persists(t *testing.T) {
 	assert.Contains(t, rec4.Body.String(), "Role2")
 }
 
+// TestModifyClusterIamRoles_RejectsWhenClusterNotAvailable verifies real
+// AWS's InvalidClusterStateFault precondition on ModifyClusterIamRoles
+// (confirmed against this op's declared error set in botocore's
+// redshift/2012-12-01/service-2.json -- only InvalidClusterStateFault and
+// ClusterNotFoundFault -- and awsAwsquery_deserializeOpErrorModifyClusterIamRoles
+// in aws-sdk-go-v2/service/redshift@v1.65.4/deserializers.go).
+func TestModifyClusterIamRoles_RejectsWhenClusterNotAvailable(t *testing.T) {
+	t.Parallel()
+
+	h := newRedshiftHandler()
+	postRedshiftForm(t, h, "Action=CreateCluster&Version=2012-12-01&ClusterIdentifier=iam-paused-cluster")
+
+	recPause := postRedshiftForm(t, h,
+		"Action=PauseCluster&Version=2012-12-01&ClusterIdentifier=iam-paused-cluster")
+	require.Equal(t, http.StatusOK, recPause.Code)
+
+	rec := postRedshiftForm(t, h,
+		"Action=ModifyClusterIamRoles&Version=2012-12-01&ClusterIdentifier=iam-paused-cluster"+
+			"&AddIamRoles.IamRoleArn.1=arn:aws:iam::123456789012:role/Role1")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "InvalidClusterState")
+
+	recDescribe := postRedshiftForm(t, h,
+		"Action=DescribeClusters&Version=2012-12-01&ClusterIdentifier=iam-paused-cluster")
+	require.Equal(t, http.StatusOK, recDescribe.Code)
+	assert.NotContains(t, recDescribe.Body.String(), "Role1")
+}
+
 // TestModifyClusterMaintenance_Persists verifies that maintenance window is stored.
 func TestModifyClusterMaintenance_Persists(t *testing.T) {
 	t.Parallel()
@@ -735,6 +763,40 @@ func TestModifyCluster_ApplyImmediately(t *testing.T) {
 			assert.Contains(t, rec.Body.String(), tt.wantNodeTypeInCluster)
 		})
 	}
+}
+
+// TestModifyCluster_RejectsWhenClusterNotAvailable verifies real AWS's
+// InvalidClusterStateFault precondition ("The specified cluster is not in
+// the available state", confirmed against InvalidClusterStateFault's
+// documentation in botocore's redshift/2012-12-01/service-2.json and its
+// presence in ModifyCluster's declared error set, awsAwsquery_deserializeOpErrorModifyCluster
+// in aws-sdk-go-v2/service/redshift@v1.65.4/deserializers.go). A paused
+// cluster stays paused indefinitely in this backend (PauseCluster sets
+// Status="paused" with no reconciler transition back), so this is reachable
+// without any activation-delay configuration.
+func TestModifyCluster_RejectsWhenClusterNotAvailable(t *testing.T) {
+	t.Parallel()
+
+	h := newRedshiftHandler()
+	postRedshiftForm(t, h, "Action=CreateCluster&Version=2012-12-01&ClusterIdentifier=paused-cluster")
+
+	recPause := postRedshiftForm(t, h, "Action=PauseCluster&Version=2012-12-01&ClusterIdentifier=paused-cluster")
+	require.Equal(t, http.StatusOK, recPause.Code)
+
+	rec := postRedshiftForm(t, h,
+		"Action=ModifyCluster&Version=2012-12-01&ClusterIdentifier=paused-cluster&NodeType=ra3.xlplus")
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "InvalidClusterState")
+
+	// The rejected modify must not have mutated the cluster: NodeType stays
+	// at its original value and status stays "paused", not silently flipped
+	// back to "available" by the rejected call.
+	recDescribe := postRedshiftForm(t, h,
+		"Action=DescribeClusters&Version=2012-12-01&ClusterIdentifier=paused-cluster")
+	require.Equal(t, http.StatusOK, recDescribe.Code)
+	assert.Contains(t, recDescribe.Body.String(), "dc2.large")
+	assert.NotContains(t, recDescribe.Body.String(), "ra3.xlplus")
+	assert.Contains(t, recDescribe.Body.String(), "<ClusterStatus>paused</ClusterStatus>")
 }
 
 // TestModifyCluster_EncryptedTriState verifies that Encrypted and

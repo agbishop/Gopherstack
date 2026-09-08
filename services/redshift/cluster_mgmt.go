@@ -50,6 +50,13 @@ func (b *InMemoryBackend) ModifyCluster(id string, opts ModifyClusterOptions) (*
 		return nil, fmt.Errorf("%w: cluster %s not found", ErrClusterNotFound, id)
 	}
 
+	if cluster.Status != clusterStatusAvailable {
+		return nil, fmt.Errorf(
+			"%w: cluster %s is not in the available state (status %q)",
+			ErrClusterInvalidState, id, cluster.Status,
+		)
+	}
+
 	if opts.VpcSecurityGroupIDs != nil {
 		cluster.VpcSecurityGroupIDs = opts.VpcSecurityGroupIDs
 	}
@@ -303,6 +310,13 @@ func (b *InMemoryBackend) ModifyClusterIamRoles(id string, addRoles, removeRoles
 	cluster, exists := b.clusters.Get(id)
 	if !exists {
 		return nil, fmt.Errorf("%w: cluster %s not found", ErrClusterNotFound, id)
+	}
+
+	if cluster.Status != clusterStatusAvailable {
+		return nil, fmt.Errorf(
+			"%w: cluster %s is not in the available state (status %q)",
+			ErrClusterInvalidState, id, cluster.Status,
+		)
 	}
 
 	// Build a set of current roles for O(1) lookup.

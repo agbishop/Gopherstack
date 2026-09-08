@@ -867,6 +867,7 @@ var errCodeSentinels = []error{
 	ErrParameterGroupInvalidState,
 	ErrSnapshotHasAuthorizedAccounts,
 	ErrInvalidS3KeyPrefix,
+	ErrClusterInvalidState,
 }
 
 func resolveErrCode(opErr error) (string, int) {
