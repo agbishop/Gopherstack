@@ -6,6 +6,7 @@ import (
 
 var (
 	ErrStateMachineAlreadyExists       = errors.New("StateMachineAlreadyExists")
+	ErrStateMachineDeleting            = errors.New("StateMachineDeleting")
 	ErrStateMachineDoesNotExist        = errors.New("StateMachineDoesNotExist")
 	ErrStateMachineVersionDoesNotExist = errors.New("StateMachineVersionDoesNotExist")
 	ErrStateMachineAliasAlreadyExists  = errors.New("StateMachineAliasAlreadyExists")

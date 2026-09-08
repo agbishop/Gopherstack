@@ -97,6 +97,12 @@ func (b *InMemoryBackend) StartSyncExecution(
 	}
 	sm := resolved.SM
 
+	if sm.Status == statusDeleting {
+		b.mu.RUnlock()
+
+		return nil, fmt.Errorf("%w: %s", ErrStateMachineDeleting, stateMachineArn)
+	}
+
 	if sm.Type != "EXPRESS" {
 		b.mu.RUnlock()
 
@@ -282,6 +288,10 @@ func (b *InMemoryBackend) startExecutionLocked(
 		return nil, resolveErr
 	}
 	sm := resolved.SM
+
+	if sm.Status == statusDeleting {
+		return nil, fmt.Errorf("%w: %s", ErrStateMachineDeleting, stateMachineArn)
+	}
 
 	// AWS allows StartExecution (asynchronous execution) on EXPRESS state
 	// machines too -- only StartSyncExecution is restricted to EXPRESS.

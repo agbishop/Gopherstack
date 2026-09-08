@@ -307,6 +307,192 @@ func TestDeleteStateMachine(t *testing.T) {
 	}
 }
 
+// TestDeleteStateMachine_DeletingObservableWhileExecutionRunning is the
+// gopherstack-kx95 regression test: AWS's DeleteStateMachine is documented
+// as asynchronous -- "It sets the state machine's status to DELETING ...
+// A state machine is deleted only when all its executions are completed"
+// (sfn service-2.json). While a state machine has a running execution, its
+// DELETING status must be observable via DescribeStateMachine, and once
+// there are no running executions left, the sweep must complete the
+// physical removal.
+func TestDeleteStateMachine_DeletingObservableWhileExecutionRunning(t *testing.T) {
+	t.Parallel()
+
+	b := stepfunctions.NewInMemoryBackendWithConfig("123456789012", "us-east-1")
+
+	sm, err := b.CreateStateMachine(context.Background(), "deleting-sm", waitDefinition, "arn:role", "STANDARD")
+	require.NoError(t, err)
+
+	smARN := sm.StateMachineArn
+
+	exec, err := b.StartExecution(smARN, "keep-alive", "")
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = b.StopExecution(exec.ExecutionArn, "Test", "cleanup")
+	})
+
+	require.Eventually(t, func() bool {
+		d, dErr := b.DescribeExecution(exec.ExecutionArn)
+
+		return dErr == nil && d.Status == "RUNNING"
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.NoError(t, b.DeleteStateMachine(smARN))
+
+	desc, err := b.DescribeStateMachine(smARN)
+	require.NoError(t, err, "DELETING state machine must still be describable")
+	assert.Equal(t, "DELETING", desc.Status)
+
+	_, err = b.CreateStateMachine(context.Background(), "deleting-sm", waitDefinition, "arn:role", "STANDARD")
+	require.ErrorIs(t, err, stepfunctions.ErrStateMachineDeleting)
+
+	require.NoError(t, b.StopExecution(exec.ExecutionArn, "Test", "cleanup"))
+	require.Eventually(t, func() bool {
+		d, dErr := b.DescribeExecution(exec.ExecutionArn)
+
+		return dErr == nil && d.Status != "RUNNING"
+	}, 5*time.Second, 10*time.Millisecond)
+
+	swept := b.SweepDeletingStateMachines(context.Background())
+	assert.Equal(t, 1, swept)
+
+	_, err = b.DescribeStateMachine(smARN)
+	require.ErrorIs(t, err, stepfunctions.ErrStateMachineDoesNotExist)
+
+	freshSM, err := b.CreateStateMachine(context.Background(), "deleting-sm", waitDefinition, "arn:role", "STANDARD")
+	require.NoError(t, err, "name must be reusable once the sweep completes deletion")
+
+	t.Cleanup(func() {
+		_ = b.DeleteStateMachine(freshSM.StateMachineArn)
+	})
+}
+
+// TestStateMachineDeleting_BlocksClientCallableOps is the gopherstack-kx95
+// regression test for the error side: AWS declares StateMachineDeleting on
+// CreateStateMachine, CreateStateMachineAlias, ListStateMachineAliases,
+// PublishStateMachineVersion, StartExecution, StartSyncExecution,
+// UpdateStateMachine, and UpdateStateMachineAlias (aws-sdk-go-v2/service/sfn
+// deserializers.go; botocore stepfunctions service-2.json). Every one of
+// those must surface it -- not DoesNotExist, not silent success -- while the
+// target state machine is mid-deletion.
+func TestStateMachineDeleting_BlocksClientCallableOps(t *testing.T) {
+	t.Parallel()
+
+	b := stepfunctions.NewInMemoryBackendWithConfig("123456789012", "us-east-1")
+
+	sm, err := b.CreateStateMachine(context.Background(), "blocked-sm", waitDefinition, "arn:role", "EXPRESS")
+	require.NoError(t, err)
+
+	smARN := sm.StateMachineArn
+
+	version, err := b.PublishStateMachineVersion(smARN, "v1", "")
+	require.NoError(t, err)
+
+	alias, err := b.CreateStateMachineAlias(smARN, "live", "", []stepfunctions.AliasRoutingConfig{
+		{StateMachineVersionArn: version.StateMachineVersionArn, Weight: 100},
+	})
+	require.NoError(t, err)
+
+	exec, err := b.StartExecution(smARN, "keep-alive", "")
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_ = b.StopExecution(exec.ExecutionArn, "Test", "cleanup")
+	})
+
+	require.Eventually(t, func() bool {
+		d, dErr := b.DescribeExecution(exec.ExecutionArn)
+
+		return dErr == nil && d.Status == "RUNNING"
+	}, 5*time.Second, 10*time.Millisecond)
+
+	require.NoError(t, b.DeleteStateMachine(smARN))
+
+	tests := []struct {
+		call func() error
+		name string
+	}{
+		{
+			name: "create_state_machine_same_name",
+			call: func() error {
+				_, callErr := b.CreateStateMachine(
+					context.Background(), "blocked-sm", waitDefinition, "arn:role", "EXPRESS",
+				)
+
+				return callErr
+			},
+		},
+		{
+			name: "create_alias",
+			call: func() error {
+				_, callErr := b.CreateStateMachineAlias(smARN, "second", "", []stepfunctions.AliasRoutingConfig{
+					{StateMachineVersionArn: version.StateMachineVersionArn, Weight: 100},
+				})
+
+				return callErr
+			},
+		},
+		{
+			name: "update_alias",
+			call: func() error {
+				_, callErr := b.UpdateStateMachineAlias(alias.StateMachineAliasArn, "updated", nil)
+
+				return callErr
+			},
+		},
+		{
+			name: "list_aliases",
+			call: func() error {
+				_, _, callErr := b.ListStateMachineAliases(smARN, "", 100)
+
+				return callErr
+			},
+		},
+		{
+			name: "publish_version",
+			call: func() error {
+				_, callErr := b.PublishStateMachineVersion(smARN, "v2", "")
+
+				return callErr
+			},
+		},
+		{
+			name: "start_execution",
+			call: func() error {
+				_, callErr := b.StartExecution(smARN, "second-exec", "")
+
+				return callErr
+			},
+		},
+		{
+			name: "start_sync_execution",
+			call: func() error {
+				_, callErr := b.StartSyncExecution(smARN, "sync-exec", "")
+
+				return callErr
+			},
+		},
+		{
+			name: "update_state_machine",
+			call: func() error {
+				_, _, callErr := b.UpdateStateMachine(smARN, "", "")
+
+				return callErr
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			gotErr := tt.call()
+			require.ErrorIs(t, gotErr, stepfunctions.ErrStateMachineDeleting)
+		})
+	}
+}
+
 func TestBackend_ValidateName_StateMachine(t *testing.T) {
 	t.Parallel()
 

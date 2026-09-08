@@ -895,3 +895,113 @@ too large a change to fold into this pass, worth its own tracked issue.
   with and without it, confirming it's documentation-only.
 - No persisted struct was touched; `pkgs/persistence` guard not re-run
   (nothing to check -- no field added).
+
+## 2026-09-08 pass (bd gopherstack-kx95): DELETING made observable, StateMachineDeleting wired to all 8 declaring ops
+
+Title claimed two linked things: (1) `DELETING` is never observable, and (2)
+therefore `StateMachineDeleting` can never be returned. Both were true of
+the code as of the 2026-09-07 pass's finding above, and both are now fixed
+-- this was a **real, fixable defect**, not a modelling gap, contra some of
+this campaign's other enum-reachability closes (amplify, networkmonitor,
+support, detective): those were async/externally-driven states a
+synchronous emulator has nothing to produce, but AWS's own docs say
+`DeleteStateMachine` is asynchronous with a real, bounded, backend-driven
+window -- not fabricated timing.
+
+**Ground truth (two independent oracles agreed):**
+- `aws-sdk-go-v2/service/sfn@v1.49.0` `types/errors.go:683-684`:
+  `// The specified state machine is being deleted.` /
+  `type StateMachineDeleting struct { Message *string; ... }`.
+- `types/enums.go:362-375`: `StateMachineStatus` has exactly two values,
+  `ACTIVE` and `DELETING`.
+- `deserializers.go` -- found via each op's
+  `awsAwsjson10_deserializeOpError<Op>` function boundaries (not `grep -n
+  'case "'`, which returns nothing for this shape): `StateMachineDeleting`
+  is declared by `CreateStateMachine` (:287), `CreateStateMachineAlias`
+  (:428), `ListStateMachineAliases` (:2381), `PublishStateMachineVersion`
+  (:2858), `StartExecution` (:3509), `StartSyncExecution` (:3647),
+  `UpdateStateMachine` (:4406), `UpdateStateMachineAlias` (:4535). Not
+  declared by `DeleteStateMachine` itself, `DescribeStateMachine`,
+  `ListStateMachines`, either `Delete*` op, `ListStateMachineVersions`, or
+  the tagging ops.
+- botocore `stepfunctions/2016-11-23/service-2.json.gz` (gzip+json):
+  identical 8-operation `errors` list for `StateMachineDeleting`, plus the
+  decisive fact the Go SDK doesn't carry -- `DeleteStateMachine`'s own
+  documentation: *"This is an asynchronous operation. It sets the state
+  machine's status to DELETING and begins the deletion process. A state
+  machine is deleted only when all its executions are completed. On the
+  next state transition, the state machine's executions are terminated."*
+  `StateMachineStatus` enum: `["ACTIVE", "DELETING"]`, no `httpStatusCode`
+  override on any of the three exception shapes checked.
+
+**Backend write-site enumeration** (boundary-matched `\.Status\s*=` across
+non-test `*.go`): `persistence.go:122-123` (execution timeout, unrelated),
+`executions.go` x6 (execution status, unrelated), `map_runs.go:120` (map
+run, unrelated), and the one that matters: `state_machines.go:144`
+(pre-fix) `sm.Status = statusDeleting` immediately followed by
+`b.stateMachines.Delete(arn)` in the same locked critical section --
+confirming the prior pass's finding verbatim: deletion was fully
+synchronous, so no request could ever observe `Status == DELETING`, and
+`CreateStateMachine`'s `sm.Status != statusDeleting` guard
+(`state_machines.go:99`, pre-fix) was dead code.
+
+**The fix**: `DeleteStateMachine` now only completes the physical delete
+immediately when the state machine has zero currently-`RUNNING` executions
+(`len(b.smExecsByStatus[arn][statusRunning]) > 0` gates it) -- this is the
+common case and keeps every pre-existing delete test's synchronous
+assertions valid unchanged. When executions are still running, the record
+is left in place with `Status = statusDeleting` (and its name-index entry,
+so the revived `CreateStateMachine` guard can see it); a new janitor tick
+(`sweepDeletingStateMachines`, alongside the existing `ExecutionPruner`,
+same `1m` default interval) calls the new `SweepDeletingStateMachines`,
+which physically completes deletion once the running-execution count drops
+to zero -- no artificial sleep, the window is bounded by real in-flight
+work plus the janitor's existing cadence. `CreateStateMachine`'s
+duplicate-name guard now returns `StateMachineDeleting` instead of
+silently falling through to create a second record at the same
+(name-derived, non-unique) ARN -- AWS ARNs have no uniquifying suffix, so
+that fallthrough was a latent same-ARN collision bug waiting on this same
+fix. `StateMachineDeleting` was wired into all 8 declaring ops
+(`CreateStateMachine`, `CreateStateMachineAlias`, `ListStateMachineAliases`,
+`PublishStateMachineVersion`, `StartExecution`, `StartSyncExecution`,
+`UpdateStateMachine`, `UpdateStateMachineAlias` -- the last required a new
+`aliasParentStateMachineLocked` reverse lookup since aliases don't store
+their parent SM ARN). Mapped in `classifyError` as `(StateMachineDeleting,
+409 Conflict)`, matching this service's existing convention for the
+`AlreadyExists`/`ConflictException` family (AWS's own JSON-1.0 wire status
+isn't per-exception-customized for this shape, so the repo's own
+established `classifyError` convention -- not literal AWS parity -- governs
+the HTTP status choice here, same as the pre-existing `DoesNotExist` →
+404 / `AlreadyExists` → 409 mappings).
+
+**Regression tests** (`state_machines_test.go`,
+`handler_state_machines_test.go`), all written and confirmed failing
+against unmodified code before the fix:
+- `TestDeleteStateMachine_DeletingObservableWhileExecutionRunning`: starts
+  an execution on a `Wait(3600s)` state machine, deletes it while running,
+  asserts `DescribeStateMachine` still succeeds with `Status == "DELETING"`
+  (pre-fix: `require.NoError` on `ErrStateMachineDoesNotExist` failed
+  immediately), asserts `CreateStateMachine` on the same name returns
+  `ErrStateMachineDeleting`, then stops the execution and asserts
+  `SweepDeletingStateMachines` completes the deletion and frees the name.
+- `TestStateMachineDeleting_BlocksClientCallableOps`: table of all 8
+  declaring ops against one shared DELETING state machine; pre-fix all 8
+  failed (`err == nil`, or the wrong sentinel -- `StateMachineDoesNotExist`/
+  `StateMachineAliasDoesNotExist` -- since the unmodified code fully
+  deleted the record before any of them could run); post-fix all 8 assert
+  `errors.Is(gotErr, ErrStateMachineDeleting)`.
+- `TestHandler_StartExecution_StateMachineDeleting`: wire-level check
+  through the real HTTP handler -- asserts the actual emitted
+  `resp["__type"] == "StateMachineDeleting"` and `rec.Code ==
+  http.StatusConflict` (409), not merely that an error occurred.
+
+### Verification
+
+- `GOTOOLCHAIN=go1.27.0 go test -race -count=1 ./services/stepfunctions/...`: pass (both `stepfunctions` and `stepfunctions/asl` packages).
+- `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/stepfunctions/...`: `0 issues.`
+- `GOTOOLCHAIN=go1.27.0 go build ./...`: clean (full-repo build, confirms no downstream breakage from the new exported `SweepDeletingStateMachines`/`ErrStateMachineDeleting`).
+- No integration test (`test/integration/stepfunctions*`) was added this
+  pass -- the backend-level and handler-level regression tests above
+  already assert the real emitted wire code end-to-end through the HTTP
+  handler; a full SDK-client round trip would need `make build-linux` +
+  Docker for a P3 fix already covered at the wire-format layer.

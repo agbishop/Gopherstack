@@ -346,6 +346,12 @@ func classifyError(reqErr error) (string, int) {
 		{ErrMapRunDoesNotExist, "ResourceNotFound", http.StatusNotFound},
 		{ErrTaskTokenNotFound, "TaskDoesNotExist", http.StatusNotFound},
 		{ErrStateMachineAlreadyExists, "StateMachineAlreadyExists", http.StatusConflict},
+		// AWS: CreateStateMachine/CreateStateMachineAlias/PublishStateMachineVersion/
+		// StartExecution/StartSyncExecution/UpdateStateMachine/UpdateStateMachineAlias/
+		// ListStateMachineAliases all model StateMachineDeleting for a state machine
+		// that is mid-deletion -- treated as a conflict, matching the
+		// AlreadyExists/ConflictException family below.
+		{ErrStateMachineDeleting, "StateMachineDeleting", http.StatusConflict},
 		// AWS: CreateStateMachineAlias models ConflictException for a duplicate
 		// alias name -- "StateMachineAliasAlreadyExists" names no type anywhere
 		// in this SDK.

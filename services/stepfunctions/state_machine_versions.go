@@ -18,6 +18,10 @@ func (b *InMemoryBackend) PublishStateMachineVersion(
 		return nil, fmt.Errorf("%w: %s", ErrStateMachineDoesNotExist, smARN)
 	}
 
+	if sm.Status == statusDeleting {
+		return nil, fmt.Errorf("%w: %s", ErrStateMachineDeleting, smARN)
+	}
+
 	versionNum := len(b.versionsByStateMachine.Get(smARN)) + 1
 	vARN := b.versionARN(smARN, sm.Name, versionNum)
 
