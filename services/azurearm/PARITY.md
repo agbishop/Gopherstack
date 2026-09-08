@@ -1,6 +1,6 @@
 ---
 service: azurearm
-sdk_module: hashicorp/terraform-provider-azurerm (pinned version TBD -- see "Audited against" below)
+sdk_module: hashicorp/terraform-provider-azurerm@v4.81.0 # latest 4.x as of 2026-09-08; test/terraform/azure pins "~> 4.0", not a go.mod dependency
 last_audit_commit: 764be44cf
 last_audit_date: 2026-09-08
 overall: B

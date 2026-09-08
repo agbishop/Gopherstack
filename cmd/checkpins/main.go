@@ -53,6 +53,17 @@ var pinRe = regexp.MustCompile(`^aws-sdk-go-v2/service/([A-Za-z0-9_-]+)@(v[0-9][
 // in go.mod (see loadGoModVersions).
 var azurePinRe = regexp.MustCompile(`^azure-sdk-for-go/sdk/([A-Za-z0-9_/-]+)@(v[0-9][0-9A-Za-z.\-+]*)$`)
 
+// hashicorpPinRe matches an sdk_module value shaped like
+// "hashicorp/terraform-provider-azurerm@v4.15.0" -- for services (starting
+// with services/azurearm, M7) audited against a Terraform provider's wire
+// behavior rather than a Go SDK client. A Terraform provider is a separate
+// downloaded binary, never a go.mod requirement, so unlike pinRe/azurePinRe
+// this pin is never cross-checked against go.mod (see evaluatePin) -- it
+// only has to be present and parseable, which is still real protection
+// against the exact "TBD"/unversioned placeholder this check exists to
+// catch.
+var hashicorpPinRe = regexp.MustCompile(`^hashicorp/([A-Za-z0-9_-]+)@(v[0-9][0-9A-Za-z.\-+]*)$`)
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "checkpins:", err)
@@ -188,6 +199,10 @@ func evaluatePin(slug, content string, goModVersions map[string]string) checkRes
 			kind:    resultMismatch,
 			message: fmt.Sprintf("%s: no sdk_module field in PARITY.md", slug),
 		}
+	}
+
+	if hashicorpPinRe.MatchString(strings.Trim(strings.TrimSpace(valueLine), `"'`)) {
+		return checkResult{kind: resultOK}
 	}
 
 	module, version, ok := parsePinValue(valueLine)
