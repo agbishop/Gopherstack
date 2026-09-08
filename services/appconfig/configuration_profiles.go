@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"sort"
+	"time"
 )
 
 // CreateConfigurationProfile creates a new configuration profile. See
@@ -39,6 +40,7 @@ func (b *InMemoryBackend) CreateConfigurationProfile(
 	}
 
 	profile := &ConfigurationProfile{
+		CreatedAt:        time.Now(),
 		ID:               newResourceID(),
 		ApplicationID:    applicationID,
 		Name:             name,
@@ -131,6 +133,41 @@ func configurationProfileToSummary(p ConfigurationProfile) ConfigurationProfileS
 	}
 }
 
+// configurationProfileOutput is the real API response shape for a
+// configuration profile -- GetConfigurationProfileOutput (also shared by
+// Create/UpdateConfigurationProfileOutput, appconfig@v1.48.4
+// api_op_GetConfigurationProfile.go:44-90, checked 2026-09-08) has
+// ApplicationId/Description/Id/KmsKeyArn/KmsKeyIdentifier/LocationUri/Name/
+// RetrievalRoleArn/Type/Validators only, no CreatedAt. KmsKeyArn is a
+// pre-existing, separately disclosed gap (models.go's ConfigurationProfile
+// doc comment); this converter only strips CreatedAt, ConfigurationProfile's
+// own internal-only field (see its doc comment).
+type configurationProfileOutput struct {
+	ApplicationID    string      `json:"ApplicationId"`
+	ID               string      `json:"Id"`
+	Name             string      `json:"Name"`
+	Description      string      `json:"Description,omitempty"`
+	LocationURI      string      `json:"LocationUri"`
+	Type             string      `json:"Type,omitempty"`
+	RetrievalRoleArn string      `json:"RetrievalRoleArn,omitempty"`
+	KmsKeyIdentifier string      `json:"KmsKeyIdentifier,omitempty"`
+	Validators       []Validator `json:"Validators,omitempty"`
+}
+
+func configurationProfileToOutput(p ConfigurationProfile) configurationProfileOutput {
+	return configurationProfileOutput{
+		ApplicationID:    p.ApplicationID,
+		ID:               p.ID,
+		Name:             p.Name,
+		Description:      p.Description,
+		LocationURI:      p.LocationURI,
+		Type:             p.Type,
+		RetrievalRoleArn: p.RetrievalRoleArn,
+		KmsKeyIdentifier: p.KmsKeyIdentifier,
+		Validators:       p.Validators,
+	}
+}
+
 // UpdateConfigurationProfile updates a configuration profile. A nil
 // name/description/retrievalRoleArn/validators means the request omitted
 // that field, and AWS AppConfig leaves an omitted field unchanged rather
@@ -180,7 +217,10 @@ func (b *InMemoryBackend) UpdateConfigurationProfile(
 }
 
 // DeleteConfigurationProfile deletes a configuration profile.
-func (b *InMemoryBackend) DeleteConfigurationProfile(applicationID, profileID string) error {
+// deletionProtectionCheck is the DeleteConfigurationProfileInput.DeletionProtectionCheck
+// header value (BYPASS, APPLY, ACCOUNT_DEFAULT, or "" for an absent header,
+// which behaves like ACCOUNT_DEFAULT).
+func (b *InMemoryBackend) DeleteConfigurationProfile(applicationID, profileID, deletionProtectionCheck string) error {
 	b.mu.Lock("DeleteConfigurationProfile")
 	defer b.mu.Unlock()
 
@@ -191,6 +231,12 @@ func (b *InMemoryBackend) DeleteConfigurationProfile(applicationID, profileID st
 			ErrConfigurationProfileNotFound,
 			profileID,
 		)
+	}
+
+	if err := b.checkDeletionProtectionLocked(
+		deletionProtectionCheck, applicationID, "", profileID, profile.CreatedAt,
+	); err != nil {
+		return err
 	}
 
 	profileArn := b.appconfigARN("application/" + applicationID + "/configurationprofile/" + profileID)

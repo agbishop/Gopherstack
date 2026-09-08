@@ -519,10 +519,13 @@ func TestHandler_ExperimentDefinition_HTTP_Errors(t *testing.T) {
 // "X-Amzn-Deletion-Protection-Check" header (appconfig@v1.48.4
 // serializers.go:1121, DeleteConfigurationProfileInput.DeletionProtectionCheck)
 // is actually read: a recognized types.DeletionProtectionCheck value still
-// deletes (this backend tracks no access-recency state to block on, so
-// APPLY/ACCOUNT_DEFAULT behave like BYPASS -- see PARITY.md), but an
-// unrecognized value -- which real AppConfig would reject -- now gets a
-// BadRequestException instead of being silently ignored.
+// deletes (newTestHandler's fixture never enables account-level deletion
+// protection nor wires an AppConfigData sibling, so checkDeletionProtectionLocked
+// allows every one of these regardless of header -- see
+// TestHandler_DeleteConfigurationProfile_DeletionProtectionCheck_EnforcesRecentRead
+// in deletion_protection_test.go for the actual blocking path,
+// gopherstack-z4v1), but an unrecognized value -- which real AppConfig would
+// reject -- now gets a BadRequestException instead of being silently ignored.
 func TestHandler_DeleteConfigurationProfile_DeletionProtectionCheck(t *testing.T) {
 	t.Parallel()
 

@@ -52,7 +52,7 @@ type StorageBackend interface {
 		monitors *[]Monitor,
 	) (*Environment, error)
 	// DeleteEnvironment deletes an environment.
-	DeleteEnvironment(applicationID, environmentID string) error
+	DeleteEnvironment(applicationID, environmentID, deletionProtectionCheck string) error
 
 	// CreateConfigurationProfile creates a new configuration profile. tags
 	// are applied inline at creation time (see CreateApplication).
@@ -79,7 +79,7 @@ type StorageBackend interface {
 		validators *[]Validator,
 	) (*ConfigurationProfile, error)
 	// DeleteConfigurationProfile deletes a configuration profile.
-	DeleteConfigurationProfile(applicationID, profileID string) error
+	DeleteConfigurationProfile(applicationID, profileID, deletionProtectionCheck string) error
 
 	// CreateHostedConfigurationVersion creates a hosted configuration
 	// version. latestVersionNumber implements the optional

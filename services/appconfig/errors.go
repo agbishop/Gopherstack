@@ -33,4 +33,8 @@ var (
 	ErrExperimentDefinitionNotFound = awserr.New("ResourceNotFoundException", awserr.ErrNotFound)
 	// ErrExperimentRunNotFound is returned when the requested experiment run does not exist.
 	ErrExperimentRunNotFound = awserr.New("ResourceNotFoundException", awserr.ErrNotFound)
+	// ErrDeletionProtected is returned when DeleteEnvironment/DeleteConfigurationProfile is
+	// blocked because AppConfigData recorded a GetLatestConfiguration call for the resource
+	// within the deletion-protection interval (gopherstack-z4v1).
+	ErrDeletionProtected = awserr.New("ConflictException", awserr.ErrConflict)
 )

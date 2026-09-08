@@ -1118,6 +1118,7 @@
       "AttributeValue.StringArray []string `json:\"StringArray,omitempty\"`",
       "AttributeValue.StringValue *string `json:\"StringValue,omitempty\"`",
       "ConfigurationProfile.ApplicationID string `json:\"ApplicationId\"`",
+      "ConfigurationProfile.CreatedAt time.Time `json:\"CreatedAt,omitzero\"`",
       "ConfigurationProfile.Description string `json:\"Description,omitempty\"`",
       "ConfigurationProfile.ID string `json:\"Id\"`",
       "ConfigurationProfile.KmsKeyIdentifier string `json:\"KmsKeyIdentifier,omitempty\"`",

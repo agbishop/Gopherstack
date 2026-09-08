@@ -54,7 +54,7 @@ func TestBackend_DeployedConfig_CascadeDeleteOnEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, deployedConfigCount(b))
 
-	require.NoError(t, b.DeleteEnvironment(appID, envID))
+	require.NoError(t, b.DeleteEnvironment(appID, envID, ""))
 	assert.Equal(t, 0, deployedConfigCount(b), "deployedConfigs must not leak after DeleteEnvironment")
 }
 
@@ -86,7 +86,7 @@ func TestBackend_DeployedConfig_CascadeDeleteOnProfile(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, deployedConfigCount(b))
 
-	require.NoError(t, b.DeleteConfigurationProfile(appID, profileID))
+	require.NoError(t, b.DeleteConfigurationProfile(appID, profileID, ""))
 	assert.Equal(t, 0, deployedConfigCount(b), "deployedConfigs must not leak after DeleteConfigurationProfile")
 }
 

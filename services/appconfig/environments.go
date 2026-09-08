@@ -137,14 +137,23 @@ func (b *InMemoryBackend) UpdateEnvironment(
 	return &cp, nil
 }
 
-// DeleteEnvironment deletes an environment.
-func (b *InMemoryBackend) DeleteEnvironment(applicationID, environmentID string) error {
+// DeleteEnvironment deletes an environment. deletionProtectionCheck is the
+// DeleteEnvironmentInput.DeletionProtectionCheck header value (BYPASS, APPLY,
+// ACCOUNT_DEFAULT, or "" for an absent header, which behaves like
+// ACCOUNT_DEFAULT).
+func (b *InMemoryBackend) DeleteEnvironment(applicationID, environmentID, deletionProtectionCheck string) error {
 	b.mu.Lock("DeleteEnvironment")
 	defer b.mu.Unlock()
 
 	env, ok := b.environments.Get(environmentID)
 	if !ok || env.ApplicationID != applicationID {
 		return fmt.Errorf("%w: environment %s", ErrEnvironmentNotFound, environmentID)
+	}
+
+	if err := b.checkDeletionProtectionLocked(
+		deletionProtectionCheck, applicationID, environmentID, "", env.CreatedAt,
+	); err != nil {
+		return err
 	}
 
 	envArn := b.appconfigARN("application/" + applicationID + "/environment/" + environmentID)

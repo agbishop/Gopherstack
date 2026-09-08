@@ -132,6 +132,7 @@ type InMemoryBackend struct {
 	experimentDefinitionsByApp     *store.Index[ExperimentDefinition]
 	experimentDefinitionsByAppName *store.Index[ExperimentDefinition]
 	configPublisher                DeployedConfigurationPublisher
+	appConfig                      any
 	region                         string
 	accountID                      string
 	paginationSecret               string
