@@ -1,6 +1,9 @@
 package azurearm
 
-import "context"
+import (
+	"context"
+	"maps"
+)
 
 // requestHostContextKey is the context key WithRequestHost/
 // RequestHostFromContext use to thread the ARM request's own Host header
@@ -26,20 +29,20 @@ func RequestHostFromContext(ctx context.Context) string {
 
 // ResourceGroup is the stored representation of an ARM resource group.
 type ResourceGroup struct {
+	Tags     map[string]string `json:"tags,omitempty"`
 	Name     string            `json:"name"`
 	Location string            `json:"location"`
-	Tags     map[string]string `json:"tags,omitempty"`
 }
 
 // Body returns the ARM wire response body for g, scoped to subscriptionID.
 func (g ResourceGroup) Body(subscriptionID string) map[string]any {
 	return map[string]any{
-		"id":       "/subscriptions/" + subscriptionID + "/resourceGroups/" + g.Name,
-		"name":     g.Name,
-		"type":     "Microsoft.Resources/resourceGroups",
-		"location": g.Location,
-		"tags":     tagsOrEmpty(g.Tags),
-		"properties": map[string]any{
+		"id":          "/subscriptions/" + subscriptionID + "/resourceGroups/" + g.Name,
+		fieldName:     g.Name,
+		fieldType:     "Microsoft.Resources/resourceGroups",
+		fieldLocation: g.Location,
+		fieldTags:     tagsOrEmpty(g.Tags),
+		fieldProperties: map[string]any{
 			"provisioningState": provisioningStateSucceeded,
 		},
 	}
@@ -52,35 +55,45 @@ func (g ResourceGroup) Body(subscriptionID string) map[string]any {
 // directly instead of using this type; Resource exists for the generic
 // pass-through path every namespace gets even without a dedicated RP.
 type Resource struct {
-	ID         ResourceID
-	Location   string
 	Tags       map[string]string
 	Properties map[string]any
 	SKU        map[string]any
+	Location   string
 	Kind       string
+	ID         ResourceID
 }
 
 // provisioningStateSucceeded is the only provisioningState this emulator
 // ever returns -- ARM is always synchronous here (AZURE.md section 10.3).
 const provisioningStateSucceeded = "Succeeded"
 
+// ARM wire-body field names shared by ResourceGroup.Body, Resource.Body, and
+// rp_storage.go's own response bodies (goconst: each appears 3+ times across
+// this file and rp_storage.go).
+const (
+	fieldName       = "name"
+	fieldType       = "type"
+	fieldLocation   = "location"
+	fieldTags       = "tags"
+	fieldProperties = "properties"
+	fieldValue      = "value"
+)
+
 // Body returns the ARM wire response body for r.
 func (r Resource) Body() map[string]any {
 	props := map[string]any{}
 
-	for k, v := range r.Properties {
-		props[k] = v
-	}
+	maps.Copy(props, r.Properties)
 
 	props["provisioningState"] = provisioningStateSucceeded
 
 	body := map[string]any{
-		"id":         r.ID.ARMID(),
-		"name":       r.ID.LeafName(),
-		"type":       r.ID.ResourceType(),
-		"location":   r.Location,
-		"tags":       tagsOrEmpty(r.Tags),
-		"properties": props,
+		"id":            r.ID.ARMID(),
+		fieldName:       r.ID.LeafName(),
+		fieldType:       r.ID.ResourceType(),
+		fieldLocation:   r.Location,
+		fieldTags:       tagsOrEmpty(r.Tags),
+		fieldProperties: props,
 	}
 
 	if len(r.SKU) > 0 {
@@ -115,7 +128,7 @@ func stringTags(v any) map[string]string {
 	out := make(map[string]string, len(m))
 
 	for k, val := range m {
-		if s, ok := val.(string); ok {
+		if s, isString := val.(string); isString {
 			out[k] = s
 		}
 	}

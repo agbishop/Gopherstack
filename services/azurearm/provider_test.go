@@ -20,10 +20,10 @@ func TestProvider_Init(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
 		appCtx   *service.AppContext
-		wantErr  bool
+		name     string
 		wantPort int
+		wantErr  bool
 	}{
 		{
 			name:    "nil app context errors",

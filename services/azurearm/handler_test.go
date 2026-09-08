@@ -27,7 +27,7 @@ import (
 // certificate in tests (production clients rely on system trust +
 // SSL_CERT_FILE instead -- see test/terraform/azure).
 func insecureTLSTransport() *http.Transport {
-	return &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // test-only
+	return &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 }
 
 // newTestHandler builds a Handler wired the same way Provider.Init does,
@@ -169,7 +169,7 @@ func TestHandler_ResourceGroupCRUD(t *testing.T) {
 	status, _ = doRequest(t, h, http.MethodPut, base+"/resourcegroups/rg1", []byte(`{"location":"eastus"}`))
 	require.Equal(t, http.StatusOK, status)
 
-	status, listBody := doRequestList(t, h, http.MethodGet, base+"/resourcegroups")
+	status, listBody := doRequestList(t, h, base+"/resourcegroups")
 	require.Equal(t, http.StatusOK, status)
 	values, ok := listBody["value"].([]any)
 	require.True(t, ok)
@@ -197,7 +197,13 @@ func TestHandler_GenericResourceAndListKeys(t *testing.T) {
 
 	resourcePath := base + "/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/acct1"
 
-	status, body := doRequest(t, h, http.MethodPut, resourcePath, []byte(`{"location":"westus","sku":{"name":"Standard_LRS"}}`))
+	status, body := doRequest(
+		t,
+		h,
+		http.MethodPut,
+		resourcePath,
+		[]byte(`{"location":"westus","sku":{"name":"Standard_LRS"}}`),
+	)
 	require.Equal(t, http.StatusCreated, status)
 	assert.Equal(t, "acct1", body["name"])
 
@@ -212,7 +218,7 @@ func TestHandler_GenericResourceAndListKeys(t *testing.T) {
 	require.True(t, ok)
 	assert.Len(t, keys, 2)
 
-	status, listBody := doRequestList(t, h, http.MethodGet,
+	status, listBody := doRequestList(t, h,
 		base+"/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts")
 	require.Equal(t, http.StatusOK, status)
 	values, ok := listBody["value"].([]any)
@@ -238,7 +244,7 @@ func TestHandler_ProviderRegistration(t *testing.T) {
 	require.Equal(t, http.StatusOK, status)
 	assert.Equal(t, "Registered", body["registrationState"])
 
-	status, listBody := doRequestList(t, h, http.MethodGet, base+"/providers")
+	status, listBody := doRequestList(t, h, base+"/providers")
 	require.Equal(t, http.StatusOK, status)
 	values, ok := listBody["value"].([]any)
 	require.True(t, ok)
@@ -254,7 +260,7 @@ func TestHandler_SubscriptionsAndTenants(t *testing.T) {
 	h := newTestHandler(t)
 	sub := h.Settings.SubscriptionID
 
-	status, listBody := doRequestList(t, h, http.MethodGet, "/subscriptions")
+	status, listBody := doRequestList(t, h, "/subscriptions")
 	require.Equal(t, http.StatusOK, status)
 	values, ok := listBody["value"].([]any)
 	require.True(t, ok)
@@ -264,7 +270,7 @@ func TestHandler_SubscriptionsAndTenants(t *testing.T) {
 	require.Equal(t, http.StatusOK, status)
 	assert.Equal(t, sub, body["subscriptionId"])
 
-	status, listBody = doRequestList(t, h, http.MethodGet, "/tenants")
+	status, listBody = doRequestList(t, h, "/tenants")
 	require.Equal(t, http.StatusOK, status)
 	values, ok = listBody["value"].([]any)
 	require.True(t, ok)
@@ -327,10 +333,10 @@ func doRequestRaw(t *testing.T, h *azurearm.Handler, method, path string, body [
 	return rec.Code, rec.Body.Bytes()
 }
 
-func doRequestList(t *testing.T, h *azurearm.Handler, method, path string) (int, map[string]any) {
+func doRequestList(t *testing.T, h *azurearm.Handler, path string) (int, map[string]any) {
 	t.Helper()
 
-	return doRequest(t, h, method, path, nil)
+	return doRequest(t, h, http.MethodGet, path, nil)
 }
 
 // TestHandler_StartWorker_BindsServesHTTPS proves the dedicated listener

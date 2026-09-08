@@ -1,12 +1,5 @@
 package azurearm
 
-// metadataAPIVersion is the ONLY api-version the metadata endpoint is served
-// under. Real ARM's metadata endpoint is versioned 2022-09-01 specifically
-// (confirmed against go-azure-sdk's metadata client) -- not "1.0", which most
-// public docs/Azure Stack examples show and which the real client does not
-// request. See AZURE.md section 10.1/10.8.
-const metadataAPIVersion = "2022-09-01"
-
 // EnvironmentDescriptor is one entry of the GET /metadata/endpoints response
 // array. Field set and semantics verified against
 // hashicorp/go-azure-sdk's environments.FromEndpoint, which hard-fails on a
@@ -15,27 +8,27 @@ const metadataAPIVersion = "2022-09-01"
 // every one of those three, plus every other field FromEndpoint reads, is
 // populated below.
 type EnvironmentDescriptor struct {
-	Name                    string                 `json:"name"`
-	Portal                  string                 `json:"portal"`
-	Authentication          EnvironmentAuth        `json:"authentication"`
+	Suffixes                EnvironmentSuffixes    `json:"suffixes"`
+	Gallery                 string                 `json:"gallery"`
 	Media                   string                 `json:"media,omitempty"`
 	Graph                   string                 `json:"graph"`
 	GraphAudience           string                 `json:"graphAudience"`
-	Gallery                 string                 `json:"gallery"`
+	Name                    string                 `json:"name"`
 	ResourceManager         string                 `json:"resourceManager"`
 	ResourceManagerEndpoint string                 `json:"resourceManagerEndpoint"`
 	ActiveDirectoryDataLake string                 `json:"activeDirectoryDataLake,omitempty"`
 	SQLManagement           string                 `json:"sqlManagement,omitempty"`
 	Batch                   string                 `json:"batch,omitempty"`
-	Suffixes                EnvironmentSuffixes    `json:"suffixes"`
+	Portal                  string                 `json:"portal"`
 	ResourceIdentifiers     EnvironmentResourceIDs `json:"resourceIdentifiers"`
+	Authentication          EnvironmentAuth        `json:"authentication"`
 }
 
 // EnvironmentAuth is EnvironmentDescriptor's "authentication" field.
 type EnvironmentAuth struct {
 	LoginEndpoint string   `json:"loginEndpoint"`
-	Audiences     []string `json:"audiences"`
 	Tenant        string   `json:"tenant"`
+	Audiences     []string `json:"audiences"`
 }
 
 // EnvironmentSuffixes is EnvironmentDescriptor's "suffixes" field.

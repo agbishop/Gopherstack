@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,13 +53,11 @@ const (
 type Handler struct {
 	Backend  *InMemoryBackend
 	Registry *Registry
-	Settings Settings
 	Issuer   *aadauth.Issuer
-
-	srvMu *lockmetrics.RWMutex
-	srv   *http.Server
-	// Port is the TCP port StartWorker binds. Set from Settings at Init time.
-	Port int
+	srvMu    *lockmetrics.RWMutex
+	srv      *http.Server
+	Settings Settings
+	Port     int
 }
 
 // NewHandler creates a new ARM Handler.
@@ -139,69 +138,230 @@ func (h *Handler) Handler() echo.HandlerFunc {
 	}
 }
 
-// dispatch routes on the request path's shape. A single large switch (rather
-// than per-route Echo registrations) mirrors services/azureblob's
-// splitPath-based dispatch and is what makes the generic resource plane's
-// "one path walker, no per-type routes" requirement (AZURE.md section 10.1)
-// possible.
-func (h *Handler) dispatch(c *echo.Context, segs []string) error {
-	switch {
-	case len(segs) == 2 && segs[0] == "metadata" && segs[1] == "endpoints":
-		return h.handleMetadataEndpoints(c)
-	case len(segs) == 2 && segs[0] == "common" && segs[1] == "discovery":
-		// handled by discovery/instance below (3 segs); this case is
-		// unreachable but kept for readability of the shape.
-		return h.writeNotFound(c)
-	case len(segs) == 3 && segs[0] == "common" && segs[1] == "discovery" && segs[2] == "instance":
-		return h.handleInstanceDiscovery(c)
-	case len(segs) == 4 && segs[1] == "v2.0" && segs[2] == ".well-known" && segs[3] == "openid-configuration":
-		return h.handleOpenIDConfiguration(c, segs[0])
-	case len(segs) == 3 && segs[1] == "oauth2" && segs[2] == "token":
-		return h.handleToken(c, segs[0])
-	case len(segs) == 4 && segs[1] == "oauth2" && segs[2] == "v2.0" && segs[3] == "token":
-		return h.handleToken(c, segs[0])
-	case len(segs) == 4 && segs[1] == "discovery" && segs[2] == "v2.0" && segs[3] == "keys":
-		return h.handleJWKS(c)
-	default:
-		return h.dispatchARMResource(c, segs)
-	}
+// armRoute is one entry in the dispatch table: match reports whether segs
+// (and, for a few routes, the request method) fit this route's shape;
+// handle serves it. Table-driven dispatch (rather than one large
+// switch/if-chain) is what makes the generic resource plane's "one path
+// walker, no per-type routes" requirement (AZURE.md section 10.1) possible
+// while keeping any single function's cyclomatic complexity low -- each
+// match closure is a handful of trivial comparisons, and the dispatcher
+// itself is just a loop.
+type armRoute struct {
+	match  func(segs []string, r *http.Request) bool
+	handle func(h *Handler, c *echo.Context, segs []string) error
 }
 
-// dispatchARMResource handles every /subscriptions/... and /tenants shape:
-// subscriptions/tenants list+get, provider registration, resource-group
-// CRUD, and the generic resource plane (PUT/GET/DELETE/listKeys).
-func (h *Handler) dispatchARMResource(c *echo.Context, segs []string) error { //nolint:cyclop // one dispatcher table, not meaningfully splittable
-	switch {
-	case len(segs) == 1 && strings.EqualFold(segs[0], "tenants"):
-		return h.handleListTenants(c)
-	case len(segs) == 1 && strings.EqualFold(segs[0], subscriptionsSegment):
-		return h.handleListSubscriptions(c)
-	case len(segs) == 2 && strings.EqualFold(segs[0], subscriptionsSegment):
-		return h.handleGetSubscription(c, segs[1])
-	case len(segs) == 3 && strings.EqualFold(segs[0], subscriptionsSegment) && strings.EqualFold(segs[2], providersSegment):
-		return h.handleListProviders(c, segs[1])
-	case len(segs) == 4 && strings.EqualFold(segs[0], subscriptionsSegment) && strings.EqualFold(segs[2], providersSegment):
-		return h.handleGetProvider(c, segs[1], segs[3])
-	case len(segs) == 5 && strings.EqualFold(segs[0], subscriptionsSegment) &&
-		strings.EqualFold(segs[2], providersSegment) && strings.EqualFold(segs[4], "register") && c.Request().Method == http.MethodPost:
-		return h.handleRegisterProvider(c, segs[1], segs[3])
-	case len(segs) == 3 && strings.EqualFold(segs[0], subscriptionsSegment) && strings.EqualFold(segs[2], resourceGroupsSegment):
-		return h.handleListResourceGroups(c, segs[1])
-	case len(segs) == 4 && strings.EqualFold(segs[0], subscriptionsSegment) && strings.EqualFold(segs[2], resourceGroupsSegment):
-		return h.handleResourceGroup(c, segs[1], segs[3])
-	case len(segs) >= 6 && strings.EqualFold(segs[len(segs)-1], "listKeys") && c.Request().Method == http.MethodPost:
-		return h.handleListKeys(c, segs[:len(segs)-1])
-	case len(segs) == 5 && strings.EqualFold(segs[0], subscriptionsSegment) && strings.EqualFold(segs[2], providersSegment):
-		return h.handleListResources(c, segs)
-	case len(segs) == 7 && strings.EqualFold(segs[0], subscriptionsSegment) &&
-		strings.EqualFold(segs[2], resourceGroupsSegment) && strings.EqualFold(segs[4], providersSegment):
-		return h.handleListResources(c, segs)
-	case len(segs) >= 7 && strings.EqualFold(segs[0], subscriptionsSegment) &&
-		strings.EqualFold(segs[2], resourceGroupsSegment) && strings.EqualFold(segs[4], providersSegment):
-		return h.handleGenericResource(c)
-	default:
-		return h.writeNotFound(c)
+// aadDiscoveryRoutes handles the AAD/metadata discovery and token shapes:
+// GET /metadata/endpoints, GET /common/discovery/instance, GET
+// /{tenant}/v2.0/.well-known/openid-configuration, POST
+// /{tenant}/oauth2[/v2.0]/token, GET /{tenant}/discovery/v2.0/keys.
+//
+//nolint:gochecknoglobals // static route table, read-only after init
+var aadDiscoveryRoutes = []armRoute{
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 2 && segs[0] == "metadata" && segs[1] == "endpoints"
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleMetadataEndpoints(c) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 3 && segs[0] == "common" && segs[1] == discoverySegment && segs[2] == "instance"
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleInstanceDiscovery(c) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && segs[1] == aadAPIVersionSegment &&
+				segs[2] == ".well-known" && segs[3] == "openid-configuration"
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleOpenIDConfiguration(c, segs[0])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 3 && segs[1] == "oauth2" && segs[2] == "token"
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error { return h.handleToken(c, segs[0]) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && segs[1] == "oauth2" && segs[2] == aadAPIVersionSegment && segs[3] == "token"
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error { return h.handleToken(c, segs[0]) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && segs[1] == discoverySegment &&
+				segs[2] == aadAPIVersionSegment && segs[3] == "keys"
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleJWKS(c) },
+	},
+}
+
+// dispatch routes on the request path's shape: the AAD discovery/token
+// routes first, then everything under /subscriptions and /tenants.
+func (h *Handler) dispatch(c *echo.Context, segs []string) error {
+	if handled, err := matchRoutes(aadDiscoveryRoutes, h, c, segs); handled {
+		return err
 	}
+
+	return h.dispatchARMResource(c, segs)
+}
+
+// matchRoutes returns the first matching route's result, or handled=false if
+// none match.
+func matchRoutes(routes []armRoute, h *Handler, c *echo.Context, segs []string) (bool, error) {
+	r := c.Request()
+
+	for _, route := range routes {
+		if route.match(segs, r) {
+			return true, route.handle(h, c, segs)
+		}
+	}
+
+	return false, nil
+}
+
+// isSubscriptionScoped reports whether segs[0] equals subscriptionsSegment
+// (case-insensitively). Each route's own len(segs) == N check (in its match
+// closure) guarantees segs[0] is in bounds before this is called.
+func isSubscriptionScoped(segs []string) bool {
+	return strings.EqualFold(segs[0], subscriptionsSegment)
+}
+
+// segAt reports whether segs[i] equals want (case-insensitively) and i is in
+// bounds.
+// Path-segment positions used by segAt calls in armResourceRoutes, e.g.
+// /subscriptions/{sub}/providers/{ns}/register: "providers" is index 2,
+// "register" is index 4.
+const (
+	providersOrResourceGroupsIdx = 2
+	providerNamespaceActionIdx   = 4
+)
+
+func segAt(segs []string, i int, want string) bool {
+	return i < len(segs) && strings.EqualFold(segs[i], want)
+}
+
+// armResourceRoutes handles every /subscriptions/... and /tenants shape:
+// tenants/subscriptions list+get, provider list/get/register,
+// resource-group CRUD, listKeys, resource-list, and the generic
+// PUT/GET/DELETE resource path.
+//
+//nolint:gochecknoglobals // static route table, read-only after init
+var armResourceRoutes = []armRoute{
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 1 && segAt(segs, 0, "tenants")
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleListTenants(c) },
+	},
+	{
+		match:  func(segs []string, _ *http.Request) bool { return len(segs) == 1 && isSubscriptionScoped(segs) },
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleListSubscriptions(c) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool { return len(segs) == 2 && isSubscriptionScoped(segs) },
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleGetSubscription(c, segs[1])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 3 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleListProviders(c, segs[1])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleGetProvider(c, segs[1], segs[3])
+		},
+	},
+	{
+		match: func(segs []string, r *http.Request) bool {
+			providers := segAt(segs, providersOrResourceGroupsIdx, providersSegment)
+			register := segAt(segs, providerNamespaceActionIdx, "register")
+
+			return len(segs) == 5 && isSubscriptionScoped(segs) && providers && register && r.Method == http.MethodPost
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleRegisterProvider(c, segs[1], segs[3])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 3 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, resourceGroupsSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleListResourceGroups(c, segs[1])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, resourceGroupsSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleResourceGroup(c, segs[1], segs[3])
+		},
+	},
+	{
+		match: func(segs []string, r *http.Request) bool {
+			return len(segs) >= 6 && strings.EqualFold(segs[len(segs)-1], "listKeys") && r.Method == http.MethodPost
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleListKeys(c, segs[:len(segs)-1])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 5 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error { return h.handleListResources(c, segs) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 7 && isSubscriptionScoped(segs) &&
+				segAt(
+					segs,
+					providersOrResourceGroupsIdx,
+					resourceGroupsSegment,
+				) && segAt(segs, providerNamespaceActionIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error { return h.handleListResources(c, segs) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) >= 7 && isSubscriptionScoped(segs) &&
+				segAt(
+					segs,
+					providersOrResourceGroupsIdx,
+					resourceGroupsSegment,
+				) && segAt(segs, providerNamespaceActionIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleGenericResource(c) },
+	},
+}
+
+// dispatchARMResource routes every /subscriptions/... and /tenants shape via
+// armResourceRoutes.
+func (h *Handler) dispatchARMResource(c *echo.Context, segs []string) error {
+	if handled, err := matchRoutes(armResourceRoutes, h, c, segs); handled {
+		return err
+	}
+
+	return h.writeNotFound(c)
 }
 
 // writeNotFound writes a generic 404 error envelope for an unrecognized path.
@@ -236,8 +396,10 @@ func operationFor(r *http.Request) string {
 }
 
 func operationForSubscriptionPath(method string, segs []string) string {
+	const subscriptionScopedLen = 2
+
 	switch {
-	case len(segs) <= 2:
+	case len(segs) <= subscriptionScopedLen:
 		return opListSubscriptions
 	case len(segs) == 3 && strings.EqualFold(segs[2], providersSegment):
 		return opListProviders
@@ -279,7 +441,7 @@ func hostFromHostHeader(hostport string) string {
 // (scheme://host:port) from the request, always https (AZURE.md section
 // 10.8).
 func (h *Handler) baseURLFor(r *http.Request) string {
-	return fmt.Sprintf("https://%s:%d", hostFromHostHeader(r.Host), h.Port)
+	return "https://" + net.JoinHostPort(hostFromHostHeader(r.Host), strconv.Itoa(h.Port))
 }
 
 // decodeJSONBody decodes r's body as a JSON object. An empty body decodes to
@@ -325,13 +487,22 @@ func errorDetails(err error) errorEntry {
 		err   error
 		entry errorEntry
 	}{
-		{ErrResourceGroupNotFound, errorEntry{"ResourceGroupNotFound", "Resource group not found.", http.StatusNotFound}},
+		{
+			ErrResourceGroupNotFound,
+			errorEntry{"ResourceGroupNotFound", "Resource group not found.", http.StatusNotFound},
+		},
 		{ErrResourceNotFound, errorEntry{"ResourceNotFound", "The resource was not found.", http.StatusNotFound}},
-		{ErrStorageAccountNotFound, errorEntry{"ResourceNotFound", "The storage account was not found.", http.StatusNotFound}},
+		{
+			ErrStorageAccountNotFound,
+			errorEntry{"ResourceNotFound", "The storage account was not found.", http.StatusNotFound},
+		},
 		{ErrSubscriptionNotFound, errorEntry{"SubscriptionNotFound", "Subscription not found.", http.StatusNotFound}},
 		{ErrProviderNotFound, errorEntry{"ProviderNotFound", "Resource provider not found.", http.StatusNotFound}},
 		{ErrInvalidResourceID, errorEntry{"InvalidResourceId", "The resource ID is malformed.", http.StatusBadRequest}},
-		{ErrInvalidRequestBody, errorEntry{"InvalidRequestContent", "The request body is malformed.", http.StatusBadRequest}},
+		{
+			ErrInvalidRequestBody,
+			errorEntry{"InvalidRequestContent", "The request body is malformed.", http.StatusBadRequest},
+		},
 	}
 
 	for _, e := range table {
@@ -360,14 +531,6 @@ func parseFormOrJSONBody(r *http.Request) (url.Values, error) {
 	}
 
 	return r.Form, nil
-}
-
-// apiVersionFromQuery returns the request's api-version query parameter,
-// parsed and echoed but never branched on for response-body shape (except
-// the metadata endpoint, which is hard-pinned to metadataAPIVersion) --
-// AZURE.md section 10.1.
-func apiVersionFromQuery(r *http.Request) string {
-	return r.URL.Query().Get("api-version")
 }
 
 // azureARMReadHeaderTimeout bounds how long the server waits to read request

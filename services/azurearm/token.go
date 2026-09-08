@@ -8,15 +8,15 @@ import (
 
 // defaultTokenAudience is used when a client-credentials request's "scope"
 // form field is empty or doesn't carry a resource prefix.
-const defaultTokenAudience = "https://management.azure.com/"
+const defaultTokenAudience = "https://management.azure.com/" //nolint:gosec // URL, not a credential
 
 // TokenResponse is the client-credentials grant response body, for both the
 // v1 (/{tenant}/oauth2/token) and v2 (/{tenant}/oauth2/v2.0/token) endpoints
 // -- AZURE.md section 10.1 specifies the identical body shape for both.
 type TokenResponse struct {
 	TokenType   string `json:"token_type"`
-	ExpiresIn   int    `json:"expires_in"`
 	AccessToken string `json:"access_token"`
+	ExpiresIn   int    `json:"expires_in"`
 }
 
 // audienceFromScope extracts the resource audience from an OAuth2 "scope"

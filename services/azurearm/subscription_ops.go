@@ -9,7 +9,7 @@ func SubscriptionBody(subscriptionID, displayName string) map[string]any {
 		"subscriptionId": subscriptionID,
 		"displayName":    displayName,
 		"state":          "Enabled",
-		"tenantId":       subscriptionID, //nolint:goconst // deliberately mirrors subscriptionID by default in this dev emulator
+		"tenantId":       subscriptionID,
 	}
 }
 

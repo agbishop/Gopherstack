@@ -31,6 +31,18 @@ const providersSegment = "providers"
 
 const subscriptionsSegment = "subscriptions"
 
+// discoverySegment and aadAPIVersionSegment are the shared path segments
+// dispatch's AAD discovery/token routes match on (goconst: each appears in
+// more than one case).
+const (
+	discoverySegment     = "discovery"
+	aadAPIVersionSegment = "v2.0"
+)
+
+// typeNamePairWidth is the number of path segments (type, name) that make up
+// one resource-type/name pair in a generic resource path.
+const typeNamePairWidth = 2
+
 // splitARMPath splits an ARM request path into its non-empty segments.
 func splitARMPath(path string) []string {
 	raw := strings.Split(path, "/")
@@ -74,14 +86,14 @@ func ParseGenericResourcePath(path string) (ResourceID, error) {
 	}
 
 	rest := segs[6:]
-	if len(rest) == 0 || len(rest)%2 != 0 {
+	if len(rest) == 0 || len(rest)%typeNamePairWidth != 0 {
 		return ResourceID{}, fmt.Errorf("%w: %q", ErrInvalidResourceID, path)
 	}
 
-	types := make([]string, 0, len(rest)/2)
-	names := make([]string, 0, len(rest)/2)
+	types := make([]string, 0, len(rest)/typeNamePairWidth)
+	names := make([]string, 0, len(rest)/typeNamePairWidth)
 
-	for i := 0; i < len(rest); i += 2 {
+	for i := 0; i < len(rest); i += typeNamePairWidth {
 		types = append(types, rest[i])
 		names = append(names, rest[i+1])
 	}
@@ -106,7 +118,7 @@ func ParseGenericResourcePath(path string) (ResourceID, error) {
 //
 // Returns the parsed (partial) ResourceID -- Names is empty -- and whether a
 // resource group scope was present.
-func ParseGenericResourceListPath(path string) (id ResourceID, hasResourceGroup bool, err error) {
+func ParseGenericResourceListPath(path string) (ResourceID, bool, error) {
 	segs := splitARMPath(path)
 
 	// Subscription-scoped: subscriptions/{sub}/providers/{ns}/{type}

@@ -3,7 +3,10 @@ package azurearm
 import (
 	"context"
 	"fmt"
+	"maps"
+	"net"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/blackbirdworks/gopherstack/pkgs/azureauth"
@@ -19,25 +22,25 @@ const storageAccountsType = "storageAccounts"
 
 const namespaceMicrosoftStorage = "Microsoft.Storage"
 
-// storageAPIVersions lists the api-versions this RP claims to support in
+// storageAPIVersions returns the api-versions this RP claims to support in
 // its /providers/{ns} registration response. Response BODY SHAPE does not
 // branch on the caller's api-version (AZURE.md section 10.1) -- these are
 // only ever echoed/advertised.
-var storageAPIVersions = []string{"2023-01-01", "2022-09-01", "2021-09-01"} //nolint:gochecknoglobals // static config list
+func storageAPIVersions() []string {
+	return []string{"2023-01-01", "2022-09-01", "2021-09-01"}
+}
 
 // StorageEndpointConfig configures how the Storage resource provider
 // advertises Blob/Queue/Table data-plane endpoints in
 // properties.primaryEndpoints, per AZURE.md section 10.4's
 // endpoint-advertisement design.
 type StorageEndpointConfig struct {
-	// BlobPort/QueuePort/TablePort are the data-plane services' own
-	// configured ports (defaults DefaultBlobEndpointPort/
-	// DefaultQueueEndpointPort/DefaultTableEndpointPort).
-	BlobPort, QueuePort, TablePort int
-	// BlobOverride/QueueOverride/TableOverride, if non-empty, are used
-	// verbatim as the full endpoint (e.g. "http://storage.example.com:9000")
-	// instead of deriving scheme://<request host>:<port>.
-	BlobOverride, QueueOverride, TableOverride string
+	BlobOverride  string
+	QueueOverride string
+	TableOverride string
+	BlobPort      int
+	QueuePort     int
+	TablePort     int
 }
 
 // storedStorageAccount is the Storage RP's own internal representation of
@@ -64,10 +67,10 @@ type storedStorageAccount struct {
 // StorageAccounts interface) is called best-effort for forward-compat with
 // M10's per-account namespacing.
 type StorageProvider struct {
-	mu        *lockmetrics.RWMutex
-	accounts  map[string]*storedStorageAccount // keyed by strings.ToLower(name)
-	cfg       StorageEndpointConfig
 	dataPlane StorageAccounts
+	mu        *lockmetrics.RWMutex
+	accounts  map[string]*storedStorageAccount
+	cfg       StorageEndpointConfig
 }
 
 // NewStorageProvider creates a StorageProvider. dataPlane may be nil, in
@@ -104,7 +107,7 @@ func (p *StorageProvider) Namespace() string { return namespaceMicrosoftStorage 
 
 // ResourceTypes implements ResourceProvider.
 func (p *StorageProvider) ResourceTypes() []ResourceTypeDef {
-	return []ResourceTypeDef{{Type: storageAccountsType, APIVersions: storageAPIVersions, HasChildren: false}}
+	return []ResourceTypeDef{{Type: storageAccountsType, APIVersions: storageAPIVersions(), HasChildren: false}}
 }
 
 // Put implements ResourceProvider: creates or updates a storage account.
@@ -218,7 +221,7 @@ func (p *StorageProvider) List(_ context.Context, id ResourceID) ([]map[string]a
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		return out[i]["name"].(string) < out[j]["name"].(string) //nolint:forcetypeassert // buildBody always sets a string name
+		return stringField(out[i], fieldName) < stringField(out[j], fieldName)
 	})
 
 	return out, nil
@@ -244,8 +247,8 @@ func (p *StorageProvider) ListKeys(_ context.Context, id ResourceID) (map[string
 
 	return map[string]any{
 		"keys": []map[string]any{
-			{"keyName": "key1", "value": azureauth.DefaultAccountKey, "permissions": "Full"},
-			{"keyName": "key2", "value": azureauth.DefaultAccountKey, "permissions": "Full"},
+			{"keyName": "key1", fieldValue: azureauth.DefaultAccountKey, "permissions": "Full"},
+			{"keyName": "key2", fieldValue: azureauth.DefaultAccountKey, "permissions": "Full"},
 		},
 	}, nil
 }
@@ -267,17 +270,15 @@ func (p *StorageProvider) buildBody(id ResourceID, acct *storedStorageAccount) m
 		},
 	}
 
-	for k, v := range acct.properties {
-		props[k] = v
-	}
+	maps.Copy(props, acct.properties)
 
 	body := map[string]any{
-		"id":         id.ARMID(),
-		"name":       acct.name,
-		"type":       namespaceMicrosoftStorage + "/" + storageAccountsType,
-		"location":   acct.location,
-		"tags":       tagsOrEmpty(acct.tags),
-		"properties": props,
+		"id":            id.ARMID(),
+		fieldName:       acct.name,
+		fieldType:       namespaceMicrosoftStorage + "/" + storageAccountsType,
+		fieldLocation:   acct.location,
+		fieldTags:       tagsOrEmpty(acct.tags),
+		fieldProperties: props,
 	}
 
 	if len(acct.sku) > 0 {
@@ -306,7 +307,7 @@ func advertiseEndpoint(override, host string, port int, account string) string {
 		host = "localhost"
 	}
 
-	return fmt.Sprintf("http://%s:%d/%s/", host, port, account)
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/" + account + "/"
 }
 
 // logStorageAdapterError logs a failure from the StorageAccounts adapter.

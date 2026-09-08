@@ -154,11 +154,11 @@ func TestIssuer_Validate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := iss.Validate(tokenString, tt.wantAud, tt.wantTenant)
+			_, validateErr := iss.Validate(tokenString, tt.wantAud, tt.wantTenant)
 			if tt.expectError {
-				require.Error(t, err)
+				require.Error(t, validateErr)
 			} else {
-				require.NoError(t, err)
+				require.NoError(t, validateErr)
 			}
 		})
 	}

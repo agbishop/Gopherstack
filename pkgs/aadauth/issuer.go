@@ -41,7 +41,7 @@ const aadVersion = "2.0"
 // DefaultTokenExpirySeconds is the lifetime, in seconds, of an issued access
 // token -- matching the real AAD v2.0 client-credentials response's typical
 // expires_in of 3599/3600 closely enough for SDK token-cache logic that only
-// checks "is this expired soon."
+// checks "is this expired soon.".
 const DefaultTokenExpirySeconds = 3599
 
 // Issuer generates and signs AAD-shaped client-credentials JWTs for a single

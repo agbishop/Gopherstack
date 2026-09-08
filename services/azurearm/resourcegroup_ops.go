@@ -5,14 +5,14 @@ import "sort"
 // PutResourceGroup creates or updates the resource group named name. Always
 // synchronous (AZURE.md section 10.3): the caller determines 200 vs 201 from
 // the returned created bool.
-func (b *InMemoryBackend) PutResourceGroup(name, location string, tags map[string]string) (rg ResourceGroup, created bool) {
+func (b *InMemoryBackend) PutResourceGroup(name, location string, tags map[string]string) (ResourceGroup, bool) {
 	b.mu.Lock("PutResourceGroup")
 	defer b.mu.Unlock()
 
 	key := resourceGroupKey(name)
 
 	existing, ok := b.resourceGroups[key]
-	created = !ok
+	created := !ok
 
 	if location == "" && ok {
 		location = existing.Location

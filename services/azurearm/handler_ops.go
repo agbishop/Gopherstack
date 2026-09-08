@@ -3,6 +3,7 @@ package azurearm
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/labstack/echo/v5"
 
@@ -72,14 +73,14 @@ func (h *Handler) handleToken(c *echo.Context, tenant string) error {
 // handleListTenants serves GET /tenants.
 func (h *Handler) handleListTenants(c *echo.Context) error {
 	return h.writeJSON(c, http.StatusOK, map[string]any{
-		"value": []map[string]any{TenantBody(h.Settings.TenantID)},
+		fieldValue: []map[string]any{TenantBody(h.Settings.TenantID)},
 	})
 }
 
 // handleListSubscriptions serves GET /subscriptions.
 func (h *Handler) handleListSubscriptions(c *echo.Context) error {
 	return h.writeJSON(c, http.StatusOK, map[string]any{
-		"value": []map[string]any{SubscriptionBody(h.Settings.SubscriptionID, "gopherstack")},
+		fieldValue: []map[string]any{SubscriptionBody(h.Settings.SubscriptionID, "gopherstack")},
 	})
 }
 
@@ -98,7 +99,7 @@ func (h *Handler) handleListProviders(c *echo.Context, sub string) error {
 		values = append(values, ProviderBody(sub, ns, state, p.ResourceTypes()))
 	}
 
-	return h.writeJSON(c, http.StatusOK, map[string]any{"value": values})
+	return h.writeJSON(c, http.StatusOK, map[string]any{fieldValue: values})
 }
 
 // handleGetProvider serves GET /subscriptions/{sub}/providers/{ns}.
@@ -134,7 +135,7 @@ func (h *Handler) handleListResourceGroups(c *echo.Context, sub string) error {
 		values = append(values, g.Body(sub))
 	}
 
-	return h.writeJSON(c, http.StatusOK, map[string]any{"value": values})
+	return h.writeJSON(c, http.StatusOK, map[string]any{fieldValue: values})
 }
 
 // handleResourceGroup serves PUT/GET/DELETE
@@ -235,7 +236,7 @@ func (h *Handler) handleListResources(c *echo.Context, segs []string) error {
 		return h.writeAPIError(c, err)
 	}
 
-	return h.writeJSON(c, http.StatusOK, map[string]any{"value": values})
+	return h.writeJSON(c, http.StatusOK, map[string]any{fieldValue: values})
 }
 
 // handleGenericResource serves PUT/GET/DELETE
@@ -305,13 +306,15 @@ func (h *Handler) deleteGenericResourceHTTP(c *echo.Context, id ResourceID) erro
 func joinSegs(segs []string) string {
 	out := ""
 
+	var outSb308 strings.Builder
 	for i, s := range segs {
 		if i > 0 {
-			out += "/"
+			outSb308.WriteString("/")
 		}
 
-		out += s
+		outSb308.WriteString(s)
 	}
+	out += outSb308.String()
 
 	return out
 }

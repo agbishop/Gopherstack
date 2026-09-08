@@ -59,7 +59,7 @@ func TestWithRequestHostAndRequestHostFromContext(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	assert.Equal(t, "", azurearm.RequestHostFromContext(ctx))
+	assert.Empty(t, azurearm.RequestHostFromContext(ctx))
 
 	ctx = azurearm.WithRequestHost(ctx, "example.com")
 	assert.Equal(t, "example.com", azurearm.RequestHostFromContext(ctx))

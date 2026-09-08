@@ -54,7 +54,11 @@ func TestParseGenericResourcePath(t *testing.T) {
 		},
 		{name: "too short", path: "/subscriptions/sub1/resourceGroups/rg1", expectError: true},
 		{name: "not subscriptions", path: "/subscription/sub1/resourceGroups/rg1/providers/ns/t/n", expectError: true},
-		{name: "not providers segment", path: "/subscriptions/sub1/resourceGroups/rg1/provider/ns/t/n", expectError: true},
+		{
+			name:        "not providers segment",
+			path:        "/subscriptions/sub1/resourceGroups/rg1/provider/ns/t/n",
+			expectError: true,
+		},
 		{
 			name:        "odd number of trailing segments",
 			path:        "/subscriptions/sub1/resourceGroups/rg1/providers/ns/t1/n1/t2",
@@ -97,8 +101,8 @@ func TestResourceID_ARMID(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		id     azurearm.ResourceID
 		wantID string
+		id     azurearm.ResourceID
 	}{
 		{
 			name: "single type/name",
@@ -133,9 +137,9 @@ func TestParseGenericResourceListPath(t *testing.T) {
 	tests := []struct {
 		name      string
 		path      string
-		wantHasRG bool
 		wantNS    string
 		wantType  string
+		wantHasRG bool
 		expectErr bool
 	}{
 		{

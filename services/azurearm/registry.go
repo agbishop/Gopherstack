@@ -80,12 +80,12 @@ func (r *Registry) providerFor(id ResourceID) ResourceProvider {
 }
 
 // Put creates or updates the resource identified by id.
-func (r *Registry) Put(ctx context.Context, id ResourceID, body map[string]any) (respBody map[string]any, created bool, err error) {
+func (r *Registry) Put(ctx context.Context, id ResourceID, body map[string]any) (map[string]any, bool, error) {
 	if p := r.providerFor(id); p != nil {
 		_, getErr := p.Get(ctx, id)
-		created = getErr != nil
+		created := getErr != nil
 
-		respBody, err = p.Put(ctx, id, body)
+		respBody, err := p.Put(ctx, id, body)
 
 		return respBody, created, err
 	}
@@ -220,10 +220,19 @@ func (b *InMemoryBackend) listGenericResources(id ResourceID) []map[string]any {
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		return out[i]["id"].(string) < out[j]["id"].(string) //nolint:forcetypeassert // Body() always sets id to a string
+		return stringField(out[i], "id") < stringField(out[j], "id")
 	})
 
 	return out
+}
+
+// stringField safely reads a string field from a wire response body map,
+// returning "" if absent or not a string -- avoids an unchecked type
+// assertion in sort comparators.
+func stringField(body map[string]any, key string) string {
+	s, _ := body[key].(string)
+
+	return s
 }
 
 func sameSubscriptionNamespaceType(res, want ResourceID, leafType string) bool {

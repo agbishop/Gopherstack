@@ -52,7 +52,7 @@ func GenerateSelfSignedCert(hosts ...string) (tls.Certificate, error) {
 // GenerateSelfSignedCert, used by callers (e.g. the terraform test harness)
 // that need to write the certificate to disk for a child process (such as
 // `tofu`/`terraform`) to trust via SSL_CERT_FILE.
-func GenerateSelfSignedCertPEM(hosts ...string) (certPEM, keyPEM []byte, err error) {
+func GenerateSelfSignedCertPEM(hosts ...string) ([]byte, []byte, error) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("devtls: generate key: %w", err)
@@ -89,8 +89,8 @@ func GenerateSelfSignedCertPEM(hosts ...string) (certPEM, keyPEM []byte, err err
 		return nil, nil, fmt.Errorf("devtls: marshal key: %w", err)
 	}
 
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 
 	return certPEM, keyPEM, nil
 }
@@ -99,7 +99,7 @@ func GenerateSelfSignedCertPEM(hosts ...string) (certPEM, keyPEM []byte, err err
 // 127.0.0.1, and ::1 always, plus any extra dedup'd hosts/IPs from extra.
 func hostsToNamesAndIPs(extra []string) ([]string, []net.IP) {
 	dnsNames := []string{"localhost"}
-	ipAddrs := []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
+	ipAddrs := []net.IP{net.ParseIP("127.0.0.1"), net.IPv6loopback}
 
 	seenNames := map[string]struct{}{"localhost": {}}
 	seenIPs := map[string]struct{}{"127.0.0.1": {}, "::1": {}}
