@@ -5828,6 +5828,7 @@
       "PullRequestApprovalRule.PRID string `json:\"-\"`",
       "PullRequestApprovalRule.RuleID string `json:\"approvalRuleId\"`",
       "PullRequestApprovalRule.RuleName string `json:\"approvalRuleName\"`",
+      "PullRequestEvent.ActorARN string `json:\"actorArn,omitempty\"`",
       "PullRequestEvent.EventDate time.Time",
       "PullRequestEvent.PullRequestEventType string `json:\"pullRequestEventType\"`",
       "PullRequestTarget.DestinationCommit string `json:\"destinationCommit,omitempty\"`",
