@@ -605,3 +605,65 @@ Two secondary observations from the same pass, out of scope for s2i4, not acted 
   rather than rejecting a value that doesn't match the wire model's `YearMonthDay`
   pattern (`(\d{4}-\d{2}-\d{2})(T\d{2}:\d{2}:\d{2}Z)?`, botocore `YearMonthDay` shape).
   Not investigated further this pass.
+
+### gopherstack-5mxi (2026-09-08): Granularity enum + unparseable TimePeriod, both fixed
+
+Both of s2i4's secondary observations above were real defects; fixed this pass.
+
+**Granularity.** Confirmed via botocore's `Granularity` shape (`{"type": "string", "enum":
+["DAILY", "MONTHLY", "HOURLY"]}`) it is a real enum, and via `GetCostAndUsageRequest`'s
+`required` list that it's mandatory for this op (the shape's doc string -- "If Granularity
+isn't set, the response object doesn't include..." -- is boilerplate shared with ops where
+it's optional; `GetCostAndUsage` itself has no undocumented default). Of the three enum
+values, only `MONTHLY` (`cost_usage.go`'s explicit case) and `DAILY` (the `default` case,
+which happened to bucket correctly since it *is* the fallback) were correctly bucketed
+before this fix. `HOURLY` was not: `buildTimeBuckets`'s switch had no case for it, so a
+well-formed `Granularity=HOURLY` request silently fell into the `DAILY` branch and got
+day-sized buckets -- a valid enum value producing wrong data, the worse failure mode the
+issue called out. Fixed by (1) rejecting any `Granularity` outside the three enum values
+in `handleGetCostAndUsage` (`ErrValidation`), and (2) giving `buildTimeBuckets` a real
+`HOURLY` case that steps by `time.Hour` and formats bucket boundaries as
+`2006-01-02T15:04:05Z` (needed for uniqueness -- `resultByTimeKey`'s pagination cursor
+requires distinct bucket starts, which same-day hour buckets can't have as plain dates).
+Note: `TimePeriod.Start`/`.End` are still parsed as plain dates (`2006-01-02`) only, so
+`HOURLY` queries are only usable with day-boundary time periods; sub-day `Start`/`.End`
+(the `THH:MM:SSZ` suffix `YearMonthDay` also permits) is not supported. The ledger has no
+per-hour data (`seedCostLedger` is day-granularity only), so hourly buckets legitimately
+carry zero-valued totals or, for `GroupBy` queries, the pre-existing `syntheticGroupsFallback`
+non-empty synthetic result (unchanged, still deliberate).
+
+**Error code.** Read `GetCostAndUsage`'s declared error set straight from
+`deserializers.go`'s `awsAwsjson11_deserializeOpErrorGetCostAndUsage` (costexplorer@v1.67.4,
+starts line 1458): `BillExpirationException`, `BillingViewHealthStatusException`,
+`DataUnavailableException`, `InvalidNextTokenException`, `LimitExceededException`,
+`RequestChangedException`, `ResourceNotFoundException` -- confirmed identical to botocore's
+op-level `errors` list. `ErrValidation` maps to wire code `ValidationError`
+(`errors.go:20`), which is in neither this list nor, as it turns out, anywhere in the whole
+costexplorer module: `grep -rl "ValidationException\|ValidationError"` over the extracted
+SDK zip returns nothing, and botocore's `ce/2017-10-25` shape list has no `ValidationException`
+either. So this isn't a `GetCostAndUsage`-specific gap; no CE operation has a typed
+validation-exception struct at all, matching `errors.go`'s existing doc comment that
+`ValidationError` is CE's documented CommonErrors type, not a per-op modeled exception.
+Concretely this means a real client's `errors.As(err, &types.SomeException{})` could never
+match a validation failure on *any* CE op regardless of which code is chosen -- the best a
+real caller can do is the generic `smithy.APIError` interface (`ErrorCode()`), which is
+exactly the precedent `TestGetAnomalyMonitors_MalformedBodySurfacesValidationError`
+(`handler_error_type_test.go`) already established and asserts against. Swapping to one of
+GetCostAndUsage's 7 declared-but-unrelated exceptions (e.g. `DataUnavailableException`)
+would be strictly worse: semantically wrong (claims data is unavailable for a malformed
+request) and inconsistent with every other required-field check already in this same
+handler using `ErrValidation`. Kept `ErrValidation`/`ValidationError`.
+
+**TimePeriod.** `buildTimeBuckets` returning zero buckets on an unparseable
+`Start`/`End` (rather than rejecting) is now caught in the handler: both are validated
+with `time.Parse("2006-01-02", ...)` before reaching the backend, rejecting with
+`ErrValidation` on failure. `buildTimeBuckets` itself is unchanged for this case (still
+returns zero buckets if ever called directly with something unparseable, e.g. from
+`GetCostForecast`/`GetUsageForecast`, which don't validate `TimePeriod` format -- out of
+scope for this issue, which is `GetCostAndUsage`-specific).
+
+Regression tests: `cost_usage_granularity_test.go`
+(`TestGetCostAndUsage_InvalidGranularityRejected`,
+`TestGetCostAndUsage_HourlyGranularityBucketsHourly`) and
+`cost_usage_timeperiod_test.go` (`TestGetCostAndUsage_UnparseableTimePeriodRejected`), both
+confirmed failing against unmodified code before the fix.

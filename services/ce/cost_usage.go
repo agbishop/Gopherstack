@@ -151,7 +151,17 @@ func buildTimeBuckets(start, end, granularity string) []timeBucket {
 			})
 			cur = next
 		}
-	default: // DAILY (HOURLY treated as DAILY for simplicity)
+	case granularityHourly:
+		cur := startT
+		for cur.Before(endT) {
+			next := cur.Add(time.Hour)
+			buckets = append(buckets, timeBucket{
+				start: cur.Format("2006-01-02T15:04:05Z"),
+				end:   next.Format("2006-01-02T15:04:05Z"),
+			})
+			cur = next
+		}
+	default: // DAILY
 		cur := startT
 		for cur.Before(endT) {
 			next := cur.AddDate(0, 0, 1)
