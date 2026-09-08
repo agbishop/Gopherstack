@@ -436,3 +436,52 @@ No bugs found; no files changed. The one pre-existing, already-disclosed gap in 
 area (`TAG_FILTERS_1_0`'s `TagFilters` parsed but never applied to narrow membership --
 see `gaps:` above) is a field-never-read gap, not a wrong-algorithm one, so it is
 outside this pass's class and was re-confirmed rather than touched.
+
+## 2026-09-08 pass (bd gopherstack-t3uf): CancelTagSyncTask / NotFoundException re-audited, left unfixed
+
+Third evidence pass on the finding tracked at gaps item 15 above (originally
+gopherstack-m4k0). Re-extracted independently: `ErrTagSyncTaskNotFound`
+(`errors.go:13-16`, `awserr.New("NotFoundException: tag-sync task not
+found", awserr.ErrNotFound)`) is emitted from `tagsync.go:102-104`:
+`if !b.tagSyncTasks.Has(tableKey) { return fmt.Errorf("%w: task %s not
+found", ErrTagSyncTaskNotFound, taskARN) }`.
+`awsRestjson1_deserializeOpErrorCancelTagSyncTask`
+(`resourcegroups@v1.36.4` deserializers.go:63-130) declares exactly
+`BadRequestException, ForbiddenException, InternalServerErrorException,
+MethodNotAllowedException, TooManyRequestsException,
+UnauthorizedException` -- no `NotFoundException`. botocore's
+`resource-groups/2017-11-27/service-2.json.gz`
+`operations.CancelTagSyncTask.errors` lists the identical six. The live
+docs.aws.amazon.com/ARG/latest/APIReference/API_CancelTagSyncTask.html
+Errors section (fetched fresh this pass) agrees verbatim and adds no
+not-found-specific language; Response Elements says only "HTTP 200
+response with an empty HTTP body" -- generic boilerplate, not idempotency
+language, per the control-experiment already on record (identical sentence
+on this service's own `GetGroup`/`DeleteGroup`, both of which DO error on
+not-found and both of which declare `NotFoundException`).
+
+Searched for new oracle evidence not already on record: live AWS API
+reference (re-fetched, matches botocore/SDK exactly, no new info), and web
+search for real-world reports of `CancelTagSyncTask` against an unknown
+`TaskArn` (a relevant AWS re:Post thread exists --
+"Deleted an application, but the tag sync remains, blocking me from
+recreating the app" -- but returned HTTP 403 to an unauthenticated fetch
+and could not be read). No new evidence found either for idempotent-success
+or for a `BadRequestException` mapping.
+
+**Left unfixed**, matching the two prior passes' conclusion. Neither
+candidate remedy clears the evidence bar: idempotent-success is
+contradicted by the GetGroup/DeleteGroup control experiment, and
+`BadRequestException` ("The request includes one or more parameters that
+violate validation rules" -- botocore shape doc) does not fit an
+unmatched-but-well-formed `TaskArn`, which violates no validation rule, it
+just doesn't resolve to an existing resource. No test was added or
+changed. `TestCancelTagSyncTask_NotFound`
+(`handler_tagsync_test.go:346`) and the `cancel_task_not_found_404` case
+of `TestErrorShapes` (`handler_test.go:521-526`) both still assert
+`http.StatusNotFound` for this path -- flagged here per the audit brief's
+instruction on pre-existing tests asserting the current wrong code:
+these are deliberately characterizing (not aspirational) tests, disclosed
+as such by the doc comment directly above `TestErrorShapes`
+(`handler_test.go:470-475`) and by gaps item 15 above; left unedited since
+no evidenced replacement behavior exists to assert instead.
