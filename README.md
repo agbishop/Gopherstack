@@ -540,7 +540,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [EventBridge Pipes](services/pipes/README.md) | A | 10 | 1 gap |
 | [EventBridge Scheduler](services/scheduler/README.md) | A | 12 | 1 gap |
 | [Pinpoint](services/pinpoint/README.md) | A | 49 | 2 gaps; 3 deferred |
-| [SES](services/ses/README.md) | A | 71 | 7 gaps; 1 deferred |
+| [SES](services/ses/README.md) | A | 71 | 8 gaps; 1 deferred |
 | [SES v2](services/sesv2/README.md) | A | 112 | clean |
 | [SNS](services/sns/README.md) | A | 34 | 2 gaps; 2 deferred |
 | [SQS](services/sqs/README.md) | A | 20 | 4 gaps; 4 deferred |
