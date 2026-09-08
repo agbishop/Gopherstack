@@ -92,6 +92,28 @@ func TestRegistry_DispatchesToRegisteredProvider(t *testing.T) {
 	assert.Contains(t, registry.RegistryProviderNamespaces(), "Microsoft.Storage")
 }
 
+// TestRegistry_DispatchIsCaseInsensitive proves a request naming the
+// registered provider's namespace in a different case (e.g.
+// "microsoft.storage") still reaches the dedicated provider instead of
+// falling through to the generic pass-through (CodeRabbit-flagged: ARM
+// identity namespaces are documented case-insensitive, AZURE.md section
+// 10.1).
+func TestRegistry_DispatchIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	_, registry := azurearm.NewTestRegistryWithStorage()
+	ctx := t.Context()
+
+	id := azurearm.ResourceID{
+		SubscriptionID: "sub1", ResourceGroup: "rg1", Namespace: "microsoft.STORAGE",
+		Types: []string{"storageAccounts"}, Names: []string{"acct1"},
+	}
+
+	body, _, err := registry.Put(ctx, id, map[string]any{"location": "westus"})
+	require.NoError(t, err)
+	assert.Equal(t, "StorageV2", body["kind"], "a differently-cased namespace must still reach the Storage RP")
+}
+
 func TestRegistry_ListKeys_UnregisteredNamespace(t *testing.T) {
 	t.Parallel()
 

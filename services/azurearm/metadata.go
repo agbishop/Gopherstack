@@ -1,5 +1,10 @@
 package azurearm
 
+import (
+	"net"
+	"strings"
+)
+
 // EnvironmentDescriptor is one entry of the GET /metadata/endpoints response
 // array. Field set and semantics verified against
 // hashicorp/go-azure-sdk's environments.FromEndpoint, which hard-fails on a
@@ -91,10 +96,15 @@ func hostnameOnly(baseURL string) string {
 		}
 	}
 
-	for i := range s {
-		if s[i] == ':' || s[i] == '/' {
-			return s[:i]
-		}
+	if slash := strings.IndexByte(s, '/'); slash >= 0 {
+		s = s[:slash]
+	}
+
+	// net.SplitHostPort handles both "host:port" and the bracketed IPv6
+	// form "[::1]:port" correctly; a naive scan for the first ':' would
+	// instead return "[" for an IPv6 host (CodeRabbit-flagged bug).
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		return host
 	}
 
 	return s

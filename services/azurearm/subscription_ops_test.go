@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/blackbirdworks/gopherstack/services/azurearm"
 )
@@ -11,12 +12,13 @@ import (
 func TestSubscriptionBody(t *testing.T) {
 	t.Parallel()
 
-	body := azurearm.SubscriptionBody("sub1", "My Sub")
+	body := azurearm.SubscriptionBody("sub1", "tenant1", "My Sub")
 
 	assert.Equal(t, "/subscriptions/sub1", body["id"])
 	assert.Equal(t, "sub1", body["subscriptionId"])
 	assert.Equal(t, "My Sub", body["displayName"])
 	assert.Equal(t, "Enabled", body["state"])
+	assert.Equal(t, "tenant1", body["tenantId"], "tenantId must be the tenant, not the subscription")
 }
 
 func TestTenantBody(t *testing.T) {
@@ -55,9 +57,7 @@ func TestProviderBody(t *testing.T) {
 	assert.Equal(t, "Registered", body["registrationState"])
 
 	resourceTypes, ok := body["resourceTypes"].([]map[string]any)
-	if ok {
-		if len(resourceTypes) > 0 {
-			assert.Equal(t, "storageAccounts", resourceTypes[0]["resourceType"])
-		}
-	}
+	require.True(t, ok)
+	require.Len(t, resourceTypes, 1)
+	assert.Equal(t, "storageAccounts", resourceTypes[0]["resourceType"])
 }

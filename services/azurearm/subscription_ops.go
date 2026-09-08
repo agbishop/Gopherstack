@@ -2,14 +2,17 @@ package azurearm
 
 // SubscriptionBody returns the wire response body for
 // GET /subscriptions/{sub} and as the single entry of GET /subscriptions'
-// "value" array.
-func SubscriptionBody(subscriptionID, displayName string) map[string]any {
+// "value" array. tenantID is a separate value from subscriptionID -- both
+// default to the same fixed all-zeros GUID (AZURE.md section 10.5), but
+// Settings allows overriding either independently, so this must not assume
+// they're equal.
+func SubscriptionBody(subscriptionID, tenantID, displayName string) map[string]any {
 	return map[string]any{
 		"id":             "/subscriptions/" + subscriptionID,
 		"subscriptionId": subscriptionID,
 		"displayName":    displayName,
 		"state":          "Enabled",
-		"tenantId":       subscriptionID,
+		"tenantId":       tenantID,
 	}
 }
 

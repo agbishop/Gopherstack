@@ -36,6 +36,18 @@ type ResourceProvider interface {
 	List(ctx context.Context, id ResourceID) ([]map[string]any, error)
 	// ListKeys returns the POST .../listKeys response body for id.
 	ListKeys(ctx context.Context, id ResourceID) (map[string]any, error)
+	// Reset clears all of this provider's own state, called by
+	// Handler.Reset via Registry.ResetAll (the /_gopherstack/reset
+	// endpoint) -- without this, a dedicated provider's resources survive
+	// a reset that's supposed to wipe every service's state.
+	Reset()
+	// DeleteResourcesInGroup deletes every resource this provider owns in
+	// resourceGroup, called by Registry.DeleteResourcesInGroup when a
+	// resource group is deleted -- without this, a dedicated provider's
+	// resources in that group are orphaned (InMemoryBackend's own generic
+	// resources are cascaded directly by DeleteResourceGroup, but a
+	// dedicated provider's internal state is opaque to InMemoryBackend).
+	DeleteResourcesInGroup(ctx context.Context, resourceGroup string)
 }
 
 // Registry dispatches generic-resource operations to the ResourceProvider
@@ -55,17 +67,21 @@ func NewRegistry(backend *InMemoryBackend) *Registry {
 	return &Registry{backend: backend, providers: make(map[string]ResourceProvider)}
 }
 
-// Register adds a ResourceProvider to the registry, keyed by its Namespace().
+// Register adds a ResourceProvider to the registry, keyed by its
+// lowercased Namespace() -- ARM namespaces are matched case-insensitively
+// (AZURE.md section 10.1: "Microsoft.storage" and "microsoft.STORAGE" must
+// both reach the same dedicated provider, not fall through to the generic
+// pass-through).
 func (r *Registry) Register(p ResourceProvider) {
-	r.providers[p.Namespace()] = p
+	r.providers[strings.ToLower(p.Namespace())] = p
 }
 
 // Providers returns the namespaces of every registered dedicated
 // ResourceProvider, sorted, for the provider-list endpoint.
 func (r *Registry) Providers() []string {
 	out := make([]string, 0, len(r.providers))
-	for ns := range r.providers {
-		out = append(out, ns)
+	for _, p := range r.providers {
+		out = append(out, p.Namespace())
 	}
 
 	sort.Strings(out)
@@ -76,7 +92,17 @@ func (r *Registry) Providers() []string {
 // providerFor returns the dedicated ResourceProvider for id.Namespace, or
 // nil if none is registered (generic pass-through applies).
 func (r *Registry) providerFor(id ResourceID) ResourceProvider {
-	return r.providers[id.Namespace]
+	return r.providers[strings.ToLower(id.Namespace)]
+}
+
+// ProviderNamed returns the dedicated ResourceProvider registered for ns
+// (matched case-insensitively, AZURE.md section 10.1), and whether one was
+// found. Used by the /providers/{ns} and /providers/{ns}/register handlers,
+// which take ns directly from the URL path rather than a parsed ResourceID.
+func (r *Registry) ProviderNamed(ns string) (ResourceProvider, bool) {
+	p, ok := r.providers[strings.ToLower(ns)]
+
+	return p, ok
 }
 
 // Put creates or updates the resource identified by id.
@@ -127,6 +153,27 @@ func (r *Registry) ListKeys(ctx context.Context, id ResourceID) (map[string]any,
 	}
 
 	return nil, ErrResourceNotFound
+}
+
+// ResetAll clears every registered dedicated provider's own state. Called
+// by Handler.Reset alongside InMemoryBackend.Reset -- the generic pass-through
+// resources and dedicated-provider resources (e.g. StorageProvider.accounts)
+// are two separate stores, and the /_gopherstack/reset endpoint must clear
+// both.
+func (r *Registry) ResetAll() {
+	for _, p := range r.providers {
+		p.Reset()
+	}
+}
+
+// DeleteResourcesInGroup cascades a resource-group delete into every
+// registered dedicated provider, so a provider's own resources in that
+// group (e.g. StorageProvider's accounts) don't survive as orphans reachable
+// by their own resource ID after the owning group is gone.
+func (r *Registry) DeleteResourcesInGroup(ctx context.Context, resourceGroup string) {
+	for _, p := range r.providers {
+		p.DeleteResourcesInGroup(ctx, resourceGroup)
+	}
 }
 
 // --- InMemoryBackend's generic (metadata-only) resource storage ---

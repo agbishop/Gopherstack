@@ -121,6 +121,7 @@ func (h *Handler) ExtractResource(c *echo.Context) string {
 // Reset clears all in-memory ARM state.
 func (h *Handler) Reset() {
 	h.Backend.Reset()
+	h.Registry.ResetAll()
 }
 
 // Handler returns the Echo handler function for ARM operations.
@@ -201,13 +202,63 @@ var aadDiscoveryRoutes = []armRoute{
 }
 
 // dispatch routes on the request path's shape: the AAD discovery/token
-// routes first, then everything under /subscriptions and /tenants.
+// routes first (always public -- a client can't get a bearer token without
+// reaching them), then the bearer-token check when
+// Settings.ValidateTokens is set, then everything under /subscriptions and
+// /tenants.
 func (h *Handler) dispatch(c *echo.Context, segs []string) error {
 	if handled, err := matchRoutes(aadDiscoveryRoutes, h, c, segs); handled {
 		return err
 	}
 
+	if h.Settings.ValidateTokens {
+		if authErr := h.bearerTokenError(c); authErr != "" {
+			return h.writeUnauthorized(c, authErr)
+		}
+	}
+
 	return h.dispatchARMResource(c, segs)
+}
+
+// bearerTokenError enforces Settings.ValidateTokens
+// (--azure-arm-validate-tokens): cryptographically validates the request's
+// Authorization: Bearer token against h.Issuer, returning a non-empty
+// rejection message if missing or invalid, else "". Deliberately does not
+// write the response itself -- dispatch must stop and call writeUnauthorized
+// exactly once on rejection, rather than falling through to
+// dispatchARMResource and writing a second response on top of the first
+// (an earlier version of this check called writeUnauthorized here and
+// returned its nil success value, which dispatch then treated as "no
+// error, keep going").
+//
+// Off by default -- by default ARM accepts any bearer token, or none, per
+// every other Azure service's own opt-in validation convention
+// (WithSharedKeyValidation, --cosmosdb-validate-auth,
+// --azure-servicebus-validate-sas).
+func (h *Handler) bearerTokenError(c *echo.Context) string {
+	const bearerPrefix = "Bearer "
+
+	auth := c.Request().Header.Get("Authorization")
+
+	token, ok := strings.CutPrefix(auth, bearerPrefix)
+	if !ok || token == "" {
+		return "The request is missing a bearer token."
+	}
+
+	if _, err := h.Issuer.Parse(token); err != nil {
+		return "The bearer token is invalid or expired."
+	}
+
+	return ""
+}
+
+// writeUnauthorized writes a 401 ARM error envelope with a WWW-Authenticate
+// challenge header, mirroring real Key Vault/ARM's own
+// unauthenticated-request response shape.
+func (h *Handler) writeUnauthorized(c *echo.Context, message string) error {
+	c.Response().Header().Set("WWW-Authenticate", `Bearer authorization_uri="`+h.baseURLFor(c.Request())+`"`)
+
+	return h.writeError(c, http.StatusUnauthorized, "InvalidAuthenticationToken", message)
 }
 
 // matchRoutes returns the first matching route's result, or handled=false if
@@ -497,6 +548,14 @@ func errorDetails(err error) errorEntry {
 			errorEntry{"ResourceNotFound", "The storage account was not found.", http.StatusNotFound},
 		},
 		{ErrSubscriptionNotFound, errorEntry{"SubscriptionNotFound", "Subscription not found.", http.StatusNotFound}},
+		{
+			errAccountExistsInOtherResourceGroup,
+			errorEntry{
+				"StorageAccountAlreadyExists",
+				"The storage account named is already taken.",
+				http.StatusConflict,
+			},
+		},
 		{ErrProviderNotFound, errorEntry{"ProviderNotFound", "Resource provider not found.", http.StatusNotFound}},
 		{ErrInvalidResourceID, errorEntry{"InvalidResourceId", "The resource ID is malformed.", http.StatusBadRequest}},
 		{
@@ -533,9 +592,16 @@ func parseFormOrJSONBody(r *http.Request) (url.Values, error) {
 	return r.Form, nil
 }
 
-// azureARMReadHeaderTimeout bounds how long the server waits to read request
-// headers, matching services/azureblob's own timeout value.
-const azureARMReadHeaderTimeout = 5 * time.Second
+// azureARMReadHeaderTimeout/azureARMReadTimeout/azureARMIdleTimeout bound the
+// dedicated listener's connection lifecycle, matching services/azureblob's
+// own timeout values (CodeRabbit-flagged: only ReadHeaderTimeout was set,
+// leaving a client free to hold a connection open indefinitely by sending
+// its body slowly, or an idle keep-alive connection open forever).
+const (
+	azureARMReadHeaderTimeout = 10 * time.Second
+	azureARMReadTimeout       = 60 * time.Second
+	azureARMIdleTimeout       = 120 * time.Second
+)
 
 // StartWorker binds AzureARM's dedicated fixed port and serves HTTPS with a
 // self-signed certificate (pkgs/devtls), synchronously, failing fast if the
@@ -573,6 +639,8 @@ func (h *Handler) StartWorker(ctx context.Context) error {
 	srv := &http.Server{
 		Handler:           e,
 		ReadHeaderTimeout: azureARMReadHeaderTimeout,
+		ReadTimeout:       azureARMReadTimeout,
+		IdleTimeout:       azureARMIdleTimeout,
 	}
 
 	h.srvMu.Lock("StartWorker")

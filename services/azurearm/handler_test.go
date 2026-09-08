@@ -292,13 +292,121 @@ func TestHandler_ResetClearsState(t *testing.T) {
 
 	h := newTestHandler(t)
 	sub := h.Settings.SubscriptionID
+	base := "/subscriptions/" + sub
 
-	_, _ = doRequest(t, h, http.MethodPut, "/subscriptions/"+sub+"/resourcegroups/rg1", []byte(`{"location":"westus"}`))
+	_, _ = doRequest(t, h, http.MethodPut, base+"/resourcegroups/rg1", []byte(`{"location":"westus"}`))
+
+	acctPath := base + "/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/acct1"
+	status, _ := doRequest(t, h, http.MethodPut, acctPath, []byte(`{"location":"westus"}`))
+	require.Equal(t, http.StatusCreated, status)
 
 	h.Reset()
 
-	status, _ := doRequest(t, h, http.MethodGet, "/subscriptions/"+sub+"/resourcegroups/rg1", nil)
+	status, _ = doRequest(t, h, http.MethodGet, base+"/resourcegroups/rg1", nil)
 	assert.Equal(t, http.StatusNotFound, status)
+
+	// Reset must clear the registry's dedicated providers too (CodeRabbit-
+	// flagged: StorageProvider.accounts previously survived a reset since
+	// only InMemoryBackend was cleared).
+	status, _ = doRequest(t, h, http.MethodGet, acctPath, nil)
+	assert.Equal(t, http.StatusNotFound, status)
+}
+
+// TestHandler_DeleteResourceGroup_CascadesToStorageProvider proves that
+// deleting a resource group also removes any storage accounts created in
+// it, rather than orphaning them (CodeRabbit-flagged).
+func TestHandler_DeleteResourceGroup_CascadesToStorageProvider(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+	sub := h.Settings.SubscriptionID
+	base := "/subscriptions/" + sub
+
+	_, _ = doRequest(t, h, http.MethodPut, base+"/resourcegroups/rg1", []byte(`{"location":"westus"}`))
+
+	acctPath := base + "/resourceGroups/rg1/providers/Microsoft.Storage/storageAccounts/acct1"
+	status, _ := doRequest(t, h, http.MethodPut, acctPath, []byte(`{"location":"westus"}`))
+	require.Equal(t, http.StatusCreated, status)
+
+	status, _ = doRequest(t, h, http.MethodDelete, base+"/resourcegroups/rg1", nil)
+	require.Equal(t, http.StatusOK, status)
+
+	status, _ = doRequest(t, h, http.MethodGet, acctPath, nil)
+	assert.Equal(t, http.StatusNotFound, status)
+}
+
+// TestHandler_GetSubscription_UnknownSubscriptionIs404 proves an unknown
+// subscription ID 404s instead of being echoed back as if it existed
+// (CodeRabbit/Copilot-flagged).
+func TestHandler_GetSubscription_UnknownSubscriptionIs404(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	status, _ := doRequest(t, h, http.MethodGet, "/subscriptions/11111111-1111-1111-1111-111111111111", nil)
+	assert.Equal(t, http.StatusNotFound, status)
+
+	status, _ = doRequest(t, h, http.MethodGet, "/subscriptions/"+h.Settings.SubscriptionID, nil)
+	assert.Equal(t, http.StatusOK, status)
+}
+
+// TestHandler_ValidateTokens_RejectsMissingOrInvalidBearer proves
+// --azure-arm-validate-tokens enforcement (CodeRabbit-flagged as a Broken
+// Authentication finding: the flag previously existed in Settings but no
+// code path ever checked it).
+func TestHandler_ValidateTokens_RejectsMissingOrInvalidBearer(t *testing.T) {
+	t.Parallel()
+
+	backend, registry := azurearm.NewTestRegistryWithStorage()
+	issuer, err := aadauth.NewIssuer()
+	require.NoError(t, err)
+
+	settings := azurearm.DefaultSettings()
+	settings.ValidateTokens = true
+
+	h := azurearm.NewHandler(backend, registry, issuer, settings)
+	sub := h.Settings.SubscriptionID
+
+	// Discovery/token endpoints must stay public even with validation on.
+	status, _ := doRequest(t, h, http.MethodGet, "/metadata/endpoints?api-version=2022-09-01", nil)
+	assert.Equal(t, http.StatusOK, status)
+
+	// No Authorization header at all.
+	status, _ = doRequest(t, h, http.MethodGet, "/subscriptions/"+sub, nil)
+	assert.Equal(t, http.StatusUnauthorized, status)
+
+	// Malformed/garbage bearer token.
+	status = doRequestWithAuth(t, h, http.MethodGet, "/subscriptions/"+sub, "Bearer not-a-real-jwt")
+	assert.Equal(t, http.StatusUnauthorized, status)
+
+	// A genuinely issued token must be accepted.
+	claims := aadauth.ClientCredentialsClaims{
+		Issuer:   "https://host:10006/" + h.Settings.TenantID + "/v2.0",
+		Audience: "https://management.azure.com/",
+		TenantID: h.Settings.TenantID,
+		ClientID: h.Settings.ClientID,
+	}
+
+	tokenString, err := issuer.IssueClientCredentialsToken(claims, aadauth.DefaultTokenExpirySeconds)
+	require.NoError(t, err)
+
+	status = doRequestWithAuth(t, h, http.MethodGet, "/subscriptions/"+sub, "Bearer "+tokenString)
+	assert.Equal(t, http.StatusOK, status)
+}
+
+// doRequestWithAuth is doRequest plus an Authorization header, returning
+// only the status -- every current caller checks status alone.
+func doRequestWithAuth(t *testing.T, h *azurearm.Handler, method, path, authHeader string) int {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, bytes.NewReader(nil))
+	req.Host = "host:10006"
+	req.Header.Set("Authorization", authHeader)
+
+	rec := httptest.NewRecorder()
+	newEchoServer(h).ServeHTTP(rec, req)
+
+	return rec.Code
 }
 
 // --- test helpers below ---

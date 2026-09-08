@@ -8,15 +8,14 @@
 | Metric | Value |
 | --- | --- |
 | PARITY entries audited | 12 (10 ok, 2 partial) |
-| Feature families | 4 (3 ok, 1 partial) |
-| Known gaps | 7 |
+| Feature families | 4 (4 ok) |
+| Known gaps | 6 |
 | Deferred items | 1 |
 | Resource leaks | clean |
 
 ### Known gaps
 
 - Storage RP account state (StorageProvider.accounts) does not survive a snapshot/restore cycle -- only InMemoryBackend's resource-group/generic-resource/provider-registration state is persisted (see ops.StorageAccountCRUD). Fix is additive: give StorageProvider its own Snapshot/Restore and wire it into Handler.Snapshot/Restore alongside the backend's.
-- --azure-arm-validate-tokens is declared in Settings but not enforced anywhere in handler.go's request path yet -- opting in currently has no effect. Wiring it requires calling Issuer.Validate against the Authorization header in dispatch() or a middleware, and deciding the exact 401 error shape.
 - Token endpoint accepts any (or a missing) client_id/grant_type without validation and always issues a token; a malformed client_credentials request should arguably 400 with invalid_request/unsupported_grant_type per RFC 6749, matching AAD's own error shape more closely.
 - Direct-data-plane storage resources (azurerm_storage_container/_blob/_queue/_table/_share) are explicitly out of scope until M10's storage-suffix spike (AZURE.md section 10.8) determines whether they can be redirected at all -- see AZURE.md section 10.8's "second, still-open uncertainty".
 - Multi-account namespace isolation: all ARM-created storage accounts alias one shared Blob/Queue/Table container/queue/table namespace (services/azureblob/azurequeue/azuretable discard the account-name path segment entirely). Two ARM storage accounts see each other's containers. Deferred to M10 per AZURE.md section 10.4's original note; StorageAccounts.RegisterAccount/DeleteAccount (interfaces.go) is the forward-compat seam for that fix.

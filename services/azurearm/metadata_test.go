@@ -51,6 +51,24 @@ func TestBuildMetadataEndpoints(t *testing.T) {
 	assert.Contains(t, doc.Portal, "host:10006")
 }
 
+// TestBuildMetadataEndpoints_IPv6Host proves hostnameOnly correctly strips
+// an IPv6 host's brackets (baseURLFor can produce "https://[::1]:10006"),
+// rather than a naive first-colon scan returning just "[" (CodeRabbit-flagged).
+func TestBuildMetadataEndpoints_IPv6Host(t *testing.T) {
+	t.Parallel()
+
+	settings := azurearm.DefaultSettings()
+	docs := azurearm.BuildMetadataEndpoints("https://[::1]:10006", settings)
+
+	require.Len(t, docs, 1)
+	doc := docs[0]
+
+	assert.NotContains(t, doc.Suffixes.KeyVaultDNS, "[")
+	assert.NotContains(t, doc.Suffixes.SQLServerHostname, "[")
+	assert.NotContains(t, doc.Suffixes.ACRLoginServer, "[")
+	assert.Contains(t, doc.Suffixes.KeyVaultDNS, "::1")
+}
+
 func TestBuildMetadataEndpoints_CustomEnvironmentName(t *testing.T) {
 	t.Parallel()
 

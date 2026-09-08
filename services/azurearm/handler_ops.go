@@ -80,13 +80,19 @@ func (h *Handler) handleListTenants(c *echo.Context) error {
 // handleListSubscriptions serves GET /subscriptions.
 func (h *Handler) handleListSubscriptions(c *echo.Context) error {
 	return h.writeJSON(c, http.StatusOK, map[string]any{
-		fieldValue: []map[string]any{SubscriptionBody(h.Settings.SubscriptionID, "gopherstack")},
+		fieldValue: []map[string]any{SubscriptionBody(h.Settings.SubscriptionID, h.Settings.TenantID, "gopherstack")},
 	})
 }
 
-// handleGetSubscription serves GET /subscriptions/{sub}.
+// handleGetSubscription serves GET /subscriptions/{sub}. Only the one fixed
+// dev subscription (h.Settings.SubscriptionID) exists in this emulator; any
+// other ID is a genuine 404, not silently echoed back as if it existed.
 func (h *Handler) handleGetSubscription(c *echo.Context, sub string) error {
-	return h.writeJSON(c, http.StatusOK, SubscriptionBody(sub, "gopherstack"))
+	if !strings.EqualFold(sub, h.Settings.SubscriptionID) {
+		return h.writeAPIError(c, ErrSubscriptionNotFound)
+	}
+
+	return h.writeJSON(c, http.StatusOK, SubscriptionBody(sub, h.Settings.TenantID, "gopherstack"))
 }
 
 // handleListProviders serves GET /subscriptions/{sub}/providers.
@@ -94,7 +100,11 @@ func (h *Handler) handleListProviders(c *echo.Context, sub string) error {
 	values := make([]map[string]any, 0, len(h.Registry.Providers()))
 
 	for _, ns := range h.Registry.Providers() {
-		p := h.Registry.providers[ns]
+		p, ok := h.Registry.ProviderNamed(ns)
+		if !ok {
+			continue
+		}
+
 		state := h.Backend.ProviderRegistrationState(sub, ns)
 		values = append(values, ProviderBody(sub, ns, state, p.ResourceTypes()))
 	}
@@ -104,7 +114,7 @@ func (h *Handler) handleListProviders(c *echo.Context, sub string) error {
 
 // handleGetProvider serves GET /subscriptions/{sub}/providers/{ns}.
 func (h *Handler) handleGetProvider(c *echo.Context, sub, ns string) error {
-	p, ok := h.Registry.providers[ns]
+	p, ok := h.Registry.ProviderNamed(ns)
 	if !ok {
 		return h.writeAPIError(c, ErrProviderNotFound)
 	}
@@ -116,7 +126,7 @@ func (h *Handler) handleGetProvider(c *echo.Context, sub, ns string) error {
 
 // handleRegisterProvider serves POST /subscriptions/{sub}/providers/{ns}/register.
 func (h *Handler) handleRegisterProvider(c *echo.Context, sub, ns string) error {
-	p, ok := h.Registry.providers[ns]
+	p, ok := h.Registry.ProviderNamed(ns)
 	if !ok {
 		return h.writeAPIError(c, ErrProviderNotFound)
 	}
@@ -195,6 +205,11 @@ func (h *Handler) deleteResourceGroup(c *echo.Context, name string) error {
 
 		return h.writeAPIError(c, err)
 	}
+
+	// Cascade into every dedicated provider's own state (e.g.
+	// StorageProvider.accounts) -- Backend.DeleteResourceGroup above only
+	// clears InMemoryBackend's own generic-resource fallback store.
+	h.Registry.DeleteResourcesInGroup(c.Request().Context(), name)
 
 	return c.NoContent(http.StatusOK)
 }
@@ -304,17 +319,5 @@ func (h *Handler) deleteGenericResourceHTTP(c *echo.Context, id ResourceID) erro
 
 // joinSegs re-joins path segments with "/", the inverse of splitARMPath.
 func joinSegs(segs []string) string {
-	out := ""
-
-	var outSb308 strings.Builder
-	for i, s := range segs {
-		if i > 0 {
-			outSb308.WriteString("/")
-		}
-
-		outSb308.WriteString(s)
-	}
-	out += outSb308.String()
-
-	return out
+	return strings.Join(segs, "/")
 }

@@ -18,9 +18,10 @@ const armSnapshotVersion = 1
 // ONLY ARM-side metadata (resource groups, generic resources, provider
 // registration state) -- never a second copy of any data-plane service's own
 // state (AZURE.md section 10.9). Storage accounts (owned by rp_storage.go's
-// StorageProvider, not InMemoryBackend) are snapshotted separately by
-// Handler.Snapshot/Restore, which also persists the registry's Storage RP
-// state.
+// StorageProvider, not InMemoryBackend) are NOT YET included in
+// Handler.Snapshot/Restore below -- an ARM-created storage account does not
+// currently survive a snapshot/restore cycle; see services/azurearm/PARITY.md's
+// persist=partial note on StorageAccountCRUD for this known gap.
 type armSnapshot struct {
 	ResourceGroups      map[string]*ResourceGroup  `json:"resourceGroups"`
 	Resources           map[string]*Resource       `json:"resources"`
@@ -122,8 +123,9 @@ func validateSnapshotResources(resources map[string]*Resource) error {
 	return nil
 }
 
-// Snapshot implements persistence.Persistable by delegating to the backend
-// and the registry's Storage RP.
+// Snapshot implements persistence.Persistable by delegating to
+// InMemoryBackend only -- the registry's Storage RP is not yet included, see
+// armSnapshot's doc comment.
 func (h *Handler) Snapshot(ctx context.Context) []byte {
 	return h.Backend.Snapshot(ctx)
 }
