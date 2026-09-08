@@ -7,6 +7,9 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	pinpointsdk "github.com/aws/aws-sdk-go-v2/service/pinpoint"
+	pinpointtypes "github.com/aws/aws-sdk-go-v2/service/pinpoint/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -331,14 +334,70 @@ func TestJourneyUpdate_BlockedWhenActive(t *testing.T) {
 		map[string]any{"State": "ACTIVE"})
 	require.Equal(t, http.StatusOK, r.Code)
 
-	// UpdateJourney (activities mutation) must be rejected.
+	// UpdateJourney (activities mutation) must be rejected: the request is
+	// well-formed but conflicts with the journey's current (ACTIVE) state,
+	// so AWS models this as ConflictException, not BadRequestException.
 	updateRec := doPinpointRequest(t, h, http.MethodPut,
 		"/v1/apps/"+appID+"/journeys/"+journeyID,
 		map[string]any{
 			"Name":       "mutated",
 			"Activities": map[string]any{"x": map[string]any{}},
 		})
-	assert.Equal(t, http.StatusBadRequest, updateRec.Code)
+	require.Equal(t, http.StatusConflict, updateRec.Code, updateRec.Body.String())
+
+	var errResp map[string]string
+	require.NoError(t, json.Unmarshal(updateRec.Body.Bytes(), &errResp))
+	assert.Equal(t, "ConflictException", errResp["__type"])
+}
+
+// TestJourneyUpdate_BlockedWhenActive_RealClient drives the real
+// aws-sdk-go-v2 pinpoint client through UpdateJourney on an ACTIVE journey
+// and confirms errors.As unwraps to *types.ConflictException, not
+// *types.BadRequestException. UpdateJourney's deserializeOpErrorUpdateJourney
+// switch (pinpoint@v1.42.4 deserializers.go) declares both, and only
+// ConflictException matches "conflict with the current state of the
+// specified resource" (botocore pinpoint/2016-12-01/service-2.json), which
+// is what an ACTIVE journey rejecting a structural edit actually is.
+func TestJourneyUpdate_BlockedWhenActive_RealClient(t *testing.T) {
+	t.Parallel()
+
+	h := newHandlerForTest(t)
+	client := newTestPinpointClient(t, h)
+
+	appOut, err := client.CreateApp(t.Context(), &pinpointsdk.CreateAppInput{
+		CreateApplicationRequest: &pinpointtypes.CreateApplicationRequest{Name: aws.String("journey-active-app")},
+	})
+	require.NoError(t, err)
+	appID := aws.ToString(appOut.ApplicationResponse.Id)
+
+	journeyOut, err := client.CreateJourney(t.Context(), &pinpointsdk.CreateJourneyInput{
+		ApplicationId:       aws.String(appID),
+		WriteJourneyRequest: &pinpointtypes.WriteJourneyRequest{Name: aws.String("active-journey")},
+	})
+	require.NoError(t, err)
+	journeyID := journeyOut.JourneyResponse.Id
+
+	_, err = client.UpdateJourneyState(t.Context(), &pinpointsdk.UpdateJourneyStateInput{
+		ApplicationId:       aws.String(appID),
+		JourneyId:           journeyID,
+		JourneyStateRequest: &pinpointtypes.JourneyStateRequest{State: pinpointtypes.StateActive},
+	})
+	require.NoError(t, err)
+
+	_, err = client.UpdateJourney(t.Context(), &pinpointsdk.UpdateJourneyInput{
+		ApplicationId:       aws.String(appID),
+		JourneyId:           journeyID,
+		WriteJourneyRequest: &pinpointtypes.WriteJourneyRequest{Name: aws.String("mutated")},
+	})
+	require.Error(t, err)
+
+	var badReq *pinpointtypes.BadRequestException
+	require.NotErrorAs(t, err, &badReq,
+		"UpdateJourney on an ACTIVE journey must not surface BadRequestException: %v", err)
+
+	var conflict *pinpointtypes.ConflictException
+	require.ErrorAs(t, err, &conflict,
+		"expected a real ConflictException from the SDK deserializer, got: %v", err)
 }
 
 // ──────────────────────────────────────────────────

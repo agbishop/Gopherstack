@@ -37,6 +37,7 @@ ops:
   DeleteUserEndpoints: {wire: ok, errors: ok, state: ok, persist: n/a, note: "gopherstack-r80d batch 5: DeleteUserEndpointsOutput.EndpointsResponse is required (pinpoint@v1.42.4 api_op_DeleteUserEndpoints.go:44-51) and the wire is the entire body deserialized directly into it (deserializers.go:5482), not a wrapper key. The handler wrote a bare 204 No Content; the real client's decoder treats the empty body as EOF (tolerated, deserializers.go:5472) so the call succeeded with EndpointsResponse left nil — same empty-body class as batch one's lambda DeleteCapacityProvider. Fixed to return the deleted endpoints as EndpointsResponse.Item with a 200 body, matching the sibling DeleteEndpoint (singular)'s existing pattern. Locked by TestDeleteUserEndpoints_EndpointsResponse_RealClient"}
   # ops carried forward unchanged from the 2026-07-12 pass (files not touched this pass, still trusted):
   CreateJourney: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-wksweep-pp-2 (2026-08-28, acceptguard): neither WriteJourneyRequest nor JourneyResponse has a Tags member at all (pinpoint@v1.42.4 types/types.go:7118, 4227) -- journeys are taggable only through the generic TagResource/ListTagsForResource ARN-based API (tags.go), same as every other Pinpoint resource. A prior version accepted a tags field on CreateJourney/UpdateJourney and echoed it back in journeyResponse -- fabricated on BOTH the request and response sides, matching this sweep's appstream Email precedent. Fixed by removing tags/Tags from createJourneyRequest, updateJourneyRequest, and journeyResponse; the real TagResource path (already correct, storage-only via the tagHolder interface) is untouched. Real client can't send/read the field, so proof is raw-body (TestCreateJourney_RawTagsFieldIgnored, wire_field_fixes_test.go), which also exercises the real TagResource/ListTagsForResource round trip on the same journey to prove tagging still works the real way."}
+  UpdateJourney: {wire: ok, errors: fixed, state: ok, persist: ok, note: "gopherstack-os7o (2026-09-08): its only backend-emitted BadRequestException (ErrJourneyActive, rejecting an edit to an ACTIVE journey's fields) was wire-shape-declared but semantically wrong -- an ACTIVE-state rejection is a conflict with the resource's current state, not a malformed request, and botocore's per-op error docs for UpdateJourney say exactly that ('The request failed due to a conflict with the current state of the specified resource' for ConflictException vs 'The request contains a syntax error' for BadRequestException). UpdateJourney already legitimately declares ConflictException (confirmed gopherstack-uox6, 2026-08-31) but nothing emitted it. Fixed by rewiring ErrJourneyActive to awserr.ErrConflict and adding the 409 ConflictException branch in handleUpdateJourney. The other BadRequestException site (unmarshalBody's malformed-JSON path) is a real syntax error and is unchanged."}
   GetJourneyExecutionMetrics: {wire: ok, errors: ok, state: ok, persist: ok, note: "route fix from prior pass; now covered by full-state persistence too"}
   GetJourneyExecutionActivityMetrics: {wire: ok, errors: ok, state: ok, persist: ok}
   GetJourneyRunExecutionMetrics: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -545,3 +546,55 @@ Gates: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/pinpoint/...` 0 issues
 `GOTOOLCHAIN=go1.27.0 go test -race ./services/pinpoint/...` ok (includes the new
 regression test). No handler dispatch table changed, so no repo-wide blast-radius run was
 needed beyond the package itself.
+
+## 2026-09-08 gopherstack-os7o: UpdateJourney's BadRequestException on an ACTIVE journey retargeted to ConflictException
+
+Filed title-only ("UpdateJourney returns BadRequestException where ConflictException may
+fit"), hedged. Enumerated every `BadRequestException` emission reachable from
+`UpdateJourney`: two sites. (1) `unmarshalBody` (`handler.go`), on malformed JSON --
+a real syntax error, correct as-is, unchanged. (2) `handler_journeys.go`'s
+`errors.Is(backendErr, awserr.ErrInvalidParameter)` branch in `handleUpdateJourney`,
+wrapping `ErrJourneyActive` (`errors.go`), emitted from `journeys.go`'s
+`UpdateJourney` when `j.State == journeyStateActive` -- the only condition that function
+checks before applying field updates.
+
+Read `UpdateJourney`'s full modeled error set from
+`awsRestjson1_deserializeOpErrorUpdateJourney` (`pinpoint@v1.42.4` `deserializers.go:18741`,
+switch at `18781-18800+`): `BadRequestException`, `ConflictException`,
+`ForbiddenException`, `InternalServerErrorException`, `MethodNotAllowedException`,
+`NotFoundException`, `PayloadTooLargeException`, plus `TooManyRequestsException` further
+down (truncated in the read range but present per the errtargetaudit sweep's count).
+Both `types/errors.go`'s `BadRequestException` and `ConflictException` doc comments are
+identical generic boilerplate ("Provides information about an API request or response.") --
+the Go SDK carries no per-type distinction, consistent with gopherstack-coib's finding on the
+same file.
+
+Second oracle, decisive: botocore's `pinpoint/2016-12-01/service-2.json.gz`. `UpdateJourney`'s
+own `errors` list carries **per-operation** documentation distinct from the generic shape
+docs: `BadRequestException` -- "The request contains a syntax error (BadRequestException)";
+`ConflictException` -- "The request failed due to a conflict with the current state of the
+specified resource (ConflictException)". Rejecting a structurally-valid `UpdateJourney`
+request solely because the target journey is currently ACTIVE is exactly "a conflict with
+the current state of the specified resource," not a syntax error -- the request body itself
+is fine. This also lines up with gopherstack-uox6 (2026-08-31)'s finding that `UpdateJourney`
+is the package's only op that legitimately declares `ConflictException`, which until this
+fix nothing in the package ever emitted.
+
+**Verdict: (a) wrong code, fixed.** `ErrJourneyActive` (`errors.go`) now wraps
+`awserr.ErrConflict` instead of `awserr.ErrInvalidParameter`; `handleUpdateJourney`
+(`handler_journeys.go`) gained an `errors.Is(backendErr, awserr.ErrConflict)` branch writing
+`409 ConflictException`, following the exact pattern already used by `handleCreateApp`
+(`handler_apps.go:98-99`).
+
+**Pre-existing test asserted the old code**: `TestJourneyUpdate_BlockedWhenActive`
+(`journeys_test.go`) asserted only `http.StatusBadRequest` on the update-while-ACTIVE path.
+Updated in place to assert `http.StatusConflict` plus the response body's `__type` ==
+`"ConflictException"`; confirmed it fails against unmodified code first, with the exact body
+`{"__type":"BadRequestException","message":"BadRequestException: journey is ACTIVE and cannot
+be modified"}`. Added `TestJourneyUpdate_BlockedWhenActive_RealClient`, driving the real
+`aws-sdk-go-v2/service/pinpoint` client and asserting `errors.As` unwraps to
+`*types.ConflictException` and explicitly does NOT unwrap to `*types.BadRequestException` --
+the errors.As-matching concern this whole error-code campaign exists to catch.
+
+Gates: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/pinpoint/...` -- 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/pinpoint/...` -- ok.

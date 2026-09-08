@@ -223,6 +223,10 @@ func (h *Handler) handleUpdateJourney(c *echo.Context, appID, journeyID string) 
 			return writeErrorResponse(c, http.StatusBadRequest, "BadRequestException", backendErr.Error())
 		}
 
+		if errors.Is(backendErr, awserr.ErrConflict) {
+			return writeErrorResponse(c, http.StatusConflict, "ConflictException", backendErr.Error())
+		}
+
 		return writeNotFoundOrInternal(c, backendErr)
 	}
 
