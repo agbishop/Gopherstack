@@ -1243,3 +1243,74 @@ the maintainer wants the "what would have to exist first" cross-service
 check-evaluation engine tracked separately (it would be a new, large,
 multi-service feature, not a securityhub-local fix). Suggested bd close
 text below.
+
+## gopherstack-3t96 (2026-09-08, P2): malformed JSON body reached the matched operation with body == nil -- found and fixed
+
+Part of the sweep following elasticache (gopherstack-8haq, P1), pinpoint (gopherstack-246v),
+and apigatewayv2 (gopherstack-wsvb, P1). `decodeJSONBody` (handler.go:531, called only from
+`handleREST` at handler.go:577 -- confirmed the single call site, so no contract-change fallout
+elsewhere) rejected malformed JSON by writing the 400 via `c.JSON` and returning that call's
+result, which is nil after a successful write. `handleREST` stored that nil in `err` and tested
+`if err != nil`, which never fired, so `classifyPath`'s matched operation ran anyway with
+`body == nil`, on top of the already-committed 400.
+
+**What a nil body actually does downstream is worse than a second write.** A nil `map[string]any`
+reads safely in Go (`body["Field"].(string)` returns `"", false`), so every op handler that reads
+required fields out of `body` (e.g. `handleCreateActionTarget`, action_targets.go: `name, _ :=
+body["Name"].(string)`) sees them as empty and rejects with its own 400 -- a real second write,
+corrupting the wire body, but no state change. The dangerous case is any op with no required
+fields: `handleEnableSecurityHubV2` (handler_hub.go) reads only the optional `Tags` map, so a nil
+body is indistinguishable from a valid empty request -- `h.Backend.EnableSecurityHubV2(nil)` ran
+and actually enabled SecurityHub V2, a real, unintended state mutation, even though the client had
+already received a 400 for the malformed body that triggered it. `handleEnableHub` (V1, same
+family) has the same shape.
+
+**Tests first**, new `handler_malformed_body_test.go` (no pre-existing test sent malformed JSON to
+this package at all, so nothing to strengthen -- both new tests assert observable state, not just
+status):
+- `TestMalformedJSONBody_DoesNotEnableHubV2`: POST `/hubv2` with `{"Tags":` (malformed), then GET
+  `/hubv2` must still be 404 `ResourceNotFoundException` (not enabled), not 200.
+- `TestMalformedJSONBody_DoesNotDoubleWrite`: POST `/actionTargets` with `{"Name":` (malformed)
+  must produce one well-formed JSON body, not two concatenated `Message` objects.
+
+Confirmed both FAIL against unmodified code (verbatim, `go test ./services/securityhub/... -run
+TestMalformedJSONBody`):
+
+```
+=== NAME  TestMalformedJSONBody_DoesNotEnableHubV2
+    handler_malformed_body_test.go:57:
+        Error:      Not equal:
+                    expected: 404
+                    actual  : 200
+        Messages:   SecurityHub V2 must not be enabled after a malformed EnableSecurityHubV2 request
+--- FAIL: TestMalformedJSONBody_DoesNotEnableHubV2 (0.00s)
+
+=== NAME  TestMalformedJSONBody_DoesNotDoubleWrite
+    handler_malformed_body_test.go:81:
+        Error:      Received unexpected error:
+                    invalid character '{' after top-level value
+        Messages:   a single write must produce one well-formed JSON body, got:
+                    {"Message":"invalid JSON body"}{"Message":"Name is required"}
+--- FAIL: TestMalformedJSONBody_DoesNotDoubleWrite (0.00s)
+```
+each paired with a `logger` line `"echo: response already written to client"`.
+
+Fixed with the pinpoint raw-unwritten-error pattern: `decodeJSONBody` no longer writes; it
+returns a new unexported static error (`errInvalidJSONBody`, handler.go), and `handleREST` maps
+any non-nil error to a 400 via `c.JSON(http.StatusBadRequest, map[string]any{keyMessage:
+err.Error()})` and writes exactly once -- left unheadered (no `X-Amzn-Errortype`), same as before
+the fix and for the same reason: `decodeJSONBody` runs before the request is classified to an
+operation, so it can't know which exception vocabulary (classic vs. V2-style) applies.
+`errname`/`err113` (this repo's golangci-lint config) require this as a static package-level
+sentinel, not inline `errors.New` at the call site.
+
+Neuter-verified two ways at handler.go's `handleREST`: (1) reverting the call site to bare
+`return err` still compiles and fails `require.NoError` in both new tests, surfacing the raw
+"invalid JSON body" text since nothing ever wrote a response; (2) restoring the entire original
+`decodeJSONBody`/call-site pair verbatim (write-then-return-nil) still compiles and reproduces
+the exact failures above, including the concatenated-body text.
+
+`go test -race ./services/securityhub/...` and `golangci-lint run ./services/securityhub/...`
+both clean after the fix. Full `go test ./services/...` also green (see gopherstack-3t96's
+cross-service report for the combined blast-radius run covering lambda, securityhub, and
+organizations).

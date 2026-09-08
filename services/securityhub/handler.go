@@ -2,6 +2,7 @@ package securityhub
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -493,10 +494,6 @@ func (h *Handler) Handler() echo.HandlerFunc {
 	}
 }
 
-// decodeJSONBody reads and decodes the request body as JSON, returning an
-// empty (non-nil) map for requests with no body. On malformed JSON it writes
-// the 400 response itself and returns that write's error (nil on success),
-// matching handleREST's historical inline behavior.
 // amznErrorTypeHeader carries the modeled exception type for the restjson1
 // protocol. aws-sdk-go-v2's restjson.GetErrorInfo (aws/protocol/restjson/decoder_util.go)
 // reads this header before falling back to a body "code"/"__type" field; without it every
@@ -518,19 +515,25 @@ func typedErrorResponse(c *echo.Context, status int, errType, message string) er
 	return c.JSON(status, map[string]any{keyMessage: message})
 }
 
+// errInvalidJSONBody is returned unwritten so handleREST can map and write
+// it exactly once. decodeJSONBody used to write the 400 itself via c.JSON
+// and return that call's (always-nil) result, so handleREST's
+// `if err != nil` check never fired and dispatch proceeded to the matched
+// operation with body == nil (gopherstack-3t96, the gopherstack-8haq
+// shape).
+var errInvalidJSONBody = errors.New("invalid JSON body")
+
 // decodeJSONBody runs before the request is classified to an operation, so
 // it can't know whether that operation uses the classic InvalidInputException
-// vocabulary or the newer ValidationException one -- left unheadered rather
-// than guessing (same reasoning as the ErrHubNotEnabled cases in
-// handler_hub.go).
+// vocabulary or the newer ValidationException one -- handleREST leaves the
+// response unheadered (no X-Amzn-Errortype) rather than guessing (same
+// reasoning as the ErrHubNotEnabled cases in handler_hub.go).
 func decodeJSONBody(c *echo.Context) (map[string]any, error) {
 	var body map[string]any
 
 	if c.Request().ContentLength != 0 {
 		if err := json.NewDecoder(c.Request().Body).Decode(&body); err != nil && err.Error() != "EOF" {
-			return nil, c.JSON(http.StatusBadRequest, map[string]any{
-				keyMessage: "invalid JSON body",
-			})
+			return nil, errInvalidJSONBody
 		}
 	}
 
@@ -573,7 +576,7 @@ func (h *Handler) handleREST(c *echo.Context) error {
 
 	body, err := decodeJSONBody(c)
 	if err != nil {
-		return err
+		return c.JSON(http.StatusBadRequest, map[string]any{keyMessage: err.Error()})
 	}
 
 	for _, handlers := range h.opHandlerGroups(c, resource, body) {
