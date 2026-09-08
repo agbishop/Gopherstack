@@ -160,6 +160,20 @@ func TestIntegration_MGN_SourceServerLifecycle(t *testing.T) {
 	require.NoError(t, err, "UpdateSourceServer should succeed")
 	assert.Equal(t, "web-1.action.example.com", aws.ToString(updated.FqdnForActionFramework))
 
+	// ChangeServerLifeCycleState requires CONTINUOUS replication (its
+	// documented launchable precondition); this test verifies the sequential
+	// resource chain, not whether the call works pre-replication, so wait for
+	// it legitimately rather than changing what's being proven.
+	require.Eventually(t, func() bool {
+		out, describeErr := client.DescribeSourceServers(ctx, &mgnsdk.DescribeSourceServersInput{
+			Filters: &mgntypes.DescribeSourceServersRequestFilters{SourceServerIDs: []string{sourceServerID}},
+		})
+
+		return describeErr == nil && len(out.Items) == 1 &&
+			out.Items[0].DataReplicationInfo != nil &&
+			out.Items[0].DataReplicationInfo.DataReplicationState == mgntypes.DataReplicationStateContinuous
+	}, mgnAsyncWait, mgnAsyncPoll, "source server never reached CONTINUOUS")
+
 	changed, err := client.ChangeServerLifeCycleState(ctx, &mgnsdk.ChangeServerLifeCycleStateInput{
 		SourceServerID: aws.String(sourceServerID),
 		LifeCycle: &mgntypes.ChangeServerLifeCycleStateSourceServerLifecycle{

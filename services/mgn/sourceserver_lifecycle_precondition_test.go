@@ -9,6 +9,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// waitForContinuousReplication polls DescribeSourceServers until serverID's
+// DataReplicationState reaches CONTINUOUS -- the launchable precondition
+// ChangeServerLifeCycleState enforces (api_op_ChangeServerLifeCycleState.go).
+func waitForContinuousReplication(t *testing.T, client *mgnsdk.Client, serverID string) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		out, err := client.DescribeSourceServers(t.Context(), &mgnsdk.DescribeSourceServersInput{
+			Filters: &types.DescribeSourceServersRequestFilters{SourceServerIDs: []string{serverID}},
+		})
+
+		return err == nil && len(out.Items) == 1 &&
+			out.Items[0].DataReplicationInfo != nil &&
+			out.Items[0].DataReplicationInfo.DataReplicationState == types.DataReplicationStateContinuous
+	}, defaultAsyncWait, defaultAsyncPoll, "source server never reached CONTINUOUS")
+}
+
 // TestMarkAsArchived_LifeCycleStatePrecondition proves MarkAsArchived enforces
 // api_op_MarkAsArchived.go's documented precondition ("This command only
 // works for SourceServers with a lifecycle. state which equals DISCONNECTED
@@ -41,6 +58,12 @@ func TestMarkAsArchived_LifeCycleStatePrecondition(t *testing.T) {
 
 		seeded := seedSourceServerViaImport(t, h, client, "archive-cutover")
 		serverID := aws.ToString(seeded.SourceServerID)
+
+		// ChangeServerLifeCycleState now requires CONTINUOUS replication --
+		// reach it legitimately before using this op as the shortcut to
+		// CUTOVER; MarkAsArchived's own precondition is what this subtest
+		// verifies, not whether ChangeServerLifeCycleState works pre-replication.
+		waitForContinuousReplication(t, client, serverID)
 
 		_, err := client.ChangeServerLifeCycleState(ctx, &mgnsdk.ChangeServerLifeCycleStateInput{
 			SourceServerID: aws.String(serverID),
@@ -92,6 +115,13 @@ func TestTerminateTargetInstances_LifeCycleStatePrecondition(t *testing.T) {
 		seeded := seedSourceServerViaImport(t, h, client, "terminate-testing")
 		serverID := aws.ToString(seeded.SourceServerID)
 
+		// ChangeServerLifeCycleState now requires CONTINUOUS replication --
+		// reach it legitimately before using this op as the shortcut to
+		// READY_FOR_TEST; TerminateTargetInstances's own block list is what
+		// this subtest verifies, not whether ChangeServerLifeCycleState works
+		// pre-replication.
+		waitForContinuousReplication(t, client, serverID)
+
 		_, err := client.ChangeServerLifeCycleState(ctx, &mgnsdk.ChangeServerLifeCycleStateInput{
 			SourceServerID: aws.String(serverID),
 			LifeCycle: &types.ChangeServerLifeCycleStateSourceServerLifecycle{
@@ -122,6 +152,13 @@ func TestTerminateTargetInstances_LifeCycleStatePrecondition(t *testing.T) {
 		seeded := seedSourceServerViaImport(t, h, client, "terminate-cutting-over")
 		serverID := aws.ToString(seeded.SourceServerID)
 
+		// ChangeServerLifeCycleState now requires CONTINUOUS replication --
+		// reach it legitimately before using this op as the shortcut to
+		// READY_FOR_CUTOVER; TerminateTargetInstances's own block list is
+		// what this subtest verifies, not whether ChangeServerLifeCycleState
+		// works pre-replication.
+		waitForContinuousReplication(t, client, serverID)
+
 		_, err := client.ChangeServerLifeCycleState(ctx, &mgnsdk.ChangeServerLifeCycleStateInput{
 			SourceServerID: aws.String(serverID),
 			LifeCycle: &types.ChangeServerLifeCycleStateSourceServerLifecycle{
@@ -151,6 +188,13 @@ func TestTerminateTargetInstances_LifeCycleStatePrecondition(t *testing.T) {
 
 		seeded := seedSourceServerViaImport(t, h, client, "terminate-cutover")
 		serverID := aws.ToString(seeded.SourceServerID)
+
+		// ChangeServerLifeCycleState now requires CONTINUOUS replication --
+		// reach it legitimately before using this op as the shortcut to
+		// CUTOVER; TerminateTargetInstances's own block list is what this
+		// subtest verifies, not whether ChangeServerLifeCycleState works
+		// pre-replication.
+		waitForContinuousReplication(t, client, serverID)
 
 		_, err := client.ChangeServerLifeCycleState(ctx, &mgnsdk.ChangeServerLifeCycleStateInput{
 			SourceServerID: aws.String(serverID),
@@ -183,5 +227,58 @@ func TestTerminateTargetInstances_LifeCycleStatePrecondition(t *testing.T) {
 			SourceServerIDs: []string{serverID},
 		})
 		require.NoError(t, err)
+	})
+}
+
+// TestChangeServerLifeCycleState_LifeCycleStatePrecondition proves
+// ChangeServerLifeCycleState enforces api_op_ChangeServerLifeCycleState.go's
+// documented precondition ("This command only works if the Source Server is
+// already launchable (dataReplicationInfo.lagDuration is not null)"), which
+// the backend did not check before the fix.
+func TestChangeServerLifeCycleState_LifeCycleStatePrecondition(t *testing.T) {
+	t.Parallel()
+
+	t.Run("not yet launchable rejected", func(t *testing.T) {
+		t.Parallel()
+
+		h, client := newTestHandlerAndClient(t)
+		ctx := t.Context()
+
+		seeded := seedSourceServerViaImport(t, h, client, "change-lifecycle-blocked")
+		serverID := aws.ToString(seeded.SourceServerID)
+
+		// Fresh import has not reached CONTINUOUS replication yet.
+		_, err := client.ChangeServerLifeCycleState(ctx, &mgnsdk.ChangeServerLifeCycleStateInput{
+			SourceServerID: aws.String(serverID),
+			LifeCycle: &types.ChangeServerLifeCycleStateSourceServerLifecycle{
+				State: types.ChangeServerLifeCycleStateSourceServerLifecycleStateReadyForCutover,
+			},
+		})
+		require.Error(t, err)
+
+		var conflict *types.ConflictException
+		require.ErrorAs(t, err, &conflict)
+	})
+
+	t.Run("launchable allowed", func(t *testing.T) {
+		t.Parallel()
+
+		h, client := newTestHandlerAndClient(t)
+		ctx := t.Context()
+
+		seeded := seedSourceServerViaImport(t, h, client, "change-lifecycle-allowed")
+		serverID := aws.ToString(seeded.SourceServerID)
+
+		waitForContinuousReplication(t, client, serverID)
+
+		out, err := client.ChangeServerLifeCycleState(ctx, &mgnsdk.ChangeServerLifeCycleStateInput{
+			SourceServerID: aws.String(serverID),
+			LifeCycle: &types.ChangeServerLifeCycleStateSourceServerLifecycle{
+				State: types.ChangeServerLifeCycleStateSourceServerLifecycleStateReadyForCutover,
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, out.LifeCycle)
+		require.Equal(t, types.LifeCycleStateReadyForCutover, out.LifeCycle.State)
 	})
 }

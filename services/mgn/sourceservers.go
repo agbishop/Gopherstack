@@ -27,9 +27,14 @@ import (
 //	CUTTING_OVER -> CUTOVER       via FinalizeCutover (a distinct call, not automatic).
 //	CUTOVER -> DISCONNECTED       via DisconnectFromService, the terminal state.
 //
-// ChangeServerLifeCycleState is the one caller-driven escape hatch: it can force
-// State directly to READY_FOR_TEST/READY_FOR_CUTOVER/CUTOVER, bypassing the table
-// above -- matching real AWS's documented manual-override purpose for this call.
+// ChangeServerLifeCycleState can force State directly to
+// READY_FOR_TEST/READY_FOR_CUTOVER/CUTOVER, bypassing the table above. Real AWS
+// documents a precondition, not a manual-override purpose: "This command only
+// works if the Source Server is already launchable (dataReplicationInfo.
+// lagDuration is not null)" (mgn api_op_ChangeServerLifeCycleState.go:12-15).
+// gopherstack never fabricates LagDuration (models.go's DataReplicationInfo doc
+// comment), so DataReplicationState == CONTINUOUS is the equivalent launchable
+// signal used below; an earlier call is rejected with ConflictException.
 
 // resolveSourceServerLocked resolves sourceServerID to its stored
 // SourceServer. Callers must hold b.mu.
@@ -472,6 +477,13 @@ func (b *InMemoryBackend) ChangeServerLifeCycleState(sourceServerID, targetState
 	s, ok := b.resolveSourceServerLocked(sourceServerID)
 	if !ok {
 		return nil, notFoundError(resourceSourceServer, sourceServerID)
+	}
+
+	if s.DataReplicationInfo == nil || s.DataReplicationInfo.DataReplicationState != DataReplicationStateContinuous {
+		return nil, conflictErrorWithResource(
+			resourceSourceServer, sourceServerID,
+			"source server is not yet launchable: "+sourceServerID,
+		)
 	}
 
 	if s.LifeCycle == nil {
