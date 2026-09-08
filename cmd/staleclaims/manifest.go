@@ -85,8 +85,8 @@ func parseManifest(service, path, content string) manifest {
 	lines := strings.Split(content, "\n")
 	frontStart, frontEnd := extractFrontmatterRange(lines)
 
-	m := manifest{service: service, path: path, lines: lines, frontStart: frontStart, frontEnd: frontEnd}
-	m.claims = findClaimBlocks(lines, frontStart, frontEnd)
+	m := manifest{service: service, path: path, lines: lines, frontStart: frontStart, frontEnd: frontEnd,
+		claims: findClaimBlocks(lines, frontStart, frontEnd)}
 	m.fmOther = complementRanges(frontStart, frontEnd, m.claims)
 	m.body = lineRange{start: frontEnd, end: len(lines)}
 

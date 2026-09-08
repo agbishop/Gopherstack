@@ -956,10 +956,10 @@ func (db *InMemoryDB) replicaGSISettingsRLocked(
 			ProvisionedReadCapacityUnits:  &rcu,
 			ProvisionedWriteCapacityUnits: &wcu,
 			ProvisionedReadCapacityAutoScalingSettings: sdkAutoScalingSettingsDescription(readAutoScaling),
-		}
-		gsiDesc.ProvisionedWriteCapacityAutoScalingSettings = sdkAutoScalingSettingsDescription(
-			gsiWriteCapacityAutoScaling[gsiName],
-		)
+
+			ProvisionedWriteCapacityAutoScalingSettings: sdkAutoScalingSettingsDescription(
+				gsiWriteCapacityAutoScaling[gsiName],
+			)}
 		gsiDescs = append(gsiDescs, gsiDesc)
 	}
 

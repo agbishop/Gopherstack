@@ -198,10 +198,9 @@ func parseClientVpnEndpointOptions(vals url.Values) ClientVpnEndpointOptions {
 		SecurityGroupIDs:     parseMemberList(vals, "SecurityGroupId"),
 		SelfServicePortalURL: vals.Get("SelfServicePortal"),
 		TransitGatewayID:     vals.Get("TransitGatewayConfiguration.TransitGatewayId"),
-	}
 
-	opts.VpnPort = parseInt32Value(vals.Get("VpnPort"))
-	opts.SessionTimeoutHours = parseInt32Value(vals.Get("SessionTimeoutHours"))
+		VpnPort:             parseInt32Value(vals.Get("VpnPort")),
+		SessionTimeoutHours: parseInt32Value(vals.Get("SessionTimeoutHours"))}
 
 	if v := vals.Get("SplitTunnel"); v != "" {
 		splitTunnel := v == ec2BooleanTrue

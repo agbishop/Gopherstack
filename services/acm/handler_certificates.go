@@ -449,9 +449,8 @@ func (h *Handler) jsonDescribeCertificate(ctx context.Context, body []byte) (any
 		InUseBy:                 nonNilSlice(cert.InUseBy),
 		KeyUsage:                keyUsages,
 		ExtendedKeyUsage:        extKeyUsages,
-	}
 
-	detail.RenewalSummary = buildRenewalSummaryDetail(cert.RenewalSummary)
+		RenewalSummary: buildRenewalSummaryDetail(cert.RenewalSummary)}
 
 	return &describeCertificateOutput{Certificate: detail}, nil
 }

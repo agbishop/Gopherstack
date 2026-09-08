@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -394,9 +395,8 @@ func (b *InMemoryBackend) ListJobRuns(
 
 	// runs are stored in chronological order, ListJobRuns expects reverse chronological
 	var reversed []*JobRun
-	//nolint:modernize // simple loop
-	for i := len(runs) - 1; i >= 0; i-- {
-		cp := *runs[i]
+	for _, run := range slices.Backward(runs) {
+		cp := *run
 		reversed = append(reversed, &cp)
 	}
 

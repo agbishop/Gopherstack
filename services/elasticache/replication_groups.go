@@ -266,8 +266,8 @@ func resizeNodeGroups(existing []NodeGroup, targetCount, replicaCount int) []Nod
 			NodeGroupID: fmt.Sprintf("%04d", i+1),
 			Status:      statusAvailable,
 			Slots:       fmt.Sprintf("%d-%d", slotStart, slotEnd),
-		}
-		ng.Replicas = make([]NodeGroupNode, replicaCount)
+
+			Replicas: make([]NodeGroupNode, replicaCount)}
 		out[i] = ng
 	}
 

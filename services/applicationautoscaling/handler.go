@@ -148,10 +148,11 @@ func marshalError(errType, message string) []byte {
 	return payload
 }
 
-// resourceNamer is implemented by [resourceNameError]; used via errors.As to
-// recover the AWS "ResourceName" field TooManyTagsException and
-// ResourceNotFoundException carry on the wire.
+// resourceNamer is implemented by [resourceNameError]; used via
+// errors.AsType to recover the AWS "ResourceName" field TooManyTagsException
+// and ResourceNotFoundException carry on the wire.
 type resourceNamer interface {
+	error
 	ResourceName() string
 }
 
@@ -179,10 +180,9 @@ func marshalResourceError(errType, message, resourceName string) []byte {
 func (h *Handler) handleError(_ context.Context, c *echo.Context, _ string, err error) error {
 	var syntaxErr *json.SyntaxError
 	var typeErr *json.UnmarshalTypeError
-	var rn resourceNamer
 
 	resourceName := ""
-	if errors.As(err, &rn) {
+	if rn, ok := errors.AsType[resourceNamer](err); ok {
 		resourceName = rn.ResourceName()
 	}
 

@@ -280,9 +280,8 @@ func toExperimentDTO(exp *Experiment) experimentDTO {
 		StartTime:                        toUnix(exp.StartTime),
 		EndTime:                          toUnixPtr(exp.EndTime),
 		TargetAccountConfigurationsCount: exp.TargetAccountConfigurationsCount,
-	}
 
-	dto.LogConfiguration = experimentLogConfigDTO(exp.LogConfiguration)
+		LogConfiguration: experimentLogConfigDTO(exp.LogConfiguration)}
 
 	if exp.ExperimentOptions != nil {
 		dto.ExperimentOptions = &experimentExperimentOptionsDTO{

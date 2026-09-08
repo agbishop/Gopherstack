@@ -51,8 +51,8 @@ func snapshotTableForBackup(table *Table) tableBackupSnapshot {
 		StreamsEnabled:        table.StreamsEnabled,
 		StreamViewType:        table.StreamViewType,
 		Status:                table.Status,
-	}
-	snap.KeySchema = make([]models.KeySchemaElement, len(table.KeySchema))
+
+		KeySchema: make([]models.KeySchemaElement, len(table.KeySchema))}
 	copy(snap.KeySchema, table.KeySchema)
 	snap.AttributeDefinitions = make([]models.AttributeDefinition, len(table.AttributeDefinitions))
 	copy(snap.AttributeDefinitions, table.AttributeDefinitions)

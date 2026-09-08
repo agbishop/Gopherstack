@@ -486,8 +486,8 @@ func snapshotSourceForPITR(
 		StreamViewType:        sourceTable.StreamViewType,
 		OnDemandMaxReadRRU:    sourceTable.OnDemandMaxReadRRU,
 		OnDemandMaxWriteRRU:   sourceTable.OnDemandMaxWriteRRU,
-	}
-	p.KeySchema = make([]models.KeySchemaElement, len(sourceTable.KeySchema))
+
+		KeySchema: make([]models.KeySchemaElement, len(sourceTable.KeySchema))}
 	copy(p.KeySchema, sourceTable.KeySchema)
 	p.AttributeDefinitions = make(
 		[]models.AttributeDefinition,
