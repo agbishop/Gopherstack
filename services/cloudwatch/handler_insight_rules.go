@@ -104,9 +104,18 @@ func (h *Handler) handleDeleteInsightRules(form url.Values, c *echo.Context) err
 		)
 	}
 
+	// Collect ARNs before deleting so tag entries can be cleaned up (insight
+	// rules are a taggable resource kind alongside alarms/dashboards/metric
+	// streams, all of which already clean up tags on delete).
+	arns := h.insightRuleARNs(ruleNames)
+
 	failures, err := h.Backend.DeleteInsightRules(ruleNames)
 	if err != nil {
 		return h.xmlError(c, http.StatusInternalServerError, "InternalFailure", err.Error())
+	}
+
+	for _, a := range arns {
+		h.deleteResourceTags(a)
 	}
 
 	type response struct {
@@ -121,6 +130,20 @@ func (h *Handler) handleDeleteInsightRules(form url.Values, c *echo.Context) err
 		RequestID: uuid.New().String(),
 		Result:    buildInsightRuleFailResult(failures),
 	})
+}
+
+// insightRuleARNs resolves the ARNs of the named insight rules that currently
+// exist, skipping names that don't (used to clean up tags before deletion).
+func (h *Handler) insightRuleARNs(names []string) []string {
+	var arns []string
+
+	for _, name := range names {
+		if rule, err := h.Backend.GetInsightRule(name); err == nil {
+			arns = append(arns, rule.Arn)
+		}
+	}
+
+	return arns
 }
 
 func (h *Handler) handleDescribeInsightRules(form url.Values, c *echo.Context) error {

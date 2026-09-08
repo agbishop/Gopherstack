@@ -234,8 +234,14 @@ func (h *Handler) cborDeleteMetricStream(input cbor.Map, c *echo.Context) error 
 		return h.cborError(c, http.StatusBadRequest, "InvalidParameterValue", "Name is required")
 	}
 
+	stream, getErr := h.Backend.GetMetricStream(name)
+
 	if err := h.Backend.DeleteMetricStream(name); err != nil {
 		return h.cborError(c, http.StatusBadRequest, "ResourceNotFoundException", err.Error())
+	}
+
+	if getErr == nil {
+		h.deleteResourceTags(stream.Arn)
 	}
 
 	return writeCBOR(c, cbor.Map{})

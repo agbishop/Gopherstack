@@ -84,9 +84,9 @@ ops:
   ListAlarmMuteRules: {wire: ok, errors: ok, state: ok, persist: ok}
   PutAnomalyDetector: {wire: ok, errors: ok, state: ok, persist: ok}
   DeleteAnomalyDetector: {wire: ok, errors: ok, state: ok, persist: ok}
-  DescribeAnomalyDetectors: {wire: ok, errors: ok, state: ok, persist: ok}
+  DescribeAnomalyDetectors: {wire: partial, errors: ok, state: ok, persist: ok, note: "GAP found 2026-09-08 (gopherstack-cqzt), NOT fixed this pass — AnomalyDetectorIds and AnomalyDetectorTypes are real modeled input filters (confirmed against botocore's DescribeAnomalyDetectorsInput) that both handler_anomaly_detectors.go and rpcv2cbor_anomaly_detectors.go silently accept-and-ignore: every detector matching Namespace/MetricName is returned regardless. AnomalyDetectorIds is straightforward to implement (AnomalyDetector.ID already exists); AnomalyDetectorTypes is closer to structural since this backend only ever creates SINGLE_METRIC detectors (no MetricMathAnomalyDetector concept exists here). Not fixed this pass because DescribeAnomalyDetectors's backend signature is positional (namespace, metricName, nextToken, maxResults) with ~10 call sites across tests plus two real-SDK-client tests (mutating_create_ids_test.go, wire_field_fixes_test.go); a signature change to add a filter touches all of them for a P3, read-op, lowest-priority-bucket fix — flagged for a dedicated pass instead of rushed under this pass's time budget."}
   PutInsightRule: {wire: ok, errors: fixed, state: ok, persist: ok, note: "FIXED 2026-07 pass — RuleDefinition is now validated as well-formed JSON (must decode to a JSON object); previously any non-JSON string was accepted and stored verbatim (insight_rule_validation.go). DEEPENED 2026-08-07 (bd gopherstack-lrmf) — RuleDefinition now also enforces the real Contributor Insights Rule Syntax's structural rules: Schema.Name (CloudWatchLogRule/CloudWatchLogRule2)/Version (1), LogFormat (JSON/CLF), LogGroupNames (non-empty string array), Contribution.Keys (1-4 string entries), and AggregateOn's Count/Sum enum with the required Contribution.ValueOf when summing — verified against AWS's published Contributor Insights Rule Syntax reference (not a generated SDK type; RuleDefinition is opaque there too, see Notes). Deliberately NOT enforced: whether AggregateOn is restricted to a specific Schema.Name (a pre-existing integration test exercises AggregateOn=Count against the base CloudWatchLogRule schema successfully, so this is not cross-checked), Contribution.Filters' per-match-type field shape, and CLF's Fields position-mapping requirement, to avoid diverging from real AWS on rules this pass could not verify against a generated type. PutManagedInsightRules deliberately bypasses this validation (it stores a plain TemplateName string, not JSON, in Definition — verified this is the correct real-AWS shape distinction, not an oversight). create-or-update semantics confirmed (no separate Update op); re-PUTting an existing RuleName re-validates and updates in place. CBOR error code FIXED 2026-08-29 — see error-codes family note."}
-  DeleteInsightRules: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteInsightRules: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-09-08 (gopherstack-cqzt) — handleDeleteInsightRules/cborDeleteInsightRules never called deleteResourceTags, unlike DeleteAlarms/DeleteDashboards/DeleteAnomalyDetector/DeleteMetricStream, which all clean up tags on delete. Insight rules ARE a taggable resource (TagResource's own doc: 'alarms, dashboards, metric streams and Contributor Insights rules'). Tags set via TagResource on an insight rule's ARN survived DeleteInsightRules as a ghost row. Fixed with a new insightRuleARNs helper (resolves ARNs before delete, since the record is gone after) called from both the XML and CBOR paths. See TestHandler_DeleteInsightRules_CleansUpTags."}
   DescribeInsightRules: {wire: ok, errors: ok, state: ok, persist: ok}
   EnableInsightRules: {wire: ok, errors: ok, state: ok, persist: ok}
   DisableInsightRules: {wire: ok, errors: ok, state: ok, persist: ok}
@@ -96,7 +96,7 @@ ops:
   PutMetricStream: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "FIXED 2026-07 pass — FirehoseArn/RoleArn/OutputFormat are all 'This member is required' in PutMetricStreamInput (true on every call, not just create, since Put is a full-replace not a patch) but were previously unenforced; OutputFormat now validated against the 3 real enum values (json/opentelemetry0.7/opentelemetry1.0); IncludeFilters+ExcludeFilters-together now rejected per the documented mutual exclusion (metric_stream_validation.go). create-or-update semantics confirmed (no separate Update op); re-PUTting an existing Name updates in place. DELIVERY IMPLEMENTED 2026-08-07 (bd gopherstack-lrmf) — see PutMetricData row and families note below. FIXED 2026-08-21 (gopherstack-r80d batch 33) — StatisticsConfigurations now parsed and stored; see GetMetricStream row and Notes. CBOR error code FIXED 2026-08-29 — see error-codes family note."}
   GetMetricStream: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-21 (gopherstack-r80d batch 33) — StatisticsConfigurations (whose members AdditionalStatistics/IncludeMetrics are both required, cloudwatch@v1.66.3 types/types.go:3270) was structurally absent from gopherstack's MetricStream model entirely: never parsed on PutMetricStream, never stored, never emitted here. A real client configuring additional statistics had that configuration silently discarded. Now threaded through end to end. See Notes."}
   ListMetricStreams: {wire: ok, errors: ok, state: ok, persist: ok}
-  DeleteMetricStream: {wire: ok, errors: ok, state: ok, persist: ok}
+  DeleteMetricStream: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-09-08 (gopherstack-cqzt) — the XML handler's tag cleanup on delete used a hardcoded 'arn:aws:cloudwatch::metric-stream/'+name (empty region/account), which never matched the real ARN PutMetricStream actually hands back to callers (arn.Build(\"cloudwatch\", region, accountID, ...) — non-empty region/account per config.DefaultRegion/DefaultAccountID), so deleteResourceTags always deleted under the wrong key and real tags survived delete as a ghost row. The pre-existing TestHandler_DeleteMetricStream_CleansUpTags test never called TagResource/ListTagsForResource at all despite its name, so it never caught this. The CBOR path (cborDeleteMetricStream) didn't attempt tag cleanup at all. Both fixed to fetch the stream (for its real .Arn) before deleting. See the strengthened TestHandler_DeleteMetricStream_CleansUpTags."}
   StartMetricStreams: {wire: ok, errors: ok, state: ok, persist: ok}
   StopMetricStreams: {wire: ok, errors: ok, state: ok, persist: ok}
   DescribeAlarmContributors:
@@ -993,3 +993,103 @@ see those services' own PARITY.md entries.
 Gates: `go build`, `go vet`, `go test -race -count=1` all clean on
 `./services/cloudwatch/...`; repo-wide `go build ./...`/`go vet ./...` clean (no
 cross-service callers of the changed `DescribeAlarmHistory` signature).
+
+## 2026-09-08 -- gopherstack-cqzt: partial audit of the previously-unreached surface
+
+Continuation of the 2026-09-04 pass that exhausted budget before reaching this
+list: `GetMetricData`/`GetMetricStatistics` and `DescribeInsightRules`/
+`DescribeAnomalyDetectors`/`ListDashboards`/`ListMetricStreams` input handling;
+delete/update preconditions and ghost rows after delete; the alarm state
+machine (`TreatMissingData`/`DatapointsToAlarm`); and resource leaks (alarm
+history/metric datapoint growth, evaluation and metric-stream tickers).
+
+**Covered, found clean:**
+- **Resource leaks.** `janitor.go`'s two tickers (`worker.NewGroup` +
+  `g.Ticker(...)`, `<-ctx.Done(); g.Stop()`) are ctx-cancellation-aware and
+  match the repo's janitor convention. `SweepExpiredMetrics` (`metrics.go:328`)
+  time-bounds metric datapoint growth (15-day retention,
+  `cwMetricRetentionDays`) via a snapshot-then-apply two-phase sweep.
+  `appendHistory` (`alarm_history.go:108`) caps per-alarm history at
+  `cwMaxAlarmHistory`, trimming the oldest entries. `DeleteAlarms` already
+  deletes the per-alarm history map entry (`alarm_history` cannot outlive its
+  alarm). No metric-stream delivery ticker exists (delivery is synchronous,
+  inline in `PutMetricData`) so there is nothing to leak there. No new
+  goroutines/tickers found outside `janitor.go`.
+- **The nil-on-write fall-through defect class** (the elasticache/pinpoint/
+  apigatewayv2/etc. shape where a local error-response-writer returns nil on
+  success and a caller's `if err != nil` after storing that return value never
+  fires). cloudwatch's two writer helpers, `xmlError` (`handler.go:638`) and
+  `cborError` (`rpcv2cbor.go:273`), both do exist and both do return `nil`
+  unconditionally after writing. Checked **every** call site
+  (`grep -n "xmlError(\|cborError("` across all non-test `.go` files, ~140
+  matches): every single one is `return h.xmlError(...)` / `return
+  h.cborError(...)` directly, with the sole non-`return` exception being
+  `handler.go:387`'s `return true, h.cborError(...)` (a two-value return, same
+  direct-propagation shape). No call site stores the result in a variable and
+  branches on it. **This defect class does not exist in cloudwatch.**
+- **The alarm state machine.** `evaluateMetricAlarmState`
+  (`alarm_eval.go:132`) and `countBreachingPeriods` implement all four
+  `TreatMissingData` modes; `missing` (default) returns `INSUFFICIENT_DATA`
+  when there aren't enough real datapoints to reach `DatapointsToAlarm`,
+  `breaching`/`notBreaching` count/exclude synthetic breaches per AWS's
+  documented meaning, and `ignore` maintains the current state only when
+  *zero* real data exists in the window (matching "the current alarm state is
+  maintained" when there is nothing to evaluate). `DatapointsToAlarm`
+  defaults to `EvaluationPeriods` when unset (M=N alarm) and `PutMetricAlarm`
+  already validates `DatapointsToAlarm <= EvaluationPeriods`
+  (`alarms.go:27`). Composite-alarm cycle handling
+  (`evalCompositeRuleDepth`) treats a cycle as `INSUFFICIENT_DATA` rather than
+  infinite-looping. Not independently re-verified against a fresh external
+  source beyond what a prior pass already confirmed (see the
+  "alarm-evaluation-state-machine" family note above) — no new bug found here.
+
+**Fixed, each with a failing-first regression test (see per-op PARITY notes
+above for detail):**
+1. `DeleteMetricStream` (XML path) cleaned up tags under a hardcoded,
+   region/account-less ARN (`"arn:aws:cloudwatch::metric-stream/"+name`) that
+   never matched the real ARN (`arn.Build("cloudwatch", region, accountID,
+   ...)`) `PutMetricStream` actually returns to callers — tags survived
+   delete as a ghost row. The CBOR path did no cleanup at all. Both now fetch
+   the stream for its real `.Arn` before deleting.
+2. `DeleteInsightRules` (both XML and CBOR) never cleaned up tags at all,
+   unlike its three taggable-resource siblings (alarms, dashboards, metric
+   streams). Fixed with a new `insightRuleARNs` helper.
+
+Both fixes strengthen a **pre-existing but non-assertive test**:
+`TestHandler_DeleteMetricStream_CleansUpTags` previously only checked the
+PUT/DELETE HTTP status codes and never called `TagResource`/
+`ListTagsForResource` despite its name claiming to test tag cleanup — it could
+not have caught either bug. It now tags the stream by its real ARN, confirms
+the tag is visible, deletes, and confirms the tag is gone. A companion test,
+`TestHandler_DeleteInsightRules_CleansUpTags`, was added new (no prior test
+covered insight-rule tag cleanup at all). Both fixes were confirmed to fail
+against unmodified code first (exact output in the bd issue / session
+transcript), then pass after the fix; both re-run 10x under `-race` with no
+flakes (fresh handler+backend per test, no shared/global state touched).
+
+**Found, NOT fixed (see `DescribeAnomalyDetectors` row above for detail):**
+`AnomalyDetectorIds`/`AnomalyDetectorTypes` are real modeled
+`DescribeAnomalyDetectorsInput` filters that both the XML and CBOR handlers
+silently ignore — every unfiltered detector is returned regardless of what a
+caller filters for. Not fixed: `DescribeAnomalyDetectors`'s backend method has
+a positional signature with roughly 10 call sites across this package's tests
+(two of them real `aws-sdk-go-v2` client round trips), and threading a new
+filter through all of them was judged too invasive for this pass's remaining
+budget on a P3, read-op (lowest-priority-bucket) finding. Left as a flagged
+gap for a dedicated pass rather than a rushed signature change.
+
+**NOT reached this pass** (still open from the original gopherstack-cqzt
+scope): `GetMetricData`/`GetMetricStatistics` input-handling validation beyond
+what earlier passes already covered (see "Verified correct, left alone"
+above); `DescribeInsightRules`/`ListDashboards`/`ListMetricStreams` input
+handling; the "at most one composite alarm per `DeleteAlarms` call" and
+"100-alarm-per-call" limits documented on `DeleteAlarms` (currently
+unenforced — gopherstack always deletes everything requested); the documented
+"cannot delete a composite alarm that is part of a dependency cycle"
+precondition (currently unenforced; cycles are only handled at *evaluation*
+time, not at delete time). None of these were touched code-wise this pass.
+
+Gates for this pass: `GOTOOLCHAIN=go1.27.0 golangci-lint run
+./services/cloudwatch/...` — 0 issues. `GOTOOLCHAIN=go1.27.0 go test -race
+./services/cloudwatch/...` — all pass. No persisted-type fields were added, so
+`pkgs/persistence` was not touched and its golden was not run.
