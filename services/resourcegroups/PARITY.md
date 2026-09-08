@@ -22,7 +22,7 @@ ops:
   SearchResources: {wire: ok, errors: ok, state: ok, persist: ok, note: "fixed: QueryErrors field now present on the wire (always empty -- see gaps, CFN-stack queries not modeled)"}
   GetTags: {wire: ok, errors: ok, state: ok, persist: ok}
   Tag: {wire: ok, errors: ok, state: ok, persist: ok}
-  Untag: {wire: ok, errors: ok, state: ok, persist: ok}
+  Untag: {wire: ok, errors: ok, state: ok, persist: ok, note: "gopherstack-7opw (2026-09-08): extractUntagKeys' two error branches (ReadBody failure, JSON-unmarshal failure) wrote their own error body via h.handleError and returned that (always-nil) result; handleUntagRequest tested that nil and fell through to call Backend.RemoveTagsByARN with keys == nil, writing a second body on top of the committed one (gopherstack-8haq shape). Confirmed Tags.DeleteKeys(nil) is a genuine no-op (ranges over a nil slice), so no tag was ever actually removed -- only the response was corrupted, not state. Fixed to return the raw error; handleUntagRequest now maps and writes it exactly once via handleError."}
   GetAccountSettings: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdateAccountSettings: {wire: ok, errors: ok, state: ok, persist: ok}
   StartTagSyncTask: {wire: ok, errors: ok, state: ok, persist: ok}

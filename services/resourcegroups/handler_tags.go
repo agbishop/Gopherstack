@@ -58,7 +58,7 @@ func (h *Handler) handleTagRequest(ctx context.Context, c *echo.Context, log *sl
 func (h *Handler) handleUntagRequest(ctx context.Context, c *echo.Context, log *slog.Logger, resourceARN string) error {
 	keys, err := h.extractUntagKeys(ctx, c, log)
 	if err != nil {
-		return err
+		return h.handleError(ctx, c, "Untag", err)
 	}
 
 	if err = h.Backend.RemoveTagsByARN(ctx, resourceARN, keys); err != nil {
@@ -71,7 +71,13 @@ func (h *Handler) handleUntagRequest(ctx context.Context, c *echo.Context, log *
 	})
 }
 
-// extractUntagKeys parses tag keys from query params or body for the Untag operation.
+// extractUntagKeys parses tag keys from query params or body for the Untag
+// operation, returning the raw unwritten error so handleUntagRequest can map
+// and write it exactly once. It used to write its own error body via
+// h.handleError and return that (always-nil, on a successful write) result
+// directly; handleUntagRequest tested that nil and fell through to call
+// Backend.RemoveTagsByARN with keys == nil, writing a second body on top of
+// the already-committed one (gopherstack-7opw, the gopherstack-8haq shape).
 func (h *Handler) extractUntagKeys(ctx context.Context, c *echo.Context, log *slog.Logger) ([]string, error) {
 	keysParam := c.Request().URL.Query().Get("keys")
 	if keysParam != "" {
@@ -82,7 +88,7 @@ func (h *Handler) extractUntagKeys(ctx context.Context, c *echo.Context, log *sl
 	if err != nil {
 		log.ErrorContext(ctx, "failed to read Untag request body", "error", err)
 
-		return nil, h.handleError(ctx, c, "Untag", err)
+		return nil, err
 	}
 
 	if len(body) == 0 {
@@ -91,7 +97,7 @@ func (h *Handler) extractUntagKeys(ctx context.Context, c *echo.Context, log *sl
 
 	var in untagResourceInput
 	if err = json.Unmarshal(body, &in); err != nil {
-		return nil, h.handleError(ctx, c, "Untag", errInvalidRequest)
+		return nil, errInvalidRequest
 	}
 
 	return in.Keys, nil
