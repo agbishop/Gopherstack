@@ -2100,6 +2100,8 @@ func TestScanServiceDir_RealCorpus_MixedGovernanceWarning(t *testing.T) {
 	goModVersions, err := loadGoModVersions(filepath.Join(repoRoot, "go.mod"))
 	require.NoError(t, err)
 
+	skipUnlessSDKModuleCached(t, cache, "schemas", goModVersions)
+
 	sr, err := scanServiceDir(filepath.Join(repoRoot, "services", "eventbridge"), repoRoot, cache, goModVersions)
 	require.NoError(t, err)
 
@@ -2119,6 +2121,35 @@ func TestScanServiceDir_RealCorpus_MixedGovernanceWarning(t *testing.T) {
 
 	require.True(t, found,
 		"mixedGovernanceWarnings must fire on the real corpus when a schema-based module and class A findings coexist")
+}
+
+// skipUnlessSDKModuleCached skips t when mod's pinned version isn't present
+// under cache. buildServiceModuleTruth (deser.go) treats a missing module
+// dir as "nothing to check", by design, not an error -- so a real-corpus
+// scan against a module this environment's build graph never downloaded
+// silently produces empty ground truth, which is not a failure of the
+// warning logic under test. schemas is eventbridge's co-resolved module for
+// TestScanServiceDir_RealCorpus_MixedGovernanceWarning above, but no
+// non-test .go file anywhere in this repo imports it (confirmed via grep as
+// of gopherstack-sywi) -- only services/eventbridge's own *_test.go files
+// do -- so a CI job scoped to `go test ./cmd/errtargetaudit/...` alone never
+// triggers its download, unlike eventbridge and sqs which cli.go and
+// cmd/pgoload import directly.
+func skipUnlessSDKModuleCached(t *testing.T, cache, mod string, goModVersions map[string]string) {
+	t.Helper()
+
+	ver, ok := goModVersions[mod]
+	require.True(t, ok, "go.mod must still pin %s", mod)
+
+	modPath := filepath.Join(cache, "github.com", "aws", "aws-sdk-go-v2", "service", mod+"@"+ver)
+
+	exists, err := fileExists(modPath)
+	require.NoError(t, err)
+
+	if !exists {
+		t.Skipf("%s@%s not present under GOMODCACHE (%s) -- this environment's build graph never imported "+
+			"it as a real Go package, so scanServiceDir cannot see its ground truth", mod, ver, cache)
+	}
 }
 
 // fixtureInternalServerException and fixtureValidationException name-share
