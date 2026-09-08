@@ -38,6 +38,10 @@ func (b *InMemoryBackend) CreateAccessor(
 	b.mu.Lock("CreateAccessor")
 	defer b.mu.Unlock()
 
+	if err := checkTagLimit(nil, tags); err != nil {
+		return nil, err
+	}
+
 	now := time.Now().UTC()
 	accessorID := uuid.NewString()
 	billingToken := uuid.NewString()

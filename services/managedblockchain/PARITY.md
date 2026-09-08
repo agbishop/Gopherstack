@@ -471,3 +471,106 @@ different error than the ones gopherstack-rcp6 concerns and needs its own regres
 Gates re-run for the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run
 ./services/managedblockchain/...` 0 issues; `GOTOOLCHAIN=go1.27.0 go test -race
 ./services/managedblockchain/...` ok.
+
+## 2026-09-08: gopherstack-9u4s -- TooManyTagsException wired for TagResource and every Create* op that declares it (fixed)
+
+Fixed the adjacent finding the gopherstack-rcp6 audit above flagged and deferred:
+`TagResource` never enforced the documented 50-tag cap and had no
+`TooManyTagsException` sentinel at all.
+
+**Declared-error audit, per op** (aws-sdk-go-v2 managedblockchain@v1.34.4
+`deserializers.go`, each op's own `awsRestjson1_deserializeOpError<Op>`
+switch, read directly rather than grepped):
+
+| Op | Declares `TooManyTagsException`? | Source |
+|---|---|---|
+| `TagResource` | yes | `deserializers.go:3555` switch |
+| `UntagResource` | no | `deserializers.go:3655` switch (removing tags can't overflow the cap) |
+| `CreateNetwork` | yes | `deserializers.go:457` switch |
+| `CreateMember` | yes | `deserializers.go:277` switch |
+| `CreateNode` | yes | `deserializers.go:640` switch |
+| `CreateProposal` | yes | `deserializers.go:820` switch |
+| `CreateAccessor` | yes | `deserializers.go:85` switch |
+
+Every op that accepts an initial `Tags` map also declares
+`TooManyTagsException` -- unlike the fsx precedent (gopherstack-u7rl) where
+`TagResource` was the one op that did *not* declare `ServiceLimitExceeded`
+while its eleven `Create*` ops did. Here the reverse holds and all seven
+tag-touching ops (minus `UntagResource`) declare the same error, so one
+check, wired everywhere a declaring op accepts tags, is correct -- no op
+was found accepting tags with no suitable declared error.
+
+**Wire-shape constraints, verbatim** (botocore
+`managedblockchain/2018-09-24/service-2.json.gz`):
+
+- `InputTagMap` (used by `TagResourceRequest.Tags`, `CreateNetworkInput.Tags`,
+  `CreateNodeInput.Tags`, `CreateProposalInput.Tags`,
+  `CreateAccessorInput.Tags`, and `MemberConfiguration.Tags` -- the shape
+  `CreateMemberInput` nests its tags under, since `CreateMemberInput` itself
+  has no top-level `Tags` member): `{"type": "map", "key": {"shape":
+  "TagKey"}, "value": {"shape": "TagValue"}, "max": 50, "min": 0}`.
+  `min: 0` -- unlike fsx's `Tags` list (`min: 1`), there is no
+  omitted-vs-empty trap here to avoid enforcing.
+- `TagResourceRequest.Tags` documentation (verbatim): "The tags to assign to
+  the specified resource. Tag values can be empty, for example, `"MyTagKey"
+  : ""`. You can specify multiple key-value pairs in a single request, with
+  an overall maximum of 50 tags added to each resource."
+- `TooManyTagsException` shape (verbatim): `{"type": "structure", "members":
+  {"Message": {"shape": "ExceptionMessage"}, "ResourceName": {"shape":
+  "ArnString", "documentation": "<p/>"}}, "documentation": "<p/>", "error":
+  {"httpStatusCode": 400}, "exception": true}` -- the exception carries no
+  documentation of its own; the cap's wording lives on each caller's `Tags`
+  field instead.
+
+**Per-request vs. per-resource**: per-resource, on the resulting total.
+`TagResourceRequest.Tags`'s doc phrase "an overall maximum of 50 tags added
+**to each resource**" (and the identical phrasing on
+`MemberConfiguration.Tags`, `CreateNetworkInput.Tags`, `CreateNodeInput.Tags`,
+`CreateProposalInput.Tags`, `CreateAccessorInput.Tags`) is explicit: the cap
+counts the tags a resource ends up with, not the size of one request. A
+resource that already carries 45 tags must reject a `TagResource` call
+adding 10 more distinct keys (55 > 50) even though 10 alone is under the
+per-request `InputTagMap` `max: 50`.
+
+**Fix**: `checkTagLimit(existing, additions map[string]string) error`
+(`tags.go`) counts only the keys in `additions` not already present in
+`existing`, rejects with `ErrTooManyTags` (new sentinel, `errors.go`) if the
+resulting total exceeds `maxTagsPerResource = 50`. Wired into:
+`TagResource` (`tags.go`, existing tags read via the pre-existing
+`resourceTags` helper), `CreateNetwork` (`networks.go`, checked
+independently for both the network's own `tags` and the initial member's
+`memberTags` -- two distinct resources, two independent 50-tag budgets),
+`CreateMember` (`members.go`, `tags` sourced from
+`MemberConfiguration.Tags`), `CreateNode` (`nodes.go`), `CreateProposal`
+(`proposals.go`), `CreateAccessor` (`accessors.go`). All five `Create*`
+checks pass `nil` for `existing` since a freshly created resource has no
+prior tags, making the check equivalent to `len(tags) > 50`.
+`handler.go`'s `writeBackendError` gained a case mapping
+`errors.Is(err, ErrTooManyTags)` to wire code `TooManyTagsException` (HTTP
+400), ahead of the generic `ErrInvalidParameter` fallthrough it would
+otherwise match (`ErrTooManyTags` wraps `awserr.ErrInvalidParameter`).
+
+**Regression tests** (`tag_limit_test.go`, new file): `TestTagResource_TooManyTags`
+(SDK round-trip: 51 tags on an untagged network, asserts
+`errors.As` against `*types.TooManyTagsException` and that
+`ListTagsForResource` still returns zero tags afterward);
+`TestTagResource_TooManyTags_Cumulative` (45 existing + 10 new distinct
+keys = 55 > 50 rejected, and the existing 45 are unchanged after the
+rejection); `TestCreateNetwork_TooManyTags` (SDK round-trip, 51 tags on
+`CreateNetworkInput.Tags`); `TestCreateOps_TooManyTags` (table-driven,
+one subtest per remaining `Create*` op); `TestTagResource_ExactlyFiftyTags`
+(boundary: exactly 50 on a previously untagged resource succeeds).
+
+Confirmed failing against the unmodified code before the fix (verbatim,
+`TestTagResource_TooManyTags`/`_Cumulative`/`TestCreateNetwork_TooManyTags`
+run together): `An error is expected but got nil.` — repeated for all
+three, since none of the seven call sites checked the count at all.
+Confirmed each new guard is load-bearing by removing the `CreateAccessor`
+check (`accessors.go`) alone and re-running
+`TestCreateOps_TooManyTags/create_accessor`: fails the same way
+(`An error is expected but got nil.`); file still compiles with the guard
+removed. Guard restored before commit.
+
+Gates re-run for the record: `GOTOOLCHAIN=go1.27.0 golangci-lint run
+./services/managedblockchain/...` 0 issues; `GOTOOLCHAIN=go1.27.0 go test -race
+-count=1 ./services/managedblockchain/...` ok.

@@ -100,4 +100,15 @@ var (
 	)
 	// ErrValidation is returned when input validation fails.
 	ErrValidation = awserr.New("InvalidRequestException: validation error", awserr.ErrInvalidParameter)
+	// ErrTooManyTags is returned when tagging a resource would push its total
+	// tag count above the 50-tag-per-resource limit (botocore
+	// managedblockchain/2018-09-24 service-2.json.gz InputTagMap: max 50;
+	// TagResourceRequest.Tags doc: "an overall maximum of 50 tags added to
+	// each resource" -- the cap is on the resource's resulting tag count,
+	// not the request's tag count). TagResource and every Create* op that
+	// accepts Tags (CreateNetwork, CreateMember via MemberConfiguration.Tags,
+	// CreateNode, CreateProposal, CreateAccessor) declare TooManyTagsException
+	// (aws-sdk-go-v2 managedblockchain@v1.34.4 deserializers.go, each op's own
+	// awsRestjson1_deserializeOpError<Op> switch).
+	ErrTooManyTags = awserr.New("TooManyTagsException: too many tags", awserr.ErrInvalidParameter)
 )

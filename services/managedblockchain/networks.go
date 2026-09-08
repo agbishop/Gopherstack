@@ -71,6 +71,14 @@ func (b *InMemoryBackend) CreateNetwork(
 	b.mu.Lock("CreateNetwork")
 	defer b.mu.Unlock()
 
+	if err := checkTagLimit(nil, tags); err != nil {
+		return nil, nil, err
+	}
+
+	if err := checkTagLimit(nil, memberTags); err != nil {
+		return nil, nil, err
+	}
+
 	for _, n := range b.networks.All() {
 		if n.Name == name {
 			return nil, nil, ErrNetworkAlreadyExists

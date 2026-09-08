@@ -88,6 +88,10 @@ func (b *InMemoryBackend) CreateNode(
 	b.mu.Lock("CreateNode")
 	defer b.mu.Unlock()
 
+	if err := checkTagLimit(nil, tags); err != nil {
+		return nil, err
+	}
+
 	if _, exists := b.networks.Get(networkID); !exists {
 		return nil, ErrNetworkNotFound
 	}

@@ -76,6 +76,10 @@ func (b *InMemoryBackend) CreateProposal(
 	b.mu.Lock("CreateProposal")
 	defer b.mu.Unlock()
 
+	if err := checkTagLimit(nil, tags); err != nil {
+		return nil, err
+	}
+
 	if _, exists := b.networks.Get(networkID); !exists {
 		return nil, ErrNetworkNotFound
 	}
