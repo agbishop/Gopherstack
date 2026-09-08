@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -1988,6 +1989,44 @@ func TestWorthReporting_KeepsZeroGroundTruthServiceWithWarnings(t *testing.T) {
 		"a service with truly nothing to report must still be dropped")
 	require.True(t, worthReporting(serviceScan{OpsGroundTruth: 5}),
 		"a normal scanned service must still be reported")
+}
+
+// TestScanServiceDir_RealCorpus_WarningsBranchReachable is gopherstack-84mn's
+// regression guard: worthReporting's `len(sr.Warnings) > 0` disjunct
+// (main.go:548) must be reachable running the REAL production pipeline
+// (scanServiceDir -> resolveServiceModules/buildServiceModuleTruth/
+// buildPkgIndex) against this repo's actual services/ tree, not only against
+// TestWorthReporting_KeepsZeroGroundTruthServiceWithWarnings' fabricated
+// serviceScan literals. sqs's own pinned SDK module (go.mod's current pin)
+// generates no deserializers.go file at all (newer smithy schema-based
+// codegen, gopherstack-zkpi's class) so its real scan has OpsGroundTruth==0;
+// without the disjunct, run() would silently drop it and its UNTRACEABLE
+// warning would never print. Confirmed as of this filing that acm, amplify,
+// codedeploy, codepipeline, route53resolver, transcribe, and workspaces hit
+// this exact same real-corpus case -- re-point this test at one of those if
+// a future go.mod bump ever gives sqs a deserializers.go file.
+func TestScanServiceDir_RealCorpus_WarningsBranchReachable(t *testing.T) {
+	t.Parallel()
+
+	repoRoot, err := repoRootDir()
+	require.NoError(t, err)
+
+	cache, err := gomodcacheDir(repoRoot)
+	require.NoError(t, err)
+
+	goModVersions, err := loadGoModVersions(filepath.Join(repoRoot, "go.mod"))
+	require.NoError(t, err)
+
+	sr, err := scanServiceDir(filepath.Join(repoRoot, "services", "sqs"), repoRoot, cache, goModVersions)
+	require.NoError(t, err)
+
+	require.Zero(t, sr.OpsGroundTruth,
+		"sqs's real pinned SDK module must have zero per-op ground truth for this case to be load-bearing")
+	require.Contains(t, sr.ModulesNoOpFuncs, "sqs")
+	require.NotEmpty(t, sr.Warnings)
+	require.Contains(t, sr.Warnings[0], "UNTRACEABLE")
+	require.True(t, worthReporting(sr),
+		"worthReporting's warnings disjunct must keep this real, zero-ground-truth service reachable to run()")
 }
 
 // fixtureInternalServerException and fixtureValidationException name-share

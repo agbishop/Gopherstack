@@ -57,8 +57,10 @@ func coverageWarnings(sr serviceScan) []string {
 // module (ModulesNoOpFuncs) defines real, service-wide error types but has
 // no per-operation ground truth at all, because its pinned SDK version
 // generates no deserializers.go file (a newer smithy schema-based codegen --
-// confirmed live only for cloudwatch's own module, out of every module this
-// repo's go.mod pins). Fired UNCONDITIONALLY, ahead of the OpsGroundTruth==0
+// confirmed live for 11 modules as of gopherstack-84mn, including 8 whose
+// service dir's OpsGroundTruth is truly zero: acm, amplify, codedeploy,
+// codepipeline, route53resolver, sqs, transcribe, workspaces). Fired
+// UNCONDITIONALLY, ahead of the OpsGroundTruth==0
 // short-circuit below, so this service is never silently indistinguishable
 // from "nothing to audit" -- the same "zero reads as clean" failure
 // emissionCoverageWarnings' BLIND case already exists to catch, for a
