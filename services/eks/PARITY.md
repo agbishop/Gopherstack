@@ -32,7 +32,7 @@ ops:
   DescribeCluster: {wire: fixed, errors: ok, state: ok, persist: ok, note: "see CreateCluster's gopherstack-tp8x note -- same clusterNetConfigJSON fix, shared by both ops."}
   ListClusters: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "now supports maxResults/nextToken pagination via pkgs/page (was returning the full list in one page). gopherstack ignored-parameter sweep (2026-08-29): Include (blank vs 'all') was declared by ListClustersInput but never read -- every cluster, including ones registered via RegisterCluster, was always returned. Now blank Include excludes clusters with a non-nil ConnectorConfig (connected/external clusters); Include=[all] includes them, matching the SDK doc. Backend ListClusters signature gained an includeExternal bool param"}
   DeleteCluster: {wire: ok, errors: ok, state: ok, persist: ok}
-  UpdateClusterConfig: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was routed as bare-path PUT /clusters/{name}; real path is POST /clusters/{name}/update-config. gopherstack-muzq (2026-08-21): the returned Update record was stamped InProgress and never advanced -- DescribeUpdate polled InProgress forever; now scheduled to Successful via scheduleUpdateTransition"}
+  UpdateClusterConfig: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was routed as bare-path PUT /clusters/{name}; real path is POST /clusters/{name}/update-config. gopherstack-muzq (2026-08-21): the returned Update record was stamped InProgress and never advanced -- DescribeUpdate polled InProgress forever; now scheduled to Successful via scheduleUpdateTransition. gopherstack-7opw (2026-09-08): applyVpcEndpointUpdate wrote its rejection via handleError and returned that (always-nil) result; handleUpdateClusterConfig tested it and fell through to write a spurious second 200 on top of the committed error body (gopherstack-8haq shape). Only reachable via a concurrent DeleteCluster racing between UpdateClusterConfig and UpdateClusterVpcEndpoint's identical existence checks on the same cluster, so no unintended mutation was possible. Fixed to return the raw error; handleUpdateClusterConfig now maps and writes it exactly once."}
   UpdateClusterVersion: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "was routed at fictional POST /clusters/{name}/update-version; real path is POST /clusters/{name}/updates (shared with ListUpdates GET). gopherstack-muzq (2026-08-21): same InProgress-forever bug and fix as UpdateClusterConfig"}
   RegisterCluster: {wire: fixed, errors: ok, state: ok, persist: ok, note: "was routed at /clusters/{placeholder}/register; real path is global POST /cluster-registrations (name comes from body, always did)"}
   DeregisterCluster: {wire: fixed, errors: ok, state: ok, persist: ok, note: "was routed as POST /clusters/{name}/deregister; real path is DELETE /cluster-registrations/{name}"}
@@ -670,3 +670,59 @@ file is outside `services/eks/` and also carries an unrelated pre-existing
 
 Gates: `go vet ./services/eks/...`, `go test -race ./services/eks/...`, and
 `golangci-lint run ./services/eks/...` all clean.
+
+## 2026-09-08 (gopherstack-7opw follow-up): the call-site mapping at handler_updates.go:164 is deliberately unpinned
+
+`handleUpdateClusterConfig`'s error-mapping of `applyVpcEndpointUpdate`'s
+return value (`handler_updates.go:164-166`) has no regression test that
+exercises the call site itself. `TestApplyVpcEndpointUpdate_BackendError_
+ReturnsRawError` (`handler_updates_internal_test.go`) pins `applyVpcEndpointUpdate`'s
+new raw-error return, but it calls that helper directly -- it never goes
+through `handleUpdateClusterConfig`. Confirmed the gap is real: temporarily
+changing line 164's condition to `vpcErr != nil && false` (deleting the
+mapping) still compiles and the entire `services/eks` suite, including that
+test, still passes.
+
+Root cause: within one synchronous `handleUpdateClusterConfig` call,
+`UpdateClusterConfig` and `UpdateClusterVpcEndpoint` perform the identical
+cluster-existence check on the same `clusterName`, and `UpdateClusterVpcEndpoint`
+(`updates.go:150`) has no other error path -- confirmed by reading it in
+full, every branch after the existence check only mutates `c.VpcConfig` and
+appends `UpdateParam`s, none of it fallible. So the vpc step structurally
+cannot fail once the config step has already succeeded in the same call.
+The only way to reach the error branch is a concurrent `DeleteCluster`
+landing in the real gap between the two backend calls (each acquires and
+releases the backend's single coarse `lockmetrics.RWMutex` independently --
+confirmed `DeleteCluster`, `UpdateClusterConfig`, and `UpdateClusterVpcEndpoint`
+all lock the same `b.mu`), which is exactly what the existing white-box test
+reproduces by driving the two backend calls itself with a `DeleteCluster`
+inserted between them.
+
+Why that cannot be turned into a call-site test without a production
+change: `Handler.Backend` is a concrete `*InMemoryBackend`
+(`handler.go:155`), not an interface, so there is no seam to inject a
+failure into the second call while `handleUpdateClusterConfig` is running.
+`handler_updates.go:159-164` calls `UpdateClusterConfig` then
+`applyVpcEndpointUpdate` back-to-back with no blocking operation (no
+channel, no lock wait exposed to test code, no timer) between them for a
+test to synchronize on -- `testing/synctest` only lets a test control
+interleaving at goroutines' durable-blocking points, and none exists in
+that gap. A test that instead raced a real goroutine calling `DeleteCluster`
+against a real goroutine calling `handleUpdateClusterConfig`, hoping the
+scheduler lands the delete in that few-instruction window, would be
+non-deterministic (it could pass or fail depending on scheduling, and the
+window is far too narrow to hit reliably even under `-race`) -- exactly the
+kind of contrived, flaky test this repo's no-`time.Sleep`-in-tests
+convention exists to rule out, so it was not written.
+
+What would be required to pin it: a deliberate testability seam, e.g.
+(a) an interface for the subset of `*InMemoryBackend` methods
+`handleUpdateClusterConfig` calls, so a test double can inject a failure
+from `UpdateClusterVpcEndpoint` while `UpdateClusterConfig` succeeds, or
+(b) a test-only hook/callback invoked between the two calls (in the style of
+`b.work.After`'s scheduler) that a test can use to delete the cluster at
+exactly that point. Both are production-code changes and were explicitly
+out of scope for this pass -- introducing either purely for this one test
+was judged not worth the added surface for a call site whose only failure
+mode is an unreachable-in-practice race. Left as an honest, documented gap
+rather than a test that would pass for the wrong reason.

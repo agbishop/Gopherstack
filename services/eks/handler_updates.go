@@ -161,8 +161,8 @@ func (h *Handler) handleUpdateClusterConfig(c *echo.Context, clusterName string,
 		return h.handleError(c, err)
 	}
 
-	if vpcErr := h.applyVpcEndpointUpdate(c, clusterName, in.ResourcesVpcConfig, update); vpcErr != nil {
-		return vpcErr
+	if vpcErr := h.applyVpcEndpointUpdate(clusterName, in.ResourcesVpcConfig, update); vpcErr != nil {
+		return h.handleError(c, vpcErr)
 	}
 
 	return c.JSON(http.StatusOK, map[string]any{
@@ -210,8 +210,14 @@ func buildClusterConfigUpdate(in updateClusterConfigBody) ClusterConfigUpdate {
 	return cfgUpd
 }
 
+// applyVpcEndpointUpdate applies the VPC endpoint sub-update, returning the
+// raw backend error unwritten so handleUpdateClusterConfig can map and write
+// it exactly once. It used to call h.handleError itself and return that
+// (always-nil, per c.JSON on success) result directly; handleUpdateClusterConfig
+// tested that nil and fell through to write a second 200 on top of the
+// already-committed error body (gopherstack-7opw, the gopherstack-8haq shape).
 func (h *Handler) applyVpcEndpointUpdate(
-	c *echo.Context, clusterName string,
+	clusterName string,
 	vpcIn *updateClusterConfigVpcConfig, update *Update,
 ) error {
 	if vpcIn == nil {
@@ -227,7 +233,7 @@ func (h *Handler) applyVpcEndpointUpdate(
 	}
 	vpcUpdate, err := h.Backend.UpdateClusterVpcEndpoint(clusterName, vpcUpd)
 	if err != nil {
-		return h.handleError(c, err)
+		return err
 	}
 	update.Params = append(update.Params, vpcUpdate.Params...)
 
