@@ -2,6 +2,7 @@ package organizations
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/labstack/echo/v5"
@@ -10,6 +11,15 @@ import (
 )
 
 const iamAccessAllow = "ALLOW"
+
+// Validation errors returned unwritten by validateCreateAccountInput; both
+// callers map them to the same InvalidInputException/400 response, so no
+// dispatch on which one fired is needed.
+var (
+	errAccountNameRequired = errors.New("AccountName is required")
+	errEmailRequired       = errors.New("email is required")
+	errInvalidIamAccess    = errors.New("IamUserAccessToBilling must be ALLOW or DENY")
+)
 
 type createAccountRequest struct {
 	AccountName            string `json:"AccountName"`
@@ -172,18 +182,22 @@ func (h *Handler) handleListAccounts(c *echo.Context, body []byte) error {
 	return c.JSON(http.StatusOK, listAccountsResponse{Accounts: p.Data, NextToken: p.Next})
 }
 
-// validateCreateAccountInput validates and normalises the common fields shared by
-// CreateAccount and CreateGovCloudAccount requests.
+// validateCreateAccountInput validates and normalises the common fields
+// shared by CreateAccount and CreateGovCloudAccount requests, returning a
+// raw unwritten error so both callers can map and write it exactly once.
+// It used to write its own rejection via h.writeError and return that
+// call's (always-nil) result, so the callers' `if err != nil` never fired
+// and the account got created anyway (gopherstack-3t96, the
+// gopherstack-8haq shape).
 func (h *Handler) validateCreateAccountInput(
-	c *echo.Context,
 	accountName, email, roleName, iamAccess string,
 ) (string, string, error) {
 	if accountName == "" {
-		return "", "", h.writeError(c, http.StatusBadRequest, "InvalidInputException", "AccountName is required")
+		return "", "", errAccountNameRequired
 	}
 
 	if email == "" {
-		return "", "", h.writeError(c, http.StatusBadRequest, "InvalidInputException", "Email is required")
+		return "", "", errEmailRequired
 	}
 
 	// Default RoleName.
@@ -196,12 +210,7 @@ func (h *Handler) validateCreateAccountInput(
 		iamAccess = iamAccessAllow
 	}
 	if iamAccess != iamAccessAllow && iamAccess != "DENY" {
-		return "", "", h.writeError(
-			c,
-			http.StatusBadRequest,
-			"InvalidInputException",
-			"IamUserAccessToBilling must be ALLOW or DENY",
-		)
+		return "", "", errInvalidIamAccess
 	}
 
 	return roleName, iamAccess, nil
@@ -214,10 +223,10 @@ func (h *Handler) handleCreateAccount(c *echo.Context, body []byte) error {
 	}
 
 	roleName, iamAccess, err := h.validateCreateAccountInput(
-		c, req.AccountName, req.Email, req.RoleName, req.IamUserAccessToBilling,
+		req.AccountName, req.Email, req.RoleName, req.IamUserAccessToBilling,
 	)
 	if err != nil {
-		return err
+		return h.writeError(c, http.StatusBadRequest, "InvalidInputException", err.Error())
 	}
 
 	status, err := h.Backend.CreateAccount(req.AccountName, req.Email, roleName, iamAccess, req.Tags)
@@ -306,10 +315,10 @@ func (h *Handler) handleCreateGovCloudAccount(c *echo.Context, body []byte) erro
 	}
 
 	roleName, iamAccess, err := h.validateCreateAccountInput(
-		c, req.AccountName, req.Email, req.RoleName, req.IamUserAccessToBilling,
+		req.AccountName, req.Email, req.RoleName, req.IamUserAccessToBilling,
 	)
 	if err != nil {
-		return err
+		return h.writeError(c, http.StatusBadRequest, "InvalidInputException", err.Error())
 	}
 
 	status, err := h.Backend.CreateGovCloudAccount(req.AccountName, req.Email, roleName, iamAccess, req.Tags)

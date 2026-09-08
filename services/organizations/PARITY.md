@@ -469,3 +469,83 @@ policy (Restore does not seed one; only `CreateOrganization` does), so a
 long-lived organization restored across this change has zero SCPs where a
 fresh one would have one. No migration was built for this -- flagged for
 the operator to decide.
+
+## 2026-09-08: CreateAccount/CreateGovCloudAccount nil-on-write fall-through fix (gopherstack-3t96, P2) -- found and fixed
+
+Part of the sweep following elasticache (gopherstack-8haq, P1), pinpoint (gopherstack-246v),
+and apigatewayv2 (gopherstack-wsvb, P1). `validateCreateAccountInput` (handler_accounts.go)
+rejected an invalid `AccountName`, `Email`, or `IamUserAccessToBilling` by writing the 400 via
+`h.writeError` and returning that call's result, which is nil after a successful write. Both
+callers, `handleCreateAccount` and `handleCreateGovCloudAccount`, stored that nil in `err` and
+tested `if err != nil`, which never fired, so execution fell through to `h.Backend.CreateAccount`/
+`CreateGovCloudAccount` and the account was created anyway -- with an empty `AccountName` or
+`Email`, or the raw invalid `IamUserAccessToBilling` value stored verbatim -- while the client had
+already received a 400.
+
+**Tests first.** Two pre-existing tests already covered these rejection branches by status code
+only, which is exactly why this survived: `TestHandler_CreateAccount`'s `missing_name_fails`/
+`missing_email_fails` cases and `TestCreateAccount_IamUserAccessToBilling`'s `invalid_value`/
+`invalid_lowercase` cases all asserted `wantStatus: http.StatusBadRequest` and nothing else --
+`httptest.ResponseRecorder.WriteHeader` keeps only the first call's code, so the 400 from
+`validateCreateAccountInput`'s write survived on the wire even though `CreateAccount` ran
+underneath it and created a real account. Both were strengthened (not just supplemented) to
+assert `organizations.AccountCount(b)` is unchanged after a rejection and grows by exactly one
+after a success; `TestHandler_CreateGovCloudAccount` (previously status-only for its own
+missing-name/email cases, sharing the same helper) got the same treatment, plus a new
+`invalid_iam_user_access_to_billing_fails` case since GovCloud had none before. Confirmed all
+FAIL against unmodified code (verbatim, `go test ./services/organizations/...`):
+
+```
+=== NAME  TestHandler_CreateAccount/missing_name_fails
+    handler_accounts_test.go:79:
+        Error:      Not equal:
+                    expected: 1
+                    actual  : 2
+        Messages:   a rejected CreateAccount must not create an account
+=== NAME  TestHandler_CreateAccount/missing_email_fails
+    (same shape, expected 1 actual 2)
+=== NAME  TestHandler_CreateAccount/invalid_iam_user_access_to_billing_fails
+    (same shape, expected 1 actual 2)
+=== NAME  TestCreateAccount_IamUserAccessToBilling/invalid_value
+    handler_accounts_test.go:282: Not equal: expected 1, actual 2
+=== NAME  TestCreateAccount_IamUserAccessToBilling/invalid_lowercase
+    (same shape, expected 1 actual 2)
+=== NAME  TestHandler_CreateGovCloudAccount/missing_account_name
+    handler_accounts_test.go:721: Not equal: expected 1, actual 2
+=== NAME  TestHandler_CreateGovCloudAccount/missing_email
+    (same shape, expected 1 actual 2)
+=== NAME  TestHandler_CreateGovCloudAccount/invalid_iam_user_access_to_billing_fails
+    (same shape, expected 1 actual 2)
+```
+each paired with a `logger` line `"echo: response already written to client"` confirming the
+double write.
+
+Fixed with the pinpoint raw-unwritten-error pattern: `validateCreateAccountInput` no longer
+takes `*echo.Context` and returns one of three new unexported static errors
+(`errAccountNameRequired`, `errEmailRequired`, `errInvalidIamAccess`) instead of writing;
+`handleCreateAccount` and `handleCreateGovCloudAccount` each map any non-nil error to
+`InvalidInputException`/400 via `h.writeError(c, http.StatusBadRequest, "InvalidInputException",
+err.Error())` and write exactly once. All three branches live in the one helper already in the
+fix's call chain, so all three were fixed together rather than treating any as a separate
+"other instance." `errname`/`err113` (this repo's golangci-lint config) require these as static
+package-level sentinels, not inline `errors.New` at each call site -- confirmed by lint failing
+on the inline-error draft and passing once converted.
+
+Neuter-verified two ways at handler_accounts.go's `handleCreateAccount`: (1) restoring the
+call site to bare `return err` (the shape after removing the write, without adding the map-and-
+write-once step) still compiles and fails with `require.NoError` errors surfacing the raw
+"AccountName is required"/"email is required"/"IamUserAccessToBilling must be ALLOW or DENY"
+text, since nothing ever wrote a response; (2) restoring the entire original
+`validateCreateAccountInput`/call-site pair verbatim (write-then-return-nil) still compiles and
+reproduces the exact `expected 1 actual 2` failures above.
+
+Swept the rest of the package for the same shape (a `*echo.Context`-taking helper whose result
+is stored and re-checked by a caller, rather than returned directly as a handler's own final
+`return h.writeError(...)`): `validateCreateAccountInput` was the only match.
+`grep -rn "return err$"` across non-test `.go` files turns up exactly two other sites
+(`tags.go:91`, `persistence.go:176/204`), both pure backend `InMemoryBackend` methods with no
+`*echo.Context` in scope and no response ever written -- ordinary Go error propagation, not this
+bug shape.
+
+`go test -race ./services/organizations/...` and `golangci-lint run ./services/organizations/...`
+both clean after the fix.
