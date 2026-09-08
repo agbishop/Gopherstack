@@ -202,6 +202,67 @@ families:
   pagination_sweep: {status: fixed, note: "2026-08-28/29 (wrapper-key-sweep-rds-cloudwatch-sqs-sns pagination pass): all List ops paginate at the handler layer via the shared s3cPaginate(items, nextToken, maxResults) index-token helper (handler.go:431), which itself correctly truncates/resumes/emits-only-when-truncated. The bug was upstream: pkgs/store.Table.All() (table.go:154) documents 'iteration order is UNSPECIFIED (Go map order)', and ListAccessPoints/ListJobs fed that unsorted order directly into s3cPaginate with no sort.Slice at all -- so a nextToken computed as an offset into one call's ordering could land on a different item in the next call's ordering, duplicating or skipping access points/jobs across a page boundary (same list-ordering-plus-pagination bug class flagged in this campaign's prior passes). Fixed: both now sort.Slice by Name/JobID before returning, matching the convention every other sorted List op in this service already follows (ListAccessGrants, ListAccessGrantsLocations, ListAccessPointsForObjectLambda, ListAccessPointsForDirectoryBuckets, ListRegionalBuckets). TestListAccessPoints_FullPagination/TestListJobs_FullPagination (wire_field_fixes_test.go) create 9 records each, page at MaxResults=4, and assert the union across the full pagination loop is exactly the created set with no duplicates; both hand-verified to fail intermittently against unfixed code (Go's randomized map iteration makes the failure probabilistic, not every run -- confirmed by running the unfixed test 5x). Also fixed the same missing-sort gap in ListMultiRegionAccessPoints/ListStorageLensConfigurations/ListStorageLensGroups for consistency, though those three are not truncation bugs in the same sense: ListMultiRegionAccessPointsInput.MaxResults/NextToken are themselves documented 'Not currently used. Do not use this parameter.' (api_op_ListMultiRegionAccessPoints.go), and ListStorageLensConfigurations/ListStorageLensGroups have no MaxResults member in the real API at all (NextToken only, and the handler already passes maxResults=0 meaning unbounded/no-token, matching that wire shape) -- so ordering stability is the only real improvement there, not a truncation fix."}
 
 gaps:
+  - "2026-09-07 (gopherstack-kx5v, filed title-only: 'DeleteBucket cannot enforce its documented
+    empty-bucket precondition; no wiring exists to services/s3's object store for Outposts
+    buckets'). Investigated and VERDICT: NO DEFECT -- the no-wiring claim in the title is
+    literally true but does not describe a bug, because this service never models Outposts
+    bucket objects at all, so the precondition it is accused of failing to enforce is
+    vacuously satisfied on every call. Evidence: (1) real DeleteBucket's doc comment
+    (api_op_DeleteBucket.go:20-22, s3control@v1.73.4) reads verbatim 'Deletes the Amazon S3 on
+    Outposts bucket. All objects (including all object versions and delete markers) in the
+    bucket must be deleted before the bucket itself can be deleted.' -- identical prose in the
+    botocore model (service-2.json, s3control/2018-08-20, DeleteBucket.documentation). Neither
+    source models this as a distinct typed exception: DeleteBucket has no 'errors' list in the
+    botocore op definition, and awsRestxml_deserializeOpErrorDeleteBucket (deserializers.go:2427,
+    same module) is a bare 'switch { default: ... }' with zero 'case strings.EqualFold(...)'
+    arms (verified: the file has 653 EqualFold occurrences total, none inside this function),
+    so even real AWS's Go SDK surface carries no distinguishable BucketNotEmpty-style error
+    type for this op -- only a generic fallback. (2) OutpostsBucket (models.go) is a pure
+    metadata record -- AccountID/Name/BucketArn/Location, nothing object-shaped. CreateBucket
+    (bucket.go:29) writes only that struct; DeleteBucket (bucket.go:70) cascade-cleans
+    bucketLifecycle/bucketPolicies/bucketTagging/bucketVersioning/bucketReplication/resourceTags,
+    also none object-shaped. (3) grepped the entire package for any object-storage surface:
+    zero hits for an objects map, a PutObject/object-count op, or anything besides the
+    'ObjectLambda'/'*ForObjectLambda' access-point family (unrelated -- those are Lambda
+    request-transform access points, not object storage). No op in this service, real or
+    modeled, ever writes an object into an Outposts bucket -- s3control's real API surface is
+    control-plane only; actual object PUT/GET against Outposts buckets happens through the S3
+    data-plane API (service/s3) pointed at an Outposts endpoint, which is a separate SDK client
+    and a separate service in this repo. (4) confirmed services/s3 has zero Outposts awareness
+    either: `grep -rl utpost services/s3/*.go` (case-insensitive) returns 0 files -- so even if
+    s3control reached into it, there is no Outposts-bucket object model on the other side to
+    reach into. (5) the structural no-wiring claim independently holds: pkgs/service.AppContext
+    (service.go:179-185) carries only Config/JanitorCtx/Logger/PortAlloc/JanitorTimeout -- no
+    other-service handle -- and s3control's Provider.Init (provider.go:21-40) builds its
+    InMemoryBackend from scratch with zero visibility into any other service, exactly like
+    every other provider in cli.go (each Provider{} is Init'd independently). Same shape as the
+    appconfig case assessed the same day: no cross-service handle exists anywhere in this
+    construction pattern, and building one is explicitly out of scope per this task's own
+    guidance. Conclusion: DeleteBucket's current behavior (delete the metadata record, cascade
+    the sub-resource maps, no object check) is the CORRECT emulation given points (1)-(4) --
+    there is no object state anywhere in this repo's Outposts model for the precondition to
+    ever observe as violated. Fabricating an object-tracking map inside s3control solely to
+    reject a delete that can never actually have pending objects would be inventing state the
+    real architecture (and this repo's architecture) doesn't have, which parity-principles.md's
+    no-stub rule cuts the other way against. Also checked DeleteBucket's other documented
+    parameters per this task's guidance (AccountId header, bucket name, x-amz-outpost-id
+    header) for a smaller fixable defect: AccountId is marked 'This member is required' on
+    DeleteBucketInput (api_op_DeleteBucket.go) and required in the botocore shape, but
+    accountIDFromRequest (handler.go:359) only ever defaults a missing header rather than
+    rejecting the request -- this is NOT a new finding, it is the same already-audited,
+    deliberate design (see the CreateBucket/bucket-outposts family notes above: AccountId is
+    not part of any bucket lookup key anywhere in this service, by design, because CreateBucket
+    -- uniquely among ~90 ops in this service -- has no AccountId member to partition against
+    in the first place). x-amz-outpost-id is documented as required for every Outposts REST
+    call but is not a modeled member of DeleteBucketInput at all (absent from both the Go SDK
+    struct and the botocore DeleteBucketRequest shape) -- it rides in the ARN-derived endpoint
+    customization (s3controlcust.UpdateEndpoint, GetOutpostIDInput wired to
+    nopGetOutpostIDFromInput for this op specifically), not a header a service-side handler
+    would validate; gopherstack ignores it exactly as every other bucket op in this file
+    already does, uniformly, and a real aws-sdk-go-v2 client still round-trips correctly
+    against that. No new parameter-handling defect found. Bucket name itself needs no format
+    validation on delete (a bad name simply 404s via errBucketNotFound, matching real
+    NoSuchBucket semantics). No code changed this pass."
   - "2026-08-30 (region-isolation sweep, fix/wrapper-key-sweep-rds-cloudwatch-sqs-sns): investigated
     the cloudwatchlogs/memorydb bug class (a resource identifier/storage key built from the
     backend's fixed default region instead of the request's) against every non-MRAP resource
