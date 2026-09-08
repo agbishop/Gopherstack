@@ -617,6 +617,45 @@ func TestHandler_UpdateApplication_ConfigMerge(t *testing.T) {
 	assert.Equal(t, autoStop, app["autoStopConfiguration"])
 }
 
+// TestHandler_UpdateApplication_AutoStopConfigValidation verifies
+// UpdateApplication rejects an out-of-range autoStopConfiguration.idleTimeoutMinutes
+// (AWS valid range: 1-10080) the same way CreateApplication does, and accepts
+// both boundary values.
+func TestHandler_UpdateApplication_AutoStopConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		idleTimeoutMinutes any
+		name               string
+		wantStatus         int
+	}{
+		{name: "too_low", idleTimeoutMinutes: 0, wantStatus: http.StatusBadRequest},
+		{name: "too_high", idleTimeoutMinutes: 10081, wantStatus: http.StatusBadRequest},
+		{name: "min_boundary", idleTimeoutMinutes: 1, wantStatus: http.StatusOK},
+		{name: "max_boundary", idleTimeoutMinutes: 10080, wantStatus: http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+			appID := createAppWithArch(t, h, "autostop-validate-app-"+tt.name, "emr-6.6.0", "")
+
+			updateRec := doRequest(t, h, http.MethodPatch, "/applications/"+appID, map[string]any{
+				"autoStopConfiguration": map[string]any{"idleTimeoutMinutes": tt.idleTimeoutMinutes},
+			})
+			assert.Equal(t, tt.wantStatus, updateRec.Code)
+
+			if tt.wantStatus == http.StatusBadRequest {
+				var out map[string]string
+				mustUnmarshal(t, updateRec, &out)
+				assert.Equal(t, "ValidationException", out["code"])
+			}
+		})
+	}
+}
+
 // TestHandler_CreateApplication_ClientTokenIdempotent verifies that retrying
 // CreateApplication with the same clientToken (as an AWS SDK does on a
 // timed-out request) returns the already-created application instead of
@@ -913,6 +952,27 @@ func TestHandler_ErrValidationMapping(t *testing.T) {
 		{
 			name:       "missing_type",
 			body:       map[string]any{"name": "myapp", "releaseLabel": "emr-6.6.0"},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "ValidationException",
+		},
+		{
+			// AutoStopConfig.IdleTimeoutMinutes: "Valid Range: Minimum value
+			// of 1. Maximum value of 10080." (AWS API reference; not present
+			// in the Go SDK's doc comment, which only states the default).
+			name: "autoStopConfiguration_idleTimeoutMinutes_too_low",
+			body: map[string]any{
+				"name": "myapp", "type": "SPARK", "releaseLabel": "emr-6.6.0",
+				"autoStopConfiguration": map[string]any{"idleTimeoutMinutes": 0},
+			},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "ValidationException",
+		},
+		{
+			name: "autoStopConfiguration_idleTimeoutMinutes_too_high",
+			body: map[string]any{
+				"name": "myapp", "type": "SPARK", "releaseLabel": "emr-6.6.0",
+				"autoStopConfiguration": map[string]any{"idleTimeoutMinutes": 10081},
+			},
 			wantStatus: http.StatusBadRequest,
 			wantCode:   "ValidationException",
 		},

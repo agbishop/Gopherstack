@@ -280,6 +280,50 @@ func applicationAutoStartEnabled(app *Application) bool {
 	return enabled
 }
 
+const (
+	// autoStopIdleTimeoutMinutesMin / autoStopIdleTimeoutMinutesMax bound
+	// AutoStopConfig.IdleTimeoutMinutes. The Go SDK's doc comment gives only
+	// the default of 15 minutes; the range lives in the wire model
+	// (botocore emr-serverless/2021-07-13/service-2.json,
+	// AutoStopConfigIdleTimeoutMinutesInteger: {"min": 1, "max": 10080}).
+	autoStopIdleTimeoutMinutesMin = 1
+	autoStopIdleTimeoutMinutesMax = 10080
+)
+
+// validateAutoStopConfig checks extra's autoStopConfiguration.idleTimeoutMinutes,
+// if present, against the documented AWS range. Absence of the sub-object or
+// key is valid -- idleTimeoutMinutes is optional and defaults to 15.
+func validateAutoStopConfig(extra map[string]any) error {
+	raw, ok := extra["autoStopConfiguration"]
+	if !ok {
+		return nil
+	}
+
+	cfg, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+
+	val, ok := cfg["idleTimeoutMinutes"]
+	if !ok {
+		return nil
+	}
+
+	n, ok := val.(float64)
+	if !ok {
+		return nil
+	}
+
+	if n < autoStopIdleTimeoutMinutesMin || n > autoStopIdleTimeoutMinutesMax {
+		return fmt.Errorf(
+			"%w: autoStopConfiguration.idleTimeoutMinutes must be between %d and %d",
+			ErrValidation, autoStopIdleTimeoutMinutesMin, autoStopIdleTimeoutMinutesMax,
+		)
+	}
+
+	return nil
+}
+
 // cloneApplication returns a deep copy of an Application with its Tags map cloned.
 // The returned copy always has a non-nil Tags map.
 func cloneApplication(app *Application) *Application {

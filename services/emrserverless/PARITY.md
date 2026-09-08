@@ -469,14 +469,38 @@ error-code switch in `deserializers.go` fresh, cross-checked against
   it (and, by the shared `AutoStartConfig` field, `StartJobRun`) got a
   state-conflict path -- `CreateApplication` was left untouched.
 - `types.AutoStopConfig` ("configuration for an application to
-  automatically stop after a certain amount of time being idle") remains
-  an inert opaque passthrough. Implementing it would require simulating
-  wall-clock idle time via a background ticker, which this service
-  deliberately has none of (`leaks: {status: clean, note: "no
-  goroutines/janitors in this service"}` above) and which the project's
-  `no time.Sleep in tests` / `testing/synctest` conventions make
-  meaningfully more involved than the two fixes above; flagged here as a
-  known, disclosed gap rather than guess-implemented.
+  automatically stop after a certain amount of time being idle") is fully
+  round-tripped (accepted on Create/Update, persisted in
+  `Application.ExtraConfig`, echoed by Get/List -- proven by
+  `TestHandler_CreateApplication_ConfigPassthrough` and
+  `TestHandler_UpdateApplication_ConfigMerge`) but **enforcement** (actually
+  stopping an idle application) remains unimplemented. Implementing
+  enforcement would require simulating wall-clock idle time via a
+  background ticker, which this service has none of (`leaks: {status:
+  clean, note: "no goroutines/janitors in this service"}` above) --
+  re-verified 2026-09-07 (gopherstack-3vyq): no `janitor.go`, no
+  `service.BackgroundWorker`/`Shutdowner` implementation in `provider.go`,
+  unlike e.g. amplify's `Janitor`/`WithJanitor`. The pattern is well
+  established elsewhere in this repo (38 other services have a
+  `janitor.go`) and wiring one in is not architecturally blocked, but
+  building it is real, non-trivial work (needs an idle-since clock per
+  application/job-run-count check, a ticker wired through
+  `provider.Init`, and a `testing/synctest`-based test in the style of
+  `services/sagemaker/lifecycle_test.go`) and is deferred, not attempted
+  this pass; flagged here as a known, disclosed gap rather than
+  guess-implemented. 2026-09-07: fixed a smaller, real defect found while
+  re-checking this gap -- `idleTimeoutMinutes` has a documented AWS range
+  ("Valid Range: Minimum value of 1. Maximum value of 10080", API
+  reference; not stated in the Go SDK's doc comment, which gives only the
+  default of 15) that gopherstack did not enforce at all, accepting e.g.
+  `idleTimeoutMinutes: 0` or `10081` with a 200 instead of the documented
+  `ValidationException`. Fixed via `validateAutoStopConfig`
+  (`applications.go`), called from both `handleCreateApplication` and
+  `handleUpdateApplication`; proven by
+  `TestHandler_ErrValidationMapping`'s two new
+  `autoStopConfiguration_idleTimeoutMinutes_*` cases and
+  `TestHandler_UpdateApplication_AutoStopConfigValidation` (rejects 0 and
+  10081, accepts the 1 and 10080 boundaries).
 - `ApplicationState`'s `CREATING`/`STARTING`/`STOPPING` and `TERMINATED`
   remain unreachable (nothing in this backend ever sets them) -- this is
   the same class of simplification already disclosed for `JobRunState`'s
@@ -497,3 +521,64 @@ Tools: `GOTOOLCHAIN=go1.26.6 go build ./...`, `go vet
 ./services/emrserverless/...`, `go test -race -count=1
 ./services/cloudformation/... ./services/emr/...` (dependents), and
 `golangci-lint run ./services/emrserverless/...` all clean, 0 issues.
+
+### 2026-09-07: gopherstack-3vyq -- AutoStopConfig audit, idleTimeoutMinutes bounds fixed
+
+Issue gopherstack-3vyq was filed title-only ("AutoStopConfig idle timeout is
+accepted but never enforced; needs a background ticker this service
+deliberately lacks") with no description. Re-derived the specifics:
+
+- **"Deliberately" is documented, not an assumption.** The prior
+  2026-09-04 pass already recorded this exact decision in the
+  "Deliberately not changed" section above (`leaks.note`: "no
+  goroutines/janitors in this service"), so the issue title accurately
+  reflects a real, pre-existing, disclosed design decision -- it did not
+  need to be re-litigated as a documentation gap.
+- **AutoStopConfig round-trips correctly**, contrary to what "accepted but
+  never enforced" alone might suggest as a defect class: it is not
+  silently dropped. `CreateApplication`/`UpdateApplication` store it in
+  `Application.ExtraConfig` via the same generic opaque-passthrough
+  mechanism as the service's other 13 config sub-objects, and
+  `GetApplication`/`ListApplications` echo it back --
+  `TestHandler_CreateApplication_ConfigPassthrough` and
+  `TestHandler_UpdateApplication_ConfigMerge` already proved this before
+  this pass.
+- **Real, fixable defect found and fixed**: `idleTimeoutMinutes` has a
+  documented range on AWS's API reference page
+  (docs.aws.amazon.com/emr-serverless/latest/APIReference/API_AutoStopConfig.html):
+  "Valid Range: Minimum value of 1. Maximum value of 10080." (not stated
+  in the pinned Go SDK's doc comment, `types/types.go:186-188`, which
+  gives only the default of 15 minutes) -- gopherstack enforced no bound
+  at all, accepting e.g. `0` or `10081` with `200 OK`. Fixed with
+  `validateAutoStopConfig` (`applications.go`), wired into both
+  `handleCreateApplication` and `handleUpdateApplication` in
+  `handler.go`, returning the documented `ValidationException`/400 (same
+  sentinel and status as every other input-validation failure in this
+  service). Regression tests written first and confirmed failing against
+  unmodified code (`expected: 400 / actual: 200`, `expected:
+  "ValidationException" / actual: ""`) in
+  `TestHandler_ErrValidationMapping`'s two new
+  `autoStopConfiguration_idleTimeoutMinutes_*` cases, then in
+  `TestHandler_UpdateApplication_AutoStopConfigValidation` (also proves
+  the 1 and 10080 boundaries are still accepted, not off-by-one rejected).
+- **Enforcement (a ticker that actually stops idle applications) is a
+  real, deferred gap, not a fixable-now bug.** `provider.go` implements
+  neither `service.BackgroundWorker` nor `service.Shutdowner`
+  (`pkgs/service/service.go:111-124`), and there is no `janitor.go` in
+  this directory, confirming the issue's premise. The pattern itself is
+  not exotic -- 38 other services in this repo have a `janitor.go`, and
+  amplify's `Janitor` (`services/amplify/janitor.go`) is a close
+  structural match: a `pkgs/worker.NewGroup`-based ticker advancing
+  resources out of a transient state, wired via `handler.WithJanitor` in
+  its `provider.go`. Building the equivalent here (idle-since tracking
+  per application, keyed off last job-run/session activity, ticked and
+  transitioning STARTED->STOPPED, with a `testing/synctest`-based test
+  along the lines of `services/sagemaker/lifecycle_test.go`) is feasible
+  but is real, multi-file, non-mechanical work -- out of scope for this
+  pass per the investigating issue's explicit scope note. Left as a
+  disclosed gap (see the "Deliberately not changed" bullet above, updated
+  this pass).
+
+Tools re-run after the fix: `GOTOOLCHAIN=go1.27.0 go test -race
+./services/emrserverless/...` and `GOTOOLCHAIN=go1.27.0 golangci-lint run
+./services/emrserverless/...`, both clean, 0 issues.
