@@ -8,7 +8,55 @@ service: guardduty
 sdk_module: aws-sdk-go-v2/service/guardduty@v1.85.4
 last_audit_commit: ca2732322
 last_audit_date: 2026-08-29
-overall: A            # 2026-08-29 (constraint-not-honoured sweep, wrapper-key-sweep-rds-cloudwatch-sqs-sns
+overall: A            # 2026-09-08 (gopherstack-uu0n): DeleteMembers/DisassociateMembers/
+                       # StopMonitoringMembers's autoEnableOrganizationMembers=ALL guard
+                       # (gopherstack-krb1) rejected the whole call whenever the detector's org config was
+                       # ALL, regardless of whether the requested accounts were still in the AWS
+                       # Organization -- over-rejecting an account that had already left, contrary to
+                       # DisassociateMembers' own doc text ("you'll receive an error if you attempt to
+                       # disassociate a member account before removing them from your organization" --
+                       # conditioned on membership, not merely on the ALL setting; DeleteMembers/
+                       # StopMonitoringMembers/DisassociateFromMasterAccount/
+                       # DisassociateFromAdministratorAccount's doc text is the same shape, confirmed against
+                       # both the aws-sdk-go-v2 doc comments and botocore's guardduty/2017-11-28/service-2.json
+                       # `documentation`/`errors` fields -- BadRequestException/InternalServerErrorException
+                       # only, an operation-level error, not a per-account UnprocessedAccounts reason).
+                       # krb1 deliberately left this unfixed, reasoning Member has no still-in-org-vs-left
+                       # field and nothing would ever set one. That was true of GuardDuty's own state but
+                       # missed a repo-wide mechanism already used by 5 other services (mgn, grafana,
+                       # resiliencehub, ec2, codedeploy pre-existing; ec2/grafana are the pattern's origin):
+                       # a lazy siblingServices cross-service lookup (SetAppConfig(ctx.Config), matched
+                       # structurally against *CLI) that reaches another emulator's backend on demand. Wired
+                       # guardduty into it (new cross_service.go, provider.go's backend.SetAppConfig call) to
+                       # reach services/organizations' StorageBackend.DescribeAccount, which already reliably
+                       # answers still-in-org-vs-left with no new write path needed:
+                       # RemoveAccountFromOrganization (services/organizations/accounts.go) deletes the
+                       # account from that backend's table, so DescribeAccount returning ErrAccountNotFound
+                       # after removal already means "left" today. No new field on Member; no
+                       # organization-departure path invented -- the fix computes membership live against the
+                       # existing Organizations backend at guard-check time instead of caching a flag that
+                       # could go stale. New rejectOrgMembersStillInOrg (members.go) replaces the old
+                       # whole-detector autoEnableOrgMembersAll short-circuit at all three call sites,
+                       # rejecting only when at least one *requested* account is confirmed still in the org;
+                       # when no Organizations backend is wired (e.g. guardduty exercised standalone, as most
+                       # of this package's tests do) membership can't be confirmed and the call is allowed,
+                       # matching real AWS never erroring over an account whose org status it can't determine
+                       # as still-a-member. Regression test
+                       # (cross_service_test.go's TestMemberOps_AutoEnableOrganizationMembersAll_
+                       # AllowedAfterAccountLeavesOrg) wires a real services/organizations backend, proves
+                       # rejection while the account is still in the org, then
+                       # RemoveAccountFromOrganization's and proves the same call now succeeds with the
+                       # account processed (not left in unprocessedAccounts) -- for all three ops. The
+                       # pre-existing krb1 regression test (members_test.go's
+                       # TestMemberOps_AutoEnableOrganizationMembersAll_Rejected) previously asserted
+                       # rejection with no Organizations backend wired at all; under the corrected semantics
+                       # that is now an "unknown membership" case that must be allowed, so it was updated to
+                       # wire an Organizations backend and keep the account in it, continuing to prove the
+                       # case its own doc-text justification actually describes (still-a-member) rather than
+                       # a case the fix now correctly stops rejecting. Grade unchanged at A: this was a
+                       # correctness bug in an already-implemented guard, not a new gap.
+                       # --- history below predates this pass ---
+                       # 2026-08-29 (constraint-not-honoured sweep, wrapper-key-sweep-rds-cloudwatch-sqs-sns
                        # branch): MaxResults/NextToken (real HTTP query params on every op below, verified
                        # per-op against aws-sdk-go-v2/service/guardduty@v1.85.4's
                        # awsRestjson1_serializeOpHttpBindings<Op>Input encoder.SetQuery calls) were never

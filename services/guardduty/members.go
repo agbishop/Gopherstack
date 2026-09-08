@@ -2,6 +2,7 @@ package guardduty
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"time"
 )
@@ -81,7 +82,7 @@ func (b *InMemoryBackend) DeleteMembers(detectorID string, accountIDs []string) 
 		return nil, ErrDetectorNotFound
 	}
 
-	if b.autoEnableOrgMembersAll(detectorID) {
+	if b.rejectOrgMembersStillInOrg(detectorID, accountIDs) {
 		return nil, ErrValidation
 	}
 
@@ -100,15 +101,28 @@ func (b *InMemoryBackend) DeleteMembers(detectorID string, accountIDs []string) 
 }
 
 // autoEnableOrgMembersAll reports whether the detector's org config has
-// autoEnableOrganizationMembers set to ALL, in which case real GuardDuty
-// rejects DeleteMembers/DisassociateMembers/StopMonitoringMembers for
-// accounts still in the organization. Member has no still-in-org-vs-left
-// field, so this approximates by rejecting for the whole detector rather
-// than per account.
+// autoEnableOrganizationMembers set to ALL.
 func (b *InMemoryBackend) autoEnableOrgMembersAll(detectorID string) bool {
 	cfg, ok := b.orgConfigs.Get(detectorID)
 
 	return ok && cfg.AutoEnableOrganizationMembers == "ALL"
+}
+
+// rejectOrgMembersStillInOrg reports whether DeleteMembers/
+// DisassociateMembers/StopMonitoringMembers must reject this call: the
+// detector's autoEnableOrganizationMembers is ALL, and at least one
+// requested account is still in the AWS Organization per the wired
+// Organizations backend (see cross_service.go's stillInOrganization).
+// Matches the real ops' doc text, e.g. DisassociateMembers: "you'll receive
+// an error if you attempt to disassociate a member account before removing
+// them from your organization" -- the error is conditioned on org
+// membership, not merely on the ALL setting (gopherstack-uu0n).
+func (b *InMemoryBackend) rejectOrgMembersStillInOrg(detectorID string, accountIDs []string) bool {
+	if !b.autoEnableOrgMembersAll(detectorID) {
+		return false
+	}
+
+	return slices.ContainsFunc(accountIDs, b.stillInOrganization)
 }
 
 // GetMembers retrieves member account details.
@@ -244,7 +258,7 @@ func (b *InMemoryBackend) StopMonitoringMembers(detectorID string, accountIDs []
 		return nil, ErrDetectorNotFound
 	}
 
-	if b.autoEnableOrgMembersAll(detectorID) {
+	if b.rejectOrgMembersStillInOrg(detectorID, accountIDs) {
 		return nil, ErrValidation
 	}
 
@@ -275,7 +289,7 @@ func (b *InMemoryBackend) DisassociateMembers(detectorID string, accountIDs []st
 		return nil, ErrDetectorNotFound
 	}
 
-	if b.autoEnableOrgMembersAll(detectorID) {
+	if b.rejectOrgMembersStillInOrg(detectorID, accountIDs) {
 		return nil, ErrValidation
 	}
 

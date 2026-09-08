@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/blackbirdworks/gopherstack/services/guardduty"
+	organizationsbackend "github.com/blackbirdworks/gopherstack/services/organizations"
 )
 
 func TestMembers(t *testing.T) {
@@ -244,10 +245,20 @@ func TestMemberBatchOps_UnknownDetector_NotFound(t *testing.T) {
 // TestMemberOps_AutoEnableOrganizationMembersAll_Rejected proves
 // DeleteMembers/DisassociateMembers/StopMonitoringMembers each reject with
 // BadRequestException when the detector's autoEnableOrganizationMembers is
-// ALL, matching the AWS doc text for all three operations
-// ("With autoEnableOrganizationMembers configuration for your organization
-// set to ALL, you'll receive an error..."). Previously all three ignored
-// this org setting entirely and always returned 200 (gopherstack-krb1).
+// ALL and the requested account is still in the AWS Organization, matching
+// the AWS doc text for all three operations ("With
+// autoEnableOrganizationMembers configuration for your organization set to
+// ALL, you'll receive an error..."). Previously all three ignored this org
+// setting entirely and always returned 200 (gopherstack-krb1).
+//
+// Updated for gopherstack-uu0n: the ALL guard used to reject unconditionally
+// regardless of the account's actual org membership, which over-rejected an
+// account that had already left the organization (see
+// TestMemberOps_AutoEnableOrganizationMembersAll_AllowedAfterAccountLeavesOrg
+// in cross_service_test.go for that case). This test now wires a real
+// Organizations backend and keeps the account in it, so it continues to
+// prove the case the AWS doc text actually describes -- rejection while
+// still a member -- instead of a case the fix now correctly allows.
 func TestMemberOps_AutoEnableOrganizationMembersAll_Rejected(t *testing.T) {
 	t.Parallel()
 
@@ -264,12 +275,27 @@ func TestMemberOps_AutoEnableOrganizationMembersAll_Rejected(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			h := newTestHandler(t)
+			orgBk := organizationsbackend.NewInMemoryBackend("123456789012", "us-east-1")
+			orgHandler := organizationsbackend.NewHandler(orgBk)
+
+			_, _, err := orgBk.CreateOrganization("ALL")
+			require.NoError(t, err)
+
+			status, err := orgBk.CreateAccount(
+				"member", "member@example.com", "OrganizationAccountAccessRole", "ALLOW", nil,
+			)
+			require.NoError(t, err)
+			accountID := status.AccountID
+
+			backend := guardduty.NewInMemoryBackend("123456789012", "us-east-1")
+			backend.SetAppConfig(&fakeSiblingServices{orgHandler: orgHandler})
+			h := guardduty.NewHandler(backend)
+
 			id := createTestDetector(t, h)
 
 			doRequest(t, h, http.MethodPost, "/detector/"+id+"/member", map[string]any{
 				"accountDetails": []map[string]any{
-					{"accountId": "111111111111", "email": "a@example.com"},
+					{"accountId": accountID, "email": "a@example.com"},
 				},
 			})
 
@@ -279,7 +305,7 @@ func TestMemberOps_AutoEnableOrganizationMembersAll_Rejected(t *testing.T) {
 			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 			rec = doRequest(t, h, http.MethodPost, "/detector/"+id+tt.path, map[string]any{
-				"accountIds": []string{"111111111111"},
+				"accountIds": []string{accountID},
 			})
 			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
 
