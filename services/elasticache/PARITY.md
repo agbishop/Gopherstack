@@ -1,9 +1,47 @@
 ---
 service: elasticache
 sdk_module: aws-sdk-go-v2/service/elasticache@v1.56.4
-last_audit_commit: 5fdd1abcf
-last_audit_date: 2026-09-04
-overall: A            # 2026-09-04 (gopherstack-973, parity-sweep-2026-09-03 branch): targeted pass on the two
+last_audit_commit: pending (uncommitted this pass -- see git log at merge time)
+last_audit_date: 2026-09-08
+overall: A            # 2026-09-08 (gopherstack-8haq, P1): xmlError/xmlResp return nil after a
+                       # successful write (handler.go), so any helper that rejects a request via
+                       # xmlError and returns that value hands nil back to a caller doing
+                       # "if err != nil { return err }" -- the check never fires and execution
+                       # falls through past the rejection. Confirmed live pre-fix with a real SDK
+                       # client: CreateCacheCluster(SnapshotName=<missing>) returned 400
+                       # InvalidParameterValueException as expected, but a follow-up
+                       # DescribeCacheClusters found the cluster anyway. Audited every xmlError call
+                       # site in the package (~171) for the broken shape -- a helper storing an
+                       # xmlError-derived result and rechecking it, not a direct "return xmlError(...)".
+                       # Found and fixed 5: applySnapshotDefaults, applyClusterSubnetGroup,
+                       # applyClusterSnapshotRetentionLimit (the three named in the issue, all in
+                       # handler_cache_clusters.go) map their own raw error at the call site now
+                       # (same "return h.xxxErrorResponse(c, err)" contract gopherstack-v5fe already
+                       # established for checkReplicationGroupExists/replicationGroupErrorResponse).
+                       # parsePaginationChecked and describeListChecked (handler.go) had the same
+                       # defect one layer deeper, fanning out to ~20 callers across nearly every
+                       # paginated Describe*/List* operation in the service -- fixed with a
+                       # errResponseWritten sentinel returned instead of xmlError's nil, translated
+                       # back to nil at the single Handler() dispatch point, so none of the ~20
+                       # existing "if err != nil { return err }" call sites needed touching. Every
+                       # fix has a regression test asserting observable post-state (resource absent,
+                       # or a later mutation -- ReplicationGroupId attach -- never ran), each
+                       # confirmed failing against the unmodified code first; two also had to detect
+                       # response-body corruption directly (a second XML document concatenated onto
+                       # the first, from echo's Response.Write having no post-commit guard) since the
+                       # SDK's XML decoder tolerated the trailing garbage and still returned the
+                       # correct typed error. No pre-existing test depended on the bug to pass; two
+                       # pre-existing tests (TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange,
+                       # Test_CreateCacheCluster_RestoreFromSnapshot's missing_snapshot_is_not_found
+                       # case) passed even under the bug because the SDK ignored the trailing
+                       # corrupted write -- they mask the defect rather than lock it, left as-is.
+                       # cloudfront/handler.go's xmlResp shares the identical nil-on-successful-write
+                       # shape (via echo's c.Blob) -- read-only spot check of its obviously-named
+                       # helper/mapper functions found them all using the safe direct
+                       # "return h.helper(...)" contract already, but cloudfront's ~421 call sites
+                       # across ~20 files were not exhaustively audited (out of scope: another agent
+                       # owns that directory) -- flagged as a follow-up, not fixed.
+                       # 2026-09-04 (gopherstack-973, parity-sweep-2026-09-03 branch): targeted pass on the two
                        # highest-yield bug classes only (partial-update clobbering on Modify* surfaces, missing
                        # delete preconditions), not full 86-file coverage. Two real bugs found and fixed, both with
                        # SDK-cited regression tests verified failing pre-fix: (1) SnapshotRetentionLimit was
@@ -658,3 +696,128 @@ existing convention of recording rather than fabricating a fix for a field the b
 never populates. **Zero new bugs found; nothing changed in this service.** `go build`,
 `go vet` (repo-wide, clean), `go test -race ./services/elasticache/...` all pass on the
 unmodified tree. No AWS documentation was fetched this pass.
+
+### 2026-09-08 (gopherstack-8haq, P1: xmlError's nil-on-write swallows a rejection)
+
+`xmlError` returns `xmlResp`'s result, and `xmlResp` (`handler.go`) returns `nil` after
+a successful write -- it wraps `c.Response().Write(...)`, which succeeds and returns
+`nil` unless the connection itself fails. Any helper that rejects a request by calling
+`xmlError(...)` and returning that value therefore hands `nil` back to a caller doing
+`if err != nil { return err }`: the check never fires, and execution falls through
+past the rejection. Confirmed live pre-fix with a real SDK client, exactly as the
+issue described: `CreateCacheCluster(CacheClusterId="probe-cluster", Engine=redis,
+SnapshotName="does-not-exist")` returns 400 `InvalidParameterValueException` as
+expected, but a follow-up `DescribeCacheClusters(CacheClusterId="probe-cluster")`
+then finds the cluster anyway -- the client is told the create failed while the
+resource exists.
+
+**Audit.** Every `xmlError` call site in the package (~171) was checked for the broken
+shape -- specifically, a *helper* that internally writes via `xmlError` and is called
+by storing its result and rechecking it (`x, err := helper(...); if err != nil`, or the
+inline `if err := helper(...); err != nil` form -- both are the same bug, since both
+key off `err`'s truthiness after the write already happened). The overwhelming
+majority of the 171 are `return xmlError(...)` directly inside a top-level dispatch
+handler (`createCacheCluster`, `deleteCacheCluster`, etc.) -- safe, since `Handler()`'s
+dispatch is the only caller and (after this pass) correctly distinguishes a real error
+from "already handled." A script cross-referencing every function whose body contains
+`return ... xmlError(...)` or `return ... xmlResp(...)` against `dispatchTable()`'s
+target list found exactly five non-dispatch helpers with the broken shape, all fixed
+this pass:
+
+- `applySnapshotDefaults` (`handler_cache_clusters.go`), returned at the old line 80,
+  checked at line 81 -- the path reproduced above.
+- `applyClusterSubnetGroup`, checked at the old line 121.
+- `applyClusterSnapshotRetentionLimit`, checked at the old lines 125 and 450 (two call
+  sites: `createCacheCluster` and `modifyCacheCluster`).
+- `parsePaginationChecked` (`handler.go`) -- called this way at ~13 direct sites across
+  nearly every paginated `Describe*`/`List*` handler in the package
+  (`handler_cache_clusters.go`, `handler_engine_versions.go`, `handler_events.go`,
+  `handler_parameter_groups.go` x2, `handler_snapshots.go`, `handler_reserved_nodes.go`
+  x2, `handler_service_updates.go` x2, `handler_replication_groups.go`,
+  `handler_serverless.go`), plus once more inside `describeListChecked` itself.
+- `describeListChecked` (`handler.go`) -- wraps `parsePaginationChecked` for its own
+  ~7 callers (`handler_parameter_groups.go`, `handler_global_replication_groups.go`,
+  `handler_security_groups.go`, `handler_serverless.go`, `handler_subnet_groups.go`,
+  `handler_user_groups.go`, `handler_users.go`), so it had the same defect one layer
+  removed: even when `parsePaginationChecked` is fixed underneath it, its own
+  `p, err := call(marker, maxRecords); if err != nil { return ..., xmlError(...) }`
+  branches were the identical shape at the next level up.
+
+**Fix.** Two different contracts, chosen per fan-out, both documented in-code so the
+next call site added to either family follows the right one:
+
+- The three `handler_cache_clusters.go` helpers (1-2 callers each) now return a raw,
+  unwritten error; the caller maps it via a dedicated `*ErrorResponse(c, err)` function
+  called directly as `return xxxErrorResponse(c, err)` -- never stored and rechecked.
+  This is the same contract gopherstack-v5fe already established for
+  `checkReplicationGroupExists`/`replicationGroupErrorResponse` (found and left alone
+  this pass, already correct), just extended to the three sibling helpers the same
+  issue predicted would hit the identical trap.
+- `parsePaginationChecked`/`describeListChecked` (~20 total callers) instead return a
+  new `errResponseWritten` sentinel in place of `xmlError`'s `nil`, so every existing
+  `if err != nil { return err }` call site -- all ~20 of them -- now works correctly
+  *unchanged*, because `err` is genuinely non-nil whenever a rejection was written.
+  `Handler()`'s single dispatch point (`return fn(ctx, c, vals)` -> now
+  `fnErr := fn(...); if errors.Is(fnErr, errResponseWritten) { return nil }; return
+  fnErr`) translates the sentinel back to `nil` in exactly one place, so
+  `pkgs/telemetry`'s `WrapEchoHandler` still logs these as ordinary "operation
+  completed with error status" (WARN) the same as every other `xmlError` call, not as
+  "operation failed" (ERROR) -- rewriting all ~20 call sites individually to map their
+  own error would have been far more invasive for the same outcome, and this repo's own
+  echo fork (`response.go:50-73`) already treats a second `WriteHeader` on a committed
+  response as a safe no-op, which is what makes the sentinel-sees-nil-at-the-boundary
+  design sound: nothing downstream ever attempts a second real write.
+
+**Tests.** Every fixed call site has a regression test asserting *observable state*,
+not just a status code, and every one was confirmed failing against the unmodified
+code first (exact pre-fix output captured in the PR description):
+`TestCreateCacheCluster_RejectedSnapshotRestore_DoesNotCreateCluster` (a rejected
+snapshot restore must not create the cluster at all -- the `DescribeCacheClusters`
+follow-up must itself 404, not just return zero rows),
+`TestCreateCacheCluster_SubnetGroupFailure_StopsBeforeReplicationGroupAttach` and
+`TestCreateCacheCluster_InvalidSnapshotRetentionLimit_StopsBeforeReplicationGroupAttach`
+(the base cluster row is unavoidably created before these two helpers run --
+`CreateCacheCluster` isn't transactional across its own post-create steps, a separate,
+larger concern -- so these instead prove the operation actually stopped: paired with a
+real `ReplicationGroupId`, the later attach step that runs after these two helpers in
+`createCacheCluster` must never fire),
+`TestModifyCacheCluster_InvalidSnapshotRetentionLimit_LeavesClusterUnchanged` and
+`TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange_DoesNotDoubleWrite`/
+`TestDescribeListChecked_MaxRecordsOutOfRange_DoesNotDoubleWrite` (for the call sites
+where nothing observable runs afterward, the pre-fix defect is wire corruption instead
+-- echo's `Response.Write` (`response.go:64-73`) has no post-commit guard, only
+`WriteHeader` does, so the swallowed rejection's fall-through second write appends a
+second, complete XML document onto the same HTTP response body; these tests read the
+raw body and assert the second document's root element never appears).
+
+**No pre-existing test depended on the bug to pass.** Two pre-existing tests turned out
+to *mask* the bug rather than lock in the wrong behavior, worth flagging even though
+neither needed changing: `TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange` and
+`Test_CreateCacheCluster_RestoreFromSnapshot`'s `missing_snapshot_is_not_found` case
+both only assert the SDK's typed error/status code, and the SDK's XML decoder happily
+parses the first (correct) `ErrorResponse` document off the front of a corrupted body
+and ignores everything appended after it -- so both passed pre-fix despite the
+double-write. This is exactly why the issue asked for observable-state assertions
+instead of response-shape ones.
+
+**cloudfront follow-up (read-only, not fixed -- out of scope this pass).**
+`services/cloudfront/handler.go`'s `xmlResp` shares the identical shape: it wraps
+`c.Blob(...)`, and echo's `Context.Blob` (`context.go:641-646`) also returns `nil` on
+a successful write. A read-only spot check of cloudfront's most obviously-named
+helper/mapper functions (`handleWebACLAssociationError`, `handleDomainAssociationError`,
+`handleTagAPIError`, `marshalDistributionIDList`, `marshalDistributionIDOwnerList`,
+`writeDistributionList`) found every one of their callers already using the safe direct
+`return h.helper(...)` contract -- but cloudfront has on the order of 421 `xmlResp`
+call sites across ~20 files, and only a handful of the most obviously-named helpers
+were sampled, not the exhaustive per-function audit this pass did for elasticache's 171.
+Recommend the cloudfront-owning pass run the equivalent systematic check (every
+function whose body contains `return ... xmlResp(...)`, cross-referenced against
+whether its callers use direct `return` vs. store-and-recheck) rather than trusting
+this spot check as complete.
+
+**Gates.** `golangci-lint run ./services/elasticache/...`: 0 issues.
+`go test -race ./services/elasticache/...`: pass. `go build ./...` and
+`go test ./services/...` (all 161 services, repo-wide): pass, no regressions --
+this was a handler-contract change (`Handler()`'s dispatch return, and the five
+touched helpers' signatures), so the full run was the right blast-radius check, not
+just this package.

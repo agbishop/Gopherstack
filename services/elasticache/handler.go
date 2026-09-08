@@ -29,6 +29,17 @@ const (
 // falls outside AWS's modeled [20,100] range.
 var errInvalidMaxRecords = errors.New("invalid MaxRecords")
 
+// errResponseWritten is returned by parsePaginationChecked and
+// describeListChecked instead of xmlError's own nil-on-success-write result,
+// so that the many callers doing "if err != nil { return err }" -- both the
+// ~13 direct parsePaginationChecked callers and describeListChecked's own
+// ~7 callers -- actually stop instead of silently falling through to a
+// second, corrupting write on an already-committed response (gopherstack-8haq).
+// Handler() translates it back to nil at the top of the dispatch chain, so
+// telemetry/logging see the same "handled, response already sent" shape as
+// every other xmlError call site.
+var errResponseWritten = errors.New("elasticache: response already written")
+
 // Handler is the Echo HTTP handler for ElastiCache operations.
 type Handler struct {
 	Backend   StorageBackend
@@ -327,7 +338,16 @@ func (h *Handler) Handler() echo.HandlerFunc {
 		region := h.regionFromRequest(c)
 		ctx := context.WithValue(c.Request().Context(), regionContextKey{}, region)
 
-		return fn(ctx, c, vals)
+		fnErr := fn(ctx, c, vals)
+		if fnErr == nil {
+			return nil
+		}
+
+		if errors.Is(fnErr, errResponseWritten) {
+			return nil
+		}
+
+		return fnErr
 	}
 }
 
@@ -391,7 +411,9 @@ func parsePagination(form url.Values) (string, int, error) {
 func parsePaginationChecked(c *echo.Context, form url.Values) (string, int, error) {
 	marker, maxRecords, err := parsePagination(form)
 	if err != nil {
-		return "", 0, xmlError(c, http.StatusBadRequest, "InvalidParameterValue", err.Error())
+		_ = xmlError(c, http.StatusBadRequest, "InvalidParameterValue", err.Error())
+
+		return "", 0, errResponseWritten
 	}
 
 	return marker, maxRecords, nil
@@ -417,10 +439,14 @@ func describeListChecked[T any](
 	p, err := call(marker, maxRecords)
 	if err != nil {
 		if errors.Is(err, notFound) {
-			return page.Page[T]{}, xmlError(c, notFoundStatus, notFoundCode, notFoundMsg)
+			_ = xmlError(c, notFoundStatus, notFoundCode, notFoundMsg)
+
+			return page.Page[T]{}, errResponseWritten
 		}
 
-		return page.Page[T]{}, xmlError(c, http.StatusInternalServerError, "InternalFailure", err.Error())
+		_ = xmlError(c, http.StatusInternalServerError, "InternalFailure", err.Error())
+
+		return page.Page[T]{}, errResponseWritten
 	}
 
 	return p, nil

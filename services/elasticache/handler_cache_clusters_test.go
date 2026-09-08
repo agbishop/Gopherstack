@@ -2,9 +2,12 @@ package elasticache_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	smithy "github.com/aws/smithy-go"
 	"github.com/labstack/echo/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -657,6 +661,46 @@ func TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange(t *testing.T) {
 	}
 }
 
+// TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange_DoesNotDoubleWrite
+// locks the same gopherstack-8haq shape one layer deeper than the four call
+// sites named in the issue: parsePaginationChecked itself rejects via
+// xmlError and returns its result, so every one of its ~13 direct callers
+// (describeCacheClusters included, at the old handler_cache_clusters.go:360)
+// plus describeListChecked's own internal call -- and so, transitively,
+// describeListChecked's ~7 further callers -- store a value that is nil
+// even when validation genuinely failed. The typed-error assertions in
+// TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange above still pass
+// under the bug (the SDK's XML decoder happily parses the first, correct
+// ErrorResponse document off the front of the body and ignores the second
+// one appended after it), so this test inspects the raw body instead, the
+// same way TestModifyCacheCluster_InvalidSnapshotRetentionLimit_LeavesClusterUnchanged
+// catches it for the two SnapshotRetentionLimit call sites.
+func TestHandler_DescribeCacheClusters_MaxRecordsOutOfRange_DoesNotDoubleWrite(t *testing.T) {
+	t.Parallel()
+
+	srv := newErrorTestServer(t)
+
+	form := url.Values{
+		"Action":     {"DescribeCacheClusters"},
+		"Version":    {"2015-02-02"},
+		"MaxRecords": {"101"},
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL, strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.NotContains(t, string(body), "DescribeCacheClustersResponse",
+		"an out-of-range MaxRecords must stop before writing a second (success) response onto the same body")
+}
+
 // ----------------------------------------
 // CacheCluster — ARN format
 // ----------------------------------------
@@ -879,6 +923,265 @@ func Test_CreateCacheCluster_RestoreFromSnapshot(t *testing.T) {
 			assert.Equal(t, "cache.m5.large", aws.ToString(out.CacheCluster.CacheNodeType))
 		})
 	}
+}
+
+// TestCreateCacheCluster_RejectedSnapshotRestore_DoesNotCreateCluster locks
+// gopherstack-8haq: applySnapshotDefaults rejects via xmlError and returns
+// its result, but xmlError/xmlResp return nil after a successful write, so
+// createCacheCluster's "if restoreErr != nil { return restoreErr }" never
+// fired and execution fell through to actually creating the cluster. The
+// client saw the correct 400 InvalidParameterValueException, but the
+// resource existed anyway -- reproduced here through the real SDK client,
+// not by inspecting the response alone.
+func TestCreateCacheCluster_RejectedSnapshotRestore_DoesNotCreateCluster(t *testing.T) {
+	t.Parallel()
+
+	client := newTestStack(t)
+	ctx := t.Context()
+
+	_, err := client.CreateCacheCluster(ctx, &elasticachesdk.CreateCacheClusterInput{
+		CacheClusterId: aws.String("probe-cluster"),
+		Engine:         aws.String("redis"),
+		SnapshotName:   aws.String("does-not-exist"),
+	})
+	require.Error(t, err)
+	requireFault[elasticachetypes.InvalidParameterValueException](t, err)
+	requireHTTPStatus(t, err, http.StatusBadRequest)
+
+	_, descErr := client.DescribeCacheClusters(ctx, &elasticachesdk.DescribeCacheClustersInput{
+		CacheClusterId: aws.String("probe-cluster"),
+	})
+	require.Error(t, descErr, "rejected CreateCacheCluster must not have created the cluster")
+	requireFault[elasticachetypes.CacheClusterNotFoundFault](t, descErr)
+}
+
+// subnetGroupFailingBackend wraps InMemoryBackend and fails
+// SetClusterSubnetGroupName deterministically, to exercise
+// applyClusterSubnetGroup's error path (gopherstack-8haq) without relying on
+// a race against the cluster it was just given.
+type subnetGroupFailingBackend struct {
+	*elasticache.InMemoryBackend
+}
+
+var errSubnetGroupBackendFailure = errors.New("boom: subnet group backend failure")
+
+func (b *subnetGroupFailingBackend) SetClusterSubnetGroupName(context.Context, string, string) error {
+	return errSubnetGroupBackendFailure
+}
+
+// TestCreateCacheCluster_SubnetGroupFailure_StopsBeforeReplicationGroupAttach
+// locks gopherstack-8haq's second call site: applyClusterSubnetGroup used to
+// reject via xmlError and return its result, which xmlError/xmlResp turn
+// into nil after a successful write, so createCacheCluster's
+// "if sgErr != nil { return sgErr }" never fired and execution fell through
+// to later steps -- including attaching the cluster to a replication group,
+// which real AWS would never do once the create is rejected. The base
+// cluster row is unavoidably created before this step runs (CreateCacheCluster
+// isn't transactional across these helpers -- a separate, larger concern),
+// so the fix is verified by the operation actually stopping: the
+// ReplicationGroupId attach that comes after applyClusterSubnetGroup in
+// createCacheCluster must never run.
+func TestCreateCacheCluster_SubnetGroupFailure_StopsBeforeReplicationGroupAttach(t *testing.T) {
+	t.Parallel()
+
+	inner := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
+	backend := &subnetGroupFailingBackend{InMemoryBackend: inner}
+	handler := elasticache.NewHandler(backend)
+
+	e := echo.New()
+	registry := service.NewRegistry()
+	require.NoError(t, registry.Register(handler))
+	router := service.NewServiceRouter(registry)
+	e.Use(router.RouteHandler())
+
+	srv := httptest.NewServer(e)
+	t.Cleanup(srv.Close)
+
+	cfg, err := awscfg.LoadDefaultConfig(
+		t.Context(),
+		awscfg.WithRegion("us-east-1"),
+		awscfg.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
+	)
+	require.NoError(t, err)
+
+	client := elasticachesdk.NewFromConfig(cfg, func(o *elasticachesdk.Options) {
+		o.BaseEndpoint = aws.String(srv.URL)
+	})
+
+	_, err = client.CreateReplicationGroup(t.Context(), &elasticachesdk.CreateReplicationGroupInput{
+		ReplicationGroupId:          aws.String("rg-sg-guard"),
+		ReplicationGroupDescription: aws.String("test"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.CreateCacheCluster(t.Context(), &elasticachesdk.CreateCacheClusterInput{
+		CacheClusterId:       aws.String("sg-fail-cluster"),
+		Engine:               aws.String("redis"),
+		CacheSubnetGroupName: aws.String("some-subnet-group"),
+		ReplicationGroupId:   aws.String("rg-sg-guard"),
+	}, func(o *elasticachesdk.Options) { o.RetryMaxAttempts = 1 })
+	require.Error(t, err)
+
+	var apiErr smithy.APIError
+	require.ErrorAs(t, err, &apiErr, "SDK must surface a typed API error, not an opaque one")
+	assert.Equal(t, "InternalFailure", apiErr.ErrorCode())
+	requireHTTPStatus(t, err, http.StatusInternalServerError)
+
+	described, descErr := client.DescribeCacheClusters(t.Context(), &elasticachesdk.DescribeCacheClustersInput{
+		CacheClusterId: aws.String("sg-fail-cluster"),
+	})
+	require.NoError(t, descErr)
+	require.Len(t, described.CacheClusters, 1)
+	assert.Empty(
+		t,
+		aws.ToString(described.CacheClusters[0].ReplicationGroupId),
+		"a rejected subnet-group write must stop createCacheCluster before it reaches the ReplicationGroupId attach step",
+	)
+}
+
+// TestCreateCacheCluster_InvalidSnapshotRetentionLimit_StopsBeforeReplicationGroupAttach
+// locks gopherstack-8haq's third call site: applyClusterSnapshotRetentionLimit
+// used to reject a non-integer SnapshotRetentionLimit via xmlError and return
+// its result, silently swallowed the same way. The real SDK types
+// SnapshotRetentionLimit as int32, so a malformed value can only be produced
+// with a raw request, bypassing the SDK's own type safety. See the subnet-group
+// test above for why the observable check is "the later ReplicationGroupId
+// attach never runs" rather than "the cluster row doesn't exist".
+func TestCreateCacheCluster_InvalidSnapshotRetentionLimit_StopsBeforeReplicationGroupAttach(t *testing.T) {
+	t.Parallel()
+
+	backend := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
+	handler := elasticache.NewHandler(backend)
+
+	e := echo.New()
+	registry := service.NewRegistry()
+	require.NoError(t, registry.Register(handler))
+	router := service.NewServiceRouter(registry)
+	e.Use(router.RouteHandler())
+
+	srv := httptest.NewServer(e)
+	t.Cleanup(srv.Close)
+
+	cfg, err := awscfg.LoadDefaultConfig(
+		t.Context(),
+		awscfg.WithRegion("us-east-1"),
+		awscfg.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
+	)
+	require.NoError(t, err)
+
+	client := elasticachesdk.NewFromConfig(cfg, func(o *elasticachesdk.Options) {
+		o.BaseEndpoint = aws.String(srv.URL)
+	})
+
+	_, err = client.CreateReplicationGroup(t.Context(), &elasticachesdk.CreateReplicationGroupInput{
+		ReplicationGroupId:          aws.String("rg-srl-guard"),
+		ReplicationGroupDescription: aws.String("test"),
+	})
+	require.NoError(t, err)
+
+	form := url.Values{
+		"Action":                 {"CreateCacheCluster"},
+		"Version":                {"2015-02-02"},
+		"CacheClusterId":         {"srl-bad-cluster"},
+		"Engine":                 {"redis"},
+		"SnapshotRetentionLimit": {"not-a-number"},
+		"ReplicationGroupId":     {"rg-srl-guard"},
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL, strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	described, descErr := client.DescribeCacheClusters(t.Context(), &elasticachesdk.DescribeCacheClustersInput{
+		CacheClusterId: aws.String("srl-bad-cluster"),
+	})
+	require.NoError(t, descErr)
+	require.Len(t, described.CacheClusters, 1)
+	assert.Empty(
+		t,
+		aws.ToString(described.CacheClusters[0].ReplicationGroupId),
+		"a rejected SnapshotRetentionLimit write must stop createCacheCluster before the RG attach step",
+	)
+}
+
+// TestModifyCacheCluster_InvalidSnapshotRetentionLimit_LeavesClusterUnchanged
+// locks gopherstack-8haq's fourth call site: applyClusterSnapshotRetentionLimit
+// used inside modifyCacheCluster the same way as createCacheCluster's copy,
+// checked at the old handler_cache_clusters.go:450. Unlike the Create paths,
+// nothing runs after this check in modifyCacheCluster, so the swallowed
+// rejection can't be observed as an extra unwanted backend write -- what it
+// actually produced was wire corruption: xmlError's write inside the helper
+// already sent the 400 ErrorResponse body, and the unguarded fall-through
+// then wrote a second, unrelated 200 ModifyCacheClusterResponse document
+// onto the *same* HTTP response body (echo's Response.Write has no
+// "already committed" guard, only WriteHeader does -- see
+// response.go:50-73 in labstack/echo/v5). The client-visible status stayed
+// 400 either way, so the only way to catch this is to inspect the raw body.
+func TestModifyCacheCluster_InvalidSnapshotRetentionLimit_LeavesClusterUnchanged(t *testing.T) {
+	t.Parallel()
+
+	backend := elasticache.NewInMemoryBackend(elasticache.EngineStub, "000000000000", "us-east-1", nil)
+	handler := elasticache.NewHandler(backend)
+
+	e := echo.New()
+	registry := service.NewRegistry()
+	require.NoError(t, registry.Register(handler))
+	router := service.NewServiceRouter(registry)
+	e.Use(router.RouteHandler())
+
+	srv := httptest.NewServer(e)
+	t.Cleanup(srv.Close)
+
+	cfg, err := awscfg.LoadDefaultConfig(
+		t.Context(),
+		awscfg.WithRegion("us-east-1"),
+		awscfg.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
+	)
+	require.NoError(t, err)
+
+	client := elasticachesdk.NewFromConfig(cfg, func(o *elasticachesdk.Options) {
+		o.BaseEndpoint = aws.String(srv.URL)
+	})
+
+	_, err = client.CreateCacheCluster(t.Context(), &elasticachesdk.CreateCacheClusterInput{
+		CacheClusterId:         aws.String("srl-modify-cluster"),
+		Engine:                 aws.String("redis"),
+		SnapshotRetentionLimit: aws.Int32(5),
+	})
+	require.NoError(t, err)
+
+	form := url.Values{
+		"Action":                 {"ModifyCacheCluster"},
+		"Version":                {"2015-02-02"},
+		"CacheClusterId":         {"srl-modify-cluster"},
+		"SnapshotRetentionLimit": {"not-a-number"},
+	}
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL, strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.NotContains(t, string(body), "ModifyCacheClusterResponse",
+		"a rejected SnapshotRetentionLimit must stop before writing a second (success) response onto the same body")
+
+	described, err := client.DescribeCacheClusters(t.Context(), &elasticachesdk.DescribeCacheClustersInput{
+		CacheClusterId: aws.String("srl-modify-cluster"),
+	})
+	require.NoError(t, err)
+	require.Len(t, described.CacheClusters, 1)
+	assert.Equal(t, int32(5), aws.ToInt32(described.CacheClusters[0].SnapshotRetentionLimit),
+		"rejected ModifyCacheCluster (invalid SnapshotRetentionLimit) must not silently change other fields either")
 }
 
 func TestHandler_DescribeCacheClusters_ShowCacheClustersNotInReplicationGroups(t *testing.T) {
