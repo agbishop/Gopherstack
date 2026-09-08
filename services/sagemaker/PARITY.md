@@ -6157,3 +6157,57 @@ services/sagemaker/*_test.go` returns exactly two lines: the live
 eleventh site above, and `lifecycle_test.go:68`, which is prose inside
 a comment (`// ... assert.Eventually hid that by returning the ...`),
 not a call.
+
+## 2026-09-07 (gopherstack-yp2t): DeletePipeline now refuses while an execution is running
+
+`DeletePipeline`'s own doc comment (`api_op_DeletePipeline.go:12-14`,
+sagemaker@v1.263.2): "Deletes a pipeline if there are no running instances
+of the pipeline. To delete a pipeline, you must stop all running instances
+of the pipeline using the StopPipelineExecution API." Its declared error
+set (`deserializeOpErrorDeletePipeline`) is `ConflictException`,
+`ResourceNotFound`, `UnknownError` — `ConflictException`'s doc
+(`types/errors.go:9-10`, "There was a conflict when you attempted to modify
+a SageMaker entity") fits, and `errors.go`'s `ErrConflictException` base
+sentinel already lists Pipeline (`Create/Update/DeletePipeline`) among the
+resources whose real conflict error is `ConflictException` rather than
+`ResourceInUse`.
+
+Reachability: gopherstack-z5hj (closed the same day, just before this
+issue) fixed `StartPipelineExecution`/`StartPipelineExecutionFull` to
+transition `Executing -> Succeeded` via `runDelayed` instead of jumping
+straight to `Succeeded`, so a pipeline execution is now observably
+`Executing` for `startTransitionDelay` (200ms) after starting — the guard
+this issue adds is reachable, not dead code.
+
+Fix (`pipelines.go`): `DeletePipeline` now scans
+`pipelineExecutionsStoreRO(region)` for any execution whose `PipelineArn`
+matches and whose `PipelineExecutionStatus == pipelineStatusExecuting`,
+returning the new `ErrPipelineExecutionRunning` sentinel
+(`awserr.New("ConflictException", ErrConflictException)`) if found.
+Deliberately scoped to `Executing` only, not `Stopping` — the real
+`PipelineExecutionStatus` enum (`types/enums.go:6949-6953`) has both as
+distinct non-terminal values, and `Executing` is the literal "running"
+state the doc text names; `Stopping` means `StopPipelineExecution` has
+already been called, i.e. the documented remediation is already underway.
+
+Found reachable via an existing test that had been silently relying on
+the missing guard: `TestHandler_PipelineLifecycle` started an execution
+and deleted the pipeline immediately after, with no wait, and asserted
+200 OK. Pre-fix, this masked the gap; fixed to assert 400 while the
+execution is still `Executing`, then wait (`synctest`,
+`time.Sleep(time.Second)` + `synctest.Wait()`) for it to reach `Succeeded`
+before asserting the delete now succeeds. The whole test was moved inside
+one `synctest.Test` bubble so `StartPipelineExecution`'s `runDelayed`
+goroutine is bubble-owned.
+
+New regression test `TestHandler_DeletePipeline_RunningExecution`
+(`handler_pipelines_test.go`) asserts the wire `__type` through the
+handler (`"ConflictException"`, not just `errors.Is` sentinel identity —
+see gopherstack-74yw for why that distinction matters), then confirms the
+delete succeeds once the execution has transitioned to `Succeeded`.
+Proven to fail pre-fix: run against the pre-fix code, both this test and
+`TestHandler_PipelineLifecycle` failed with `expected: 400 / actual: 200`
+at the immediate-delete assertion.
+
+Gates: `go test -race -count=1 ./services/sagemaker/...` fully green;
+`golangci-lint run ./services/sagemaker/...` 0 issues.

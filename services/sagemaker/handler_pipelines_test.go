@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -439,72 +440,131 @@ func TestHandler_PipelineLifecycle(t *testing.T) {
 
 	h := newTestHandler(t)
 
-	// Create pipeline.
-	recCreate := doSageMakerRequest(t, h, "CreatePipeline", map[string]any{
-		"PipelineName":       "my-pipeline",
-		"PipelineDefinition": `{"Version":"2020-12-01","Steps":[]}`,
+	synctest.Test(t, func(t *testing.T) {
+		// Create pipeline.
+		recCreate := doSageMakerRequest(t, h, "CreatePipeline", map[string]any{
+			"PipelineName":       "my-pipeline",
+			"PipelineDefinition": `{"Version":"2020-12-01","Steps":[]}`,
+		})
+		assert.Equal(t, http.StatusOK, recCreate.Code)
+
+		var createOut map[string]any
+		require.NoError(t, json.Unmarshal(recCreate.Body.Bytes(), &createOut))
+		assert.NotEmpty(t, createOut["PipelineArn"])
+
+		// Describe pipeline.
+		recDesc := doSageMakerRequest(
+			t,
+			h,
+			"DescribePipeline",
+			map[string]any{"PipelineName": "my-pipeline"},
+		)
+		assert.Equal(t, http.StatusOK, recDesc.Code)
+
+		// List pipelines.
+		recList := doSageMakerRequest(t, h, "ListPipelines", map[string]any{})
+		assert.Equal(t, http.StatusOK, recList.Code)
+
+		var listOut map[string]any
+		require.NoError(t, json.Unmarshal(recList.Body.Bytes(), &listOut))
+		assert.Len(t, listOut["PipelineSummaries"].([]any), 1)
+
+		// Update pipeline.
+		recUpdate := doSageMakerRequest(t, h, "UpdatePipeline", map[string]any{
+			"PipelineName":       "my-pipeline",
+			"PipelineDefinition": `{"Version":"2020-12-01","Steps":[{"Name":"step1"}]}`,
+		})
+		assert.Equal(t, http.StatusOK, recUpdate.Code)
+
+		// Start pipeline execution.
+		recExec := doSageMakerRequest(t, h, "StartPipelineExecution", map[string]any{
+			"PipelineName": "my-pipeline",
+		})
+		assert.Equal(t, http.StatusOK, recExec.Code)
+
+		var execOut map[string]any
+		require.NoError(t, json.Unmarshal(recExec.Body.Bytes(), &execOut))
+		execArn := execOut["PipelineExecutionArn"].(string)
+		assert.NotEmpty(t, execArn)
+
+		// Describe pipeline execution.
+		recDescExec := doSageMakerRequest(t, h, "DescribePipelineExecution", map[string]any{
+			"PipelineExecutionArn": execArn,
+		})
+		assert.Equal(t, http.StatusOK, recDescExec.Code)
+
+		// List pipeline executions.
+		recListExec := doSageMakerRequest(t, h, "ListPipelineExecutions", map[string]any{
+			"PipelineName": "my-pipeline",
+		})
+		assert.Equal(t, http.StatusOK, recListExec.Code)
+
+		// The execution is still Executing here (StartPipelineExecution's
+		// Executing -> Succeeded transition is delayed, gopherstack-z5hj), so
+		// DeletePipeline must refuse per its own doc comment ("no running
+		// instances") -- see TestHandler_DeletePipeline_RunningExecution for
+		// the dedicated regression test.
+		recDeleteWhileRunning := doSageMakerRequest(
+			t,
+			h,
+			"DeletePipeline",
+			map[string]any{"PipelineName": "my-pipeline"},
+		)
+		assert.Equal(t, http.StatusBadRequest, recDeleteWhileRunning.Code)
+
+		// Wait for the execution to reach Succeeded, then delete should succeed.
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		recDelete := doSageMakerRequest(
+			t,
+			h,
+			"DeletePipeline",
+			map[string]any{"PipelineName": "my-pipeline"},
+		)
+		assert.Equal(t, http.StatusOK, recDelete.Code)
 	})
-	assert.Equal(t, http.StatusOK, recCreate.Code)
+}
 
-	var createOut map[string]any
-	require.NoError(t, json.Unmarshal(recCreate.Body.Bytes(), &createOut))
-	assert.NotEmpty(t, createOut["PipelineArn"])
+// TestHandler_DeletePipeline_RunningExecution verifies DeletePipeline
+// refuses while an execution is Executing, per its own doc comment
+// (api_op_DeletePipeline.go:12-14, sagemaker@v1.263.2): "Deletes a pipeline
+// if there are no running instances of the pipeline." (gopherstack-yp2t).
+func TestHandler_DeletePipeline_RunningExecution(t *testing.T) {
+	t.Parallel()
 
-	// Describe pipeline.
-	recDesc := doSageMakerRequest(
-		t,
-		h,
-		"DescribePipeline",
-		map[string]any{"PipelineName": "my-pipeline"},
-	)
-	assert.Equal(t, http.StatusOK, recDesc.Code)
+	h := newTestHandler(t)
 
-	// List pipelines.
-	recList := doSageMakerRequest(t, h, "ListPipelines", map[string]any{})
-	assert.Equal(t, http.StatusOK, recList.Code)
+	synctest.Test(t, func(t *testing.T) {
+		recCreate := doSageMakerRequest(t, h, "CreatePipeline", map[string]any{
+			"PipelineName":       "running-pipeline",
+			"PipelineDefinition": `{"Version":"2020-12-01","Steps":[]}`,
+		})
+		require.Equal(t, http.StatusOK, recCreate.Code)
 
-	var listOut map[string]any
-	require.NoError(t, json.Unmarshal(recList.Body.Bytes(), &listOut))
-	assert.Len(t, listOut["PipelineSummaries"].([]any), 1)
+		recExec := doSageMakerRequest(t, h, "StartPipelineExecution", map[string]any{
+			"PipelineName": "running-pipeline",
+		})
+		require.Equal(t, http.StatusOK, recExec.Code)
 
-	// Update pipeline.
-	recUpdate := doSageMakerRequest(t, h, "UpdatePipeline", map[string]any{
-		"PipelineName":       "my-pipeline",
-		"PipelineDefinition": `{"Version":"2020-12-01","Steps":[{"Name":"step1"}]}`,
+		recDelete := doSageMakerRequest(t, h, "DeletePipeline", map[string]any{
+			"PipelineName": "running-pipeline",
+		})
+		require.Equal(t, http.StatusBadRequest, recDelete.Code)
+
+		var errResp map[string]any
+		require.NoError(t, json.Unmarshal(recDelete.Body.Bytes(), &errResp))
+		assert.Equal(t, "ConflictException", errResp["__type"])
+
+		// Once the execution reaches Succeeded, the delete is allowed.
+		time.Sleep(time.Second)
+		synctest.Wait()
+
+		recDeleteAfter := doSageMakerRequest(t, h, "DeletePipeline", map[string]any{
+			"PipelineName": "running-pipeline",
+		})
+		assert.Equal(t, http.StatusOK, recDeleteAfter.Code)
 	})
-	assert.Equal(t, http.StatusOK, recUpdate.Code)
-
-	// Start pipeline execution.
-	recExec := doSageMakerRequest(t, h, "StartPipelineExecution", map[string]any{
-		"PipelineName": "my-pipeline",
-	})
-	assert.Equal(t, http.StatusOK, recExec.Code)
-
-	var execOut map[string]any
-	require.NoError(t, json.Unmarshal(recExec.Body.Bytes(), &execOut))
-	execArn := execOut["PipelineExecutionArn"].(string)
-	assert.NotEmpty(t, execArn)
-
-	// Describe pipeline execution.
-	recDescExec := doSageMakerRequest(t, h, "DescribePipelineExecution", map[string]any{
-		"PipelineExecutionArn": execArn,
-	})
-	assert.Equal(t, http.StatusOK, recDescExec.Code)
-
-	// List pipeline executions.
-	recListExec := doSageMakerRequest(t, h, "ListPipelineExecutions", map[string]any{
-		"PipelineName": "my-pipeline",
-	})
-	assert.Equal(t, http.StatusOK, recListExec.Code)
-
-	// Delete pipeline.
-	recDelete := doSageMakerRequest(
-		t,
-		h,
-		"DeletePipeline",
-		map[string]any{"PipelineName": "my-pipeline"},
-	)
-	assert.Equal(t, http.StatusOK, recDelete.Code)
 }
 
 func TestHandler_Pipeline_NotFound(t *testing.T) {

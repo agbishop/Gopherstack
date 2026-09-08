@@ -23,6 +23,15 @@ var (
 	ErrPipelineAlreadyExists = awserr.New("ConflictException", ErrConflictException)
 	// ErrPipelineExecutionNotFound is returned when a pipeline execution does not exist.
 	ErrPipelineExecutionNotFound = awserr.New("ResourceNotFound", awserr.ErrNotFound)
+	// ErrPipelineExecutionRunning is returned by DeletePipeline when the
+	// pipeline still has an Executing instance. DeletePipeline's own doc
+	// comment (api_op_DeletePipeline.go:12-14, sagemaker@v1.263.2): "Deletes
+	// a pipeline if there are no running instances of the pipeline. To
+	// delete a pipeline, you must stop all running instances of the
+	// pipeline using the StopPipelineExecution API." Its declared error set
+	// is ConflictException (deserializeOpErrorDeletePipeline), same as
+	// ErrPipelineAlreadyExists above.
+	ErrPipelineExecutionRunning = awserr.New("ConflictException", ErrConflictException)
 )
 
 // ParallelismConfiguration limits concurrent steps in a pipeline execution.
@@ -300,6 +309,17 @@ func (b *InMemoryBackend) DeletePipeline(ctx context.Context, name string) (*Pip
 	p, ok := store.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("%w: pipeline %q not found", ErrPipelineNotFound, name)
+	}
+
+	for _, pe := range b.pipelineExecutionsStoreRO(region).All() {
+		if pe.PipelineArn == p.PipelineArn && pe.PipelineExecutionStatus == pipelineStatusExecuting {
+			return nil, fmt.Errorf(
+				"%w: pipeline %q has a running execution %q",
+				ErrPipelineExecutionRunning,
+				name,
+				pe.PipelineExecutionArn,
+			)
+		}
 	}
 
 	cp := clonePipeline(p)
