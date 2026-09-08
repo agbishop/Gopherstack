@@ -2571,17 +2571,7 @@
   },
   "azuretable": {
     "fields": [
-      "EntityProperty.Type EdmType",
-      "EntityProperty.Value any",
-      "backendSnapshot.Tables map[string]*storedTable `json:\"tables\"`",
-      "entityCompositeKey.PartitionKey string",
-      "entityCompositeKey.RowKey string",
-      "storedEntity.PartitionKey string",
-      "storedEntity.Properties map[string]EntityProperty",
-      "storedEntity.RowKey string",
-      "storedEntity.Timestamp time.Time",
-      "storedTable.Entities map[entityCompositeKey]*storedEntity",
-      "storedTable.Name string"
+      "azureTableSnapshot.Tables map[string]*odatatable.StoredTable `json:\"tables\"`"
     ],
     "version": 2
   },

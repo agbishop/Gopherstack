@@ -244,8 +244,6 @@ func unmarshalPropertyValue(edmType EdmType, wireValue any) (any, error) {
 	case EdmInt64, EdmDateTime, EdmGUID, EdmBinary:
 		return unmarshalStringEncodedValue(edmType, wireValue)
 	case EdmString:
-		fallthrough
-	default:
 		s, ok := wireValue.(string)
 		if !ok {
 			return nil, fmt.Errorf(
@@ -256,6 +254,8 @@ func unmarshalPropertyValue(edmType EdmType, wireValue any) (any, error) {
 		}
 
 		return s, nil
+	default:
+		return nil, fmt.Errorf("%w: unknown EdmType %q", ErrInvalidEntityProperty, edmType)
 	}
 }
 
@@ -386,6 +386,16 @@ type storedTable struct {
 	Name     string
 }
 
+// StoredTable is an exported alias for storedTable, existing solely so a
+// caller package (services/azuretable, and services/cosmosdb should its
+// Table API ever be wired into persistence) can reference this type's name
+// in its own guard-visible *Snapshot-suffixed struct -- see
+// services/azuretable/persistence.go's azureTableSnapshot and
+// pkgs/persistence/snapshotversion_guard_test.go's doc comment for why that
+// struct needs to exist at all. It is never constructed directly outside
+// this package.
+type StoredTable = storedTable
+
 // entityCompositeKey is an entity's map key within storedTable.Entities: a
 // comparable struct of its two identifying fields, not a delimited string.
 // A delimited string (e.g. partitionKey+"\x00"+rowKey) is unsafe: JSON
@@ -401,6 +411,12 @@ type entityCompositeKey struct {
 	RowKey       string
 }
 
+// entityCompositeKeyElemCount is the number of elements the JSON array
+// MarshalText/UnmarshalText encode entityCompositeKey as (PartitionKey,
+// RowKey) -- named rather than a bare literal at each use site, including
+// UnmarshalText's length validation (see its own doc comment).
+const entityCompositeKeyElemCount = 2
+
 // MarshalText implements encoding.TextMarshaler so entityCompositeKey can be
 // used as a map key in backendSnapshot's persisted storedTable.Entities
 // (encoding/json only accepts string, integer, or TextMarshaler-implementing
@@ -411,16 +427,27 @@ type entityCompositeKey struct {
 // encoding can't reintroduce the same collision class the struct key itself
 // was introduced to close.
 func (k entityCompositeKey) MarshalText() ([]byte, error) {
-	return json.Marshal([2]string{k.PartitionKey, k.RowKey})
+	return json.Marshal([entityCompositeKeyElemCount]string{k.PartitionKey, k.RowKey})
 }
 
 // UnmarshalText implements encoding.TextUnmarshaler, the inverse of
 // MarshalText.
 func (k *entityCompositeKey) UnmarshalText(text []byte) error {
-	var pair [2]string
+	// Decoded into a []string, not a [2]string: encoding/json silently
+	// truncates a longer JSON array (discarding excess elements) and
+	// zero-fills a shorter one when the target is a fixed-size array,
+	// accepting a malformed or wrong-length key instead of rejecting it --
+	// the explicit length check below is what actually enforces "exactly
+	// two elements".
+	var pair []string
 
 	if err := json.Unmarshal(text, &pair); err != nil {
 		return fmt.Errorf("odatatable: malformed entity composite key %q: %w", text, err)
+	}
+
+	if len(pair) != entityCompositeKeyElemCount {
+		return fmt.Errorf("%w: %q: want %d elements, got %d",
+			ErrMalformedEntityCompositeKey, text, entityCompositeKeyElemCount, len(pair))
 	}
 
 	k.PartitionKey, k.RowKey = pair[0], pair[1]

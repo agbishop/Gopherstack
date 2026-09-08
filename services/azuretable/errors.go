@@ -44,4 +44,9 @@ var (
 	// mismatch would let those two views disagree about a table's identity.
 	// See persistence.go.
 	ErrSnapshotTableNameMismatch = odatatable.ErrSnapshotTableNameMismatch
+
+	// ErrSnapshotEntityKeyMismatch is returned by Restore when a table's
+	// "Entities" map key differs from that entry's own derived
+	// (PartitionKey, RowKey) key. See persistence.go.
+	ErrSnapshotEntityKeyMismatch = odatatable.ErrSnapshotEntityKeyMismatch
 )

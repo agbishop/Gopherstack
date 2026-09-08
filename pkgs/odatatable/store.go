@@ -41,15 +41,31 @@ type InMemoryBackend struct {
 	// tests (see SetETagFunc) for deterministic ETag assertions independent
 	// of the real wire format.
 	etagFunc func(time.Time) string
+	// version is the snapshot-version Restore compares an incoming
+	// snapshot's own Version field against (see persistence.go). It is
+	// caller-supplied (via NewInMemoryBackend), not a single package-owned
+	// constant: this engine backs both services/azuretable and
+	// services/cosmosdb's Table API, two independent callers each needing
+	// their own persisted-state version to stay covered by
+	// pkgs/persistence's snapshot-version guard (which scans services/*/,
+	// not pkgs/) -- see each caller's own <name>SnapshotVersion const.
+	version int
 }
 
-// NewInMemoryBackend creates a new empty InMemoryBackend.
-func NewInMemoryBackend() *InMemoryBackend {
+// NewInMemoryBackend creates a new empty InMemoryBackend. label identifies
+// the caller for lock-contention metrics (lockmetrics.New) -- distinct
+// labels per caller (e.g. "azuretable" vs. "cosmosdb") keep Azure Table and
+// Cosmos DB's Table API locks distinguishable in metrics even though they
+// share this one engine. version is the snapshot-version value Snapshot
+// writes and Restore enforces (see persistence.go and the version field's
+// own doc comment); callers own their version numbering independently.
+func NewInMemoryBackend(label string, version int) *InMemoryBackend {
 	return &InMemoryBackend{
-		mu:       lockmetrics.New("odatatable"),
+		mu:       lockmetrics.New(label),
 		tables:   make(map[string]*storedTable),
 		nowFunc:  time.Now,
 		etagFunc: etagFor,
+		version:  version,
 	}
 }
 
@@ -231,14 +247,29 @@ func (b *InMemoryBackend) checkIfMatch(e *storedEntity, exists bool, ifMatch str
 // b.now() for a brand-new entity, or b.now() advanced by at least
 // minTimestampBump past the entity's previous Timestamp for an existing one
 // -- guaranteeing a distinct ETag on every mutation (see minTimestampBump).
+//
+// The threshold compared against is e.Timestamp.Add(minTimestampBump), NOT
+// e.Timestamp itself: comparing against e.Timestamp alone let two mutations
+// land as little as 1ns apart whenever nowFunc had already advanced past
+// e.Timestamp by less than minTimestampBump (e.g. two fast successive
+// mutations under a real wall clock) -- etagFor formats a Timestamp at only
+// 100ns ("tick") resolution (see etagTimeLayout), so a sub-100ns gap between
+// two Timestamps can format to the exact same ETag string, silently
+// defeating the optimistic-concurrency guarantee this function exists to
+// provide. Comparing against the full minTimestampBump-advanced threshold
+// closes that gap: the returned Timestamp is always either b.now() (when
+// that's already more than minTimestampBump past e.Timestamp, hence
+// guaranteed to format to a different tick) or exactly e.Timestamp advanced
+// by minTimestampBump (never less).
 func (b *InMemoryBackend) bumpTimestamp(e *storedEntity, existedBefore bool) time.Time {
 	now := b.now()
 	if !existedBefore {
 		return now
 	}
 
-	if !now.After(e.Timestamp) {
-		return e.Timestamp.Add(minTimestampBump)
+	threshold := e.Timestamp.Add(minTimestampBump)
+	if !now.After(threshold) {
+		return threshold
 	}
 
 	return now

@@ -8,22 +8,20 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/persistence"
 )
 
-// snapshotVersion identifies the shape of backendSnapshot. Must be bumped
-// whenever a change to storedTable/storedEntity would make an older
-// snapshot unsafe to decode as the current shape; Restore compares this
-// against the persisted value and discards (rather than partially decodes)
-// any mismatch, mirroring services/azurequeue and services/azureblob.
-//
-// This is the same value (2) services/azuretable's own
-// azureTableSnapshotVersion carried before this package existed: the shape
-// hasn't changed, only its package.
-const snapshotVersion = 2
-
 // backendSnapshot is the top-level on-disk shape for an InMemoryBackend.
 // Tables serialises directly (no DTO layer): storedTable/storedEntity have
 // no unexported fields, so encoding/json round-trips them as-is
 // (EntityProperty's own MarshalJSON/UnmarshalJSON handle its typed Value
 // field -- see models.go).
+//
+// Version's meaning is caller-owned (see InMemoryBackend.version's doc
+// comment): each caller of NewInMemoryBackend supplies its own version
+// number, bumped whenever a change to storedTable/storedEntity would make an
+// older snapshot unsafe to decode as the current shape. This package cannot
+// track that itself -- see each caller's own <name>SnapshotVersion const
+// (e.g. services/azuretable/persistence.go's azureTableSnapshotVersion) and
+// its own guard-visible *Snapshot-suffixed struct, since pkgs/persistence's
+// snapshot-version guard only scans services/*/, not pkgs/.
 type backendSnapshot struct {
 	Tables  map[string]*storedTable `json:"tables"`
 	Version int                     `json:"version"`
@@ -39,7 +37,7 @@ func (b *InMemoryBackend) Snapshot(ctx context.Context) []byte {
 	defer b.mu.RUnlock()
 
 	snap := backendSnapshot{
-		Version: snapshotVersion,
+		Version: b.version,
 		Tables:  b.tables,
 	}
 
@@ -58,7 +56,7 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 	b.mu.Lock("Restore")
 	defer b.mu.Unlock()
 
-	if snap.Version != snapshotVersion {
+	if snap.Version != b.version {
 		// An incompatible (older/newer/absent) snapshot version must never be
 		// partially decoded as the current shape -- discard cleanly and start
 		// empty instead of erroring, since this is an expected, recoverable
@@ -67,7 +65,7 @@ func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
 		// services/azureblob.
 		logger.Load(ctx).WarnContext(ctx,
 			"odatatable: discarding incompatible snapshot version, starting empty",
-			"gotVersion", snap.Version, "wantVersion", snapshotVersion)
+			"gotVersion", snap.Version, "wantVersion", b.version)
 
 		b.tables = make(map[string]*storedTable)
 
@@ -111,6 +109,11 @@ func validateSnapshotTables(tables map[string]*storedTable) error {
 		for key, e := range t.Entities {
 			if e == nil {
 				return fmt.Errorf("%w: key %v in table %q", ErrSnapshotEntityNull, key, name)
+			}
+
+			if derived := entityKey(e.PartitionKey, e.RowKey); derived != key {
+				return fmt.Errorf("%w: map key %v, entity (PartitionKey=%q, RowKey=%q) in table %q",
+					ErrSnapshotEntityKeyMismatch, key, e.PartitionKey, e.RowKey, name)
 			}
 		}
 

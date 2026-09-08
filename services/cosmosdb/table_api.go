@@ -25,7 +25,6 @@ package cosmosdb
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -92,12 +91,18 @@ const (
 )
 
 // tableAPISupportedOperations lists the Table API operations
-// GetSupportedOperations appends to Core/SQL's own list.
+// GetSupportedOperations appends to Core/SQL's own list. opTableAPIBatch is
+// deliberately excluded: $batch (multipart/mixed changesets) is explicitly
+// deferred (see handleTableBatch and PARITY.md's deferred section, which
+// always responds 501 NotImplemented), so it must not be advertised as
+// supported. opTableAPIBatch itself stays defined and is still used by
+// tableAPIOperationFor for metrics labeling -- a request to $batch is a real
+// request that needs an operation name for observability, distinct from
+// GetSupportedOperations' capability-advertisement contract.
 func tableAPISupportedOperations() []string {
 	return []string{
 		opListTables, opCreateTable, opDeleteTable,
 		opInsertEntity, opGetEntity, opQueryEntities, opReplaceEntity, opMergeEntity, opDeleteEntity,
-		opTableAPIBatch,
 	}
 }
 
@@ -387,16 +392,17 @@ func (h *Handler) createTable(c *echo.Context) error {
 
 	level := tableODataLevelFromAccept(r.Header.Get("Accept"))
 
-	return h.writeTableJSON(c, http.StatusCreated, h.tableEntityBody(req.TableName, level))
+	return h.writeTableJSON(c, http.StatusCreated, h.tableEntityBody(r.Host, req.TableName, level))
 }
 
 func (h *Handler) listTables(c *echo.Context) error {
 	infos := h.TableBackend.ListTables()
-	level := tableODataLevelFromAccept(c.Request().Header.Get("Accept"))
+	r := c.Request()
+	level := tableODataLevelFromAccept(r.Header.Get("Accept"))
 
 	values := make([]map[string]any, 0, len(infos))
 	for _, ti := range infos {
-		values = append(values, h.tableEntityBody(ti.Name, level))
+		values = append(values, h.tableEntityBody(r.Host, ti.Name, level))
 	}
 
 	return h.writeTableJSON(c, http.StatusOK, map[string]any{"value": values})
@@ -418,14 +424,14 @@ func (h *Handler) deleteTable(c *echo.Context, quotedName string) error {
 // tableEntityBody builds a Table Storage/Table API table entity's OData
 // JSON body, varying by metadata level, mirroring
 // services/azuretable/table_ops.go's identical function.
-func (h *Handler) tableEntityBody(name, level string) map[string]any {
+func (h *Handler) tableEntityBody(host, name, level string) map[string]any {
 	m := map[string]any{"TableName": name}
 
 	if level == odatatable.MetadataLevelNoMetadata {
 		return m
 	}
 
-	endpoint := h.tableServiceEndpoint()
+	endpoint := tableServiceEndpoint(host)
 	m["odata.metadata"] = endpoint + "/$metadata#Tables/@Element"
 
 	if level == odatatable.MetadataLevelFull {
@@ -438,15 +444,16 @@ func (h *Handler) tableEntityBody(name, level string) map[string]any {
 }
 
 // tableServiceEndpoint returns the base URL used to build
-// odata.metadata/odata.id values in Table API responses. Unlike
-// services/azuretable's Handler, CosmosDB's Handler has no separately
-// configurable Endpoint override (Core/SQL's own wire responses never embed
-// a self-referential URL -- see container_ops.go's containerBody, which
-// only ever emits a path-relative "_self") -- Table API's OData metadata
-// fields need one, though, so this derives it from h.Port the same way
-// services/azuretable's serviceEndpoint does when no override is set.
-func (h *Handler) tableServiceEndpoint() string {
-	return fmt.Sprintf("http://127.0.0.1:%d", h.Port)
+// odata.metadata/odata.id values in Table API responses, built from host
+// (the incoming request's own Host header, i.e. c.Request().Host) rather
+// than h.Port -- mirroring account_ops.go's accountPropertiesBody, whose doc
+// comment explains why: gopherstack's own configured port is frequently NOT
+// the port a client actually connects through (Docker port mapping, a
+// docker-compose service name, a CI container, etc.), so hardcoding
+// 127.0.0.1/h.Port here would embed a URL nothing but a same-machine,
+// same-port client could ever reach.
+func tableServiceEndpoint(host string) string {
+	return "http://" + host
 }
 
 // tableODataLevelFromAccept picks the OData metadata level from an Accept

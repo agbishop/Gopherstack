@@ -90,13 +90,34 @@ type Handler struct {
 	ValidateAuth bool
 }
 
+// tableAPIBackendLockMetricsLabel is the lockmetrics label for TableBackend,
+// distinguishing its lock-contention metrics from services/azuretable's own
+// odatatable.InMemoryBackend instance (which passes "azuretable") -- both
+// otherwise construct the exact same type and would collide onto one shared
+// label if the engine picked its own internally.
+const tableAPIBackendLockMetricsLabel = "cosmosdb"
+
+// tableAPIBackendVersion is the snapshot-version TableBackend's own
+// Restore enforces (see pkgs/odatatable/persistence.go). Deliberately NOT
+// named with a "SnapshotVersion" suffix: that name shape is what
+// pkgs/persistence's snapshot-version guard (snapshotversion_guard_test.go)
+// scans services/*/ packages for, and TableBackend is NOT wired into
+// Handler.Snapshot/Restore's persistence lifecycle (see TableBackend's own
+// doc comment below) -- it has no golden-tracked shape for the guard to
+// enforce yet, so it must not look like it does. If/when TableBackend is
+// wired into snapshot/restore, rename this to cosmosdbTableSnapshotVersion
+// and add a matching guard-visible struct, mirroring
+// services/azuretable/persistence.go's azureTableSnapshotVersion/
+// azureTableSnapshot.
+const tableAPIBackendVersion = 2
+
 // NewHandler creates a new Cosmos DB Handler. Port/MasterKey default to
 // DefaultPort/DefaultMasterKey; callers (typically provider.go) override
 // them from Settings.
 func NewHandler(backend StorageBackend) *Handler {
 	return &Handler{
 		Backend:      backend,
-		TableBackend: odatatable.NewInMemoryBackend(),
+		TableBackend: odatatable.NewInMemoryBackend(tableAPIBackendLockMetricsLabel, tableAPIBackendVersion),
 		Port:         DefaultPort,
 		MasterKey:    DefaultMasterKey,
 		srvMu:        lockmetrics.New("cosmosdb.server"),

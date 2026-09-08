@@ -20,10 +20,18 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/odatatable"
 )
 
+// testSnapshotVersion is an arbitrary fixed version this file's tests
+// construct every InMemoryBackend with -- NewInMemoryBackend takes its
+// version from the caller (see store.go's doc comment) rather than owning
+// one internally, so a direct-package test needs to supply its own. It must
+// match the literal "version" values embedded in this file's raw JSON
+// snapshot fixtures (e.g. TestInMemoryBackend_Restore_NullTableRejected).
+const testSnapshotVersion = 2
+
 func TestInMemoryBackend_EntityLifecycle(t *testing.T) {
 	t.Parallel()
 
-	b := odatatable.NewInMemoryBackend()
+	b := odatatable.NewInMemoryBackend("test", testSnapshotVersion)
 	require.NoError(t, b.CreateTable("t"))
 	require.ErrorIs(t, b.CreateTable("t"), odatatable.ErrTableAlreadyExists)
 
@@ -65,7 +73,7 @@ func TestInMemoryBackend_EntityLifecycle(t *testing.T) {
 func TestInMemoryBackend_QueryEntities_FilterAndTop(t *testing.T) {
 	t.Parallel()
 
-	b := odatatable.NewInMemoryBackend()
+	b := odatatable.NewInMemoryBackend("test", testSnapshotVersion)
 	require.NoError(t, b.CreateTable("t"))
 
 	for i, rowKey := range []string{"r1", "r2", "r3"} {
@@ -193,7 +201,7 @@ func TestParseTop(t *testing.T) {
 func TestInMemoryBackend_SnapshotRestore_RoundTrip(t *testing.T) {
 	t.Parallel()
 
-	b := odatatable.NewInMemoryBackend()
+	b := odatatable.NewInMemoryBackend("test", testSnapshotVersion)
 	require.NoError(t, b.CreateTable("t"))
 	_, err := b.InsertEntity("t", "p", "r", map[string]odatatable.EntityProperty{
 		"Name": {Type: odatatable.EdmString, Value: "hi"},
@@ -203,7 +211,7 @@ func TestInMemoryBackend_SnapshotRestore_RoundTrip(t *testing.T) {
 	snap := b.Snapshot(t.Context())
 	require.NotEmpty(t, snap)
 
-	b2 := odatatable.NewInMemoryBackend()
+	b2 := odatatable.NewInMemoryBackend("test", testSnapshotVersion)
 	require.NoError(t, b2.Restore(t.Context(), snap))
 
 	got, err := b2.GetEntity("t", "p", "r")
@@ -214,7 +222,7 @@ func TestInMemoryBackend_SnapshotRestore_RoundTrip(t *testing.T) {
 func TestInMemoryBackend_Restore_NullTableRejected(t *testing.T) {
 	t.Parallel()
 
-	b := odatatable.NewInMemoryBackend()
+	b := odatatable.NewInMemoryBackend("test", testSnapshotVersion)
 	err := b.Restore(t.Context(), []byte(`{"tables":{"t":null},"version":2}`))
 	require.ErrorIs(t, err, odatatable.ErrSnapshotTableNull)
 }
@@ -222,7 +230,7 @@ func TestInMemoryBackend_Restore_NullTableRejected(t *testing.T) {
 func TestSetNowFuncAndSetETagFunc(t *testing.T) {
 	t.Parallel()
 
-	b := odatatable.NewInMemoryBackend()
+	b := odatatable.NewInMemoryBackend("test", testSnapshotVersion)
 	fixed := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
 	odatatable.SetNowFunc(b, func() time.Time { return fixed })
 	odatatable.SetETagFunc(b, func(time.Time) string { return "fixed-etag" })
@@ -240,4 +248,34 @@ func TestEtagFor(t *testing.T) {
 
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	assert.Contains(t, odatatable.EtagFor(ts), `W/"datetime'`)
+}
+
+// TestInMemoryBackend_ReplaceEntity_DistinctETagsUnderSubTickClock is the
+// regression test for bumpTimestamp's ETag-collision bug: two mutations
+// whose nowFunc-reported instants are only 1ns apart (far below etagFor's
+// 100ns/"tick" formatting resolution -- see etagTimeLayout) must still
+// produce distinct ETags, never silently reuse the same one.
+func TestInMemoryBackend_ReplaceEntity_DistinctETagsUnderSubTickClock(t *testing.T) {
+	t.Parallel()
+
+	b := odatatable.NewInMemoryBackend("test", testSnapshotVersion)
+
+	base := time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC)
+	tick := base
+
+	odatatable.SetNowFunc(b, func() time.Time { return tick })
+
+	require.NoError(t, b.CreateTable("t"))
+
+	first, err := b.ReplaceEntity("t", "p", "r", nil, "")
+	require.NoError(t, err)
+
+	tick = tick.Add(time.Nanosecond)
+
+	second, err := b.ReplaceEntity("t", "p", "r", nil, "")
+	require.NoError(t, err)
+
+	assert.NotEqual(t, first.Timestamp, second.Timestamp)
+	assert.NotEqual(t, first.ETag, second.ETag,
+		"two mutations 1ns apart must not collide onto the same 100ns-resolution ETag")
 }

@@ -60,47 +60,115 @@ func resolveOperand(op operand, entity EntityInfo) (operand, bool) {
 			return operand{}, false
 		}
 
-		return propertyOperand(prop), true
+		return propertyOperand(prop)
 	}
 }
 
-func propertyOperand(p EntityProperty) operand {
+// propertyOperand converts p into a comparable operand. ok is false --
+// meaning the comparison this operand feeds into must evaluate to no-match,
+// never a zero-valued stand-in -- when p.Type is unrecognized, or when
+// p.Value's concrete Go type doesn't match what p.Type declares (e.g. a
+// caller-constructed EntityProperty with a mismatched Type/Value pair):
+// silently falling back to the type's zero value on a failed assertion would
+// let e.g. an Edm.Int32 property whose Value is actually a string compare
+// equal to 0, a wrong answer rather than a clean "doesn't match". Each
+// branch below only dispatches to a small, single-purpose conversion
+// function -- the type assertion (and its ok-check) lives there, not here --
+// which is what keeps this switch itself well under the complexity a fully
+// inlined version would carry.
+func propertyOperand(p EntityProperty) (operand, bool) {
 	switch p.Type {
 	case EdmString:
-		s, _ := p.Value.(string)
-
-		return operand{litType: tString, strVal: s}
+		return stringOperand(p.Value)
 	case EdmInt32:
-		n, _ := p.Value.(int32)
-
-		return operand{litType: tInt, isInt32: true, intVal: int64(n)}
+		return int32Operand(p.Value)
 	case EdmInt64:
-		n, _ := p.Value.(int64)
-
-		return operand{litType: tInt64, intVal: n}
+		return int64Operand(p.Value)
 	case EdmDouble:
-		f, _ := p.Value.(float64)
-
-		return operand{litType: tFloat, floatVal: f}
+		return doubleOperand(p.Value)
 	case EdmBoolean:
-		b, _ := p.Value.(bool)
-
-		return operand{litType: tBool, boolVal: b}
+		return boolOperand(p.Value)
 	case EdmDateTime:
-		t, _ := p.Value.(time.Time)
-
-		return operand{litType: tDateTime, timeVal: t}
+		return dateTimeOperand(p.Value)
 	case EdmGUID:
-		s, _ := p.Value.(string)
-
-		return operand{litType: tGUID, strVal: s}
+		return guidOperand(p.Value)
 	case EdmBinary:
-		b, _ := p.Value.([]byte)
-
-		return operand{litType: tBinary, bytesVal: b}
+		return binaryOperand(p.Value)
 	default:
-		return operand{}
+		return operand{}, false
 	}
+}
+
+func stringOperand(v any) (operand, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return operand{}, false
+	}
+
+	return operand{litType: tString, strVal: s}, true
+}
+
+func int32Operand(v any) (operand, bool) {
+	n, ok := v.(int32)
+	if !ok {
+		return operand{}, false
+	}
+
+	return operand{litType: tInt, isInt32: true, intVal: int64(n)}, true
+}
+
+func int64Operand(v any) (operand, bool) {
+	n, ok := v.(int64)
+	if !ok {
+		return operand{}, false
+	}
+
+	return operand{litType: tInt64, intVal: n}, true
+}
+
+func doubleOperand(v any) (operand, bool) {
+	f, ok := v.(float64)
+	if !ok {
+		return operand{}, false
+	}
+
+	return operand{litType: tFloat, floatVal: f}, true
+}
+
+func boolOperand(v any) (operand, bool) {
+	b, ok := v.(bool)
+	if !ok {
+		return operand{}, false
+	}
+
+	return operand{litType: tBool, boolVal: b}, true
+}
+
+func dateTimeOperand(v any) (operand, bool) {
+	t, ok := v.(time.Time)
+	if !ok {
+		return operand{}, false
+	}
+
+	return operand{litType: tDateTime, timeVal: t}, true
+}
+
+func guidOperand(v any) (operand, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return operand{}, false
+	}
+
+	return operand{litType: tGUID, strVal: s}, true
+}
+
+func binaryOperand(v any) (operand, bool) {
+	b, ok := v.([]byte)
+	if !ok {
+		return operand{}, false
+	}
+
+	return operand{litType: tBinary, bytesVal: b}, true
 }
 
 // compareOperands applies op to left/right if they fall in the same

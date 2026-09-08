@@ -14,8 +14,8 @@ import (
 // to pkgs/odatatable's shared codec -- see that package's EncodeEntity for
 // the full contract. Mirrors services/azuretable/entity_ops.go's identical
 // (Handler-bound) encodeEntity wrapper.
-func (h *Handler) encodeTableEntity(info odatatable.EntityInfo, table, level, selectParam string) map[string]any {
-	return odatatable.EncodeEntity(info, table, level, selectParam, h.tableServiceEndpoint(), tableAPIAccountName)
+func (h *Handler) encodeTableEntity(info odatatable.EntityInfo, table, level, selectParam, host string) map[string]any {
+	return odatatable.EncodeEntity(info, table, level, selectParam, tableServiceEndpoint(host), tableAPIAccountName)
 }
 
 func (h *Handler) insertEntity(c *echo.Context, table string) error {
@@ -58,7 +58,7 @@ func (h *Handler) insertEntity(c *echo.Context, table string) error {
 
 	level := tableODataLevelFromAccept(r.Header.Get("Accept"))
 
-	return h.writeTableJSON(c, http.StatusCreated, h.encodeTableEntity(info, table, level, ""))
+	return h.writeTableJSON(c, http.StatusCreated, h.encodeTableEntity(info, table, level, "", r.Host))
 }
 
 func (h *Handler) getEntity(c *echo.Context, table, partitionKey, rowKey string) error {
@@ -76,9 +76,10 @@ func (h *Handler) getEntity(c *echo.Context, table, partitionKey, rowKey string)
 
 	c.Response().Header().Set("ETag", info.ETag)
 
-	level := tableODataLevelFromAccept(c.Request().Header.Get("Accept"))
+	r := c.Request()
+	level := tableODataLevelFromAccept(r.Header.Get("Accept"))
 
-	return h.writeTableJSON(c, http.StatusOK, h.encodeTableEntity(info, table, level, c.QueryParam("$select")))
+	return h.writeTableJSON(c, http.StatusOK, h.encodeTableEntity(info, table, level, c.QueryParam("$select"), r.Host))
 }
 
 func (h *Handler) queryEntities(c *echo.Context, table string) error {
@@ -103,12 +104,13 @@ func (h *Handler) queryEntities(c *echo.Context, table string) error {
 		return h.writeTableNotFoundError(c)
 	}
 
-	level := tableODataLevelFromAccept(c.Request().Header.Get("Accept"))
+	r := c.Request()
+	level := tableODataLevelFromAccept(r.Header.Get("Accept"))
 	selectParam := c.QueryParam("$select")
 
 	values := make([]map[string]any, 0, len(infos))
 	for _, info := range infos {
-		values = append(values, h.encodeTableEntity(info, table, level, selectParam))
+		values = append(values, h.encodeTableEntity(info, table, level, selectParam, r.Host))
 	}
 
 	return h.writeTableJSON(c, http.StatusOK, map[string]any{"value": values})

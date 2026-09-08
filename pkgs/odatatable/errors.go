@@ -45,4 +45,18 @@ var (
 	// mismatch would let those two views disagree about a table's identity.
 	// See persistence.go.
 	ErrSnapshotTableNameMismatch = errors.New("odatatable: restore snapshot: table map key does not match Name")
+
+	// ErrSnapshotEntityKeyMismatch is returned by Restore when a table's
+	// "Entities" map key differs from that entry's own derived
+	// (PartitionKey, RowKey) key. Entity operations all key off the map, so
+	// a mismatch would let a stored entity be reachable under one identity
+	// while its own fields claim another. See persistence.go.
+	ErrSnapshotEntityKeyMismatch = errors.New(
+		"odatatable: restore snapshot: entity map key does not match PartitionKey/RowKey",
+	)
+
+	// ErrMalformedEntityCompositeKey is returned by
+	// entityCompositeKey.UnmarshalText when the persisted key does not
+	// decode to exactly two JSON string elements. See models.go.
+	ErrMalformedEntityCompositeKey = errors.New("odatatable: malformed entity composite key")
 )
