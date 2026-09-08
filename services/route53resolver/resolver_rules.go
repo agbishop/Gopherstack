@@ -91,6 +91,12 @@ func (b *InMemoryBackend) CreateResolverRule(
 		copy(tipsCopy, targetIps)
 	}
 
+	if r, handled, err := b.matchExistingRuleByCreatorRequestID(
+		region, creatorRequestID, name, domainName, ruleType, endpointID, delegationRecord, tipsCopy,
+	); handled {
+		return r, err
+	}
+
 	now := currentTime()
 	id := "rslvr-rr-" + uuid.New().String()[:8]
 	ruleARN := arn.Build("route53resolver", region, b.accountID, "resolver-rule/"+id)
@@ -116,6 +122,42 @@ func (b *InMemoryBackend) CreateResolverRule(
 	cp := cloneRule(r)
 
 	return cp, nil
+}
+
+// matchExistingRuleByCreatorRequestID looks up an existing resolver rule
+// created under creatorRequestID. handled is false when creatorRequestID is
+// empty or no match is found (caller proceeds to create); when handled is
+// true, the caller must return (r, err) as-is -- either the existing
+// resource (matching retry) or a ResourceExistsException (conflicting
+// retry).
+func (b *InMemoryBackend) matchExistingRuleByCreatorRequestID(
+	region, creatorRequestID, name, domainName, ruleType, endpointID, delegationRecord string,
+	targetIps []TargetIP,
+) (*ResolverRule, bool, error) {
+	if creatorRequestID == "" {
+		return nil, false, nil
+	}
+
+	for _, existing := range b.rulesByRegion.Get(region) {
+		if existing.CreatorRequestID != creatorRequestID {
+			continue
+		}
+		if existing.Name == name &&
+			existing.DomainName == domainName &&
+			existing.RuleType == ruleType &&
+			existing.ResolverEndpointID == endpointID &&
+			existing.DelegationRecord == delegationRecord &&
+			slices.Equal(existing.TargetIps, targetIps) {
+			return cloneRule(existing), true, nil
+		}
+
+		return nil, true, fmt.Errorf(
+			"%w: a resolver rule already exists for CreatorRequestId %s with different parameters",
+			ErrAlreadyExists, creatorRequestID,
+		)
+	}
+
+	return nil, false, nil
 }
 
 func (b *InMemoryBackend) GetResolverRule(ctx context.Context, id string) (*ResolverRule, error) {

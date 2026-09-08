@@ -50,6 +50,24 @@ func (b *InMemoryBackend) CreateResolverQueryLogConfig(
 		)
 	}
 
+	if creatorRequestID != "" {
+		for _, existing := range b.queryLogConfigsByRegion.Get(region) {
+			if existing.CreatorRequestID != creatorRequestID {
+				continue
+			}
+			if existing.Name == name && existing.DestinationARN == destinationARN {
+				cp := *existing
+
+				return &cp, nil
+			}
+
+			return nil, fmt.Errorf(
+				"%w: a resolver query log config already exists for CreatorRequestId %s with different parameters",
+				ErrAlreadyExists, creatorRequestID,
+			)
+		}
+	}
+
 	now := currentTime()
 	id := "rqlc-" + uuid.New().String()[:8]
 	configARN := arn.Build(

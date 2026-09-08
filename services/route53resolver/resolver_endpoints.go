@@ -13,6 +13,20 @@ import (
 
 const dirPrefixLen = 2
 
+// copyIPAddressesWithIDs copies ips, assigning a generated IPID to any entry
+// that doesn't already have one.
+func copyIPAddressesWithIDs(ips []IPAddress) []IPAddress {
+	cp := make([]IPAddress, len(ips))
+	for i, ip := range ips {
+		cp[i] = ip
+		if cp[i].IPID == "" {
+			cp[i].IPID = "rni-" + uuid.New().String()[:8]
+		}
+	}
+
+	return cp
+}
+
 func (b *InMemoryBackend) CreateResolverEndpoint(
 	ctx context.Context,
 	name, direction, vpcID string,
@@ -66,19 +80,22 @@ func (b *InMemoryBackend) CreateResolverEndpoint(
 	id := "rslvr-" + dirPrefix + "-" + uuid.New().String()[:8]
 	epARN := arn.Build("route53resolver", region, b.accountID, "resolver-endpoint/"+id)
 
-	ipsCopy := make([]IPAddress, len(ips))
-	for i, ip := range ips {
-		ipsCopy[i] = ip
-		if ipsCopy[i].IPID == "" {
-			ipsCopy[i].IPID = "rni-" + uuid.New().String()[:8]
-		}
-	}
+	ipsCopy := copyIPAddressesWithIDs(ips)
 
 	sgCopy := make([]string, len(securityGroupIDs))
 	copy(sgCopy, securityGroupIDs)
 
 	protocolsCopy := make([]string, len(protocols))
 	copy(protocolsCopy, protocols)
+
+	if ep, handled, err := b.matchExistingEndpointByCreatorRequestID(
+		region, creatorRequestID, name, direction, vpcID, ipsCopy, sgCopy, resolverEndpointType,
+		protocolsCopy, outpostArn, preferredInstanceType,
+		rniEnhancedMetricsEnabled, targetNameServerMetricsEnabled,
+		dns64Enabled, ipv6InternetAccessEnabled,
+	); handled {
+		return ep, err
+	}
 
 	now := currentTime()
 	ep := &ResolverEndpoint{
@@ -223,6 +240,98 @@ func (b *InMemoryBackend) AssociateResolverEndpointIPAddress(
 }
 
 // cloneEndpoint returns a deep copy of a ResolverEndpoint.
+// matchExistingEndpointByCreatorRequestID looks up an existing resolver
+// endpoint created under creatorRequestID. handled is false when
+// creatorRequestID is empty or no match is found (caller proceeds to
+// create); when handled is true, the caller must return (ep, err) as-is --
+// either the existing resource (matching retry) or a ResourceExistsException
+// (conflicting retry, see resolverEndpointMatchesCreate).
+func (b *InMemoryBackend) matchExistingEndpointByCreatorRequestID(
+	region, creatorRequestID, name, direction, vpcID string,
+	ips []IPAddress,
+	securityGroupIDs []string,
+	resolverEndpointType string,
+	protocols []string,
+	outpostArn, preferredInstanceType string,
+	rniEnhancedMetricsEnabled, targetNameServerMetricsEnabled bool,
+	dns64Enabled, ipv6InternetAccessEnabled bool,
+) (*ResolverEndpoint, bool, error) {
+	if creatorRequestID == "" {
+		return nil, false, nil
+	}
+
+	for _, existing := range b.endpointsByRegion.Get(region) {
+		if existing.CreatorRequestID != creatorRequestID {
+			continue
+		}
+		if resolverEndpointMatchesCreate(
+			existing, name, direction, vpcID, ips, securityGroupIDs, resolverEndpointType,
+			protocols, outpostArn, preferredInstanceType,
+			rniEnhancedMetricsEnabled, targetNameServerMetricsEnabled,
+			dns64Enabled, ipv6InternetAccessEnabled,
+		) {
+			return cloneEndpoint(existing), true, nil
+		}
+
+		return nil, true, fmt.Errorf(
+			"%w: a resolver endpoint already exists for CreatorRequestId %s with different parameters",
+			ErrAlreadyExists, creatorRequestID,
+		)
+	}
+
+	return nil, false, nil
+}
+
+// resolverEndpointMatchesCreate reports whether a CreateResolverEndpoint
+// retry's parameters match the resource already created under the same
+// CreatorRequestId -- a matching retry returns the existing resource
+// (CreatorRequestId doc comment, api_op_CreateResolverEndpoint.go:38-40:
+// "allows failed requests to be retried without the risk of running the
+// operation twice"); a conflicting one raises ResourceExistsException, the
+// error CreateResolverEndpoint's own deserializer declares.
+func resolverEndpointMatchesCreate(
+	existing *ResolverEndpoint,
+	name, direction, vpcID string,
+	ips []IPAddress,
+	securityGroupIDs []string,
+	resolverEndpointType string,
+	protocols []string,
+	outpostArn, preferredInstanceType string,
+	rniEnhancedMetricsEnabled, targetNameServerMetricsEnabled bool,
+	dns64Enabled, ipv6InternetAccessEnabled bool,
+) bool {
+	return existing.Name == name &&
+		existing.Direction == direction &&
+		existing.VpcID == vpcID &&
+		existing.ResolverEndpointType == resolverEndpointType &&
+		existing.OutpostArn == outpostArn &&
+		existing.PreferredInstanceType == preferredInstanceType &&
+		existing.RniEnhancedMetricsEnabled == rniEnhancedMetricsEnabled &&
+		existing.TargetNameServerMetricsEnabled == targetNameServerMetricsEnabled &&
+		existing.DNS64Enabled == dns64Enabled &&
+		existing.Ipv6InternetAccessEnabled == ipv6InternetAccessEnabled &&
+		slices.Equal(existing.SecurityGroupIDs, securityGroupIDs) &&
+		slices.Equal(existing.Protocols, protocols) &&
+		ipAddressesEqualIgnoringID(existing.IPAddresses, ips)
+}
+
+// ipAddressesEqualIgnoringID compares caller-supplied IP address fields,
+// ignoring IPID: IPID is server-generated (see the uuid assignment in
+// CreateResolverEndpoint above), so it never matches across two otherwise
+// identical create calls.
+func ipAddressesEqualIgnoringID(a, b []IPAddress) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].SubnetID != b[i].SubnetID || a[i].IP != b[i].IP || a[i].Ipv6 != b[i].Ipv6 {
+			return false
+		}
+	}
+
+	return true
+}
+
 func cloneEndpoint(ep *ResolverEndpoint) *ResolverEndpoint {
 	cp := *ep
 	cp.IPAddresses = make([]IPAddress, len(ep.IPAddresses))

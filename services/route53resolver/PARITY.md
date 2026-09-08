@@ -115,7 +115,7 @@ overall: A            # gopherstack-6flj (2026-08-15): full wrapper-key/nesting 
                        # BatchUpdateFirewallRule in ops below, which inherit the fix for free via the
                        # shared createFirewallRuleInput/updateFirewallRuleInput path.
 ops:
-  CreateResolverEndpoint: {wire: fixed, errors: ok, state: ok, persist: ok, note: "removed invented IpAddresses response field (see notes); added RniEnhancedMetricsEnabled/TargetNameServerMetricsEnabled input+output. gopherstack-y9w3: added Dns64Enabled/Ipv6InternetAccessEnabled input+output (verified against api_op_CreateResolverEndpoint.go and types.ResolverEndpoint -- both genuine stored-and-echoed booleans, same shape as the RNI metrics flags). gopherstack-6flj: removed a second, previously-missed fabricated field, top-level VpcId, from the shared resolverEndpointOutput (see GetResolverEndpoint/ListResolverEndpoints/UpdateResolverEndpoint/AssociateResolverEndpointIpAddress/DisassociateResolverEndpointIpAddress, all of which share this type) -- confirmed absent from types.ResolverEndpoint's real deserializer case list, only HostVPCId is real. Also found and disclosed (not fixed): the real CreateResolverEndpointInput has no VpcId request member either (AWS derives HostVPCId server-side from IpAddresses[].SubnetId); gopherstack's request-side VpcId field is kept as an internal-only convenience since no real client can ever send it and this backend has no subnet->VPC registry to derive HostVPCId honestly instead -- see gaps."}
+  CreateResolverEndpoint: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "removed invented IpAddresses response field (see notes); added RniEnhancedMetricsEnabled/TargetNameServerMetricsEnabled input+output. gopherstack-y9w3: added Dns64Enabled/Ipv6InternetAccessEnabled input+output (verified against api_op_CreateResolverEndpoint.go and types.ResolverEndpoint -- both genuine stored-and-echoed booleans, same shape as the RNI metrics flags). gopherstack-6flj: removed a second, previously-missed fabricated field, top-level VpcId, from the shared resolverEndpointOutput (see GetResolverEndpoint/ListResolverEndpoints/UpdateResolverEndpoint/AssociateResolverEndpointIpAddress/DisassociateResolverEndpointIpAddress, all of which share this type) -- confirmed absent from types.ResolverEndpoint's real deserializer case list, only HostVPCId is real. Also found and disclosed (not fixed): the real CreateResolverEndpointInput has no VpcId request member either (AWS derives HostVPCId server-side from IpAddresses[].SubnetId); gopherstack's request-side VpcId field is kept as an internal-only convenience since no real client can ever send it and this backend has no subnet->VPC registry to derive HostVPCId honestly instead -- see gaps. FIXED THIS PASS (gopherstack-tihg): CreatorRequestId was parsed and stored but never used for idempotency -- every retry, even with an identical token, minted a new endpoint. Botocore's route53resolver 2018-04-01 model confirms this op declares ResourceExistsException (the other 4 CreatorRequestId-bearing Create ops in this SDK -- CreateFirewallDomainList/CreateFirewallRuleGroup/CreateFirewallRule/CreateOutpostResolver -- do not). A retry with the same CreatorRequestId and identical parameters now returns the original endpoint (CreatorRequestId's own doc comment: 'allows failed requests to be retried without the risk of running the operation twice'); a retry with the same CreatorRequestId and different parameters now raises ResourceExistsException. See matchExistingEndpointByCreatorRequestID (resolver_endpoints.go) and TestCreate_CreatorRequestId_Idempotency."}
   GetResolverEndpoint: {wire: fixed, errors: ok, state: ok, persist: ok, note: "removed invented IpAddresses response field; added RniEnhancedMetricsEnabled/TargetNameServerMetricsEnabled output. gopherstack-6flj: shares CreateResolverEndpoint's VpcId fix, see its entry."}
   ListResolverEndpoints: {wire: fixed, errors: ok, state: ok, persist: ok, note: "same IpAddresses fix, see CreateResolverEndpoint; gopherstack-66dr: Filters was modelled in the SDK but not on this wire-input struct, so it was silently dropped and every call returned the unfiltered list. Added Filters (CreatorRequestId/Direction/HostVPCId/IpAddressCount/Name/SecurityGroupIds/Status, both CamelCase and legacy UPPER_SNAKE names per types.Filter's doc); unknown filter names now reject with InvalidParameterException. gopherstack-6flj: shares CreateResolverEndpoint's VpcId fix, see its entry. ListResolverEndpointIpAddresses' own per-item CreationTime/ModificationTime/StatusMessage (real types.IpAddressResponse members) remain unmodeled -- disclosed, not fixed, see gaps."}
   DeleteResolverEndpoint: {wire: ok, errors: ok, state: ok, persist: ok, note: "cascades rules + tags + rule associations"}
@@ -123,7 +123,7 @@ ops:
   ListResolverEndpointIpAddresses: {wire: ok, errors: ok, state: ok, persist: ok}
   AssociateResolverEndpointIpAddress: {wire: fixed, errors: ok, state: ok, persist: ok, note: "removed invented IpAddresses response field, see notes"}
   DisassociateResolverEndpointIpAddress: {wire: fixed, errors: ok, state: ok, persist: ok, note: "removed invented IpAddresses response field, see notes"}
-  CreateResolverRule: {wire: fixed, errors: ok, state: ok, persist: ok, note: "Tags input field was missing entirely -- silently dropped tags on create; added. gopherstack-y9w3: added DelegationRecord (verified against api_op_CreateResolverRule.go and types.ResolverRule -- 'DNS queries with delegation records that point to this domain name are forwarded to resolvers on your network'), stored and echoed on Create/Get/List. The DELEGATE RuleTypeOption itself remains an unimplemented structural gap (see gaps) -- this only fixes the independent field-drop bug, it does not newly support delegation rule creation. gopherstack-6flj follow-up: TargetAddress.ServerNameIndication (types/types.go:1682, both serializers.go:4838 request-side and deserializers.go:13705 response-side -- 'The Server Name Indication of the DoH server') had no field in gopherstack's targetIP wire struct or TargetIP domain model at all; a real client's TargetIps[].ServerNameIndication was silently dropped on create and never echoed. Added."}
+  CreateResolverRule: {wire: fixed, errors: ok, state: fixed, persist: ok, note: "Tags input field was missing entirely -- silently dropped tags on create; added. gopherstack-y9w3: added DelegationRecord (verified against api_op_CreateResolverRule.go and types.ResolverRule -- 'DNS queries with delegation records that point to this domain name are forwarded to resolvers on your network'), stored and echoed on Create/Get/List. The DELEGATE RuleTypeOption itself remains an unimplemented structural gap (see gaps) -- this only fixes the independent field-drop bug, it does not newly support delegation rule creation. gopherstack-6flj follow-up: TargetAddress.ServerNameIndication (types/types.go:1682, both serializers.go:4838 request-side and deserializers.go:13705 response-side -- 'The Server Name Indication of the DoH server') had no field in gopherstack's targetIP wire struct or TargetIP domain model at all; a real client's TargetIps[].ServerNameIndication was silently dropped on create and never echoed. Added. FIXED THIS PASS (gopherstack-tihg): CreatorRequestId idempotency -- same fix and same sourcing as CreateResolverEndpoint (see its ops entry); see matchExistingRuleByCreatorRequestID (resolver_rules.go)."}
   GetResolverRule: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-6flj follow-up: shares CreateResolverRule's TargetAddress.ServerNameIndication fix, see its entry."}
   ListResolverRules: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-66dr: Filters was modelled but not on this wire-input struct -- same silently-ignored-filter bug as ListResolverEndpoints. Added Filters (CreatorRequestId/DomainName/Name/ResolverEndpointId/Status/Type, both name forms); unknown filter names reject with InvalidParameterException. gopherstack-6flj follow-up: shares CreateResolverRule's TargetAddress.ServerNameIndication fix, see its entry."}
   DeleteResolverRule: {wire: ok, errors: ok, state: ok, persist: ok, note: "cascades tags + rule associations"}
@@ -134,7 +134,7 @@ ops:
   ListResolverRuleAssociations: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-hvni: same silently-ignored-Filters bug as ListResolverEndpoints/Rules/QueryLogConfigs (fixed separately in c90bf50bf), left out of that pass because the filed issue named only those three. Added Filters (Name/ResolverRuleId/Status/VPCId, both CamelCase and legacy UPPER_SNAKE names per types.Filter's doc); unknown filter names reject with InvalidParameterException. gopherstack-6flj: shares AssociateResolverRule's StatusMessage fix, see its entry."}
   GetResolverRulePolicy: {wire: ok, errors: ok, state: ok, persist: ok}
   PutResolverRulePolicy: {wire: ok, errors: ok, state: ok, persist: ok}
-  CreateResolverQueryLogConfig: {wire: ok, errors: ok, state: ok, persist: ok}
+  CreateResolverQueryLogConfig: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED THIS PASS (gopherstack-tihg): CreatorRequestId idempotency -- same fix and same sourcing as CreateResolverEndpoint (see its ops entry); see the idempotency check in CreateResolverQueryLogConfig (query_log_configs.go)."}
   GetResolverQueryLogConfig: {wire: ok, errors: ok, state: ok, persist: ok}
   ListResolverQueryLogConfigs: {wire: fixed, errors: ok, state: ok, persist: ok, note: "gopherstack-66dr: same silently-ignored-Filters bug. Added Filters (Arn/AssociationCount/CreationTime/CreatorRequestId/Destination/DestinationArn/Id/Name/OwnerId/ShareStatus/Status, both name forms); Destination (S3/CloudWatchLogs/KinesisFirehose) is derived from DestinationArn's prefix, the same classification isValidQueryLogDestination already used, not a fabricated field. Unknown filter names reject with InvalidParameterException. gopherstack-jp7o: added the SortBy/SortOrder this op also models (service-2.json.gz SortBy is a free string, max 64/min 1, no enum -- valid names come only from the operation's doc comment: Arn/AssociationCount/CreationTime/CreatorRequestId/DestinationArn/Id/Name/OwnerId/ShareStatus/Status). Sort runs before pagination so NextToken order is global, not per-page. Unrecognized SortBy/SortOrder reject with InvalidParameterException, same precedent as Filters. SortOrder has no documented default; ASCENDING is assumed when omitted (unverified, conservative reading). gopherstack-6flj: TotalCount/TotalFilteredCount -- real, always-populated ListResolverQueryLogConfigsOutput members (deserializers.go) -- were never wired at all, leaving both at 0 for every real SDK client regardless of backend state. Added: TotalCount is the pre-Filters account/region total, TotalFilteredCount is post-Filters/pre-pagination."}
   DeleteResolverQueryLogConfig: {wire: ok, errors: ok, state: ok, persist: ok, note: "cascades tags + associations"}
@@ -827,3 +827,75 @@ and the `handleError` dispatch fix together.
 Gates: `go build`, `go test -race -count=1 ./services/route53resolver/...`,
 `golangci-lint run ./services/route53resolver/...` -- all clean (0 lint
 issues, baseline was also 0 before this pass).
+
+## 2026-09-08: CreatorRequestId idempotency implemented (gopherstack-tihg)
+
+Resolves the gap the 2026-09-04 pass above left open, and the durable verdict
+recorded on gopherstack-1kse ("ResourceExistsException's doc does not
+distinguish a matching retry from a conflicting one") -- that verdict was
+based on published AWS documentation only. This pass checked a second oracle
+neither prior pass had: the botocore route53resolver 2018-04-01 model
+(`service-2.json.gz`, `operations[op].errors`). It confirms the "three
+Create ops" scope precisely -- of the seven Create ops that carry a required
+`CreatorRequestId` (CreateResolverEndpoint/CreateResolverQueryLogConfig/
+CreateResolverRule/CreateFirewallDomainList/CreateFirewallRuleGroup/
+CreateFirewallRule/CreateOutpostResolver), only those same three declare
+`ResourceExistsException` in their error set; the other four do not. This
+matches `error_target_fixes_test.go`'s existing, independently-sourced
+comment (`deserializers.go`'s `awsAwsjson11_deserializeOpError<Op>` switches).
+
+The matching-vs-conflicting distinction itself is still not spelled out by
+either oracle as a bare sentence, so it was synthesized from what both
+actually say rather than fabricated: `CreatorRequestId`'s own doc comment
+(`api_op_CreateResolverRule.go:33-35` et al., aws-sdk-go-v2 v1.53.0) states
+its purpose is to let "failed requests to be retried without the risk of
+running the operation twice" -- direct support for a matching retry
+returning the original resource rather than creating a second one.
+`ResourceExistsException`'s doc ("The resource that you tried to create
+already exists") is the error these three ops already declare for exactly
+this situation -- support for a conflicting retry (same token, different
+parameters) erroring rather than silently duplicating or silently returning
+a resource that doesn't match what the caller asked for. This is the
+conservative reading: it surfaces a conflict instead of masking one.
+
+**Before this fix**: `CreateResolverEndpoint`/`CreateResolverQueryLogConfig`/
+`CreateResolverRule` stored `CreatorRequestId` but never consulted it --
+every call, including an exact retry of an identical request, minted a new
+resource with a new ID. A real SDK client's automatic retry (on a timeout or
+5xx) would silently double-create.
+
+**Fix**: each op now checks, before generating a new ID, whether an existing
+resource in the same region already carries the given `CreatorRequestId`.
+If none, it creates as before. If one exists and its caller-supplied fields
+match the new request exactly, the existing resource is returned unchanged
+(no new resource created). If one exists with different fields,
+`ResourceExistsException` is raised. See
+`matchExistingEndpointByCreatorRequestID` (`resolver_endpoints.go`),
+`matchExistingRuleByCreatorRequestID` (`resolver_rules.go`), and the inline
+check in `CreateResolverQueryLogConfig` (`query_log_configs.go`). No new
+persisted field was needed -- `CreatorRequestID` was already a stored,
+persisted member on all three domain models; `go test ./pkgs/persistence/...`
+passes unchanged.
+
+New test: `TestCreate_CreatorRequestId_Idempotency`
+(`creator_request_id_idempotency_test.go`), table-driven over all three ops
+via the real aws-sdk-go-v2 client, two subtests each:
+"matching retry returns same resource" (asserts equal IDs across both calls
+*and* that a follow-up List returns exactly 1 resource -- not just that the
+second call succeeded, which the pre-fix bug would also do) and "conflicting
+retry errors" (asserts a real `*types.ResourceExistsException` via
+`errors.As`, and that the count stays at 1). Confirmed failing against
+unmodified code first: all 6 subtests failed (matching-retry cases returned
+distinct IDs and a count of 2; conflicting-retry cases returned `nil` error
+instead of `ResourceExistsException`). Ran `-race -count=10` after the fix:
+10/10 clean.
+
+No pre-existing test was modified.
+
+Gates: `go build ./services/route53resolver/...`,
+`go test -race ./services/route53resolver/...`,
+`golangci-lint run ./services/route53resolver/...` -- 0 issues (two funlen/
+gocognit trips from the added logic were resolved by extracting
+`matchExistingEndpointByCreatorRequestID`/`matchExistingRuleByCreatorRequestID`/
+`copyIPAddressesWithIDs` as separate functions, not by nolint -- this repo
+bans cyclop/gocognit/funlen nolints).
