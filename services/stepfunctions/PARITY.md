@@ -1005,3 +1005,67 @@ against unmodified code before the fix:
   already assert the real emitted wire code end-to-end through the HTTP
   handler; a full SDK-client round trip would need `make build-linux` +
   Docker for a P3 fix already covered at the wire-format layer.
+
+## 2026-09-08 pass (bd gopherstack-s9zy): DescribeStateMachineForExecution / StateMachineDoesNotExist re-audited, left unfixed
+
+Second evidence pass on the one real finding carried over from the
+2026-09-07 audit above (item 3). Re-extracted independently and confirmed
+identical: `awsAwsjson10_deserializeOpErrorDescribeStateMachineForExecution`
+(`sfn@v1.49.0` deserializers.go:1588-1648) declares exactly
+`ExecutionDoesNotExist, InvalidArn, KmsAccessDeniedException,
+KmsInvalidStateException, KmsThrottlingException` -- no
+`StateMachineDoesNotExist`. botocore's `stepfunctions/2016-11-23/service-2.json.gz`
+`operations.DescribeStateMachineForExecution.errors` lists the identical
+five. The live
+docs.aws.amazon.com/step-functions/latest/apireference/API_DescribeStateMachineForExecution.html
+Errors section (fetched fresh this pass) agrees verbatim and adds no
+special-case language for a deleted underlying state machine; the op's own
+description only notes it is "eventually consistent" and unsupported for
+`EXPRESS` state machines. Emission site unchanged:
+`executions.go:794-798`, the `!hasSnapshot && !smExists` branch of
+`DescribeStateMachineForExecution`, reachable via the documented
+Phase-3.3 persistence boundary (executions restored after a restart carry
+no `executionDefinitions` snapshot; if the referenced state machine is
+later removed, this branch fires for a still-real execution).
+
+**New finding this pass, narrowing (not resolving) remedy (2):** the
+2026-09-07 note called the sibling branch three lines down
+(`hasSnapshot == true`, SM also gone -- executions.go:806-813, returns
+`&StateMachine{StateMachineArn: ..., Definition: definition}`) "the
+strongest same-function precedent" for converting this branch to a
+synthetic 200 too. That precedent doesn't actually transfer cleanly: the
+sibling has a real `definition` string to populate (from the persisted
+execution-time snapshot); the `!hasSnapshot` branch by construction has
+none. A synthetic success here could only populate `StateMachineArn`,
+leaving `Definition` empty -- but AWS's own wire shape constrains
+`definition`: "Length Constraints: Minimum length of 1" (same API
+reference page, Response Elements). A 200 with an empty `definition` field
+would violate the op's own modeled shape, arguably a worse defect (silently
+wrong data passing as success) than today's undeclared-but-visible error
+code. This is new counter-evidence, not merely "still no evidence for" --
+it actively weakens remedy (2) for this specific branch.
+
+Remedy (1) (persist `executionDefinitions`, closing the root cause) remains
+correct in principle but is a persistence-shape change out of scope for a
+P3 error-code fix (bumps `sfnSnapshotVersion`, discards user snapshots on
+restore per gopherstack-c8sa).
+
+Also checked per this pass's brief: the 2026-09-08 `StateMachineDeleting`
+work (gopherstack-kx95, section above) does not touch this op --
+`DescribeStateMachineForExecution` is not among the 8 ops that declare
+`StateMachineDeleting`, and kx95's DELETING window only *narrows* this
+branch's reachability (a state machine with running executions now stays
+present with `Status = statusDeleting` instead of vanishing immediately,
+so `smExists` stays true longer) without closing it -- the branch still
+fires once the janitor completes the sweep, or after a persistence
+restore whose referenced state machine was deleted before the restore.
+
+**Left unfixed.** No declared code fits "execution exists, state machine
+gone" (`ExecutionDoesNotExist` would be affirmatively false), and the one
+candidate remedy with same-function precedent (synthetic success) would
+trade a wrong-typed-but-visible error for a schema-violating silent
+success. No test was added or changed -- there is no fix to regress-test
+against, and no pre-existing test asserts this path either way (confirmed
+by re-grepping `*_test.go` for `StateMachineDoesNotExist` near
+`DescribeStateMachineForExecution`; none found). Landmine comment at
+executions.go:784-793 left as-is, now cross-referenced by this entry.
