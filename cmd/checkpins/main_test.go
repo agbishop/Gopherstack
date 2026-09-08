@@ -60,6 +60,20 @@ func TestEvaluatePin(t *testing.T) {
 			wantKind: resultOK,
 		},
 		{
+			name: "hashicorp terraform provider pin, never a go.mod dependency",
+			slug: "azurearm",
+			content: "service: azurearm\n" +
+				"sdk_module: hashicorp/terraform-provider-azurerm@v4.81.0   # not a go.mod dependency\n",
+			wantKind: resultOK,
+		},
+		{
+			name:     "hashicorp pin missing version",
+			slug:     "azurearm",
+			content:  "service: azurearm\nsdk_module: hashicorp/terraform-provider-azurerm\n",
+			wantKind: resultMismatch,
+			wantMsg:  "no parseable @version",
+		},
+		{
 			name:     "module missing and undocumented",
 			slug:     "foo",
 			content:  "service: foo\nsdk_module: aws-sdk-go-v2/service/foo@v1.0.0   # some other note\n",

@@ -1,0 +1,685 @@
+package azurearm
+
+import (
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/labstack/echo/v5"
+
+	"github.com/blackbirdworks/gopherstack/pkgs/aadauth"
+	"github.com/blackbirdworks/gopherstack/pkgs/devtls"
+	"github.com/blackbirdworks/gopherstack/pkgs/lockmetrics"
+	"github.com/blackbirdworks/gopherstack/pkgs/logger"
+	"github.com/blackbirdworks/gopherstack/pkgs/service"
+	"github.com/blackbirdworks/gopherstack/pkgs/telemetry"
+)
+
+// Operation name constants used for metrics (ExtractOperation) and
+// GetSupportedOperations.
+const (
+	opMetadataEndpoints   = "MetadataEndpoints"
+	opOpenIDConfiguration = "OpenIDConfiguration"
+	opInstanceDiscovery   = "InstanceDiscovery"
+	opToken               = "Token"
+	opListSubscriptions   = "ListSubscriptions"
+	opGetSubscription     = "GetSubscription"
+	opListTenants         = "ListTenants"
+	opListProviders       = "ListProviders"
+	opGetProvider         = "GetProvider"
+	opRegisterProvider    = "RegisterProvider"
+	opPutResourceGroup    = "PutResourceGroup"
+	opGetResourceGroup    = "GetResourceGroup"
+	opDeleteResourceGroup = "DeleteResourceGroup"
+	opListResourceGroups  = "ListResourceGroups"
+	opPutResource         = "PutResource"
+	opGetResource         = "GetResource"
+	opDeleteResource      = "DeleteResource"
+	opListResources       = "ListResources"
+	opListKeys            = "ListKeys"
+	unknownOperation      = "Unknown"
+)
+
+// Handler is the Echo HTTP handler for the ARM emulation's dedicated
+// listener.
+type Handler struct {
+	Backend  *InMemoryBackend
+	Registry *Registry
+	Issuer   *aadauth.Issuer
+	srvMu    *lockmetrics.RWMutex
+	srv      *http.Server
+	Settings Settings
+	Port     int
+}
+
+// NewHandler creates a new ARM Handler.
+func NewHandler(backend *InMemoryBackend, registry *Registry, issuer *aadauth.Issuer, settings Settings) *Handler {
+	return &Handler{
+		Backend:  backend,
+		Registry: registry,
+		Settings: settings,
+		Issuer:   issuer,
+		Port:     settings.Port,
+		srvMu:    lockmetrics.New("azurearm.server"),
+	}
+}
+
+var (
+	_ service.BackgroundWorker = (*Handler)(nil)
+	_ service.Shutdowner       = (*Handler)(nil)
+	_ service.Resettable       = (*Handler)(nil)
+)
+
+// Name returns the service name.
+func (h *Handler) Name() string { return "AzureARM" }
+
+// GetSupportedOperations returns the list of supported ARM operations.
+func (h *Handler) GetSupportedOperations() []string {
+	return []string{
+		opMetadataEndpoints, opOpenIDConfiguration, opInstanceDiscovery, opToken,
+		opListSubscriptions, opGetSubscription, opListTenants,
+		opListProviders, opGetProvider, opRegisterProvider,
+		opPutResourceGroup, opGetResourceGroup, opDeleteResourceGroup, opListResourceGroups,
+		opPutResource, opGetResource, opDeleteResource, opListResources, opListKeys,
+	}
+}
+
+// RouteMatcher exists only to satisfy service.Registerable's interface
+// contract: AzureARM deliberately never matches on the shared AWS
+// single-port Router, exactly like services/azureblob/azurequeue/azuretable/
+// cosmosdb -- it runs on its own dedicated HTTPS listener started by
+// StartWorker. Only RouteMatcher itself is inert.
+func (h *Handler) RouteMatcher() service.Matcher {
+	return func(*echo.Context) bool { return false }
+}
+
+// MatchPriority returns the routing priority for the AzureARM handler.
+// Irrelevant in practice since RouteMatcher never matches; 0 is the safe
+// default.
+func (h *Handler) MatchPriority() int { return 0 }
+
+// ExtractOperation extracts the ARM operation name from the request, for
+// metrics labeling.
+func (h *Handler) ExtractOperation(c *echo.Context) string {
+	return operationFor(c.Request())
+}
+
+// ExtractResource extracts a resource identifier from the request path, for
+// metrics labeling.
+func (h *Handler) ExtractResource(c *echo.Context) string {
+	return c.Request().URL.Path
+}
+
+// Reset clears all in-memory ARM state.
+func (h *Handler) Reset() {
+	h.Backend.Reset()
+	h.Registry.ResetAll()
+}
+
+// Handler returns the Echo handler function for ARM operations.
+func (h *Handler) Handler() echo.HandlerFunc {
+	return func(c *echo.Context) error {
+		r := c.Request()
+		path := strings.TrimSuffix(r.URL.Path, "/")
+		segs := splitARMPath(path)
+
+		host := hostFromHostHeader(r.Host)
+		ctx := WithRequestHost(r.Context(), host)
+		c.SetRequest(r.WithContext(ctx))
+
+		return h.dispatch(c, segs)
+	}
+}
+
+// armRoute is one entry in the dispatch table: match reports whether segs
+// (and, for a few routes, the request method) fit this route's shape;
+// handle serves it. Table-driven dispatch (rather than one large
+// switch/if-chain) is what makes the generic resource plane's "one path
+// walker, no per-type routes" requirement (AZURE.md section 10.1) possible
+// while keeping any single function's cyclomatic complexity low -- each
+// match closure is a handful of trivial comparisons, and the dispatcher
+// itself is just a loop.
+type armRoute struct {
+	match  func(segs []string, r *http.Request) bool
+	handle func(h *Handler, c *echo.Context, segs []string) error
+}
+
+// aadDiscoveryRoutes handles the AAD/metadata discovery and token shapes:
+// GET /metadata/endpoints, GET /common/discovery/instance, GET
+// /{tenant}/v2.0/.well-known/openid-configuration, POST
+// /{tenant}/oauth2[/v2.0]/token, GET /{tenant}/discovery/v2.0/keys.
+//
+//nolint:gochecknoglobals // static route table, read-only after init
+var aadDiscoveryRoutes = []armRoute{
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 2 && segs[0] == "metadata" && segs[1] == "endpoints"
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleMetadataEndpoints(c) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 3 && segs[0] == "common" && segs[1] == discoverySegment && segs[2] == "instance"
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleInstanceDiscovery(c) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && segs[1] == aadAPIVersionSegment &&
+				segs[2] == ".well-known" && segs[3] == "openid-configuration"
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleOpenIDConfiguration(c, segs[0])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 3 && segs[1] == "oauth2" && segs[2] == "token"
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error { return h.handleToken(c, segs[0]) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && segs[1] == "oauth2" && segs[2] == aadAPIVersionSegment && segs[3] == "token"
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error { return h.handleToken(c, segs[0]) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && segs[1] == discoverySegment &&
+				segs[2] == aadAPIVersionSegment && segs[3] == "keys"
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleJWKS(c) },
+	},
+}
+
+// dispatch routes on the request path's shape: the AAD discovery/token
+// routes first (always public -- a client can't get a bearer token without
+// reaching them), then the bearer-token check when
+// Settings.ValidateTokens is set, then everything under /subscriptions and
+// /tenants.
+func (h *Handler) dispatch(c *echo.Context, segs []string) error {
+	if handled, err := matchRoutes(aadDiscoveryRoutes, h, c, segs); handled {
+		return err
+	}
+
+	if h.Settings.ValidateTokens {
+		if authErr := h.bearerTokenError(c); authErr != "" {
+			return h.writeUnauthorized(c, authErr)
+		}
+	}
+
+	return h.dispatchARMResource(c, segs)
+}
+
+// bearerTokenError enforces Settings.ValidateTokens
+// (--azure-arm-validate-tokens): cryptographically validates the request's
+// Authorization: Bearer token against h.Issuer, returning a non-empty
+// rejection message if missing or invalid, else "". Deliberately does not
+// write the response itself -- dispatch must stop and call writeUnauthorized
+// exactly once on rejection, rather than falling through to
+// dispatchARMResource and writing a second response on top of the first
+// (an earlier version of this check called writeUnauthorized here and
+// returned its nil success value, which dispatch then treated as "no
+// error, keep going").
+//
+// Off by default -- by default ARM accepts any bearer token, or none, per
+// every other Azure service's own opt-in validation convention
+// (WithSharedKeyValidation, --cosmosdb-validate-auth,
+// --azure-servicebus-validate-sas).
+func (h *Handler) bearerTokenError(c *echo.Context) string {
+	const bearerPrefix = "Bearer "
+
+	auth := c.Request().Header.Get("Authorization")
+
+	token, ok := strings.CutPrefix(auth, bearerPrefix)
+	if !ok || token == "" {
+		return "The request is missing a bearer token."
+	}
+
+	if _, err := h.Issuer.Parse(token); err != nil {
+		return "The bearer token is invalid or expired."
+	}
+
+	return ""
+}
+
+// writeUnauthorized writes a 401 ARM error envelope with a WWW-Authenticate
+// challenge header, mirroring real Key Vault/ARM's own
+// unauthenticated-request response shape.
+func (h *Handler) writeUnauthorized(c *echo.Context, message string) error {
+	c.Response().Header().Set("WWW-Authenticate", `Bearer authorization_uri="`+h.baseURLFor(c.Request())+`"`)
+
+	return h.writeError(c, http.StatusUnauthorized, "InvalidAuthenticationToken", message)
+}
+
+// matchRoutes returns the first matching route's result, or handled=false if
+// none match.
+func matchRoutes(routes []armRoute, h *Handler, c *echo.Context, segs []string) (bool, error) {
+	r := c.Request()
+
+	for _, route := range routes {
+		if route.match(segs, r) {
+			return true, route.handle(h, c, segs)
+		}
+	}
+
+	return false, nil
+}
+
+// isSubscriptionScoped reports whether segs[0] equals subscriptionsSegment
+// (case-insensitively). Each route's own len(segs) == N check (in its match
+// closure) guarantees segs[0] is in bounds before this is called.
+func isSubscriptionScoped(segs []string) bool {
+	return strings.EqualFold(segs[0], subscriptionsSegment)
+}
+
+// segAt reports whether segs[i] equals want (case-insensitively) and i is in
+// bounds.
+// Path-segment positions used by segAt calls in armResourceRoutes, e.g.
+// /subscriptions/{sub}/providers/{ns}/register: "providers" is index 2,
+// "register" is index 4.
+const (
+	providersOrResourceGroupsIdx = 2
+	providerNamespaceActionIdx   = 4
+)
+
+func segAt(segs []string, i int, want string) bool {
+	return i < len(segs) && strings.EqualFold(segs[i], want)
+}
+
+// armResourceRoutes handles every /subscriptions/... and /tenants shape:
+// tenants/subscriptions list+get, provider list/get/register,
+// resource-group CRUD, listKeys, resource-list, and the generic
+// PUT/GET/DELETE resource path.
+//
+//nolint:gochecknoglobals // static route table, read-only after init
+var armResourceRoutes = []armRoute{
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 1 && segAt(segs, 0, "tenants")
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleListTenants(c) },
+	},
+	{
+		match:  func(segs []string, _ *http.Request) bool { return len(segs) == 1 && isSubscriptionScoped(segs) },
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleListSubscriptions(c) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool { return len(segs) == 2 && isSubscriptionScoped(segs) },
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleGetSubscription(c, segs[1])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 3 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleListProviders(c, segs[1])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleGetProvider(c, segs[1], segs[3])
+		},
+	},
+	{
+		match: func(segs []string, r *http.Request) bool {
+			providers := segAt(segs, providersOrResourceGroupsIdx, providersSegment)
+			register := segAt(segs, providerNamespaceActionIdx, "register")
+
+			return len(segs) == 5 && isSubscriptionScoped(segs) && providers && register && r.Method == http.MethodPost
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleRegisterProvider(c, segs[1], segs[3])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 3 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, resourceGroupsSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleListResourceGroups(c, segs[1])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 4 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, resourceGroupsSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleResourceGroup(c, segs[1], segs[3])
+		},
+	},
+	{
+		match: func(segs []string, r *http.Request) bool {
+			return len(segs) >= 6 && strings.EqualFold(segs[len(segs)-1], "listKeys") && r.Method == http.MethodPost
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error {
+			return h.handleListKeys(c, segs[:len(segs)-1])
+		},
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 5 && isSubscriptionScoped(segs) &&
+				segAt(segs, providersOrResourceGroupsIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error { return h.handleListResources(c, segs) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) == 7 && isSubscriptionScoped(segs) &&
+				segAt(
+					segs,
+					providersOrResourceGroupsIdx,
+					resourceGroupsSegment,
+				) && segAt(segs, providerNamespaceActionIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, segs []string) error { return h.handleListResources(c, segs) },
+	},
+	{
+		match: func(segs []string, _ *http.Request) bool {
+			return len(segs) >= 7 && isSubscriptionScoped(segs) &&
+				segAt(
+					segs,
+					providersOrResourceGroupsIdx,
+					resourceGroupsSegment,
+				) && segAt(segs, providerNamespaceActionIdx, providersSegment)
+		},
+		handle: func(h *Handler, c *echo.Context, _ []string) error { return h.handleGenericResource(c) },
+	},
+}
+
+// dispatchARMResource routes every /subscriptions/... and /tenants shape via
+// armResourceRoutes.
+func (h *Handler) dispatchARMResource(c *echo.Context, segs []string) error {
+	if handled, err := matchRoutes(armResourceRoutes, h, c, segs); handled {
+		return err
+	}
+
+	return h.writeNotFound(c)
+}
+
+// writeNotFound writes a generic 404 error envelope for an unrecognized path.
+func (h *Handler) writeNotFound(c *echo.Context) error {
+	return h.writeError(c, http.StatusNotFound, "NotFound", "The requested resource was not found.")
+}
+
+// operationFor derives a coarse operation name from the request, for
+// metrics labeling.
+func operationFor(r *http.Request) string {
+	path := strings.TrimSuffix(r.URL.Path, "/")
+	segs := splitARMPath(path)
+
+	switch {
+	case len(segs) == 0:
+		return unknownOperation
+	case len(segs) == 2 && segs[0] == "metadata":
+		return opMetadataEndpoints
+	case strings.Contains(path, "openid-configuration"):
+		return opOpenIDConfiguration
+	case strings.Contains(path, "discovery/instance"):
+		return opInstanceDiscovery
+	case strings.Contains(path, "oauth2"):
+		return opToken
+	case strings.HasSuffix(path, "/listKeys"):
+		return opListKeys
+	case len(segs) >= 1 && strings.EqualFold(segs[0], "tenants"):
+		return opListTenants
+	default:
+		return operationForSubscriptionPath(r.Method, segs)
+	}
+}
+
+func operationForSubscriptionPath(method string, segs []string) string {
+	const subscriptionScopedLen = 2
+
+	switch {
+	case len(segs) <= subscriptionScopedLen:
+		return opListSubscriptions
+	case len(segs) == 3 && strings.EqualFold(segs[2], providersSegment):
+		return opListProviders
+	case len(segs) == 4 && strings.EqualFold(segs[2], providersSegment):
+		return opGetProvider
+	case len(segs) == 5 && strings.EqualFold(segs[2], providersSegment):
+		return opRegisterProvider
+	case len(segs) == 3 && strings.EqualFold(segs[2], resourceGroupsSegment):
+		return opListResourceGroups
+	case len(segs) == 4 && strings.EqualFold(segs[2], resourceGroupsSegment):
+		return methodOperation(method, opPutResourceGroup, opGetResourceGroup, opDeleteResourceGroup)
+	default:
+		return methodOperation(method, opPutResource, opGetResource, opDeleteResource)
+	}
+}
+
+func methodOperation(method, put, get, del string) string {
+	switch method {
+	case http.MethodPut:
+		return put
+	case http.MethodDelete:
+		return del
+	default:
+		return get
+	}
+}
+
+// hostFromHostHeader strips a port from a host:port string.
+func hostFromHostHeader(hostport string) string {
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return hostport
+	}
+
+	return host
+}
+
+// baseURLFor builds this ARM listener's own externally-visible base URL
+// (scheme://host:port) from the request, always https (AZURE.md section
+// 10.8).
+func (h *Handler) baseURLFor(r *http.Request) string {
+	return "https://" + net.JoinHostPort(hostFromHostHeader(r.Host), strconv.Itoa(h.Port))
+}
+
+// decodeJSONBody decodes r's body as a JSON object. An empty body decodes to
+// an empty (non-nil) map.
+func decodeJSONBody(r *http.Request) (map[string]any, error) {
+	if r.ContentLength == 0 {
+		return map[string]any{}, nil
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidRequestBody, err)
+	}
+
+	if body == nil {
+		body = map[string]any{}
+	}
+
+	return body, nil
+}
+
+// writeJSON writes v as the JSON response body with the given status.
+func (h *Handler) writeJSON(c *echo.Context, status int, v any) error {
+	err := c.JSON(status, v)
+	if err != nil {
+		return fmt.Errorf("azurearm: write JSON response: %w", err)
+	}
+
+	return nil
+}
+
+// writeError writes the ARM error envelope {"error":{"code","message"}}.
+func (h *Handler) writeError(c *echo.Context, status int, code, message string) error {
+	return h.writeJSON(c, status, map[string]any{
+		"error": map[string]any{"code": code, "message": message},
+	})
+}
+
+// errorDetails maps a sentinel error to its ARM error code, message, and
+// HTTP status, mirroring services/sqs's errorDetails pattern.
+func errorDetails(err error) errorEntry {
+	table := []struct {
+		err   error
+		entry errorEntry
+	}{
+		{
+			ErrResourceGroupNotFound,
+			errorEntry{"ResourceGroupNotFound", "Resource group not found.", http.StatusNotFound},
+		},
+		{ErrResourceNotFound, errorEntry{"ResourceNotFound", "The resource was not found.", http.StatusNotFound}},
+		{
+			ErrStorageAccountNotFound,
+			errorEntry{"ResourceNotFound", "The storage account was not found.", http.StatusNotFound},
+		},
+		{ErrSubscriptionNotFound, errorEntry{"SubscriptionNotFound", "Subscription not found.", http.StatusNotFound}},
+		{
+			errAccountExistsInOtherResourceGroup,
+			errorEntry{
+				"StorageAccountAlreadyExists",
+				"The storage account named is already taken.",
+				http.StatusConflict,
+			},
+		},
+		{ErrProviderNotFound, errorEntry{"ProviderNotFound", "Resource provider not found.", http.StatusNotFound}},
+		{ErrInvalidResourceID, errorEntry{"InvalidResourceId", "The resource ID is malformed.", http.StatusBadRequest}},
+		{
+			ErrInvalidRequestBody,
+			errorEntry{"InvalidRequestContent", "The request body is malformed.", http.StatusBadRequest},
+		},
+	}
+
+	for _, e := range table {
+		if errors.Is(err, e.err) {
+			return e.entry
+		}
+	}
+
+	return errorEntry{"InternalError", err.Error(), http.StatusInternalServerError}
+}
+
+// writeAPIError writes the ARM error envelope for err, using errorDetails to
+// determine its code/message/status.
+func (h *Handler) writeAPIError(c *echo.Context, err error) error {
+	e := errorDetails(err)
+
+	return h.writeError(c, e.status, e.code, e.message)
+}
+
+// parseFormOrJSONBody parses an application/x-www-form-urlencoded body
+// (client-credentials token requests always use this content type) into a
+// url.Values.
+func parseFormOrJSONBody(r *http.Request) (url.Values, error) {
+	if err := r.ParseForm(); err != nil {
+		return nil, fmt.Errorf("azurearm: parse form body: %w", err)
+	}
+
+	return r.Form, nil
+}
+
+// azureARMReadHeaderTimeout/azureARMReadTimeout/azureARMIdleTimeout bound the
+// dedicated listener's connection lifecycle, matching services/azureblob's
+// own timeout values (CodeRabbit-flagged: only ReadHeaderTimeout was set,
+// leaving a client free to hold a connection open indefinitely by sending
+// its body slowly, or an idle keep-alive connection open forever).
+const (
+	azureARMReadHeaderTimeout = 10 * time.Second
+	azureARMReadTimeout       = 60 * time.Second
+	azureARMIdleTimeout       = 120 * time.Second
+)
+
+// StartWorker binds AzureARM's dedicated fixed port and serves HTTPS with a
+// self-signed certificate (pkgs/devtls), synchronously, failing fast if the
+// port is unavailable rather than falling back into the shared PortAlloc
+// pool -- exactly like services/azureblob/azurequeue/azuretable/cosmosdb's
+// StartWorker (see AZURE.md section 10.7). Unlike those, ARM serves HTTPS
+// unconditionally: azurerm's metadata_host handling hardcodes
+// "https://" (AZURE.md section 10.8), so a plain-HTTP listener here would
+// make provider initialization fail outright, not merely warn.
+func (h *Handler) StartWorker(ctx context.Context) error {
+	var listenConfig net.ListenConfig
+
+	listener, err := listenConfig.Listen(ctx, "tcp", fmt.Sprintf(":%d", h.Port))
+	if err != nil {
+		return fmt.Errorf("azurearm: bind port %d: %w", h.Port, err)
+	}
+
+	cert, err := devtls.GenerateSelfSignedCert()
+	if err != nil {
+		_ = listener.Close()
+
+		return fmt.Errorf("azurearm: generate self-signed certificate: %w", err)
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+	tlsListener := tls.NewListener(listener, tlsConfig)
+
+	e := echo.New()
+	e.Use(logger.EchoMiddleware(logger.Load(ctx)))
+	e.Any("/*", telemetry.WrapEchoHandler("AzureARM", h.Handler(), h))
+
+	srv := &http.Server{
+		Handler:           e,
+		ReadHeaderTimeout: azureARMReadHeaderTimeout,
+		ReadTimeout:       azureARMReadTimeout,
+		IdleTimeout:       azureARMIdleTimeout,
+	}
+
+	h.srvMu.Lock("StartWorker")
+	h.srv = srv
+	h.srvMu.Unlock()
+
+	workerCtx := logger.WithWorker(ctx, "azurearm", "listener")
+	log := logger.Load(workerCtx)
+
+	log.InfoContext(workerCtx, "azurearm: starting dedicated HTTPS listener", "port", h.Port)
+
+	go func() {
+		if serveErr := srv.Serve(tlsListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			log.ErrorContext(workerCtx, "azurearm: listener stopped", "error", serveErr)
+		}
+	}()
+
+	return nil
+}
+
+// Shutdown stops the dedicated ARM listener, mirroring
+// services/azureblob.Handler.Shutdown's graceful-then-forced-close shape.
+func (h *Handler) Shutdown(ctx context.Context) {
+	h.srvMu.Lock("Shutdown")
+	srv := h.srv
+	h.srv = nil
+	h.srvMu.Unlock()
+
+	if srv == nil {
+		return
+	}
+
+	log := logger.Load(ctx)
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.ErrorContext(ctx, "azurearm: graceful shutdown failed, forcing close", "error", err)
+
+		if closeErr := srv.Close(); closeErr != nil {
+			log.ErrorContext(ctx, "azurearm: forced close also failed", "error", closeErr)
+		}
+	}
+}

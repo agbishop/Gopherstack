@@ -2501,6 +2501,28 @@
     ],
     "version": 4
   },
+  "azurearm": {
+    "fields": [
+      "Resource.ID ResourceID",
+      "Resource.Kind string",
+      "Resource.Location string",
+      "Resource.Properties map[string]any",
+      "Resource.SKU map[string]any",
+      "Resource.Tags map[string]string",
+      "ResourceGroup.Location string `json:\"location\"`",
+      "ResourceGroup.Name string `json:\"name\"`",
+      "ResourceGroup.Tags map[string]string `json:\"tags,omitempty\"`",
+      "ResourceID.Names []string",
+      "ResourceID.Namespace string",
+      "ResourceID.ResourceGroup string",
+      "ResourceID.SubscriptionID string",
+      "ResourceID.Types []string",
+      "armSnapshot.RegisteredProviders map[string]map[string]bool `json:\"registeredProviders\"`",
+      "armSnapshot.ResourceGroups map[string]*ResourceGroup `json:\"resourceGroups\"`",
+      "armSnapshot.Resources map[string]*Resource `json:\"resources\"`"
+    ],
+    "version": 1
+  },
   "azureblob": {
     "fields": [
       "backendSnapshot.Containers map[string]*storedContainer `json:\"containers\"`",

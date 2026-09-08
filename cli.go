@@ -2,20 +2,12 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
-	"math/big"
-	"net"
 	"net/http"
 	nhpprof "net/http/pprof"
 	"net/url"
@@ -61,6 +53,7 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/awsmeta"
 	"github.com/blackbirdworks/gopherstack/pkgs/chaos"
 	"github.com/blackbirdworks/gopherstack/pkgs/config"
+	"github.com/blackbirdworks/gopherstack/pkgs/devtls"
 	gopherDNS "github.com/blackbirdworks/gopherstack/pkgs/dns"
 	snsevents "github.com/blackbirdworks/gopherstack/pkgs/events"
 	"github.com/blackbirdworks/gopherstack/pkgs/httputils"
@@ -89,6 +82,7 @@ import (
 	athenabackend "github.com/blackbirdworks/gopherstack/services/athena"
 	autoscalingbackend "github.com/blackbirdworks/gopherstack/services/autoscaling"
 	awsconfigbackend "github.com/blackbirdworks/gopherstack/services/awsconfig"
+	azurearmbackend "github.com/blackbirdworks/gopherstack/services/azurearm"
 	azureblobbackend "github.com/blackbirdworks/gopherstack/services/azureblob"
 	azurequeuebackend "github.com/blackbirdworks/gopherstack/services/azurequeue"
 	azureservicebusbackend "github.com/blackbirdworks/gopherstack/services/azureservicebus"
@@ -251,15 +245,6 @@ const (
 	defaultReadHeaderTimeout = 5 * time.Second
 	configDirPerm            = 0o700
 	configFilePerm           = 0o600
-
-	// selfSignedValidity is how long a generated self-signed TLS cert is valid.
-	selfSignedValidity = 365 * 24 * time.Hour
-	// selfSignedSerialBits is the bit-length of the random certificate serial.
-	selfSignedSerialBits = 128
-	// localhostName is the hostname the self-signed dev certificate is issued for.
-	localhostName = "localhost"
-	// loopbackIPv4Octet is the first octet of the IPv4 loopback address (127.x).
-	loopbackIPv4Octet = 127
 
 	keyMessageField      = "message"
 	logLevelDebug        = "debug"
@@ -445,6 +430,7 @@ type CLI struct {
 	SigV4Secret                   string                          `                                    name:"sigv4-secret"            env:"SIGV4_SECRET"            default:"test"          help:"Secret access key SigV4 validation signs against (used only when --validate-sigv4 is set)."`           //nolint:lll // config struct tags are intentionally verbose
 	InitScripts                   []string                        `                                    name:"init-script"             env:"INIT_SCRIPTS"                                    help:"Shell scripts to run on startup (may be specified multiple times)."`                                   //nolint:lll // config struct tags are intentionally verbose
 	S3InitBuckets                 []string                        `                                    name:"s3-bucket"               env:"S3_BUCKETS"                                      help:"S3 bucket names to create on startup (may be specified multiple times or as a comma-separated list)."` //nolint:lll // config struct tags are intentionally verbose
+	AzureARM                      azurearmbackend.Settings        `embed:"" prefix:"azure-arm-"`
 	S3                            s3backend.Settings              `embed:"" prefix:"s3-"`
 	CosmosDB                      cosmosdbbackend.Settings        `embed:"" prefix:"cosmosdb-"`
 	Lambda                        lambdabackend.Settings          `embed:"" prefix:"lambda-"`
@@ -555,6 +541,12 @@ func (c *CLI) GetCosmosDBSettings() cosmosdbbackend.Settings {
 // (azureservicebus.ConfigProvider).
 func (c *CLI) GetAzureServiceBusSettings() azureservicebusbackend.Settings {
 	return c.AzureServiceBus
+}
+
+// GetAzureARMSettings returns Azure Resource Manager settings
+// (azurearm.ConfigProvider).
+func (c *CLI) GetAzureARMSettings() azurearmbackend.Settings {
+	return c.AzureARM
 }
 
 // GetS3Endpoint returns the configured S3 endpoint (s3.ConfigProvider).
@@ -1963,6 +1955,19 @@ func reserveFixedServicePorts(ctx context.Context, log *slog.Logger, alloc *port
 	if err := alloc.Reserve(cli.AzureServiceBus.Port, "azureservicebus"); err != nil {
 		log.WarnContext(ctx, "failed to reserve AzureServiceBus's fixed port in the shared pool",
 			"port", cli.AzureServiceBus.Port, "error", err)
+	}
+
+	// AzureARM's dedicated HTTPS listener (services/azurearm) binds its own
+	// fixed port (10006, the next available slot after AzureServiceBus's
+	// 10003 -- Key Vault's 10004 and App Configuration's 10005 are reserved
+	// for M11/M12, see AZURE.md section 10.7) the same way
+	// AzureBlob/AzureQueue/AzureTable/AzureServiceBus do above -- see those
+	// calls' comments for the full rationale. It sits in the same
+	// PortRangeStart/PortRangeEnd default range, so it needs the same
+	// reservation.
+	if err := alloc.Reserve(cli.AzureARM.Port, "azurearm"); err != nil {
+		log.WarnContext(ctx, "failed to reserve AzureARM's fixed port in the shared pool",
+			"port", cli.AzureARM.Port, "error", err)
 	}
 }
 
@@ -3702,6 +3707,7 @@ func getMostRecentServiceProviders() []service.Provider {
 		&azuretablebackend.Provider{},
 		&azureservicebusbackend.Provider{},
 		&cosmosdbbackend.Provider{},
+		&azurearmbackend.Provider{},
 		&pinpointbackend.Provider{},
 		&pipesbackend.Provider{},
 		&accessanalyzerbackend.Provider{},
@@ -10630,7 +10636,7 @@ func serveHTTP(server *http.Server, tlsCfg tlsSettings) error {
 	}
 
 	// No cert supplied: generate a self-signed certificate in memory.
-	cert, err := generateSelfSignedCert()
+	cert, err := devtls.GenerateSelfSignedCert()
 	if err != nil {
 		return fmt.Errorf("generate self-signed certificate: %w", err)
 	}
@@ -10642,48 +10648,6 @@ func serveHTTP(server *http.Server, tlsCfg tlsSettings) error {
 
 	// Empty cert/key paths => server uses TLSConfig.Certificates.
 	return server.ListenAndServeTLS("", "")
-}
-
-// generateSelfSignedCert creates an in-memory self-signed certificate valid for
-// localhost / 127.0.0.1 / ::1, suitable for an opt-in dev HTTPS listener.
-func generateSelfSignedCert() (tls.Certificate, error) {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("generate key: %w", err)
-	}
-
-	serialLimit := new(big.Int).Lsh(big.NewInt(1), selfSignedSerialBits)
-	serial, err := rand.Int(rand.Reader, serialLimit)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("generate serial: %w", err)
-	}
-
-	template := x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "gopherstack", Organization: []string{"gopherstack"}},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(selfSignedValidity),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-		DNSNames:              []string{localhostName},
-		IPAddresses:           []net.IP{net.IPv4(loopbackIPv4Octet, 0, 0, 1), net.IPv6loopback},
-	}
-
-	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("create certificate: %w", err)
-	}
-
-	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("marshal key: %w", err)
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
-
-	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
 // buildLogger converts the CLI log-level string to a [slog.Logger].
