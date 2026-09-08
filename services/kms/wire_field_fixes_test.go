@@ -192,3 +192,40 @@ func TestListRetirableGrants_PrincipalCardinality_RealClient(t *testing.T) {
 		})
 	}
 }
+
+// TestCreateKey_ExternalKeyStore_UnsupportedOperationException_RealClient pins
+// CreateKey's rejection of the external-key-store linkage (gopherstack-ufvn:
+// resolving XksKeyId against an external key manager is not modeled -- see
+// PARITY.md) to a declared, typed error. CreateKey's error set (kms@v1.59.0
+// deserializeOpErrorCreateKey) has no ValidationException type at all, so this
+// must come back as UnsupportedOperationException, which real clients can
+// match with errors.As, not an undeclared code that degrades to a generic
+// smithy error.
+func TestCreateKey_ExternalKeyStore_UnsupportedOperationException_RealClient(t *testing.T) {
+	t.Parallel()
+
+	client := newTestKMSClient(t, newTestKMSHandler())
+	ctx := t.Context()
+
+	store, err := client.CreateCustomKeyStore(ctx, &kmssdk.CreateCustomKeyStoreInput{
+		CustomKeyStoreName: aws.String("xks-store"),
+		CustomKeyStoreType: kmstypes.CustomKeyStoreTypeExternalKeyStore,
+	})
+	require.NoError(t, err)
+
+	_, err = client.ConnectCustomKeyStore(ctx, &kmssdk.ConnectCustomKeyStoreInput{
+		CustomKeyStoreId: store.CustomKeyStoreId,
+	})
+	require.NoError(t, err)
+
+	_, err = client.CreateKey(ctx, &kmssdk.CreateKeyInput{
+		CustomKeyStoreId: store.CustomKeyStoreId,
+		Origin:           kmstypes.OriginTypeExternalKeyStore,
+	})
+	require.Error(t, err)
+
+	var unsupportedErr *kmstypes.UnsupportedOperationException
+	require.ErrorAs(t, err, &unsupportedErr,
+		"CreateKey against an external key store must surface a typed "+
+			"UnsupportedOperationException, not an undeclared code")
+}
