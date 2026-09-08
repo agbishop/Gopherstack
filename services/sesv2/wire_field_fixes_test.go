@@ -56,8 +56,9 @@ func TestPutAccountDetails_UseCaseDescription(t *testing.T) {
 	ctx := t.Context()
 
 	_, err := client.PutAccountDetails(ctx, &sesv2sdk.PutAccountDetailsInput{
-		MailType:           sesv2types.MailTypeMarketing,
-		WebsiteURL:         aws.String("https://example.com"),
+		MailType:   sesv2types.MailTypeMarketing,
+		WebsiteURL: aws.String("https://example.com"),
+		//nolint:staticcheck // exercising the real, deprecated SDK member's round trip
 		UseCaseDescription: aws.String("wire fix round trip"),
 	})
 	require.NoError(t, err)

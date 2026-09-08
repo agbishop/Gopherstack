@@ -550,8 +550,7 @@ func (e *Executor) Execute(
 
 	output, err := e.runStates(ctx, executionARN, e.sm.States, e.sm.StartAt, input)
 	if err != nil {
-		var failErr *FailError
-		if errors.As(err, &failErr) {
+		if failErr, ok := errors.AsType[*FailError](err); ok {
 			return &ExecutionResult{Error: failErr.ErrCode, Cause: failErr.Cause, Failed: true}, nil
 		}
 
@@ -3320,8 +3319,7 @@ func catchesError(errorEquals []string, err error) bool {
 }
 
 func stepFunctionsErrorCode(err error) string {
-	var failErr *FailError
-	if errors.As(err, &failErr) {
+	if failErr, ok := errors.AsType[*FailError](err); ok {
 		return failErr.ErrCode
 	}
 
@@ -3348,8 +3346,7 @@ func stepFunctionsErrorCode(err error) string {
 // Fail state or a wrapped service-integration failure); other errors have no
 // separate code/cause split, so the full message is used as the cause.
 func stepFunctionsErrorCause(err error) string {
-	var failErr *FailError
-	if errors.As(err, &failErr) {
+	if failErr, ok := errors.AsType[*FailError](err); ok {
 		return failErr.Cause
 	}
 

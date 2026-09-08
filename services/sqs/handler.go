@@ -398,8 +398,7 @@ const errTypeInvalidParameterValue = "com.amazonaws.sqs#InvalidParameterValue"
 // invalidParameterValueMessage returns the AWS error message for parameter-validation
 // sentinel errors, or ("", false) if the error is not a parameter error.
 func invalidParameterValueMessage(err error) (string, bool) {
-	var ipe *InvalidParameterError
-	if errors.As(err, &ipe) {
+	if ipe, ok := errors.AsType[*InvalidParameterError](err); ok {
 		return ipe.Message, true
 	}
 

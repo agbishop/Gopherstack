@@ -48,19 +48,17 @@ func (b *InMemoryBackend) CreateCustomDataIdentifier(
 	now := time.Now().UTC()
 
 	cdi := &storedCustomDataID{
-		CustomDataIdentifier: CustomDataIdentifier{
-			ID:                   id,
-			Arn:                  b.customDataIDARN(id),
-			Name:                 name,
-			Description:          description,
-			Regex:                regex,
-			IgnoreWords:          ignoreWords,
-			Keywords:             keywords,
-			SeverityLevels:       severityLevels,
-			MaximumMatchDistance: dist,
-			CreatedAt:            now,
-			Tags:                 maps.Clone(tags),
-		},
+		ID:                   id,
+		Arn:                  b.customDataIDARN(id),
+		Name:                 name,
+		Description:          description,
+		Regex:                regex,
+		IgnoreWords:          ignoreWords,
+		Keywords:             keywords,
+		SeverityLevels:       severityLevels,
+		MaximumMatchDistance: dist,
+		CreatedAt:            now,
+		Tags:                 maps.Clone(tags),
 	}
 
 	b.customDataIDs.Put(cdi)

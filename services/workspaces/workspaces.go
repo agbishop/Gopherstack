@@ -653,9 +653,9 @@ func (b *InMemoryBackend) collectStateFailures(
 }
 
 // MigrateWorkspace migrates a workspace to a new bundle.
-func (b *InMemoryBackend) MigrateWorkspace( //nolint:nonamedreturns // existing issue.
+func (b *InMemoryBackend) MigrateWorkspace(
 	sourceWorkspaceID, bundleID string,
-) (sourceID, targetID string, err error) {
+) (string, string, error) {
 	b.mu.Lock("MigrateWorkspace")
 	defer b.mu.Unlock()
 

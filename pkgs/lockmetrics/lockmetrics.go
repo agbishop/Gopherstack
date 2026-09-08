@@ -189,8 +189,7 @@ func (c *liveCollector) Collect(ch chan<- prometheus.Metric) {
 
 func registerOrReuse[T prometheus.Collector](c T) T {
 	if err := prometheus.DefaultRegisterer.Register(c); err != nil {
-		var are prometheus.AlreadyRegisteredError
-		if errors.As(err, &are) {
+		if are, isAlreadyRegistered := errors.AsType[prometheus.AlreadyRegisteredError](err); isAlreadyRegistered {
 			existing, ok := are.ExistingCollector.(T)
 			if !ok {
 				panic("lockmetrics: registered collector has unexpected type")

@@ -26,7 +26,7 @@ func TestGetGroup_UnknownGroupSurfacesNotFoundException(t *testing.T) {
 	client := newTestResourceGroupsClient(t, resourcegroups.NewHandler(backend))
 
 	_, err := client.GetGroup(t.Context(), &resourcegroupssdk.GetGroupInput{
-		GroupName: aws.String("no-such-group"),
+		Group: aws.String("no-such-group"),
 	})
 	require.Error(t, err)
 

@@ -265,12 +265,10 @@ func (h *Handler) handleGetPercentiles(c *echo.Context) error {
 	}
 
 	percentiles, err := h.Backend.GetPercentiles(&PercentilesInput{
-		AggregationInput: AggregationInput{
-			IndexName:        body.IndexName,
-			QueryString:      body.QueryString,
-			AggregationField: body.AggregationField,
-		},
-		Percents: body.Percents,
+		IndexName:        body.IndexName,
+		QueryString:      body.QueryString,
+		AggregationField: body.AggregationField,
+		Percents:         body.Percents,
 	})
 	if err != nil {
 		return h.handleError(c, err)
@@ -291,12 +289,10 @@ func (h *Handler) handleGetBucketsAggregation(c *echo.Context) error {
 	}
 
 	buckets, err := h.Backend.GetBucketsAggregation(&BucketsAggregationInput{
-		AggregationInput: AggregationInput{
-			IndexName:        body.IndexName,
-			QueryString:      body.QueryString,
-			AggregationField: body.AggregationField,
-		},
-		MaxBuckets: body.BucketsAggregationType.TermsAggregation.MaxBuckets,
+		IndexName:        body.IndexName,
+		QueryString:      body.QueryString,
+		AggregationField: body.AggregationField,
+		MaxBuckets:       body.BucketsAggregationType.TermsAggregation.MaxBuckets,
 	})
 	if err != nil {
 		return h.handleError(c, err)

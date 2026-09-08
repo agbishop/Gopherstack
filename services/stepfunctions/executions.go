@@ -316,7 +316,6 @@ func (b *InMemoryBackend) startExecutionLocked(
 	// The context is derived from b.svcCtx so that all active executions are
 	// also cancelled when the server shuts down.
 
-	//nolint:gosec // cancel is stored in b.cancelFns for StopExecution/DeleteStateMachine
 	ctx, cancel := context.WithCancel(b.svcCtx)
 	b.cancelFns[execArn] = cancel
 
@@ -695,7 +694,6 @@ func (b *InMemoryBackend) redriveExecutionLocked(executionARN string) (*redriven
 	// Snapshot the (possibly-updated) definition.
 	b.executionDefinitions[executionARN] = definition
 
-	//nolint:gosec // cancel is stored in b.cancelFns for StopExecution/DeleteStateMachine
 	ctx, cancel := context.WithCancel(b.svcCtx)
 	b.cancelFns[executionARN] = cancel
 

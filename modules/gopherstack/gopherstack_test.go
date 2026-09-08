@@ -91,10 +91,8 @@ func TestWithEnv(t *testing.T) {
 			t.Parallel()
 
 			req := testcontainers.GenericContainerRequest{
-				ContainerRequest: testcontainers.ContainerRequest{
-					Image: "dummy",
-					Env:   tt.initial,
-				},
+				Image: "dummy",
+				Env:   tt.initial,
 			}
 
 			opt := gopherstackmodule.WithEnv(tt.input)

@@ -51,16 +51,14 @@ func (b *InMemoryBackend) CreateFindingsFilter(
 	}
 
 	ff := &storedFindingsFilter{
-		FindingsFilterDetail: FindingsFilterDetail{
-			ID:              id,
-			Arn:             b.findingsFilterARN(id),
-			Name:            name,
-			Description:     description,
-			Action:          action,
-			Position:        pos,
-			FindingCriteria: criteria,
-			Tags:            maps.Clone(tags),
-		},
+		ID:              id,
+		Arn:             b.findingsFilterARN(id),
+		Name:            name,
+		Description:     description,
+		Action:          action,
+		Position:        pos,
+		FindingCriteria: criteria,
+		Tags:            maps.Clone(tags),
 	}
 
 	b.findingsFilters.Put(ff)

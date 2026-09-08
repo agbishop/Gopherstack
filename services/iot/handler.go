@@ -356,7 +356,7 @@ func (h *Handler) handleAcceptCertificateTransfer(c *echo.Context) error {
 func (h *Handler) handleAttachThingPrincipal(c *echo.Context) error {
 	// Path: /things/{thingName}/principals
 	after := strings.TrimPrefix(c.Request().URL.Path, "/things/")
-	thingName := strings.SplitN(after, "/", maxPathSegments)[0]
+	thingName, _, _ := strings.Cut(after, "/")
 	principal := c.Request().Header.Get(headerIoTPrincipal)
 
 	if err := h.Backend.AttachThingPrincipal(&AttachThingPrincipalInput{

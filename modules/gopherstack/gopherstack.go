@@ -78,13 +78,11 @@ func WithEnv(env map[string]string) testcontainers.ContainerCustomizer {
 //	defer testcontainers.TerminateContainer(container)
 func Run(ctx context.Context, image string, opts ...testcontainers.ContainerCustomizer) (*Container, error) {
 	req := testcontainers.GenericContainerRequest{
-		ContainerRequest: testcontainers.ContainerRequest{
-			Image:        image,
-			ExposedPorts: []string{defaultPort},
-			WaitingFor: wait.ForHTTP("/_gopherstack/health").
-				WithStatusCodeMatcher(func(code int) bool { return code == http.StatusOK }).
-				WithStartupTimeout(startupTimeout),
-		},
+		Image:        image,
+		ExposedPorts: []string{defaultPort},
+		WaitingFor: wait.ForHTTP("/_gopherstack/health").
+			WithStatusCodeMatcher(func(code int) bool { return code == http.StatusOK }).
+			WithStartupTimeout(startupTimeout),
 		Started: true,
 	}
 

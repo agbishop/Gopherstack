@@ -11,7 +11,7 @@ import (
 func (h *Handler) handleAttachSecurityProfile(c *echo.Context) error {
 	// Path: /security-profiles/{securityProfileName}/targets
 	after := strings.TrimPrefix(c.Request().URL.Path, "/security-profiles/")
-	profileName := strings.SplitN(after, "/", maxPathSegments)[0]
+	profileName, _, _ := strings.Cut(after, "/")
 	targetArn := c.QueryParam("securityProfileTargetArn")
 
 	if err := h.Backend.AttachSecurityProfile(&AttachSecurityProfileInput{

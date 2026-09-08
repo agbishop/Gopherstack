@@ -2298,8 +2298,7 @@ func buildHTTPErrorHandler() func(*echo.Context, error) {
 
 		message := err.Error()
 
-		var httpErr *echo.HTTPError
-		if errors.As(err, &httpErr) {
+		if httpErr, ok := errors.AsType[*echo.HTTPError](err); ok {
 			message = httpErr.Message
 		}
 
@@ -2423,10 +2422,8 @@ func buildSnapshotHandler(m *persistence.Manager) echo.HandlerFunc {
 		}
 
 		resp := snapshotResponse{
-			snapshotBundle: snapshotBundle{
-				Format:   snapshotBundleFormat,
-				Services: services,
-			},
+			Format:   snapshotBundleFormat,
+			Services: services,
 			Exported: len(services),
 			Status:   "ok",
 		}

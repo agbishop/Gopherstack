@@ -399,7 +399,7 @@ func TestBackend_GetPercentiles(t *testing.T) {
 	seedNumericThings(t, b)
 
 	percentiles, err := b.GetPercentiles(&iot.PercentilesInput{
-		AggregationInput: iot.AggregationInput{AggregationField: "attributes.temperature"},
+		AggregationField: "attributes.temperature",
 		Percents:         []float64{0, 50, 100},
 	})
 	require.NoError(t, err)
@@ -416,7 +416,7 @@ func TestBackend_GetBucketsAggregation(t *testing.T) {
 	seedThingsForSearch(t, b)
 
 	buckets, err := b.GetBucketsAggregation(&iot.BucketsAggregationInput{
-		AggregationInput: iot.AggregationInput{AggregationField: "thingTypeName"},
+		AggregationField: "thingTypeName",
 	})
 	require.NoError(t, err)
 	require.Len(t, buckets, 2)
