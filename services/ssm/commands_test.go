@@ -1060,3 +1060,56 @@ func TestHandler_ListCommandInvocations(t *testing.T) {
 		})
 	}
 }
+
+// TestSendCommand_MaxConcurrencyMaxErrorsValidation locks in that
+// SendCommandInput.MaxConcurrency/MaxErrors are checked against the wire
+// model's pattern (ssm/2014-11-06/service-2.json: MaxConcurrency
+// "^([1-9][0-9]*|[1-9][0-9]%|[1-9]%|100%)$", MaxErrors
+// "^([1-9][0-9]*|[0]|[1-9][0-9]%|[0-9]%|100%)$") rather than accepted verbatim.
+func TestSendCommand_MaxConcurrencyMaxErrorsValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		maxConcurrency string
+		maxErrors      string
+		wantErr        bool
+	}{
+		{name: "absolute counts", maxConcurrency: "10", maxErrors: "0"},
+		{name: "percentages", maxConcurrency: "50%", maxErrors: "10%"},
+		{name: "unset is allowed"},
+		{name: "maxConcurrency zero", maxConcurrency: "0", wantErr: true},
+		{name: "maxConcurrency leading zero", maxConcurrency: "05", wantErr: true},
+		{name: "maxConcurrency over 100 percent", maxConcurrency: "150%", wantErr: true},
+		{name: "maxConcurrency non-numeric", maxConcurrency: "abc", wantErr: true},
+		{name: "maxErrors negative", maxErrors: "-1", wantErr: true},
+		{name: "maxErrors non-numeric", maxErrors: "abc", wantErr: true},
+		{name: "maxConcurrency over length bound", maxConcurrency: "12345678", wantErr: true},
+		{name: "maxErrors over length bound", maxErrors: "12345678", wantErr: true},
+		{name: "maxConcurrency at length bound", maxConcurrency: "1234567"},
+		{name: "maxErrors at length bound", maxErrors: "1234567"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := ssm.NewInMemoryBackend()
+
+			_, err := b.SendCommand(context.Background(), &ssm.SendCommandInput{
+				DocumentName:   "AWS-RunShellScript",
+				InstanceIDs:    []string{"i-111"},
+				MaxConcurrency: tc.maxConcurrency,
+				MaxErrors:      tc.maxErrors,
+			})
+
+			if tc.wantErr {
+				require.ErrorIs(t, err, ssm.ErrValidationException)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
