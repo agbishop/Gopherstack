@@ -176,6 +176,17 @@ type FISActionProvider interface {
 }
 
 // AppContext contains shared resources needed by services during initialization.
+//
+// Config is also the carrier for cross-service backend lookup: a backend
+// stores it via SetAppConfig(ctx.Config) in its provider.Init, then
+// type-asserts it to a narrow siblingServices interface (matched
+// structurally against *CLI) to reach another service's StorageBackend
+// lazily, after every provider has finished Init. See
+// services/grafana/cross_service.go for the reference implementation and its
+// SetAppConfig doc comment for why the lookup must be lazy. When the sibling
+// isn't wired (e.g. a unit test constructing a backend directly), callers
+// treat it as unknown and degrade gracefully -- skip the check, or fall back
+// -- rather than rejecting the request.
 type AppContext struct {
 	Config         any
 	JanitorCtx     context.Context

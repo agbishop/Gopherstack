@@ -231,14 +231,17 @@ gaps:
     and a separate service in this repo. (4) confirmed services/s3 has zero Outposts awareness
     either: `grep -rl utpost services/s3/*.go` (case-insensitive) returns 0 files -- so even if
     s3control reached into it, there is no Outposts-bucket object model on the other side to
-    reach into. (5) the structural no-wiring claim independently holds: pkgs/service.AppContext
-    (service.go:179-185) carries only Config/JanitorCtx/Logger/PortAlloc/JanitorTimeout -- no
-    other-service handle -- and s3control's Provider.Init (provider.go:21-40) builds its
-    InMemoryBackend from scratch with zero visibility into any other service, exactly like
-    every other provider in cli.go (each Provider{} is Init'd independently). Same shape as the
-    appconfig case assessed the same day: no cross-service handle exists anywhere in this
-    construction pattern, and building one is explicitly out of scope per this task's own
-    guidance. Conclusion: DeleteBucket's current behavior (delete the metadata record, cascade
+    reach into. (5) s3control's Provider.Init (provider.go:21-40) builds its InMemoryBackend
+    from scratch with no wiring to services/s3 today -- gopherstack DOES have a cross-service
+    backend-lookup mechanism a provider.Init can opt into (SetAppConfig + a narrow
+    siblingServices type-assertion against pkgs/service.AppContext.Config; see
+    service.go:179-189's doc comment and services/grafana/cross_service.go for the reference
+    implementation), so the absence of wiring here is a choice this service hasn't made, not
+    evidence no such mechanism exists in the repo (gopherstack-z4v1 corrects an earlier version
+    of this entry that cited it that way). It doesn't change this verdict either way: even a
+    wired handle into services/s3 would find no Outposts-bucket object model there to query
+    (point 4), so the precondition remains vacuous regardless of wiring. Conclusion:
+    DeleteBucket's current behavior (delete the metadata record, cascade
     the sub-resource maps, no object check) is the CORRECT emulation given points (1)-(4) --
     there is no object state anywhere in this repo's Outposts model for the precondition to
     ever observe as violated. Fabricating an object-tracking map inside s3control solely to

@@ -60,19 +60,22 @@ gaps:
     exception exists to enforce against. ContainerInUseException's own doc (types/errors.go:10-11:
     \"The container that you specified in the request already exists or is being updated\")
     already maps 1:1 to gopherstack's existing create-time already-exists/being-updated case
-    (handler.go:643-645), not emptiness. STRUCTURAL, not fixable without new cross-service
-    architecture: services/mediastoredata (the object data plane) is a fully independent
-    provider -- its Init (mediastoredata/provider.go:17-30) builds its own NewInMemoryBackend
-    with no handle to mediastore, matching pkgs/service.AppContext (service.go:179-185), which
-    carries only Config/JanitorCtx/Logger/PortAlloc/JanitorTimeout, no cross-service registry --
-    the same isolation shape as appconfig/appconfigdata. It goes deeper than isolation, though:
+    (handler.go:643-645), not emptiness. STRUCTURAL, not fixable by cross-service wiring alone:
+    gopherstack DOES have a cross-service backend-lookup mechanism (a backend records
+    service.AppContext.Config via SetAppConfig in its provider.Init, then type-asserts it to a
+    narrow siblingServices interface -- see pkgs/service.AppContext's doc comment, service.go:
+    179-189, and services/grafana/cross_service.go for the reference implementation). Neither
+    mediastore's nor mediastoredata's provider.Init uses it today (mediastoredata/provider.go:
+    17-30 builds its NewInMemoryBackend with no sibling lookup), so the two are not wired to each
+    other -- gopherstack-z4v1 corrects an earlier version of this entry that took that as evidence
+    no such mechanism exists in the repo at all. But wiring alone would not be enough:
     mediastoredata's object store (InMemoryBackend.states map[string]*store.Table[Object],
     mediastoredata/store.go:38-42) is keyed ONLY by region (getRegion, store.go:15-27), with no
     container dimension at all -- its handler resolves only the SigV4 region per request
-    (requestContext, handler.go:118-126), never a container identifier. Even a hypothetical
-    shared backend could not answer \"is this container empty\" today: mediastoredata would
-    first need a container key added to its storage model, on top of the missing cross-service
-    handle. Left unenforced rather than fabricated. Adjacent items checked per the same issue:
+    (requestContext, handler.go:118-126), never a container identifier. Even a wired
+    cross-service handle could not answer \"is this container empty\" today: mediastoredata would
+    first need a container key added to its storage model. Left unenforced rather than
+    fabricated. Adjacent items checked per the same issue:
     error type for a missing container is correct (ContainerNotFoundException, handler.go:625-631,
     already pinned by a terraform-provider-aws-waiter comment); container-name format validation
     (validateContainerName, containers.go:19-26) runs only on CreateContainer, not Delete or any
@@ -434,18 +437,22 @@ Title-only issue, no description. Verdict: **STRUCTURAL GAP, not fixed** --
 see the `gaps` entry above for the full citation trail. Short version: real
 AWS's DeleteContainer doc prose requires an empty container, but neither the
 Go SDK's nor botocore's modeled error set for the op names a distinct
-"container not empty" exception to enforce it against, and this repo's
-object data plane (`services/mediastoredata`) is not merely isolated from
-`services/mediastore` the way appconfig/appconfigdata are (separate
-`Provider.Init`, no cross-service handle in `pkgs/service.AppContext`) --
-its `InMemoryBackend.states` is keyed only by region
-(`services/mediastoredata/store.go:38-42`), with **no container dimension in
-the data model at all**. Fixing this for real needs two things, neither of
-which this pass built: (1) a cross-service handle from mediastore to
-mediastoredata's backend (or a shared store), and (2) adding a container key
-to mediastoredata's object table, which today only exists per-region.
-Building either is new cross-service architecture, correctly out of scope
-for a parity fix.
+"container not empty" exception to enforce it against. `services/mediastore`
+and `services/mediastoredata` are separate `Provider.Init`s and, as things
+stand today, neither wires to the other -- but gopherstack does have a
+cross-service backend-lookup mechanism available for exactly this (see
+`pkgs/service.AppContext`'s doc comment, `service.go:179-189`, and
+`services/grafana/cross_service.go` for the reference implementation); it is
+just unused here, not architecturally absent (gopherstack-z4v1 corrects an
+earlier version of this entry that concluded otherwise). Wiring is not the
+decisive blocker, though: `mediastoredata`'s `InMemoryBackend.states` is
+keyed only by region (`services/mediastoredata/store.go:38-42`), with **no
+container dimension in the data model at all**. Fixing this for real needs
+two things: (1) wiring mediastore to mediastoredata via the established
+SetAppConfig/siblingServices pattern, and (2) adding a container key to
+mediastoredata's object table, which today only exists per-region. Neither
+was built this pass; (2) in particular is a real storage-model change, out
+of scope for a parity fix.
 
 Also checked the scope note's three adjacent questions: DeleteContainer's
 error type for a missing container is correct
@@ -471,9 +478,9 @@ against unmodified code for the record: `GOTOOLCHAIN=go1.27.0 golangci-lint
 run ./services/mediastore/... ./services/mediastoredata/...` -> `0 issues.`;
 `GOTOOLCHAIN=go1.27.0 go test -race ./services/mediastore/...
 ./services/mediastoredata/...` -> both `ok`. Confidence: high on the
-structural-isolation finding (multiple independent code-level confirmations:
-provider wiring, `AppContext` shape, and mediastoredata's region-only
-storage keying); lower on the two flagged-but-unverified adjacent items
+decisive finding (mediastoredata's region-only storage keying, independently
+confirmed by direct code reading); lower on the two flagged-but-unverified
+adjacent items
 (name-format validation on non-Create ops, double-delete-while-DELETING
 semantics), which are genuinely unconfirmed against real AWS rather than
 dismissed.
