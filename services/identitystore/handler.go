@@ -161,7 +161,15 @@ func (h *Handler) Handler() echo.HandlerFunc {
 
 		log.DebugContext(ctx, "identitystore request", "op", op)
 
-		return h.dispatch(ctx, c, op, body)
+		if dispatchErr := h.dispatch(ctx, c, op, body); dispatchErr != nil {
+			if errors.Is(dispatchErr, errResponseWritten) {
+				return nil
+			}
+
+			return dispatchErr
+		}
+
+		return nil
 	}
 }
 
@@ -292,9 +300,9 @@ func (h *Handler) parseAlternateIDRequest(c *echo.Context, body []byte) (alterna
 	}
 
 	if err := json.Unmarshal(body, &req); err != nil {
-		return alternateIDResult{}, h.writeError(
-			c, http.StatusBadRequest, "ValidationException", "invalid request body",
-		)
+		_ = h.writeError(c, http.StatusBadRequest, "ValidationException", "invalid request body")
+
+		return alternateIDResult{}, errResponseWritten
 	}
 
 	if err := h.requireIdentityStoreID(c, req.IdentityStoreID); err != nil {
@@ -303,9 +311,9 @@ func (h *Handler) parseAlternateIDRequest(c *echo.Context, body []byte) (alterna
 
 	attrPath, attrValue := extractAlternateIdentifier(req.AlternateIdentifier)
 	if attrPath == "" {
-		return alternateIDResult{}, h.writeError(
-			c, http.StatusBadRequest, "ValidationException", "AlternateIdentifier is required",
-		)
+		_ = h.writeError(c, http.StatusBadRequest, "ValidationException", "AlternateIdentifier is required")
+
+		return alternateIDResult{}, errResponseWritten
 	}
 
 	// Only UniqueAttribute.AttributePath is client-controlled free text; the
@@ -315,13 +323,17 @@ func (h *Handler) parseAlternateIDRequest(c *echo.Context, body []byte) (alterna
 	if req.AlternateIdentifier.UniqueAttribute != nil {
 		const fieldName = "AlternateIdentifier.UniqueAttribute.AttributePath"
 		if err := validatePattern(patternAttributePath, fieldName, attrPath); err != nil {
-			return alternateIDResult{}, h.writeError(c, http.StatusBadRequest, "ValidationException", err.Error())
+			_ = h.writeError(c, http.StatusBadRequest, "ValidationException", err.Error())
+
+			return alternateIDResult{}, errResponseWritten
 		}
 	}
 
 	if ext := req.AlternateIdentifier.ExternalID; ext != nil {
 		if err := validateExternalIDs([]ExternalID{{Issuer: ext.Issuer, ID: ext.ID}}); err != nil {
-			return alternateIDResult{}, h.writeError(c, http.StatusBadRequest, "ValidationException", err.Error())
+			_ = h.writeError(c, http.StatusBadRequest, "ValidationException", err.Error())
+
+			return alternateIDResult{}, errResponseWritten
 		}
 	}
 
