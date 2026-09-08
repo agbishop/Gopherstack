@@ -639,3 +639,68 @@ persisted; known image accepted) for both `CreateFunction` and
 `UpdateFunctionCode`, plus a no-resolver-wired test documenting the accept-all
 default is unchanged. Each guard was neutered individually and confirmed to make
 exactly its own regression test fail (and no others).
+
+## 2026-09-08: Invoke reached the backend on a rejected header (gopherstack-3t96, P2) -- found and fixed
+
+Part of the sweep following elasticache (gopherstack-8haq, P1), pinpoint (gopherstack-246v),
+and apigatewayv2 (gopherstack-wsvb, P1). `validateInvocationHeaders` (handler_invocation.go:18)
+rejected an invalid `X-Amz-Invocation-Type` or `X-Amz-Log-Type` header by writing the 400 via
+`h.writeError` and returning that call's result, which is nil after a successful write.
+`handleInvoke` stored that nil in `valErr` and tested `if valErr != nil`, which never fired, so
+the function was invoked anyway and a second response (the invocation result) was written on top
+of the already-committed 400.
+
+**Tests first.** Added `invokeCount` to `mockBackend` (handler_test.go) -- incremented on every
+`InvokeFunction` call -- and two new `TestInvoke` cases, `invalid_invocation_type_not_invoked` and
+`invalid_log_type_not_invoked`, asserting `bk.invokeCount == 0`, not just the response status: no
+pre-existing test covered either rejection branch at all (only valid `Event`/`DryRun` values were
+exercised). Confirmed both FAIL against unmodified code (verbatim, `go test ./services/lambda/...
+-run TestInvoke`):
+
+```
+{"level":"ERROR","msg":"echo: response already written to client"}
+    handler_test.go:785:
+        Error:      Not equal:
+                    expected: 0
+                    actual  : 1
+        Test:       TestInvoke/invalid_invocation_type_not_invoked
+        Messages:   a rejected invocation header must not reach the backend
+    handler_test.go:789:
+        Error:      Received unexpected error:
+                    invalid character '{' after top-level value
+        Test:       TestInvoke/invalid_invocation_type_not_invoked
+--- FAIL: TestInvoke/invalid_invocation_type_not_invoked (0.00s)
+--- FAIL: TestInvoke/invalid_log_type_not_invoked (0.00s)
+```
+The second failure is the double write corrupting the wire body: the mock's `{"answer":42}`-shaped
+result (for `request_response`-style success) got concatenated onto the already-written 400 JSON,
+so the response body was no longer valid JSON on its own -- worse than a clean second response,
+since a real client's JSON decoder chokes on it outright rather than seeing a plausible-but-wrong
+payload.
+
+Fixed with the pinpoint raw-unwritten-error pattern: `validateInvocationHeaders` no longer writes;
+it returns one of two new unexported static errors (`errInvalidInvocationType`, `errInvalidLogType`,
+handler_invocation.go), and `handleInvoke` maps any non-nil error to `InvalidParameterValueException`/
+400 via `h.writeError(c, http.StatusBadRequest, "InvalidParameterValueException", valErr.Error())`
+and writes exactly once. `errname`/`err113` (this repo's golangci-lint config) require these as
+static package-level sentinels, not inline `errors.New` at each call site.
+
+Neuter-verified by reverting `handleInvoke`'s call site back to bare `return valErr` (in effect a
+"forgot the write" regression, distinct from the original bug but on the same guard) and separately
+back to the exact original write-then-return-nil shape: both still compile, and the latter
+reproduces the `expected 0 actual 1` failures above verbatim.
+
+Swept the rest of the package for the same shape (a `*echo.Context`-taking helper whose result is
+stored and re-checked by a caller, rather than the handler's own final `return h.writeError(...)`):
+the seven `validate*` helpers in handler_functions.go (`validateQualifier`,
+`validateCreateFunctionInput`, `validateSnapStartInput`, `validateEphemeralStorageInput`,
+`validateMemoryAndTimeout`, `validateImageURIResolves`, `validateCreateFunctionCode`) already use a
+different, safe convention: they return `bool` and explicitly discard `h.writeError`'s result
+(`_ = h.writeError(...)`; return `false`), so their callers' `if !h.validateXxx(...) { return nil }`
+checks are not fooled by a nil error value. `dispatchSpecialRoutes` (handler_dispatch.go:552)
+returns `(bool, error)` but is a pure pass-through dispatcher whose result is Echo's own terminal
+handler return, never stored and re-checked. No other instance found.
+
+`go test -race ./services/lambda/...` and `golangci-lint run ./services/lambda/...` both clean
+after the fix. Full `go test ./services/...` also green (see gopherstack-3t96's cross-service
+report for the combined blast-radius run covering lambda, securityhub, and organizations).
