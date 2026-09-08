@@ -619,10 +619,10 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [Fault Injection Simulator](services/fis/README.md) | A | 26 | 3 gaps; 1 deferred |
 | [OpsWorks](services/opsworks/README.md) | B | 32 | 5 gaps; 1 deferred |
 | [Organizations](services/organizations/README.md) | A | 63 | 7 gaps |
-| [Resource Access Manager](services/ram/README.md) | A | 36 | 3 deferred |
+| [Resource Access Manager](services/ram/README.md) | A | 36 | 4 deferred |
 | [Resource Groups](services/resourcegroups/README.md) | A | 23 | 3 gaps |
 | [Resource Groups Tagging API](services/resourcegroupstaggingapi/README.md) | A | 9 | 9 gaps; 2 deferred |
-| [Systems Manager](services/ssm/README.md) | A | 105 | 30 gaps |
+| [Systems Manager](services/ssm/README.md) | A | 105 | 31 gaps |
 
 ### Developer Tools
 
