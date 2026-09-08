@@ -92,6 +92,13 @@ var (
 	// both declare it (codecommit@v1.36.4 deserializers.go); neither declares
 	// InvalidParameterException.
 	ErrInvalidContinuationToken = awserr.New("InvalidContinuationTokenException", awserr.ErrInvalidParameter)
+	// ErrInvalidActorArn is returned when DescribePullRequestEventsInput.ActorArn is
+	// not a well-formed ARN. Code is InvalidActorArnException, declared by
+	// DescribePullRequestEvents specifically (codecommit@v1.36.4 deserializers.go);
+	// real AWS also declares ActorDoesNotExistException for a well-formed ARN that
+	// doesn't correspond to any account principal -- not implemented here (would
+	// require cross-service coupling to IAM's user/role store, out of scope).
+	ErrInvalidActorArn = awserr.New("InvalidActorArnException", awserr.ErrInvalidParameter)
 )
 
 // repoNameRe matches valid CodeCommit repository names: alphanumeric, _, -, .
@@ -101,6 +108,24 @@ var repoNameRe = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 // Branch names may contain alphanumeric characters, slashes, dashes, underscores, and dots.
 // They may not begin or end with a slash, and may not contain consecutive slashes.
 var branchNameRe = regexp.MustCompile(`^[a-zA-Z0-9._\-/]+$`)
+
+// actorArnRe matches the general ARN shape (arn:partition:service:region:account-id:resource).
+var actorArnRe = regexp.MustCompile(
+	`^arn:(aws|aws-cn|aws-us-gov|aws-iso|aws-iso-b):[a-zA-Z0-9-]+:[a-zA-Z0-9-]*:\d*:.+$`,
+)
+
+// validateActorArn returns ErrInvalidActorArn if arn is non-empty and not a
+// well-formed ARN. An empty arn (the filter omitted) is valid -- absence, not shape.
+func validateActorArn(arn string) error {
+	if arn == "" {
+		return nil
+	}
+	if !actorArnRe.MatchString(arn) {
+		return fmt.Errorf("%w: actorArn %q is not a valid ARN", ErrInvalidActorArn, arn)
+	}
+
+	return nil
+}
 
 // validateBranchName returns an error if the branch name is empty or contains invalid characters.
 func validateBranchName(name string) error {

@@ -71,14 +71,14 @@ ops:
   UpdatePullRequestTitle: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdatePullRequestDescription: {wire: ok, errors: ok, state: ok, persist: ok}
   UpdatePullRequestStatus: {wire: ok, errors: ok, state: ok, persist: ok}
-  DescribePullRequestEvents: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-21 (gopherstack-us9u kind-mismatch sweep) -- PullRequestEvent.EventDate was a string built via time.Now().UTC().Format(time.RFC3339); the real EventDate deserializes via ParseEpochSeconds(json.Number) (deserializers.go, case \"eventDate\"), so every real SDK client's DescribePullRequestEvents call failed outright once any pull request event existed (always true after OverridePullRequestApprovalRules). Fixed by changing the domain field to time.Time and projecting to epoch seconds at the handler's wire-build step. Proven via a real aws-sdk-go-v2/service/codecommit client round trip (wire_pull_request_event_test.go), hand-reverted/confirmed-failing (expected EventDate to be a JSON Number, got string instead)/restored, md5sum-verified byte-identical."}
+  DescribePullRequestEvents: {wire: fixed, errors: fixed, state: ok, persist: ok, note: "FIXED 2026-08-21 (gopherstack-us9u kind-mismatch sweep) -- PullRequestEvent.EventDate was a string built via time.Now().UTC().Format(time.RFC3339); the real EventDate deserializes via ParseEpochSeconds(json.Number) (deserializers.go, case \"eventDate\"), so every real SDK client's DescribePullRequestEvents call failed outright once any pull request event existed (always true after OverridePullRequestApprovalRules). Fixed by changing the domain field to time.Time and projecting to epoch seconds at the handler's wire-build step. Proven via a real aws-sdk-go-v2/service/codecommit client round trip (wire_pull_request_event_test.go), hand-reverted/confirmed-failing (expected EventDate to be a JSON Number, got string instead)/restored, md5sum-verified byte-identical. FIXED 2026-09-08 (gopherstack-a7tx): ActorArn was dropped from the decode struct entirely (silently ignored) and unvalidated; also OverridePullRequestApprovalRules -- the only op that ever records a PullRequestEvent -- hardcoded its event's actor to \"\" instead of the resolved caller identity already available via awsmeta.CallerArn(ctx) (set onto the request context repo-wide by cli.go's principalMiddleware before dispatch runs; codecommit's own dispatch was discarding ctx). Now: PullRequestEvent carries ActorARN, OverridePullRequestApprovalRules records the real caller, actorArn is parsed+validated as an ARN (InvalidActorArnException on a malformed value, matching the declared error set) and used to filter DescribePullRequestEvents. NOT fixed (structural, out of scope): ActorDoesNotExistException (would require cross-service coupling to IAM's user/role store to check the ARN actually names an account principal); also, 8 of the 9 real PullRequestEventType values (PULL_REQUEST_CREATED, _STATUS_CHANGED, _SOURCE_REFERENCE_UPDATED, _MERGE_STATE_CHANGED, _APPROVAL_RULE_CREATED/_UPDATED/_DELETED, _APPROVAL_STATE_CHANGED) are never recorded by any backend op -- only PULL_REQUEST_APPROVAL_RULE_OVERRIDDEN is, so actorArn filtering is only observable against that one event type today; a pre-existing gap, not introduced or widened by this pass."}
   CreatePullRequestApprovalRule: {wire: ok, errors: ok, state: ok, persist: ok}
   DeletePullRequestApprovalRule: {wire: ok, errors: fixed, state: ok, persist: ok, note: "rule-not-found now ApprovalRuleDoesNotExistException, was RepositoryDoesNotExistException"}
   UpdatePullRequestApprovalRuleContent: {wire: ok, errors: fixed, state: ok, persist: ok, note: "rule-not-found now ApprovalRuleDoesNotExistException, was RepositoryDoesNotExistException"}
   UpdatePullRequestApprovalState: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): revisionId is a required UpdatePullRequestApprovalStateInput member (codecommit@v1.36.4 api_op_UpdatePullRequestApprovalState.go) that was decoded and never validated. Added a required-field check. NOT fixed (gap): no staleness/mismatch check against the PR's real, tracked RevisionID (models.go/pull_requests.go) -- real AWS can also return InvalidRevisionIdException/RevisionNotCurrentException for a wrong or stale value; only the RevisionIdRequiredException case is covered, to avoid inventing which of those two codes an unmodeled mismatch should map to."}
   GetPullRequestApprovalStates: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState above (GetPullRequestApprovalStatesInput.RevisionId is also required)."}
   EvaluatePullRequestApprovalRules: {wire: fixed, errors: ok, state: ok, persist: ok, note: "FIXED (gopherstack-lx5h) — response emitted evaluationResults, an array of {approvalRuleName,satisfied} objects; the real required key (deserializers.go EvaluatePullRequestApprovalRulesOutput) is a single evaluation object (types.Evaluation: approved/overridden/approvalRulesSatisfied/approvalRulesNotSatisfied). Prior wire: ok was false. Handler now splits the backend's per-rule []RuleEvaluation into satisfied/not-satisfied name lists and folds in the existing prOverrides/prOverriders override state (approved := overridden || no unsatisfied rules). Backend still marks every rule Satisfied: true unconditionally (never checks a rule's real approval-pool/numberOfApprovalsNeeded content against actual approvals) — that evaluation-logic gap is pre-existing and out of this pass's scope (a wrong-key bug, not a wrong-logic one), tracked separately. FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState above (see its note)."}
-  OverridePullRequestApprovalRules: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState (see its note)."}
+  OverridePullRequestApprovalRules: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState (see its note). FIXED 2026-09-08 (gopherstack-a7tx): the recorded PullRequestEvent's actor was hardcoded to the empty string instead of the resolved caller (see DescribePullRequestEvents' note above for the full fix and its scope)."}
   GetPullRequestOverrideState: {wire: ok, errors: ok, state: ok, persist: ok, note: "FIXED 2026-08-30 (gopherstack-4a8v): same revisionId-required fix and same NOT-fixed staleness-check gap as UpdatePullRequestApprovalState (see its note)."}
   MergePullRequestByFastForward: {wire: ok, errors: ok, state: ok, persist: ok}
   MergePullRequestBySquash: {wire: ok, errors: ok, state: ok, persist: ok, note: "status transition is real; content-level squash semantics are not modeled (see gaps)"}
@@ -852,4 +852,94 @@ passes. No pre-existing test asserted this field's value, so nothing else
 changed.
 
 Gates: `golangci-lint run ./services/codecommit/...` (0 issues), `go test -race
+./services/codecommit/...` (ok).
+
+## 2026-09-08 actorArn caller-identity audit (gopherstack-a7tx)
+
+Filed as "codecommit: no caller-identity plumbing, so actorArn filters cannot
+work" (P3, title-only, empty description). The premise was imprecise:
+`pkgs/awsmeta` + `services/iam`/`services/sts` do resolve caller identity, and
+that resolution is wired repo-wide, not per-service -- cli.go's
+`awsMetaMiddleware` (`e.Pre`, applies to every request) and `principalMiddleware`
+(`registry.Use`, applies to every registered service including codecommit)
+populate `awsmeta.CallerArn(ctx)` before any service's dispatch ever runs. The
+real defect was narrower and local to this package: codecommit's own
+`dispatch` discarded that ctx (`func (h *Handler) dispatch(_ context.Context,
+...)`), and `OverridePullRequestApprovalRules` -- the one op that records a
+`PullRequestEvent` -- hardcoded its actor to `""` even though its backend
+signature already had an `overriderARN` parameter to receive it
+(`handler_pull_requests.go`, pre-fix: `h.Backend.OverridePullRequestApprovalRules(req.PullRequestID,
+req.OverrideStatus, "")`). Confirmed via `OverridePullRequestApprovalRulesInput`
+(codecommit@v1.36.4 api_op_OverridePullRequestApprovalRules.go / botocore
+service-2.json): it has no actor/overrider ARN field at all -- real AWS derives
+"who overrode" purely from caller identity, exactly what `awsmeta.CallerArn`
+already resolves.
+
+`DescribePullRequestEventsInput.ActorArn` ("The Amazon Resource Name (ARN) of
+the user whose actions resulted in the event. Examples include updating the
+pull request with more commits or changing the status of a pull request.",
+api_op_DescribePullRequestEvents.go:36-39, confirmed against botocore's
+longer `service-2.json` doc string) was silently dropped: the decode struct
+in `handleDescribePullRequestEvents` had no `ActorArn` field, so a
+client-supplied filter was ignored outright (not merely unvalidated -- never
+read). `actorArn`'s wire shape is `Arn` (an unconstrained string in the
+model), but the operation's declared error set includes
+`InvalidActorArnException` ("Make sure that you have provided the full ARN
+...") and `ActorDoesNotExistException` ("does not exist in the Amazon Web
+Services account").
+
+Fixed (in scope -- uses existing plumbing, no new identity mechanism, no
+cross-service wiring):
+- `PullRequestEvent` gained an `ActorARN` field (`models.go`).
+- `OverridePullRequestApprovalRules` now stores its (already-passed)
+  `overriderARN` onto the event it creates (`pull_requests.go`).
+- `dispatch` now special-cases `OverridePullRequestApprovalRules` to call it
+  with `ctx` (rather than growing the `ops` table's function type to
+  `func(context.Context, []byte)` across all 79 other ops, out of proportion
+  to a one-op fix) and `handleOverridePullRequestApprovalRules` extracts
+  `awsmeta.CallerArn(ctx)` in place of the old `""` literal.
+- `handleDescribePullRequestEvents` parses `actorArn`, validates it as an ARN
+  shape (new `ErrInvalidActorArn` / `InvalidActorArnException`, `errors.go`'s
+  `actorArnRe`), and both `DescribePullRequestEvents` (backend) and the wire
+  response now filter/echo by it.
+
+NOT fixed, and explicitly out of scope for this pass:
+- `ActorDoesNotExistException` -- checking that an ARN names a real account
+  principal would require coupling codecommit to IAM's user/role store
+  cross-service, which the audit brief excluded.
+- 8 of the 9 real `PullRequestEventType` values are never recorded by any
+  backend operation -- only `PULL_REQUEST_APPROVAL_RULE_OVERRIDDEN` is (the
+  sole `b.prEvents[prID] = append(...)` call site in the package, before this
+  pass). actorArn filtering is consequently only observable against that one
+  event type today; this is a pre-existing structural gap in event recording,
+  independent of caller identity, and was not widened or narrowed by this fix.
+
+Verdict: (i) -- the plumbing exists and codecommit simply wasn't using it, so
+this was a fixable defect, not a structural blocker. Not a pure case of
+"just call `awsmeta.CallerArn(ctx)` at filter time", though: `actorArn`
+attributes each *past* event to whoever performed *that* action, which meant
+capturing identity at event-creation time (already ctx-available at
+`dispatch`), not at query time.
+
+New regression test `TestOverridePullRequestApprovalRules_RecordsCallerAsActorArn`
+(`actor_arn_test.go`), 4 subtests, all failing pre-fix:
+- `matches_caller`: expected the recorded event's `actorArn` to equal the
+  caller's ARN, got `<nil>` (field absent).
+- `no_filter_returns_all`: same `<nil>` failure (event existed but carried no
+  actor).
+- `different_actor_returns_none`: expected 0 events filtering by a different
+  actor, got 1 (filter param didn't exist, so nothing was ever excluded).
+- `malformed_arn_rejected`: expected HTTP 400 / `InvalidActorArnException`,
+  got HTTP 200 with the (unfiltered) event list.
+All 4 pass post-fix. One pre-existing call site updated for the new backend
+signature (`persistence_test.go`'s `fresh.DescribePullRequestEvents(pr.PullRequestID,
+"", "")`, third arg added) -- no assertion changed, purely mechanical.
+
+Stability: new test run 10x under `-race -count=1` (all pass), full package
+run 5x under `-race -count=1` (all pass). No global/shared state involved
+(fresh backend/handler per test, no package-level mutable state touched).
+
+Gates: `go build ./services/codecommit/...` (clean), `go vet
+./services/codecommit/...` (clean), `golangci-lint run
+./services/codecommit/...` (0 issues), `go test -race
 ./services/codecommit/...` (ok).

@@ -224,7 +224,7 @@ func TestInMemoryBackend_SnapshotRestore_FullState(t *testing.T) {
 	assert.Equal(t, "arn:aws:iam::111122223333:user/bob", overrider)
 
 	// prEvents plain map.
-	events, err := fresh.DescribePullRequestEvents(pr.PullRequestID, "")
+	events, err := fresh.DescribePullRequestEvents(pr.PullRequestID, "", "")
 	require.NoError(t, err)
 	require.Len(t, events, 1)
 	assert.Equal(t, "PULL_REQUEST_APPROVAL_RULE_OVERRIDDEN", events[0].PullRequestEventType)

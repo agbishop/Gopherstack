@@ -133,6 +133,11 @@ type PullRequestApprovalRule struct {
 type PullRequestEvent struct {
 	EventDate            time.Time
 	PullRequestEventType string `json:"pullRequestEventType"`
+	// ActorARN is the ARN of the caller whose action produced this event
+	// (DescribePullRequestEventsInput.ActorArn, codecommit@v1.36.4
+	// api_op_DescribePullRequestEvents.go:36-39). Empty when the
+	// event-generating op ran without a resolved caller identity.
+	ActorARN string `json:"actorArn,omitempty"`
 }
 
 // RuleEvaluation represents the evaluation of a pull request approval rule.
