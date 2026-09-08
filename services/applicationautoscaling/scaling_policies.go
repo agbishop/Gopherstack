@@ -182,9 +182,10 @@ func (b *InMemoryBackend) PutScalingPolicy(
 		// TargetTrackingScaling/StepScaling policies, visible via
 		// cloudwatch:DescribeAlarms. gopherstack's applicationautoscaling
 		// backend has no reference to the cloudwatch service's backend --
-		// that cross-service wiring pattern exists elsewhere (e.g.
-		// cloudformation) but is set up at CLI init time (cli.go), which is
-		// out of scope for this pass -- so it cannot create a real alarm. A
+		// the SetAppConfig/siblingServices pattern (see AppContext in
+		// pkgs/service) would allow one from this service's own
+		// provider.Init, but adopting it is a separate decision that has not
+		// been taken -- so it cannot create a real alarm today. A
 		// previous pass synthesized a stable-looking name + arn.Build ARN
 		// here that resolved to nothing when queried against
 		// cloudwatch:DescribeAlarms; that is exactly the kind of
