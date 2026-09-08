@@ -38,11 +38,9 @@ var (
 )
 
 const (
-	monitorStateActive  = "ACTIVE"
-	monitorStatePending = "PENDING"
+	monitorStateActive = "ACTIVE"
 
-	probeStateActive  = "ACTIVE"
-	probeStatePending = "PENDING"
+	probeStateActive = "ACTIVE"
 
 	protocolTCP  = "TCP"
 	protocolICMP = "ICMP"

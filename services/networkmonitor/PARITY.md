@@ -36,6 +36,25 @@ leaks: {status: clean, note: "no goroutines/janitors in this service; InMemoryBa
   the real API's transient `PENDING`. This is deliberately NOT the disguised
   no-op bug class (stuck-forever PENDING) -- it's the opposite (immediately
   usable), which is safe for emulation and intentionally left as-is.
+- `ProbeState` `PENDING` *is* reachable in gopherstack: `UpdateProbeInput`
+  (real SDK) carries a client-settable `State ProbeState` field (its own
+  `request_snapshot/UpdateProbe.request.snap` fixture sends
+  `"state":"PENDING"` on the wire), and `UpdateProbe`'s handler
+  (`probes.go`'s `validateProbeState`/`applyProbeUpdate`) already accepts and
+  applies any of the six real `ProbeState` enum values, `PENDING` included.
+  `MonitorState` `PENDING` is not reachable -- `UpdateMonitorInput` has no
+  `State` member at all (only `AggregationPeriod`/`MonitorName`), so no
+  client-callable path can ever produce it, consistent with the bullet above.
+- The service quotas below (`maxMonitorsPerAccountRegion`=100,
+  `maxProbesPerMonitor`=24, `maxProbesPerSubnetPerMonitor`=4) are sourced from
+  AWS's service-quotas docs page, not from the Go SDK module: neither
+  `aws-sdk-go-v2/service/networkmonitor@v1.16.4` (its
+  `ServiceQuotaExceededException` shape carries only `Message`) nor the
+  botocore `networkmonitor/2023-08-01/service-2.json` model (same
+  `message`-only exception shape; no shape in the model declares a `max` of
+  100, 24, or 4) encodes account-level quota numbers -- these live outside
+  both machine-readable API models, in AWS doc prose only. Recorded here as a
+  known unverifiable-by-oracle item; the numbers themselves were not changed.
 
 ### Fixed this pass
 
@@ -187,3 +206,47 @@ temporarily breaking `findResourceByARN` to return whatever it finds first
 in the region: the two-monitors, two-probes, and unknown-arn cases all
 failed as expected, while the single-monitor case passed trivially (hollow
 by itself, as expected -- it's the other three that pin the lookup).
+
+### 2026-09-07: gopherstack-g93t / gopherstack-dde0 -- both no-defect, dead consts removed
+
+**g93t** ("`monitorStatePending`/`probeStatePending` declared but never
+assigned; PENDING unreachable; SDK silent on the PENDING->ACTIVE trigger"):
+verified the literal claim (repo-wide grep: both constants appeared only in
+their own `store.go` declarations, nowhere else) and removed them as dead
+code -- same reasoning as the prior pass's `monitorStateDeleted` removal
+above. The behavioral claims don't hold as stated, though: `ProbeState`
+`PENDING` is already reachable today via `UpdateProbe`'s `state` field (see
+the new Notes bullet above), so only `MonitorState` `PENDING` is genuinely
+unreachable, and that's the pre-existing, deliberate, already-documented
+"immediately ACTIVE" modelling gap (Notes above), not new. Confirmed no
+janitor/background worker exists in this service (`leaks` above) and none is
+warranted -- `CreateMonitor`/`CreateProbe` are synchronous single-call
+operations with no async provisioning step to simulate, unlike e.g.
+amplify's janitor-driven initial-state transition. The "SDK is silent"
+half of the claim held up this time: `types/types.go`'s `State` field doc
+comments ("The state of the monitor."/"The state of the probe.",
+`types.go:56`/`types.go:113`) and every `api_op_CreateMonitor.go`/
+`api_op_CreateProbe.go`/`api_op_UpdateMonitor.go`/`api_op_UpdateProbe.go`/
+`api_op_GetMonitor.go`/`api_op_GetProbe.go`/`doc.go` operation comment were
+read in full; none describe what moves a monitor or probe from `PENDING` to
+`ACTIVE`. Verdict: no defect (modelling gap, already accepted); only change
+is removing the two unused constants -- zero behavior change, no regression
+test needed. `go build`/`go test -race`/`golangci-lint run` all clean after
+the removal.
+
+**dde0** ("quota constants 100/24/4 cite an AWS docs URL, not the Go SDK"):
+confirmed true and, per the task's own framing, not a defect -- checked both
+available oracles and neither carries the numbers. `aws-sdk-go-v2/service/
+networkmonitor@v1.16.4`'s `types/errors.go` `ServiceQuotaExceededException`
+is `{Message, ErrorCodeOverride}` only, no quota metadata. The botocore
+model (`~/.local/lib/python3.14/site-packages/botocore/data/networkmonitor/
+2023-08-01/service-2.json.gz`, decompressed and checked as a second oracle)
+has the same `message`-only exception shape and, scanning every shape with a
+`min`/`max` bound, only four: `AggregationPeriod` (min 30), `MaxResults`
+(min 1/max 25), `PacketSize` (min 56/max 8500), `Port` (min 0/max 65536) --
+none at 100, 24, or 4. Both machine-readable models are silent; the quota
+numbers exist only in AWS's service-quotas doc prose
+(<https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_limits.html#nw-monitor-quotas>).
+Recorded as a known unverifiable-by-oracle item (Notes above). Constants
+left unchanged -- no evidence they're wrong, just no second source to check
+them against.
