@@ -17,7 +17,7 @@ func TestRedshiftDashboard(t *testing.T) {
 	stack := newStack(t)
 
 	_, err := stack.RedshiftHandler.Backend.CreateCluster(
-		"test-cluster", "dc2.large", "mydb", "admin",
+		"test-cluster", "dc2.large", "mydb", "admin", nil, "",
 	)
 	require.NoError(t, err)
 
