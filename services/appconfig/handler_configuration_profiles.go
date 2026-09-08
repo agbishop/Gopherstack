@@ -145,6 +145,10 @@ func (h *Handler) handleDeleteConfigurationProfile(
 	c *echo.Context,
 	applicationID, profileID string,
 ) error {
+	if rejected, err := rejectInvalidDeletionProtectionCheck(c); rejected {
+		return err
+	}
+
 	if err := h.Backend.DeleteConfigurationProfile(applicationID, profileID); err != nil {
 		if errors.Is(err, awserr.ErrNotFound) {
 			return notFoundResponse(c, err)

@@ -3,6 +3,7 @@ package appconfig_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -342,4 +343,67 @@ func TestHandler_EnvironmentStateRoundTrip(t *testing.T) {
 	require.Len(t, listResp.Items, 1)
 	assert.Equal(t, "READY_FOR_DEPLOYMENT", listResp.Items[0].State,
 		"ListEnvironments must also return READY_FOR_DEPLOYMENT")
+}
+
+// TestHandler_DeleteEnvironment_DeletionProtectionCheck proves the
+// "X-Amzn-Deletion-Protection-Check" header (appconfig@v1.48.4
+// serializers.go:1268, DeleteEnvironmentInput.DeletionProtectionCheck) is
+// actually read: a recognized types.DeletionProtectionCheck value still
+// deletes (this backend tracks no access-recency state to block on, so
+// APPLY/ACCOUNT_DEFAULT behave like BYPASS -- see PARITY.md), but an
+// unrecognized value -- which real AppConfig would reject -- now gets a
+// BadRequestException instead of being silently ignored.
+func TestHandler_DeleteEnvironment_DeletionProtectionCheck(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		headerVal  string
+		wantStatus int
+	}{
+		{name: "absent", headerVal: "", wantStatus: http.StatusNoContent},
+		{name: "bypass", headerVal: "BYPASS", wantStatus: http.StatusNoContent},
+		{name: "apply", headerVal: "APPLY", wantStatus: http.StatusNoContent},
+		{name: "account default", headerVal: "ACCOUNT_DEFAULT", wantStatus: http.StatusNoContent},
+		{name: "unrecognized value", headerVal: "NONSENSE", wantStatus: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t)
+
+			rec := doRequest(t, h, http.MethodPost, "/applications", []byte(`{"name":"dpc-app"}`))
+			require.Equal(t, http.StatusCreated, rec.Code)
+
+			var app appconfig.Application
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &app))
+
+			rec = doRequest(t, h, http.MethodPost, "/applications/"+app.ID+"/environments",
+				[]byte(`{"name":"dpc-env"}`))
+			require.Equal(t, http.StatusCreated, rec.Code)
+
+			var env appconfig.Environment
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &env))
+
+			path := "/applications/" + app.ID + "/environments/" + env.ID
+
+			var delRec *httptest.ResponseRecorder
+			if tt.headerVal == "" {
+				delRec = doRequest(t, h, http.MethodDelete, path, nil)
+			} else {
+				delRec = doRequestWithHeader(t, h, http.MethodDelete, path,
+					"X-Amzn-Deletion-Protection-Check", tt.headerVal, nil)
+			}
+			assert.Equal(t, tt.wantStatus, delRec.Code)
+
+			getRec := doRequest(t, h, http.MethodGet, path, nil)
+			if tt.wantStatus == http.StatusNoContent {
+				assert.Equal(t, http.StatusNotFound, getRec.Code, "environment should have been deleted")
+			} else {
+				assert.Equal(t, http.StatusOK, getRec.Code, "environment must survive a rejected delete")
+			}
+		})
+	}
 }
