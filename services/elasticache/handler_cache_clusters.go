@@ -224,6 +224,16 @@ func (h *Handler) deleteCacheCluster(ctx context.Context, c *echo.Context, form 
 	}
 
 	cl := clusters.Data[0]
+
+	// api-2.json SnapshotFeatureNotSupportedFault: "Creating a snapshot of a
+	// cluster that is running Memcached rather than Valkey or Redis OSS" is
+	// unsupported, and DeleteCacheCluster takes the final snapshot as part
+	// of the delete.
+	if form.Get("FinalSnapshotIdentifier") != "" && cl.Engine == engineMemcached {
+		return xmlError(c, http.StatusBadRequest, "SnapshotFeatureNotSupportedFault",
+			"Snapshots not supported for Memcached engine")
+	}
+
 	if err := h.Backend.DeleteCluster(ctx, id); err != nil {
 		if errors.Is(err, ErrClusterNotFound) {
 			return xmlError(c, http.StatusNotFound, "CacheClusterNotFound", "Cache cluster not found")

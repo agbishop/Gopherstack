@@ -251,6 +251,78 @@ func TestDeleteCacheCluster(t *testing.T) {
 	}
 }
 
+// TestDeleteCacheCluster_FinalSnapshotIdentifier pins
+// SnapshotFeatureNotSupportedFault (api-2.json:
+// "Creating a snapshot of a cluster that is running Memcached rather than
+// Valkey or Redis OSS" is unsupported) for DeleteCacheCluster's
+// FinalSnapshotIdentifier. All three cases matter: a guard that rejects
+// every engine regardless of FinalSnapshotIdentifier, or that fires on
+// Memcached even with no FinalSnapshotIdentifier, would each pass a
+// single-case test but must fail here.
+func TestDeleteCacheCluster_FinalSnapshotIdentifier(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		finalSnapshotID string
+		name            string
+		engine          string
+		wantRejected    bool
+	}{
+		{
+			name:            "memcached_with_final_snapshot_rejected",
+			engine:          "memcached",
+			finalSnapshotID: "final-snap",
+			wantRejected:    true,
+		},
+		{
+			name:            "memcached_without_final_snapshot_allowed",
+			engine:          "memcached",
+			finalSnapshotID: "",
+			wantRejected:    false,
+		},
+		{
+			name:            "redis_with_final_snapshot_allowed",
+			engine:          "redis",
+			finalSnapshotID: "final-snap",
+			wantRejected:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := newTestStack(t)
+			clusterID := "fsi-" + tt.name
+
+			_, err := client.CreateCacheCluster(t.Context(), &elasticachesdk.CreateCacheClusterInput{
+				CacheClusterId: aws.String(clusterID),
+				Engine:         aws.String(tt.engine),
+			})
+			require.NoError(t, err)
+
+			var finalSnap *string
+			if tt.finalSnapshotID != "" {
+				finalSnap = aws.String(tt.finalSnapshotID)
+			}
+
+			_, err = client.DeleteCacheCluster(t.Context(), &elasticachesdk.DeleteCacheClusterInput{
+				CacheClusterId:          aws.String(clusterID),
+				FinalSnapshotIdentifier: finalSnap,
+			})
+
+			if tt.wantRejected {
+				requireFault[elasticachetypes.SnapshotFeatureNotSupportedFault](t, err)
+				requireHTTPStatus(t, err, http.StatusBadRequest)
+
+				return
+			}
+
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestBackend(t *testing.T) {
 	t.Parallel()
 
