@@ -11,10 +11,8 @@ import (
 // ses/2010-12-01 service-2.json "required" lists): S3Action.BucketName,
 // SNSAction.TopicArn, LambdaAction.FunctionArn, BounceAction.{SmtpReplyCode,
 // Message,Sender}, AddHeaderAction.{HeaderName,HeaderValue}. StopAction.Scope
-// and the gopherstack-only "SQS" action have no member to enforce here (Scope
-// is not modeled -- gopherstack always treats a Stop action as its one legal
-// value, RuleSet; SqsAction has no counterpart in the real ReceiptAction
-// union at all).
+// has no member to enforce here -- Scope is not modeled, gopherstack always
+// treats a Stop action as its one legal value, RuleSet.
 func validateReceiptAction(a ReceiptAction) error {
 	switch a.Type {
 	case ReceiptActionTypeS3:

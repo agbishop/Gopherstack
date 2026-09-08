@@ -149,12 +149,6 @@ func parseReceiptActions(vals url.Values, prefix string) []ReceiptAction {
 				LambdaFunctionARN: vals.Get(idx + ".LambdaAction.FunctionArn"),
 				LambdaTopicARN:    vals.Get(idx + ".LambdaAction.TopicArn"),
 			}
-		case hasPrefixedKey(vals, idx+".SqsAction."):
-			action = ReceiptAction{
-				Type:        ReceiptActionTypeSQS,
-				SQSQueueARN: vals.Get(idx + ".SqsAction.QueueArn"),
-				SQSTopicARN: vals.Get(idx + ".SqsAction.TopicArn"),
-			}
 		case hasPrefixedKey(vals, idx+".AddHeaderAction."):
 			action = ReceiptAction{
 				Type:        ReceiptActionTypeAddHeader,
@@ -222,8 +216,6 @@ func receiptActionToXML(a ReceiptAction) xmlReceiptAction {
 		x.SNSAction = &xmlSNSAction{TopicARN: a.SNSTopicARN}
 	case ReceiptActionTypeLambda:
 		x.LambdaAction = &xmlLambdaAction{FunctionARN: a.LambdaFunctionARN, TopicARN: a.LambdaTopicARN}
-	case ReceiptActionTypeSQS:
-		x.SqsAction = &xmlSQSAction{QueueARN: a.SQSQueueARN, TopicARN: a.SQSTopicARN}
 	case ReceiptActionTypeAddHeader:
 		x.AddHeaderAction = &xmlAddHeaderAction{HeaderName: a.HeaderName, HeaderValue: a.HeaderValue}
 	case ReceiptActionTypeBounce:
@@ -286,11 +278,6 @@ type xmlLambdaAction struct {
 	TopicARN    string `xml:"TopicArn,omitempty"`
 }
 
-type xmlSQSAction struct {
-	QueueARN string `xml:"QueueArn"`
-	TopicARN string `xml:"TopicArn,omitempty"`
-}
-
 type xmlAddHeaderAction struct {
 	HeaderName  string `xml:"HeaderName"`
 	HeaderValue string `xml:"HeaderValue"`
@@ -313,7 +300,6 @@ type xmlReceiptAction struct {
 	S3Action        *xmlS3Action        `xml:"S3Action,omitempty"`
 	SNSAction       *xmlSNSAction       `xml:"SNSAction,omitempty"`
 	LambdaAction    *xmlLambdaAction    `xml:"LambdaAction,omitempty"`
-	SqsAction       *xmlSQSAction       `xml:"SqsAction,omitempty"`
 	AddHeaderAction *xmlAddHeaderAction `xml:"AddHeaderAction,omitempty"`
 	BounceAction    *xmlBounceAction    `xml:"BounceAction,omitempty"`
 	StopAction      *xmlStopAction      `xml:"StopAction,omitempty"`

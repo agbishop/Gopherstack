@@ -44,13 +44,6 @@ func TestReceiptActionToXML_AllTypes(t *testing.T) {
 			wantContains: "FunctionArn",
 		},
 		{
-			name: "sqs_action",
-			actionParams: url.Values{
-				"Rule.Actions.member.1.SqsAction.QueueArn": {"arn:aws:sqs:us-east-1:123:q"},
-			}.Encode(),
-			wantContains: "QueueArn",
-		},
-		{
 			name: "add_header_action",
 			actionParams: url.Values{
 				"Rule.Actions.member.1.AddHeaderAction.HeaderName":  {"X-My-Header"},
@@ -105,6 +98,38 @@ func TestReceiptActionToXML_AllTypes(t *testing.T) {
 			assert.Contains(t, rec.Body.String(), tt.wantContains)
 		})
 	}
+}
+
+// TestReceiptActionSQS_NotAWireShape proves gopherstack no longer accepts or
+// emits an SQS receipt action (gopherstack-brmq): ses@v1.37.4's
+// types.ReceiptAction union has exactly 8 members and none of them is SQS,
+// so Rule.Actions.member.N.SqsAction.* is not a real wire key. Submitting it
+// must not produce a stored action, and DescribeReceiptRule's XML output
+// must not mention it.
+func TestReceiptActionSQS_NotAWireShape(t *testing.T) {
+	t.Parallel()
+
+	h := newHandler()
+	postForm(t, h, "Action=CreateReceiptRuleSet&Version=2010-12-01&RuleSetName=test-rs")
+
+	rec := postForm(t, h, url.Values{
+		"Action":      {"CreateReceiptRule"},
+		"Version":     {"2010-12-01"},
+		"RuleSetName": {"test-rs"},
+		"Rule.Name":   {"rule1"},
+		"Rule.Actions.member.1.SqsAction.QueueArn": {"arn:aws:sqs:us-east-1:123:q"},
+	}.Encode())
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	described, err := h.Backend.DescribeReceiptRule("test-rs", "rule1")
+	require.NoError(t, err)
+	assert.Empty(t, described.Actions, "an unrecognized SqsAction key must not produce a stored action")
+
+	rec2 := postForm(t, h, "Action=DescribeReceiptRule&Version=2010-12-01&RuleSetName=test-rs&RuleName=rule1")
+	assert.Equal(t, http.StatusOK, rec2.Code)
+	body := rec2.Body.String()
+	assert.NotContains(t, body, "SqsAction")
+	assert.NotContains(t, body, "QueueArn")
 }
 
 func TestHandler_DescribeReceiptRule_Errors(t *testing.T) {
