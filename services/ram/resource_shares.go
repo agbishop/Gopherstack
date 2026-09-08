@@ -11,6 +11,26 @@ import (
 	"github.com/blackbirdworks/gopherstack/pkgs/arn"
 )
 
+// isValidResourceARN reports whether s is syntactically ARN-shaped: it starts
+// with "arn:" and has at least five colon separators (six colon-delimited
+// segments), matching the resourcegroups package's own resource-ARN check.
+func isValidResourceARN(s string) bool {
+	return strings.HasPrefix(s, "arn:") && strings.Count(s, ":") >= 5
+}
+
+// validateResourceARNs returns ErrMalformedArn if any resourceARNs entry isn't
+// ARN-shaped. CreateResourceShare and AssociateResourceShare both model
+// MalformedArnException for a malformed resourceArns entry (see ErrMalformedArn).
+func validateResourceARNs(resourceARNs []string) error {
+	for _, r := range resourceARNs {
+		if !isValidResourceARN(r) {
+			return fmt.Errorf("%w: %q is not a valid ARN", ErrMalformedArn, r)
+		}
+	}
+
+	return nil
+}
+
 // CreateResourceShare creates a new resource share.
 func (b *InMemoryBackend) CreateResourceShare(
 	name string,
@@ -40,6 +60,10 @@ func (b *InMemoryBackend) CreateResourceShare(
 				ErrValidation,
 			)
 		}
+	}
+
+	if err := validateResourceARNs(resourceARNs); err != nil {
+		return nil, err
 	}
 
 	now := time.Now()

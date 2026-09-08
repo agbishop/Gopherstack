@@ -106,3 +106,49 @@ func TestAssociateResourceShare_ExternalPrincipalNotAllowed(t *testing.T) {
 	var apiErr *ramtypes.InvalidParameterException
 	require.ErrorAs(t, err, &apiErr, "expected a real InvalidParameterException from the SDK deserializer")
 }
+
+// TestAssociateResourceShare_MalformedResourceArn drives a real ram client's
+// AssociateResourceShare with a resourceArns entry that isn't ARN-shaped.
+// AssociateResourceShare's own error model (ram@v1.39.4 deserializers.go
+// awsRestjson1_deserializeOpErrorAssociateResourceShare) defines
+// MalformedArnException for exactly this; gopherstack previously accepted
+// any string as a resource ARN and associated it unconditionally.
+func TestAssociateResourceShare_MalformedResourceArn(t *testing.T) {
+	t.Parallel()
+
+	client := newRoundTripClient(t, ram.NewHandler(ram.NewInMemoryBackend("000000000000", "us-east-1")))
+
+	share, err := client.CreateResourceShare(t.Context(), &ramsdk.CreateResourceShareInput{
+		Name: aws.String("malformed-arn-associate-share"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.AssociateResourceShare(t.Context(), &ramsdk.AssociateResourceShareInput{
+		ResourceShareArn: share.ResourceShare.ResourceShareArn,
+		ResourceArns:     []string{"not-an-arn"},
+	})
+	require.Error(t, err)
+
+	var apiErr *ramtypes.MalformedArnException
+	require.ErrorAs(t, err, &apiErr, "expected a real MalformedArnException from the SDK deserializer")
+}
+
+// TestCreateResourceShare_MalformedResourceArn drives a real ram client's
+// CreateResourceShare with a resourceArns entry that isn't ARN-shaped.
+// CreateResourceShare's own error model (ram@v1.39.4 deserializers.go
+// awsRestjson1_deserializeOpErrorCreateResourceShare) defines
+// MalformedArnException for exactly this.
+func TestCreateResourceShare_MalformedResourceArn(t *testing.T) {
+	t.Parallel()
+
+	client := newRoundTripClient(t, ram.NewHandler(ram.NewInMemoryBackend("000000000000", "us-east-1")))
+
+	_, err := client.CreateResourceShare(t.Context(), &ramsdk.CreateResourceShareInput{
+		Name:         aws.String("malformed-arn-create-share"),
+		ResourceArns: []string{"not-an-arn"},
+	})
+	require.Error(t, err)
+
+	var apiErr *ramtypes.MalformedArnException
+	require.ErrorAs(t, err, &apiErr, "expected a real MalformedArnException from the SDK deserializer")
+}

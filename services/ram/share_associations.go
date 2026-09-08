@@ -37,6 +37,10 @@ func (b *InMemoryBackend) AssociateResourceShare(
 		return nil, err
 	}
 
+	if err := validateResourceARNs(resourceARNs); err != nil {
+		return nil, err
+	}
+
 	now := time.Now()
 	added := make([]*ResourceShareAssociation, 0, len(principals)+len(resourceARNs))
 	added = append(added, b.associatePrincipalsLocked(rs, principals, active, inactive, now)...)
