@@ -469,3 +469,79 @@ between 15 KB and 7 MB proving the same). All three failed against pre-fix code 
 reverting the 15 touched files to `HEAD`, confirming the package still built, running the new
 tests to see them fail with the exact predicted status-code mismatch, then restoring the fix
 byte-for-byte).
+
+## 2026-09-08: writeErrorResponse nil-on-write fall-through audit (gopherstack-246v) -- found and fixed
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `writeErrorResponse`
+(`handler.go:506`) writes the JSON error body and unconditionally `return nil`s. Any helper
+that rejects via `return writeErrorResponse(...)` and is called by code storing and checking
+the result would get a silent nil and fall through past the rejection.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test file in this
+package (26k lines, the largest in this batch after quicksight, flat, no subdirectories)
+computed the fixed-point closure seeded with `writeErrorResponse`: find every function with a
+bare `return <sink>(...)`, add it, repeat to convergence. `ServeHTTP` (`handler.go:383`,
+returned as-is by `Handler()` and registered directly with echo) is pinpoint's dispatch
+entry; its own unrecognized-path fallback and every `dispatchXxx` sub-router it calls end
+their default cases in a direct `return writeErrorResponse(...)`, pulling them into the
+closure automatically along with the ~85 `handleXxx` op handlers those routers call — no
+separate dispatch/non-dispatch partition was needed, since the same call-site sweep covers
+both.
+
+The closure converged at 107 functions. Every call site of every one of those 107 was
+re-walked and classified: 340 total call sites. 336 are `return <fn>(...)` (direct-return,
+safe) -- this includes 3 sites where `writeErrorResponse`'s result is stored but explicitly
+discarded (`_ = writeErrorResponse(...)`) inside a `bool`-returning checked-helper
+(`unmarshalBody`, `checkPayloadSize`, mirroring mwaa's `decodeJSONBody` pattern), which is
+safe: callers check the returned `bool`, never the discarded `error`.
+
+**One broken instance found**, at `handler_templates.go:355` (now fixed) in
+`handleUpdateTemplate`:
+
+```go
+if updateErr := h.applyTemplateUpdate(c, body, templateName, templateType); updateErr != nil {
+    return updateErr
+}
+httputils.WriteJSON(c.Request().Context(), c.Response(), http.StatusAccepted,
+    messageBodyResponse{Message: acceptedMessage})
+return nil
+```
+
+`applyTemplateUpdate` and the five `update{Email,InApp,Push,SMS,Voice}TemplateFromBody`
+functions it dispatched to each had exactly one caller and each rejected (unknown template
+type, invalid JSON body, or a backend error such as the template not existing) via a direct
+`return writeErrorResponse(...)` / `return writeNotFoundOrInternal(...)` — correct in
+isolation, but that made `applyTemplateUpdate` return `nil` on *every* path, success or
+rejected. `handleUpdateTemplate`'s `updateErr != nil` guard therefore never fired, and a
+rejected `PUT /v1/templates/{name}/{type}` always fell through to writing a second, spurious
+`202 Accepted` response on top of the already-committed rejection.
+
+Unlike elasticache's instance, no double *backend* mutation results (none of the five
+`update*FromBody` functions call the backend again after a rejection), so the observable
+damage is a corrupted HTTP response body, not a phantom-created resource. Status code alone
+does not distinguish fixed from broken: echo's own `Response.WriteHeader` guards on
+`Committed` and silently drops the second status, so `rec.Code` is 404 either way. But the
+`httptest.ResponseRecorder` used by this package's tests has no `Content-Length`
+enforcement (unlike a real `net/http` server, which would return `http.ErrContentLength`
+from the second `Write` and truncate it) — so the second write's bytes land in `rec.Body`
+verbatim. `TestUpdateTemplate_RejectedUpdate_DoesNotDoubleWrite`
+(`handler_templates_rejection_test.go`) asserts on that: against unmodified code it fails
+with body
+`{"__type":"NotFoundException","message":"NotFoundException: app not found"}{"Message":"Accepted"}`
+(concatenated, invalid JSON; `json.Unmarshal` on it fails with `invalid character '{' after
+top-level value`), and an `echo: response already written to client` ERROR log fires from
+echo's own guard. Confirmed failing against the pre-fix tree before applying the fix, then
+passing after.
+
+**Fix** (one caller at each level, so per the elasticache pattern: raw unwritten error mapped
+at the call site, no sentinel needed): `applyTemplateUpdate` and the five
+`update*TemplateFromBody` functions no longer take `*echo.Context` or write anything — they
+return the raw backend error, or the existing `errInvalidRequestBody` sentinel (already used
+elsewhere in this file for the same "bad JSON" case) for a decode failure, or a new
+`errUnknownTemplateType` sentinel for an unrecognized type. `handleUpdateTemplate` maps and
+writes the result exactly once, directly returning in every branch.
+
+Gates: `GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/pinpoint/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/pinpoint/...` ok (includes the new
+regression test). No handler dispatch table changed, so no repo-wide blast-radius run was
+needed beyond the package itself.
