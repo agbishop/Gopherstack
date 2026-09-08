@@ -186,7 +186,7 @@ ops:
   UpdateDistributionWithStagingConfig: {wire: fixed, errors: fixed, state: ok, persist: n/a, note: "FIXED 2026-08-13 (gopherstack-ob1g): routing bug found while hardening this handler's discarded xml.Unmarshal error. Real wire is PUT /2020-05-31/distribution/{Id}/promote-staging-config with StagingDistributionId as a QUERY parameter, never a body field (serializers.go: awsRestxml_serializeOpUpdateDistributionWithStagingConfig's SplitURI and awsRestxml_serializeOpHttpBindingsUpdateDistributionWithStagingConfigInput's SetQuery call). The route table matched a bare \"/staging\" suffix instead, so every real client's PUT 404'd as NoSuchOperation. Since real clients never send a body, the (now-fixed) discarded xml.Unmarshal error itself was latent rather than an active wipe for real traffic -- the route was the blocking bug. Fixed both: route corrected to the real path, and the unmarshal error is now handled instead of discarded, guarding the pre-existing body-based fallback path some callers may still use for backward compatibility."}
   ListDomainConflicts: {wire: fixed, errors: fixed, state: ok, persist: n/a, note: "FIXED 2026-08-13 (gopherstack-ob1g): routing bug found while hardening this handler's discarded xml.Unmarshal error. Real path is /2020-05-31/domain-conflicts (plural; serializers.go: awsRestxml_serializeOpListDomainConflicts's SplitURI); the route table matched the singular \"domain-conflict\", so every real client's POST 404'd as NoSuchOperation. Root/field names (ListDomainConflictsRequest>Domain) were already correct. Fixed both: route corrected to the plural path, and the unmarshal error is now handled instead of discarded. CORRECTED 2026-08-13 (gopherstack-3izo): that pass's 'Root/field names were already correct' verification only checked Domain -- it missed that ListDomainConflictsInput has a SECOND independently-required member, DomainControlValidationResource (a types.DistributionResourceId identifying the distribution or distribution tenant whose certificate validates control of the domain; api_op_ListDomainConflicts.go:73-77), which the request struct dropped entirely. Real AWS scopes the conflict check to that resource (excludes it from its own conflict list, since it legitimately holds the domain's cert); gopherstack ignored the scope and returned every conflict for the domain globally, including the resource itself when it was the one claiming the domain -- wrong, not merely incomplete. Fixed: DomainControlValidationResource now parsed (nested DistributionId/DistributionTenantId, exactly one required -> InvalidArgument otherwise), both required members validated (missing Domain or missing DomainControlValidationResource -> InvalidArgument), the referenced resource's existence checked (EntityNotFound if neither a real distribution nor tenant, matching this op's own declared error switch, not the per-resource-type NoSuchDistribution/NoSuchDistributionTenant codes other ops use), and findDomainConflicts extended to exclude that resource from the results. Two pre-existing tests (TestListDomainConflicts_RealConflicts, TestListDomainConflicts_TableDriven) never sent DomainControlValidationResource at all (one even used a nonexistent-on-the-real-wire ?Domain= query fallback) and so encoded the global-scope bug as correct; both corrected to send real bodies and now also cover the self-exclusion scoping and the new validation errors. All new/changed cases fail against the pre-fix handler by reverting by hand."}
   UpdatePublicKey: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-13 (gopherstack-o31x, filed by gopherstack-ob1g): real UpdatePublicKey PUTs to /2020-05-31/public-key/{Id}/config (serializers.go: awsRestxml_serializeOpUpdatePublicKey's SplitURI), not the bare /public-key/{Id} path -- every real client call 404'd. parseCFResourcePath's public-key call site (handler_paths.go: parseCFPublicKeyRealtimePath) had updateOp and updateConfigOp backwards (bound to the bare path, left the /config-suffixed PUT unmatched). Fixed by swapping which argument carries the real op. Existing tests asserting the wrong bare-ID path were updated to the real /config path, not preserved -- a test asserting a 404-producing route is negative value. Verified against the real aws-sdk-go-v2 client (TestUpdatePublicKey_RealClient) and confirmed to fail against the pre-fix shape by reverting by hand."}
-  UpdateFieldLevelEncryptionConfig: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-13 (gopherstack-o31x, filed by gopherstack-ob1g): same bare-vs-/config bug as UpdatePublicKey. Real path is /2020-05-31/field-level-encryption/{Id}/config (serializers.go SplitURI). Fixed the same way (parseCFFieldLevelEncryptionPath's field-level-encryption call site); existing tests updated to the real path. Verified against the real aws-sdk-go-v2 client (TestUpdateFieldLevelEncryptionConfig_RealClient) and confirmed to fail against the pre-fix shape by reverting by hand."}
+  UpdateFieldLevelEncryptionConfig: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-13 (gopherstack-o31x, filed by gopherstack-ob1g): same bare-vs-/config bug as UpdatePublicKey. Real path is /2020-05-31/field-level-encryption/{Id}/config (serializers.go SplitURI). Fixed the same way (parseCFFieldLevelEncryptionPath's field-level-encryption call site); existing tests updated to the real path. Verified against the real aws-sdk-go-v2 client (TestUpdateFieldLevelEncryptionConfig_RealClient) and confirmed to fail against the pre-fix shape by reverting by hand. ALSO FIXED (gopherstack-kpk5, see Root cause C below): the CallerReference rename-collision check was removed from UpdateFieldLevelEncryption (field_level_encryption.go) since real AWS's declared error set for this op has no FieldLevelEncryptionConfigAlreadyExists at all (Create-only), so gopherstack was rejecting requests real AWS accepts."}
   UpdateFieldLevelEncryptionProfile: {wire: ok, errors: ok, state: fixed, persist: ok, note: "FIXED 2026-08-13 (gopherstack-o31x, filed by gopherstack-ob1g): same bare-vs-/config bug as UpdatePublicKey. Real path is /2020-05-31/field-level-encryption-profile/{Id}/config (serializers.go SplitURI). Fixed the same way (parseCFFieldLevelEncryptionPath's field-level-encryption-profile call site); existing tests updated to the real path. Verified against the real aws-sdk-go-v2 client (TestUpdateFieldLevelEncryptionProfile_RealClient) and confirmed to fail against the pre-fix shape by reverting by hand."}
 families:
   list_distributions_by: {status: fixed, note: "FIXED 2026-08-13 (gopherstack-o31x): all 12 ListDistributionsBy* ops (AnycastIpListId, CachePolicyId, ConnectionFunction, ConnectionMode, KeyGroup, OriginRequestPolicyId, OwnedResource, RealtimeLogConfig, ResponseHeadersPolicyId, TrustStore, VpcOriginId, WebACLId) were routed on a hyphenated \"distributions/by-x-id/{id}\" path with no real-SDK counterpart at all -- every real client call 404'd NoSuchOperation. Real paths are a single camelCase segment with no hyphens, e.g. \"/2020-05-31/distributionsByCachePolicyId/{CachePolicyId}\" (serializers.go SplitURI, verified per-op individually, cloudfront@v1.67.4). Beyond the path shape, several ops also had the wrong ID SOURCE: ByConnectionFunction and ByTrustStore carry their identifier as a query value with no URI label at all (ConnectionFunctionIdentifier/TrustStoreIdentifier), not a path segment; ByConnectionMode and ByOwnedResource carry theirs as a URI label, not a query value (gopherstack previously had this backwards for all four); ByRealtimeLogConfig carries its ARN/Name in the XML body (POST, root ListDistributionsByRealtimeLogConfigRequest), not a query value. Fixed by rewriting parseCFDistributionsByPath (handler_paths.go) to the real per-op path shapes and dispatchStubsDistributionListBy (handler_dispatch.go) to read each op's identifier from its real source; deleted the now-fully-dead hyphenated-path fallback code in parseCFMiscPathSimple/parseCFMiscPathByDistribution that duplicated the wrong shape. Verified against the real aws-sdk-go-v2 client for ByConnectionMode (field-level round-trip, TestListDistributionsByConnectionMode_RealClient) and ByRealtimeLogConfig (TestListDistributionsByRealtimeLogConfig_RealClient); the other 10 are covered by TestExtractOperation_SDKRouteTable's exhaustive method+path diff against every real op (see 'Full route-table audit' note below) but not individually round-tripped through a real client due to this pass's time budget."}
@@ -1299,27 +1299,51 @@ behavior for all other ~40 `validateQuantities` call sites), and a new
 `handler_connection.go:84,519`) now call it instead of `validateQuantities`; no other call
 site changed.
 
-**Root cause C (1 finding, CONFIRMED, left unfixed -- ambiguous, filed for gopherstack to
-triage):** `UpdateFieldLevelEncryptionConfig`'s rename-collision path
-(`field_level_encryption.go:182`, `renameInIndex` failing) returns
-`FieldLevelEncryptionConfigAlreadyExists`, but that op's own declared error set
-(`AccessDenied IllegalUpdate InconsistentQuantities InvalidArgument InvalidIfMatchVersion
-NoSuchFieldLevelEncryptionConfig NoSuchFieldLevelEncryptionProfile PreconditionFailed
-QueryArgProfileEmpty TooManyFieldLevelEncryptionContentTypeProfiles
-TooManyFieldLevelEncryptionQueryArgProfiles UnknownError`) never includes it -- only
-`CreateFieldLevelEncryptionConfig` does. Unlike root cause A this IS reachable by a
-legitimate client (update an FLE config's `CallerReference` to one already used by another
-FLE config) so it is not a false positive. But real `types.FieldLevelEncryptionConfig` has
-no `Name` field at all (only `CallerReference`, `Comment`, `ContentTypeProfileConfig`,
-`QueryArgProfileConfig` -- verified against `awsRestxml_serializeDocumentFieldLevelEncryptionConfig`);
-this repo's `fieldLevelEncryptionByName` uniqueness index is keyed on `CallerReference`
-under an internal `Name` field, a gopherstack-only invention with no real-AWS analogue to
-consult. Real CloudFront's declared set gives no signal on what Update SHOULD do on a
-collision (silently allow it, since CallerReference collision isn't validated the same way
-on Update as on Create? or `IllegalUpdate`, this file's standing code for "not allowed on
-update"?) -- a genuine judgement call between at least two plausible fixes, not "exactly
-one declared code obviously replaces the wrong one." Left unfixed per this campaign's
-standard; flagging for a filed issue rather than guessing.
+**Root cause C (1 finding, CONFIRMED, FIXED 2026-09-08, gopherstack-kpk5):**
+`UpdateFieldLevelEncryptionConfig`'s rename-collision path (`field_level_encryption.go:182`
+pre-fix, `renameInIndex` failing) returned `FieldLevelEncryptionConfigAlreadyExists`, but
+that op's own declared error set (`AccessDenied IllegalUpdate InconsistentQuantities
+InvalidArgument InvalidIfMatchVersion NoSuchFieldLevelEncryptionConfig
+NoSuchFieldLevelEncryptionProfile PreconditionFailed QueryArgProfileEmpty
+TooManyFieldLevelEncryptionContentTypeProfiles TooManyFieldLevelEncryptionQueryArgProfiles
+UnknownError`) never includes it -- only `CreateFieldLevelEncryptionConfig` does. This IS
+reachable by a legitimate client (update an FLE config's `CallerReference` to one already
+used by another FLE config), so it was not a false positive -- and gopherstack-kpk5 (filed
+title-only as "emits IllegalUpdate for a Name collision that has no real-AWS analogue")
+turned out to be wrong about *which* code was emitted -- the code path actually emitted
+`FieldLevelEncryptionConfigAlreadyExists`, never `IllegalUpdate` -- but right about the
+conclusion: real AWS has no analogue for rejecting this Update at all, under any code.
+
+The original writeup here posed two candidate fixes ("silently allow it" vs. `IllegalUpdate`,
+this file's standing code for "not allowed on update") as an unresolved judgement call. A
+decisive cross-op comparison resolves it: `CreateDistribution`/`UpdateDistribution` declare
+`DistributionAlreadyExists` on Create only, and `CreateStreamingDistribution`/
+`UpdateStreamingDistribution` declare `StreamingDistributionAlreadyExists` on Create only --
+both real AWS ops with a `CallerReference`-bearing config, both showing the same
+Create-checks/Update-doesn't split as `FieldLevelEncryptionConfig`. The contrasting case,
+`UpdateFieldLevelEncryptionProfile`, *does* declare `FieldLevelEncryptionProfileAlreadyExists`
+in its own error set (botocore `cloudfront/2020-05-31/service-2.json`), and gopherstack's
+`renameInIndex` rejection for FLE *profiles* (`field_level_encryption.go:320`) was left
+untouched -- it is a correct, declared rejection, not this bug. Four real ops line up
+consistently: the two Distribution pairs and FLE profile's Update all confirm Create-time
+`CallerReference` collision detection is real but does not carry over to Update; only FLE
+*config's* Update was checking it anyway, wrongly. Fix: `UpdateFieldLevelEncryption`
+(`field_level_encryption.go`) no longer rejects a `CallerReference` rename that collides
+with another config -- it moves the `fieldLevelEncryptionByName` index entry unconditionally
+instead of failing when the target name is taken. `IllegalUpdate` was never a fit either:
+its own doc comment ("The update contains modifications that are not allowed.",
+aws-sdk-go-v2 cloudfront@v1.67.4 `types/errors.go:795`) describes disallowed *field*
+mutations (e.g. changing an immutable public key field), not a collision with another
+resource's identity -- so neither the code gopherstack was actually emitting nor the code
+its own title alleged was the right fix; removing the rejection was.
+
+Regression: `TestUpdateFieldLevelEncryptionConfig_CallerReferenceCollisionAllowed`
+(`handler_field_level_encryption_test.go`) creates two FLE configs, renames the second's
+`CallerReference` onto the first's, and pins the actual wire response -- `200 OK` with the
+new `CallerReference` echoed back, and asserts the body contains neither
+`FieldLevelEncryptionConfigAlreadyExists` nor `IllegalUpdate` -- not merely "no error".
+Confirmed to fail with `409 FieldLevelEncryptionConfigAlreadyExists` against the pre-fix
+code before the fix landed.
 
 **Verdict table** (all 32; raw extraction is `awk "/deserializeOpError<Op>\(/,/^}/"
 deserializers.go | grep -oE '"[A-Za-z0-9]+"' | sort -u`, scripted per op in a bash loop):
@@ -1349,7 +1373,7 @@ deserializers.go | grep -oE '"[A-Za-z0-9]+"' | sort -u`, scripted per op in a ba
 | UpdateConnectionGroup | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, ResourceInUse, UnknownError) |
 | UpdateDistributionTenant | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, CNAMEAlreadyExists, EntityAlreadyExists, EntityLimitExceeded, EntityNotFound, InvalidArgument, InvalidAssociation, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
 | UpdateDomainAssociation | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, IllegalUpdate, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError) |
-| UpdateFieldLevelEncryptionConfig | FieldLevelEncryptionConfigAlreadyExists | CONFIRMED, left unfixed | C: reachable, ambiguous fix (declared: AccessDenied, IllegalUpdate, InconsistentQuantities, InvalidArgument, InvalidIfMatchVersion, NoSuchFieldLevelEncryptionConfig, NoSuchFieldLevelEncryptionProfile, PreconditionFailed, QueryArgProfileEmpty, TooManyFieldLevelEncryptionContentTypeProfiles, TooManyFieldLevelEncryptionQueryArgProfiles, UnknownError) |
+| UpdateFieldLevelEncryptionConfig | FieldLevelEncryptionConfigAlreadyExists | CONFIRMED, FIXED (gopherstack-kpk5) | C: reachable, rejection removed -- real AWS has no CallerReference-collision check on Update at all (declared: AccessDenied, IllegalUpdate, InconsistentQuantities, InvalidArgument, InvalidIfMatchVersion, NoSuchFieldLevelEncryptionConfig, NoSuchFieldLevelEncryptionProfile, PreconditionFailed, QueryArgProfileEmpty, TooManyFieldLevelEncryptionContentTypeProfiles, TooManyFieldLevelEncryptionQueryArgProfiles, UnknownError) |
 | UpdateFunction | InconsistentQuantities | CONFIRMED, FIXED | B (declared: FunctionSizeLimitExceeded, InvalidArgument, InvalidIfMatchVersion, NoSuchFunctionExists, PreconditionFailed, UnknownError, UnsupportedOperation) |
 | UpdateKeyGroup | InconsistentQuantities | FALSE POSITIVE | A (declared: InvalidArgument, InvalidIfMatchVersion, KeyGroupAlreadyExists, NoSuchResource, PreconditionFailed, TooManyPublicKeysInKeyGroup, UnknownError) |
 | UpdateKeyValueStore | InconsistentQuantities | FALSE POSITIVE | A (declared: AccessDenied, EntityNotFound, InvalidArgument, InvalidIfMatchVersion, PreconditionFailed, UnknownError, UnsupportedOperation) |

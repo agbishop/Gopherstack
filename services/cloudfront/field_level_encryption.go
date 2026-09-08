@@ -178,9 +178,15 @@ func (b *InMemoryBackend) UpdateFieldLevelEncryption(
 		return nil, err
 	}
 
-	if !renameInIndex(b.fieldLevelEncryptionByName, id, fle.Name, name) {
-		return nil, fmt.Errorf(
-			"%w: field level encryption with name %q already exists", ErrFLEAlreadyExists, name)
+	// Unlike CreateFieldLevelEncryptionConfig, real UpdateFieldLevelEncryptionConfig's
+	// declared error set has no FieldLevelEncryptionConfigAlreadyExists (cloudfront@
+	// v1.67.4 deserializers.go:24068 awsRestxml_deserializeOpErrorUpdateFieldLevelEncryptionConfig)
+	// -- same Create-only/Update-silent split as DistributionAlreadyExists and
+	// StreamingDistributionAlreadyExists -- so a CallerReference collision on Update is not
+	// rejected here; gopherstack-kpk5.
+	if name != fle.Name {
+		delete(b.fieldLevelEncryptionByName, fle.Name)
+		b.fieldLevelEncryptionByName[name] = id
 	}
 
 	fle.Name = name

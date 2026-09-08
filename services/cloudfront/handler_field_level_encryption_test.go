@@ -372,6 +372,45 @@ func TestUpdateFieldLevelEncryptionConfig_RealClient(t *testing.T) {
 	assert.Equal(t, "updated", aws.ToString(updated.FieldLevelEncryption.FieldLevelEncryptionConfig.Comment))
 }
 
+// TestUpdateFieldLevelEncryptionConfig_CallerReferenceCollisionAllowed is a regression test
+// for gopherstack-kpk5. UpdateFieldLevelEncryptionConfig's declared error set
+// (cloudfront@v1.67.4 deserializers.go:24068
+// awsRestxml_deserializeOpErrorUpdateFieldLevelEncryptionConfig) has no
+// FieldLevelEncryptionConfigAlreadyExists -- unlike CreateFieldLevelEncryptionConfig, which
+// does declare it -- so real AWS does not re-validate CallerReference uniqueness on Update.
+// Same Create-only/Update-silent split holds for DistributionAlreadyExists
+// (CreateDistribution/UpdateDistribution) and StreamingDistributionAlreadyExists
+// (CreateStreamingDistribution/UpdateStreamingDistribution). Renaming a config's
+// CallerReference onto one already used by a different config must therefore succeed, not
+// return IllegalUpdate or FieldLevelEncryptionConfigAlreadyExists.
+func TestUpdateFieldLevelEncryptionConfig_CallerReferenceCollisionAllowed(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler(t)
+
+	first, err := h.Backend.CreateFieldLevelEncryption("fle-collision-target", "first", nil)
+	require.NoError(t, err)
+	second, err := h.Backend.CreateFieldLevelEncryption("fle-collision-source", "second", nil)
+	require.NoError(t, err)
+
+	body := []byte(`<FieldLevelEncryptionConfig><CallerReference>fle-collision-target</CallerReference>` +
+		`<Comment>renamed onto first's CallerReference</Comment></FieldLevelEncryptionConfig>`)
+	rec := doXML(t, h, http.MethodPut, "/2020-05-31/field-level-encryption/"+second.ID+"/config", body)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "<CallerReference>fle-collision-target</CallerReference>")
+	assert.NotContains(t, rec.Body.String(), "FieldLevelEncryptionConfigAlreadyExists")
+	assert.NotContains(t, rec.Body.String(), "IllegalUpdate")
+
+	got, err := h.Backend.GetFieldLevelEncryption(second.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "fle-collision-target", got.Name)
+
+	stillThere, err := h.Backend.GetFieldLevelEncryption(first.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "fle-collision-target", stillThere.Name)
+}
+
 // TestUpdateFieldLevelEncryptionProfile_RealClient drives the real
 // aws-sdk-go-v2 client to prove UpdateFieldLevelEncryptionProfile is
 // reachable. Real UpdateFieldLevelEncryptionProfile PUTs to
