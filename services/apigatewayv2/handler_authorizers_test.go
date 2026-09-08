@@ -294,18 +294,22 @@ type authScenario struct {
 
 // setupRequestAuthAPI creates an HTTP API with an AWS_PROXY integration, a
 // REQUEST authorizer, and a CUSTOM-authorized route. It returns the api id and
-// an atomic counter that records how many times the authorizer Lambda is
-// invoked (integration invocations are not counted).
+// two atomic counters recording how many times the authorizer Lambda and the
+// route's integration Lambda are each invoked -- integrationCalls exists so
+// tests can prove a denied request never reaches the integration
+// (gopherstack-wsvb: enforceRequestAuthorizer wrote its 401/403 and returned
+// nil, so a denial fell through to invoke the integration anyway).
 func setupRequestAuthAPI(
 	t *testing.T,
 	h *apigatewayv2.Handler,
 	sc authScenario,
-) (string, *atomic.Int64) {
+) (string, *atomic.Int64, *atomic.Int64) {
 	t.Helper()
 
 	const routeKey = "GET /secure"
 
-	var authCalls atomic.Int64
+	authCalls := &atomic.Int64{}
+	integrationCalls := &atomic.Int64{}
 
 	respBytes, _ := json.Marshal(sc.authResponse)
 
@@ -318,6 +322,8 @@ func setupRequestAuthAPI(
 			}
 
 			// Integration backend function.
+			integrationCalls.Add(1)
+
 			b, _ := json.Marshal(map[string]any{"statusCode": 200, "body": "ok"})
 
 			return b, 200, nil
@@ -375,19 +381,20 @@ func setupRequestAuthAPI(
 	})
 	require.Equal(t, http.StatusCreated, rr.Code)
 
-	return apiID, &authCalls
+	return apiID, authCalls, integrationCalls
 }
 
 func TestRequestAuthorizer_SimpleResponse(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		isAuth     bool
-		wantStatus int
+		name                 string
+		isAuth               bool
+		wantStatus           int
+		wantIntegrationCalls int64
 	}{
-		{name: "simple_allow", isAuth: true, wantStatus: http.StatusOK},
-		{name: "simple_deny", isAuth: false, wantStatus: http.StatusForbidden},
+		{name: "simple_allow", isAuth: true, wantStatus: http.StatusOK, wantIntegrationCalls: 1},
+		{name: "simple_deny", isAuth: false, wantStatus: http.StatusForbidden, wantIntegrationCalls: 0},
 	}
 
 	for _, tt := range tests {
@@ -395,7 +402,7 @@ func TestRequestAuthorizer_SimpleResponse(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler()
-			apiID, authCalls := setupRequestAuthAPI(t, h, authScenario{
+			apiID, authCalls, integrationCalls := setupRequestAuthAPI(t, h, authScenario{
 				payloadVersion: "2.0",
 				enableSimple:   true,
 				ttlSeconds:     0,
@@ -408,6 +415,12 @@ func TestRequestAuthorizer_SimpleResponse(t *testing.T) {
 
 			assert.Equal(t, tt.wantStatus, rr.Code)
 			assert.Equal(t, int64(1), authCalls.Load())
+			// A denied REQUEST-authorizer decision must not reach the route's
+			// integration (gopherstack-wsvb): a status-only assertion here would
+			// still pass even if the denial fell through to invoke it, since
+			// the first WriteHeader call wins and the second write only
+			// corrupts the body.
+			assert.Equal(t, tt.wantIntegrationCalls, integrationCalls.Load())
 
 			if tt.wantStatus == http.StatusForbidden {
 				assert.Equal(t, "AccessDeniedException", rr.Header().Get(errTypeHeaderKey))
@@ -436,24 +449,28 @@ func TestRequestAuthorizer_IAMPolicyResponse(t *testing.T) {
 	}
 
 	tests := []struct {
-		response   map[string]any
-		name       string
-		wantStatus int
+		response             map[string]any
+		name                 string
+		wantStatus           int
+		wantIntegrationCalls int64
 	}{
 		{
-			name:       "policy_allow_wildcard",
-			response:   allowStmt("Allow", "*"),
-			wantStatus: http.StatusOK,
+			name:                 "policy_allow_wildcard",
+			response:             allowStmt("Allow", "*"),
+			wantStatus:           http.StatusOK,
+			wantIntegrationCalls: 1,
 		},
 		{
-			name:       "policy_explicit_deny",
-			response:   allowStmt("Deny", "*"),
-			wantStatus: http.StatusForbidden,
+			name:                 "policy_explicit_deny",
+			response:             allowStmt("Deny", "*"),
+			wantStatus:           http.StatusForbidden,
+			wantIntegrationCalls: 0,
 		},
 		{
-			name:       "policy_no_matching_resource_implicit_deny",
-			response:   allowStmt("Allow", "arn:aws:execute-api:us-east-1:123456789012:other/*/GET/nope"),
-			wantStatus: http.StatusForbidden,
+			name:                 "policy_no_matching_resource_implicit_deny",
+			response:             allowStmt("Allow", "arn:aws:execute-api:us-east-1:123456789012:other/*/GET/nope"),
+			wantStatus:           http.StatusForbidden,
+			wantIntegrationCalls: 0,
 		},
 	}
 
@@ -462,7 +479,7 @@ func TestRequestAuthorizer_IAMPolicyResponse(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler()
-			apiID, authCalls := setupRequestAuthAPI(t, h, authScenario{
+			apiID, authCalls, integrationCalls := setupRequestAuthAPI(t, h, authScenario{
 				payloadVersion: "1.0",
 				enableSimple:   false,
 				authResponse:   tt.response,
@@ -474,6 +491,8 @@ func TestRequestAuthorizer_IAMPolicyResponse(t *testing.T) {
 
 			assert.Equal(t, tt.wantStatus, rr.Code)
 			assert.Equal(t, int64(1), authCalls.Load())
+			assert.Equal(t, tt.wantIntegrationCalls, integrationCalls.Load(),
+				"an explicit or implicit IAM-policy deny must not reach the integration (gopherstack-wsvb)")
 		})
 	}
 }
@@ -482,7 +501,7 @@ func TestRequestAuthorizer_MissingIdentitySource(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler()
-	apiID, authCalls := setupRequestAuthAPI(t, h, authScenario{
+	apiID, authCalls, integrationCalls := setupRequestAuthAPI(t, h, authScenario{
 		payloadVersion: "2.0",
 		enableSimple:   true,
 		identitySource: []string{"$request.header.Authorization"},
@@ -496,6 +515,8 @@ func TestRequestAuthorizer_MissingIdentitySource(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 	assert.Equal(t, "UnauthorizedException", rr.Header().Get(errTypeHeaderKey))
 	assert.Equal(t, int64(0), authCalls.Load())
+	assert.Equal(t, int64(0), integrationCalls.Load(),
+		"a missing identity source must not reach the integration (gopherstack-wsvb)")
 }
 
 func TestRequestAuthorizer_CachingTTL(t *testing.T) {
@@ -516,7 +537,7 @@ func TestRequestAuthorizer_CachingTTL(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler()
-			apiID, authCalls := setupRequestAuthAPI(t, h, authScenario{
+			apiID, authCalls, integrationCalls := setupRequestAuthAPI(t, h, authScenario{
 				payloadVersion: "2.0",
 				enableSimple:   true,
 				ttlSeconds:     tt.ttl,
@@ -531,6 +552,8 @@ func TestRequestAuthorizer_CachingTTL(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.wantCalls, authCalls.Load())
+			assert.Equal(t, int64(tt.numRequest), integrationCalls.Load(),
+				"every allowed request must reach the integration regardless of auth-decision caching")
 		})
 	}
 }
@@ -539,7 +562,7 @@ func TestRequestAuthorizer_MissingAuthorizerRejected(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler()
-	apiID, _ := setupRequestAuthAPI(t, h, authScenario{
+	apiID, _, integrationCalls := setupRequestAuthAPI(t, h, authScenario{
 		payloadVersion:    "2.0",
 		enableSimple:      true,
 		authorizerMissing: true,
@@ -551,31 +574,37 @@ func TestRequestAuthorizer_MissingAuthorizerRejected(t *testing.T) {
 	})
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, int64(0), integrationCalls.Load(),
+		"a CUSTOM route whose authorizerId does not resolve must not reach the integration (gopherstack-wsvb)")
 }
 
 func TestRouteAuth_AWSIAM(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		headers    map[string]string
-		query      string
-		name       string
-		wantStatus int
+		headers              map[string]string
+		query                string
+		name                 string
+		wantStatus           int
+		wantIntegrationCalls int64
 	}{
 		{
-			name:       "unsigned_request_rejected",
-			headers:    nil,
-			wantStatus: http.StatusForbidden,
+			name:                 "unsigned_request_rejected",
+			headers:              nil,
+			wantStatus:           http.StatusForbidden,
+			wantIntegrationCalls: 0,
 		},
 		{
-			name:       "sigv4_signed_allowed",
-			headers:    map[string]string{"Authorization": sigV4AuthHeader},
-			wantStatus: http.StatusOK,
+			name:                 "sigv4_signed_allowed",
+			headers:              map[string]string{"Authorization": sigV4AuthHeader},
+			wantStatus:           http.StatusOK,
+			wantIntegrationCalls: 1,
 		},
 		{
-			name:       "presigned_query_allowed",
-			query:      "?X-Amz-Algorithm=AWS4-HMAC-SHA256",
-			wantStatus: http.StatusOK,
+			name:                 "presigned_query_allowed",
+			query:                "?X-Amz-Algorithm=AWS4-HMAC-SHA256",
+			wantStatus:           http.StatusOK,
+			wantIntegrationCalls: 1,
 		},
 	}
 
@@ -584,7 +613,17 @@ func TestRouteAuth_AWSIAM(t *testing.T) {
 			t.Parallel()
 
 			h := newTestHandler()
-			h.SetLambdaInvoker(&mockLambdaInvoker{})
+
+			var integrationCalls atomic.Int64
+			h.SetLambdaInvoker(&mockLambdaInvoker{
+				fn: func(_ context.Context, _, _ string, _ []byte) ([]byte, int, error) {
+					integrationCalls.Add(1)
+
+					b, _ := json.Marshal(map[string]any{"statusCode": 200, "body": "ok"})
+
+					return b, 200, nil
+				},
+			})
 
 			apiID := createAPI(t, h, "iam-api")
 
@@ -607,6 +646,11 @@ func TestRouteAuth_AWSIAM(t *testing.T) {
 
 			rr = doProxyRequest(t, h, http.MethodGet, apiID, "/iam"+tt.query, tt.headers)
 			assert.Equal(t, tt.wantStatus, rr.Code)
+			// A rejected AWS_IAM request must not reach the integration
+			// (gopherstack-wsvb): the status alone can pass even when it does,
+			// since c.JSON's first WriteHeader call wins and the integration's
+			// later write only corrupts the body underneath the 403.
+			assert.Equal(t, tt.wantIntegrationCalls, integrationCalls.Load())
 
 			if tt.wantStatus == http.StatusForbidden {
 				assert.Equal(t, "AccessDeniedException", rr.Header().Get(errTypeHeaderKey))

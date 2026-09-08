@@ -139,7 +139,7 @@ func (h *Handler) handleHTTPAPIProxy(c *echo.Context, apiID, stageName, resource
 	// Throttle (RouteSettings/DefaultRouteSettings) then authorization (NONE /
 	// JWT / CUSTOM / AWS_IAM) enforcement for the matched route.
 	if ctrlErr := h.applyRouteControls(c, apiID, stageName, resourcePath, matchedRoute); ctrlErr != nil {
-		return ctrlErr
+		return writeRouteControlRejection(c, ctrlErr)
 	}
 
 	// Resolve integration.
@@ -224,8 +224,9 @@ func (h *Handler) resolveHTTPAPIIntegration(apiID, integrationID string, deploym
 // route, in that order: throttle first, mirroring apigateway v1's
 // stage-throttle-before-authorizer precedence (proxy.go's
 // applyMethodControls) -- it's not client-specific, so it applies to traffic
-// regardless of whether the request is later authorized. Returns a non-nil
-// error (already written to c) when the request is denied.
+// regardless of whether the request is later authorized. Returns a non-nil,
+// unwritten error when the request is denied; the caller maps and writes it
+// exactly once via writeRouteControlRejection.
 func (h *Handler) applyRouteControls(
 	c *echo.Context,
 	apiID, stageName, resourcePath string,
@@ -239,8 +240,11 @@ func (h *Handler) applyRouteControls(
 }
 
 // enforceRouteThrottle applies the stage's RouteSettings/DefaultRouteSettings
-// throttling for routeKey and writes the AWS-accurate 429 response when the
-// limit is exceeded. Returns nil (request allowed) when unthrottled.
+// throttling for routeKey. Returns nil (request allowed) when unthrottled, or
+// ErrThrottled (unwritten) when the limit is exceeded -- the caller maps and
+// writes the AWS-accurate 429 response exactly once. An unexpected
+// enforcement error deliberately fails open (returns nil): that's a separate
+// design decision from this rejection-writing bug, not part of it.
 func (h *Handler) enforceRouteThrottle(c *echo.Context, apiID, stageName, routeKey string) error {
 	log := logger.Load(c.Request().Context())
 
@@ -252,7 +256,7 @@ func (h *Handler) enforceRouteThrottle(c *echo.Context, apiID, stageName, routeK
 	case errors.Is(err, ErrThrottled):
 		log.Info("apigatewayv2: route throttle exceeded", "apiId", apiID, "stage", stageName, "routeKey", routeKey)
 
-		return writeErr(c, http.StatusTooManyRequests, "Too Many Requests")
+		return err
 	default:
 		log.Warn("apigatewayv2: route-throttle enforcement error", "error", err)
 
@@ -262,8 +266,8 @@ func (h *Handler) enforceRouteThrottle(c *echo.Context, apiID, stageName, routeK
 
 // enforceRouteAuth enforces the matched route's authorization type on the data
 // plane. It dispatches to the JWT, REQUEST (Lambda), or AWS_IAM authorizer as
-// appropriate and returns an error (already written to c) when authorization
-// fails. NONE routes pass through.
+// appropriate and returns a non-nil, unwritten error when authorization
+// fails; the caller maps and writes it exactly once. NONE routes pass through.
 func (h *Handler) enforceRouteAuth(
 	c *echo.Context,
 	apiID, stageName, resourcePath string,
@@ -284,13 +288,13 @@ func (h *Handler) enforceRouteAuth(
 		if authErr != nil {
 			log.Warn("apigatewayv2: authorizer not found", "id", route.AuthorizerID)
 
-			return writeErr(c, http.StatusUnauthorized, msgUnauthorized)
+			return errRouteUnauthorized
 		}
 
 		if jwtErr := h.enforceJWTAuthorizer(c.Request(), authorizer); jwtErr != nil {
 			log.Info("apigatewayv2: JWT validation failed", "error", jwtErr)
 
-			return writeErr(c, http.StatusUnauthorized, msgUnauthorized)
+			return errRouteUnauthorized
 		}
 
 		return nil
@@ -304,7 +308,7 @@ func (h *Handler) enforceRouteAuth(
 		if authErr != nil {
 			log.Warn("apigatewayv2: authorizer not found", "id", route.AuthorizerID)
 
-			return writeErr(c, http.StatusUnauthorized, msgUnauthorized)
+			return errRouteUnauthorized
 		}
 
 		return h.enforceRequestAuthorizer(c, apiID, stageName, route, authorizer, resourcePath)

@@ -2,8 +2,42 @@
 service: apigatewayv2
 sdk_module: aws-sdk-go-v2/service/apigatewayv2@v1.37.4
 last_audit_commit: ca3a1e21f
-last_audit_date: 2026-09-04
-overall: A            # route-throttle enforcement pass (this pass, 2026-09-06, gopherstack-dv44).
+last_audit_date: 2026-09-08
+overall: A            # 2026-09-08 (gopherstack-wsvb, P1): enforceRouteThrottle/enforceRouteAuth
+                       # (http_proxy.go) and enforceIAMAuth/enforceRequestAuthorizer/
+                       # finishAuthDecision (authorizers.go) rejected a request by writing its
+                       # 429/401/403 via writeErr and returning that call's result -- c.JSON
+                       # returns nil after a successful write, so applyRouteControls' and
+                       # handleHTTPAPIProxy's "if ctrlErr != nil" checks never fired and a
+                       # throttled or unauthorized (JWT/CUSTOM/AWS_IAM) request was forwarded to
+                       # the real integration anyway, even though the client already received a
+                       # 429/401/403. Same class as elasticache (gopherstack-8haq) and pinpoint
+                       # (gopherstack-246v). Fixed with the pinpoint raw-unwritten-error pattern:
+                       # every enforce* helper in the chain now returns one of a small set of
+                       # unwritten sentinel errors (errRoute{Unauthorized,Forbidden,ExplicitDeny,
+                       # MissingAuthToken,AuthConfigInvalid}, errors.go), and a single new
+                       # writeRouteControlRejection maps and writes the response exactly once, at
+                       # handleHTTPAPIProxy -- no sentinel-plus-inline-write shape (elasticache's
+                       # errResponseWritten) was introduced; the fan-out didn't warrant it.
+                       # enforceRouteThrottle's fail-open default branch (an unexpected backend
+                       # error still returns nil, allowing the request) is preserved unchanged --
+                       # a separate, deliberate design decision, not part of this bug. New and
+                       # strengthened tests prove the integration was NOT invoked, not just that
+                       # the right status code came back -- a status-only assertion passes against
+                       # this bug, since c.JSON's first WriteHeader call wins the response and the
+                       # integration's later write only corrupts the body underneath it. Covers
+                       # every write site in the chain: route throttled
+                       # (TestHTTPAPIProxy_RouteThrottle_TooManyRequests, strengthened), JWT
+                       # authorizer missing (new
+                       # TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration), JWT
+                       # validation failure (TestHTTPAPIProxy_JWTAuthorizer, strengthened),
+                       # AWS_IAM unsigned request (TestRouteAuth_AWSIAM, strengthened), and the
+                       # CUSTOM/REQUEST authorizer paths found to share the same shape: missing
+                       # authorizerId, missing identity source, and explicit/implicit deny in both
+                       # the simple-response and IAM-policy-response shapes (all in
+                       # handler_authorizers_test.go, strengthened). See Notes.
+                       # ---- prior pass's note follows ----
+                       # route-throttle enforcement pass (this pass, 2026-09-06, gopherstack-dv44).
                        # RouteSettings/DefaultRouteSettings.Throttling{Rate,Burst}Limit were
                        # stored (CreateStage/UpdateStage) and echoed back, but handleHTTPAPIProxy
                        # dispatched straight to the integration with no limiter ever consulted --
@@ -784,3 +818,133 @@ Verdict: zero real bugs. Every moved finding traces to either the
 determinism fix (safe direction, now resolved) or a separate, pre-existing
 `reqfielddiff` blind spot (`Decode` not in `decodeCallVerbs`) that reading
 the actual source -- rather than trusting either tool -- neutralizes.
+
+## 2026-09-08: route-throttle/authorization nil-on-write fall-through fix (gopherstack-wsvb, P1) -- found and fixed
+
+Part of the sweep following the elasticache fix (gopherstack-8haq) and the pinpoint audit
+(gopherstack-246v). `writeErr`/`writeErrType` (errors.go) write the JSON error body via
+`c.JSON` and return its result, which is nil after a successful write. `enforceRouteThrottle`
+and `enforceRouteAuth` (http_proxy.go) rejected a request via `return writeErr(...)`, so
+`applyRouteControls`' and `handleHTTPAPIProxy`'s `if ctrlErr != nil` checks never fired and a
+throttled or unauthorized request was forwarded to the real integration anyway, even though
+the client had already received the 429/401/403. The same shape was independently present in
+`enforceIAMAuth`, `enforceRequestAuthorizer`, and `finishAuthDecision` (authorizers.go), all
+reached from `enforceRouteAuth`'s AWS_IAM/CUSTOM branches -- same call chain, same bug.
+
+**Tests first.** Following gopherstack-246v's lesson that a status-only assertion passes
+against this bug (echo's `Response.WriteHeader` is a no-op after the first call, so the
+committed rejection status stays on the wire even when the integration is invoked
+underneath it -- only the body gets corrupted, or in this package's case, since the mock
+integration Lambda usually still returns a clean `{"statusCode":200,...}` envelope that
+`writeHTTPAPILambdaResponse` writes into the already-committed response, the body). Every
+test below therefore asserts a mock Lambda invocation counter, not just the response status.
+Confirmed each FAILS against unmodified code before fixing (verbatim, `go test -race
+./services/apigatewayv2/...`):
+
+```
+=== NAME  TestHTTPAPIProxy_RouteThrottle_TooManyRequests
+    http_proxy_throttle_test.go:64:
+        Error Trace:    /home/agbishop/gopherstack/services/apigatewayv2/http_proxy_throttle_test.go:64
+        Error:          Not equal:
+                        expected: 1
+                        actual  : 2
+        Test:           TestHTTPAPIProxy_RouteThrottle_TooManyRequests
+        Messages:       a throttled request must not reach the integration (gopherstack-wsvb)
+--- FAIL: TestHTTPAPIProxy_RouteThrottle_TooManyRequests (0.00s)
+
+=== NAME  TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration
+    http_proxy_test.go:574:
+        Error Trace:    /home/agbishop/gopherstack/services/apigatewayv2/http_proxy_test.go:574
+        Error:          Not equal:
+                        expected: 0
+                        actual  : 1
+        Test:           TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration
+        Messages:       a JWT route with an unresolvable authorizerId must not reach the integration (gopherstack-wsvb)
+--- FAIL: TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration (0.00s)
+
+=== NAME  TestHTTPAPIProxy_JWTAuthorizer
+    http_proxy_test.go:513: Error Trace ... expected: 0, actual: 1, Messages: a missing JWT must not reach the integration
+    http_proxy_test.go:519: Error Trace ... expected: 0, actual: 2, Messages: an invalid JWT must not reach the integration
+--- FAIL: TestHTTPAPIProxy_JWTAuthorizer (0.00s)
+
+=== NAME  TestRouteAuth_AWSIAM/unsigned_request_rejected
+    handler_authorizers_test.go:653: Error Trace ... expected: 0, actual: 1
+--- FAIL: TestRouteAuth_AWSIAM (0.00s)
+    --- FAIL: TestRouteAuth_AWSIAM/unsigned_request_rejected (0.00s)
+    --- PASS: TestRouteAuth_AWSIAM/sigv4_signed_allowed (0.00s)
+    --- PASS: TestRouteAuth_AWSIAM/presigned_query_allowed (0.00s)
+```
+
+The CUSTOM/REQUEST-authorizer paths (`enforceRequestAuthorizer`/`finishAuthDecision`,
+authorizers.go), reached from the same `enforceRouteAuth` call chain, share the identical
+shape and were also caught pre-fix, each an existing test strengthened from a status-only
+assertion to also assert non-invocation (see "modified pre-existing tests" below):
+
+```
+--- FAIL: TestRequestAuthorizer_SimpleResponse (0.00s)
+    --- PASS: TestRequestAuthorizer_SimpleResponse/simple_allow (0.00s)
+    --- FAIL: TestRequestAuthorizer_SimpleResponse/simple_deny (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+
+--- FAIL: TestRequestAuthorizer_IAMPolicyResponse (0.00s)
+    --- PASS: TestRequestAuthorizer_IAMPolicyResponse/policy_allow_wildcard (0.00s)
+    --- FAIL: TestRequestAuthorizer_IAMPolicyResponse/policy_explicit_deny (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+    --- FAIL: TestRequestAuthorizer_IAMPolicyResponse/policy_no_matching_resource_implicit_deny (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+
+--- FAIL: TestRequestAuthorizer_MissingIdentitySource (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+
+--- FAIL: TestRequestAuthorizer_MissingAuthorizerRejected (0.00s)
+        Error: Not equal: expected: 0, actual: 1
+```
+
+Echo's own instrumentation independently corroborates the double write on several of these
+runs, logged alongside the failures above: `{"level":"ERROR","msg":"echo: response already
+written to client"}`.
+
+**Fix.** Following the pinpoint pattern (handler_templates.go's `applyTemplateUpdate`), not
+elasticache's `errResponseWritten` sentinel-plus-inline-write shape -- the fan-out here (two
+`http_proxy.go` enforce helpers plus three `authorizers.go` helpers, all funneling into one
+`applyRouteControls` and one `handleHTTPAPIProxy`) doesn't warrant a sentinel. Every helper in
+the chain (`enforceRouteThrottle`, `enforceRouteAuth`, `enforceIAMAuth`,
+`enforceRequestAuthorizer`, `finishAuthDecision`) now returns a raw, unwritten error: either
+the existing `ErrThrottled`, or one of five new package-private sentinels in errors.go
+(`errRouteUnauthorized`, `errRouteForbidden`, `errRouteExplicitDeny`,
+`errRouteMissingAuthToken`, `errRouteAuthConfigInvalid`). A single new
+`writeRouteControlRejection` (errors.go) maps each to its AWS-accurate status/body and writes
+it exactly once, called only at `handleHTTPAPIProxy`'s `applyRouteControls` check.
+`enforceRouteThrottle`'s `default:` branch (an unexpected backend enforcement error) still
+returns nil and allows the request through -- that fail-open behavior is preserved unchanged;
+it's a separate, deliberate design decision from this bug, not part of it.
+
+**Modified pre-existing tests** (all strengthened from a status-only assertion to also assert
+the integration was not invoked -- exactly the class of assertion that let this bug hide):
+`TestHTTPAPIProxy_RouteThrottle_TooManyRequests`, `TestHTTPAPIProxy_JWTAuthorizer`,
+`TestRouteAuth_AWSIAM`, `TestRequestAuthorizer_SimpleResponse`,
+`TestRequestAuthorizer_IAMPolicyResponse`, `TestRequestAuthorizer_MissingIdentitySource`,
+`TestRequestAuthorizer_MissingAuthorizerRejected`. `setupRequestAuthAPI`
+(handler_authorizers_test.go) gained a second atomic counter, `integrationCalls`, alongside
+its existing `authCalls`, distinguishing the two Lambdas the same way the existing mock
+already did by ARN substring (`auth-fn` vs the route's own integration function) -- it just
+wasn't being counted before. `TestRequestAuthorizer_CachingTTL` (already passing pre-fix, not
+a bug site) also gained an `integrationCalls` assertion for completeness since the counter
+was threaded through its call site anyway.
+
+**New test**: `TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration`
+(http_proxy_test.go) -- a JWT route whose `authorizerId` doesn't resolve to a stored
+authorizer, the JWT-authorizer counterpart of `TestRequestAuthorizer_MissingAuthorizerRejected`
+(CUSTOM).
+
+**Scope check**: grepped every `writeErr`/`writeErrType`/`c.JSON`/`c.String` call site in the
+package (~180) against every checked `if xErr := h.foo(...); xErr != nil` call site (~10).
+Outside the enforcement chain above, every other writer call is either the final `return` of
+its own echo-registered handler (never re-checked by another function in this package) or an
+already-safe direct passthrough (`return writeErr(...)`/`return c.JSON(...)`, not stored and
+rechecked). No other instance of this shape exists in `services/apigatewayv2/`.
+
+**Verification**: `golangci-lint run ./services/apigatewayv2/...` → 0 issues.
+`go test -race ./services/apigatewayv2/...` → ok. Full `go test ./services/...` → ok, 169
+packages, zero failures (`services/stepfunctions`, owned by another concurrent change, also
+passed unaffected).

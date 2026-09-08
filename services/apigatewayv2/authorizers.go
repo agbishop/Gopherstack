@@ -210,10 +210,10 @@ func buildRouteArn(apiID, stage, method, resourcePath string) string {
 }
 
 // enforceRequestAuthorizer invokes a REQUEST (Lambda) authorizer for the matched
-// route and returns an error (already written to c) when the request is not
-// authorized. It supports both the simple (isAuthorized) and IAM-policy
-// response shapes, honours identity-source extraction, and caches decisions for
-// the authorizer's result TTL.
+// route and returns a non-nil, unwritten error when the request is not
+// authorized; the caller maps and writes it exactly once. It supports both the
+// simple (isAuthorized) and IAM-policy response shapes, honours identity-source
+// extraction, and caches decisions for the authorizer's result TTL.
 func (h *Handler) enforceRequestAuthorizer(
 	c *echo.Context,
 	apiID, stageName string,
@@ -227,7 +227,7 @@ func (h *Handler) enforceRequestAuthorizer(
 	if h.lambdaInvoker == nil {
 		log.Error("apigatewayv2: no lambda invoker configured for REQUEST authorizer")
 
-		return writeErr(c, http.StatusInternalServerError, msgAuthConfigInvalid)
+		return errRouteAuthConfigInvalid
 	}
 
 	// Extract identity sources. AWS requires every configured identity source to
@@ -236,12 +236,12 @@ func (h *Handler) enforceRequestAuthorizer(
 	if len(auth.IdentitySource) > 0 && !allPresent {
 		log.Info("apigatewayv2: REQUEST authorizer missing identity source", "authorizerId", auth.AuthorizerID)
 
-		return writeErr(c, http.StatusUnauthorized, msgUnauthorized)
+		return errRouteUnauthorized
 	}
 
 	cacheKey := auth.AuthorizerID + "\n" + strings.Join(idValues, "\n")
 	if allow, ok := h.authCache.get(cacheKey); ok {
-		return finishAuthDecision(c, allow)
+		return finishAuthDecision(allow)
 	}
 
 	method := req.Method
@@ -251,7 +251,7 @@ func (h *Handler) enforceRequestAuthorizer(
 	if buildErr != nil {
 		log.Error("apigatewayv2: failed to build authorizer payload", "error", buildErr)
 
-		return writeErr(c, http.StatusInternalServerError, msgAuthConfigInvalid)
+		return errRouteAuthConfigInvalid
 	}
 
 	authArn := extractHTTPAPILambdaARN(auth.AuthorizerURI)
@@ -260,7 +260,7 @@ func (h *Handler) enforceRequestAuthorizer(
 	if invokeErr != nil {
 		log.Error("apigatewayv2: REQUEST authorizer invocation failed", "arn", authArn, "error", invokeErr)
 
-		return writeErr(c, http.StatusInternalServerError, msgAuthConfigInvalid)
+		return errRouteAuthConfigInvalid
 	}
 
 	allow, denyExplicit := evaluateAuthorizerResponse(respBytes, auth, routeArn)
@@ -270,22 +270,23 @@ func (h *Handler) enforceRequestAuthorizer(
 
 	if !allow {
 		if denyExplicit {
-			return writeErr(c, http.StatusForbidden, msgExplicitDeny)
+			return errRouteExplicitDeny
 		}
 
-		return writeErr(c, http.StatusForbidden, msgForbidden)
+		return errRouteForbidden
 	}
 
 	return nil
 }
 
-// finishAuthDecision writes the appropriate response for a cached decision.
-func finishAuthDecision(c *echo.Context, allow bool) error {
+// finishAuthDecision returns the unwritten rejection error for a cached
+// decision, or nil when allowed.
+func finishAuthDecision(allow bool) error {
 	if allow {
 		return nil
 	}
 
-	return writeErr(c, http.StatusForbidden, msgForbidden)
+	return errRouteForbidden
 }
 
 // buildAuthorizerPayload marshals the correct authorizer event for the
@@ -522,8 +523,9 @@ func resolveIdentitySource(r *http.Request, src string) string {
 // enforceIAMAuth enforces AWS_IAM authorization on the data plane. Full SigV4
 // verification requires the caller's secret key, which the data plane does not
 // hold, so this enforces the observable AWS contract: an unsigned request (no
-// SigV4 Authorization header and no session-token header) is rejected with 403
-// "Missing Authentication Token", exactly as real API Gateway does.
+// SigV4 Authorization header and no session-token header) is rejected -- with
+// an unwritten error the caller maps to 403 "Missing Authentication Token" and
+// writes exactly once, exactly as real API Gateway returns it.
 func (h *Handler) enforceIAMAuth(c *echo.Context) error {
 	req := c.Request()
 
@@ -539,7 +541,7 @@ func (h *Handler) enforceIAMAuth(c *echo.Context) error {
 
 	logger.Load(req.Context()).Info("apigatewayv2: AWS_IAM route rejected unsigned request")
 
-	return writeErr(c, http.StatusForbidden, msgMissingAuthToken)
+	return errRouteMissingAuthToken
 }
 
 // CreateAuthorizer creates a new authorizer for an API.

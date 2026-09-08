@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/labstack/echo/v5"
@@ -440,12 +441,29 @@ func TestHTTPAPIProxy_CORSPreflight(t *testing.T) {
 }
 
 // TestHTTPAPIProxy_JWTAuthorizer verifies that JWT authorization blocks requests
-// without a valid token.
+// without a valid token, and that a blocked request never reaches the
+// integration (gopherstack-wsvb: enforceRouteAuth wrote the 401 for a failed
+// enforceJWTAuthorizer check and returned nil, so applyRouteControls'
+// `if throttleErr/ctrlErr != nil` never fired and the request was forwarded
+// anyway). A status-only assertion would still pass under that bug, since
+// c.JSON's first WriteHeader call wins the response and the integration's
+// later write only corrupts the body underneath the 401 -- hence the
+// integrationCalls assertions below.
 func TestHTTPAPIProxy_JWTAuthorizer(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler()
-	h.SetLambdaInvoker(&mockLambdaInvoker{})
+
+	var integrationCalls atomic.Int64
+	h.SetLambdaInvoker(&mockLambdaInvoker{
+		fn: func(_ context.Context, _, _ string, _ []byte) ([]byte, int, error) {
+			integrationCalls.Add(1)
+
+			b, _ := json.Marshal(map[string]any{"statusCode": 200, "body": "ok"})
+
+			return b, 200, nil
+		},
+	})
 
 	// Create API.
 	rr := doRequest(t, h, http.MethodPost, "/v2/apis", map[string]any{
@@ -489,14 +507,72 @@ func TestHTTPAPIProxy_JWTAuthorizer(t *testing.T) {
 	})
 	require.Equal(t, http.StatusCreated, rr.Code)
 
-	// Request without Authorization header → 401.
+	// Request without Authorization header → 401, integration never invoked.
 	rr = doProxyRequest(t, h, http.MethodGet, api.APIID, "/secure", nil)
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, int64(0), integrationCalls.Load(), "a missing JWT must not reach the integration")
 
-	// Request with a garbage token → 401.
+	// Request with a garbage token → 401, integration never invoked.
 	rr = doProxyRequest(t, h, http.MethodGet, api.APIID, "/secure",
 		map[string]string{"Authorization": "Bearer not-a-jwt"})
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, int64(0), integrationCalls.Load(), "an invalid JWT must not reach the integration")
+}
+
+// TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration proves a JWT
+// route whose authorizerId does not resolve to a stored authorizer is
+// rejected with 401 and never reaches the integration (gopherstack-wsvb: the
+// same enforceRouteAuth branch that handles a failed JWT check also writes a
+// 401 for h.Backend.GetAuthorizer failing and returned nil, defeating the
+// applyRouteControls/handleHTTPAPIProxy checks the same way).
+func TestHTTPAPIProxy_JWTAuthorizerMissing_DoesNotInvokeIntegration(t *testing.T) {
+	t.Parallel()
+
+	h := newTestHandler()
+
+	var integrationCalls atomic.Int64
+	h.SetLambdaInvoker(&mockLambdaInvoker{
+		fn: func(_ context.Context, _, _ string, _ []byte) ([]byte, int, error) {
+			integrationCalls.Add(1)
+
+			b, _ := json.Marshal(map[string]any{"statusCode": 200, "body": "ok"})
+
+			return b, 200, nil
+		},
+	})
+
+	rr := doRequest(t, h, http.MethodPost, "/v2/apis", map[string]any{
+		"name": "jwt-missing-authorizer-api", "protocolType": "HTTP",
+	})
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	var api apigatewayv2.API
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &api))
+
+	rr = doRequest(t, h, http.MethodPost, "/v2/apis/"+api.APIID+"/integrations", map[string]any{
+		"integrationType": "AWS_PROXY",
+		"integrationUri":  "arn:aws:lambda:us-east-1:123456789012:function:fn/invocations",
+	})
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	var integ apigatewayv2.Integration
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &integ))
+
+	// authorizerId names an authorizer that was never created.
+	rr = doRequest(t, h, http.MethodPost, "/v2/apis/"+api.APIID+"/routes", map[string]any{
+		"routeKey":          "GET /secure",
+		"authorizationType": "JWT",
+		"authorizerId":      "does-not-exist",
+		"target":            "integrations/" + integ.IntegrationID,
+	})
+	require.Equal(t, http.StatusCreated, rr.Code)
+
+	rr = doProxyRequest(t, h, http.MethodGet, api.APIID, "/secure",
+		map[string]string{"Authorization": "Bearer whatever"})
+
+	assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	assert.Equal(t, int64(0), integrationCalls.Load(),
+		"a JWT route with an unresolvable authorizerId must not reach the integration (gopherstack-wsvb)")
 }
 
 // TestHTTPAPIProxy_JWTAuthorizer_ValidCognitoToken verifies that a token issued and

@@ -116,3 +116,41 @@ var (
 	// configured throttling rate/burst limit.
 	ErrThrottled = errors.New("TooManyRequestsException")
 )
+
+// Route-control rejection reasons for the HTTP API data plane. The
+// enforce*/apply* chain (http_proxy.go, authorizers.go) returns these
+// unwritten so handleHTTPAPIProxy can map and write the response exactly
+// once via writeRouteControlRejection, instead of each helper writing its
+// own response and returning nil -- which let every checked
+// "if ctrlErr != nil" caller in the chain mistake a written rejection for
+// success and forward the request to the integration anyway
+// (gopherstack-wsvb, the gopherstack-8haq/246v shape).
+var (
+	errRouteUnauthorized      = errors.New("route: unauthorized")
+	errRouteForbidden         = errors.New("route: forbidden")
+	errRouteExplicitDeny      = errors.New("route: explicit deny")
+	errRouteMissingAuthToken  = errors.New("route: missing authentication token")
+	errRouteAuthConfigInvalid = errors.New("route: authorizer configuration invalid")
+)
+
+// writeRouteControlRejection maps an unwritten route-control rejection error
+// (from applyRouteControls) to its AWS-accurate status/body and writes it
+// exactly once.
+func writeRouteControlRejection(c *echo.Context, err error) error {
+	switch {
+	case errors.Is(err, ErrThrottled):
+		return writeErr(c, http.StatusTooManyRequests, "Too Many Requests")
+	case errors.Is(err, errRouteUnauthorized):
+		return writeErr(c, http.StatusUnauthorized, msgUnauthorized)
+	case errors.Is(err, errRouteMissingAuthToken):
+		return writeErr(c, http.StatusForbidden, msgMissingAuthToken)
+	case errors.Is(err, errRouteExplicitDeny):
+		return writeErr(c, http.StatusForbidden, msgExplicitDeny)
+	case errors.Is(err, errRouteForbidden):
+		return writeErr(c, http.StatusForbidden, msgForbidden)
+	case errors.Is(err, errRouteAuthConfigInvalid):
+		return writeErr(c, http.StatusInternalServerError, msgAuthConfigInvalid)
+	default:
+		return c.String(http.StatusInternalServerError, "Internal Server Error")
+	}
+}

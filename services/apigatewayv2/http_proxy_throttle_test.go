@@ -2,7 +2,9 @@ package apigatewayv2_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -17,11 +19,29 @@ const throttleLambdaURI = "arn:aws:lambda:us-east-1:123456789012:function:my-fn/
 // enforces a route's RouteSettings burst limit and returns AWS's real 429 shape
 // (gopherstack-dv44: RouteSettings were stored and echoed but nothing enforced
 // them).
+//
+// It also proves the throttled request never reaches the integration
+// (gopherstack-wsvb: enforceRouteThrottle wrote the 429 and returned nil, so
+// applyRouteControls' `if throttleErr != nil` never fired and the request was
+// forwarded anyway). A status-only assertion here would still pass under that
+// bug, since c.JSON's first WriteHeader call wins the response and the
+// integration's later write only corrupts the body underneath the 429 --
+// hence the integrationCalls assertion below, not just the body-contains check.
 func TestHTTPAPIProxy_RouteThrottle_TooManyRequests(t *testing.T) {
 	t.Parallel()
 
 	h := newTestHandler()
-	h.SetLambdaInvoker(&mockLambdaInvoker{})
+
+	var integrationCalls atomic.Int64
+	h.SetLambdaInvoker(&mockLambdaInvoker{
+		fn: func(_ context.Context, _, _ string, _ []byte) ([]byte, int, error) {
+			integrationCalls.Add(1)
+
+			b, _ := json.Marshal(map[string]any{"statusCode": 200, "body": "ok"})
+
+			return b, 200, nil
+		},
+	})
 
 	apiID := buildHTTPAPIWithLambda(t, h, "GET /items", throttleLambdaURI)
 	ensureDefaultStage(t, h, apiID)
@@ -35,11 +55,14 @@ func TestHTTPAPIProxy_RouteThrottle_TooManyRequests(t *testing.T) {
 
 	first := doProxyRequest(t, h, http.MethodGet, apiID, "/items", nil)
 	require.Equal(t, http.StatusOK, first.Code, "first request must consume the single burst token")
+	require.Equal(t, int64(1), integrationCalls.Load(), "the allowed first request must reach the integration")
 
 	second := doProxyRequest(t, h, http.MethodGet, apiID, "/items", nil)
 	require.Equal(t, http.StatusTooManyRequests, second.Code, "the burst-1 bucket must be exhausted after one request")
 	assert.Contains(t, second.Body.String(), "Too Many Requests")
 	assert.Equal(t, "TooManyRequestsException", second.Header().Get("X-Amzn-Errortype"))
+	assert.Equal(t, int64(1), integrationCalls.Load(),
+		"a throttled request must not reach the integration (gopherstack-wsvb)")
 }
 
 // TestHTTPAPIProxy_RouteThrottle_Unconfigured proves an unconfigured route never
