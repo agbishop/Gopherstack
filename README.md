@@ -575,7 +575,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 |---|---|---|---|
 | [ACM](services/acm/README.md) | A | 38 | 7 gaps; 3 deferred |
 | [ACM PCA](services/acmpca/README.md) | A | 23 | 9 gaps |
-| [Detective](services/detective/README.md) | A | 29 | 3 gaps; 2 deferred |
+| [Detective](services/detective/README.md) | A | 29 | 4 gaps; 2 deferred |
 | [GuardDuty](services/guardduty/README.md) | A | 66 | 5 gaps; 1 structural gap; 5 deferred |
 | [Inspector](services/inspector2/README.md) | A | 13 | 10 gaps; 1 deferred |
 | [KMS](services/kms/README.md) | A | 54 | 17 gaps; 2 deferred |
@@ -664,7 +664,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | [MediaConvert](services/mediaconvert/README.md) | A | 34 | 8 gaps; 1 deferred |
 | [MediaLive](services/medialive/README.md) | A | — | 26 families; 5 gaps |
 | [MediaPackage](services/mediapackage/README.md) | A | 19 | 1 deferred |
-| [MediaStore](services/mediastore/README.md) | A | 21 | clean |
+| [MediaStore](services/mediastore/README.md) | A | 21 | 1 gap |
 | [MediaStore Data](services/mediastoredata/README.md) | A | 5 | 4 gaps; 1 deferred |
 | [MediaTailor](services/mediatailor/README.md) | A | 48 | 2 gaps |
 
