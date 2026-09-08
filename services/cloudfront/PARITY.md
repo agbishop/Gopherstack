@@ -1467,3 +1467,69 @@ field to one of those 27 ops' request shapes would silently re-arm `validateQuan
 for it with the correct code already in place (harmless), but would NOT itself flip that
 op's `deserializeOpError` case list to declare `InconsistentQuantities` -- worth re-running
 this audit after any cloudfront SDK version bump, not just trusting this file's snapshot.
+
+## 2026-09-08: xmlResp nil-on-write fall-through audit (gopherstack-lk0w) -- clean
+
+Companion to the elasticache fix (gopherstack-8haq): `xmlResp` wraps `c.Blob`, which
+returns `nil` after a successful write, so a helper that rejects via
+`return xmlResp(...)` and is called by a caller doing `if err := helper(...); err !=
+nil { return err }` hands that caller a `nil`, the guard never fires, and execution
+falls through past the rejection into whatever mutation follows. Unlike elasticache,
+cloudfront has no separate `xmlError` -- `xmlResp` (`handler.go:533`) is the only
+response writer, used for both success and error bodies alike.
+
+**Method (mechanical, not by eye).** A `go/parser`/`go/ast` script over every non-test
+`.go` file in this flat package (108 files, no subdirectories) did two passes:
+
+1. Parsed every `*ast.FuncDecl`, walked its body for a `return` statement whose sole
+   result is a direct call to `xmlResp` -- i.e. every function *capable* of handing a
+   caller this nil-disguised-as-rejection value. 328 call sites of `xmlResp` exist in
+   non-test code (all of them, verified separately, are exactly `return xmlResp(...)`
+   with no multi-value-return variant to miss); they resolve to exactly 160 functions
+   containing such a return.
+2. Cross-referenced that set against `handler_dispatch.go`'s switch-case targets (every
+   `return h.handleXxx(...)` inside a `case` there: 168 distinct functions in total).
+   152 of the 160 functions from step 1 are among those 168 dispatch targets, called
+   from exactly one place -- the dispatch switch itself, which uses the
+   `errNotDispatched`-sentinel/direct-`return` idiom throughout, never a bare
+   `if err != nil` guard with more work after it. A second script pass confirmed all
+   168 dispatch targets (not just the 152 subset) are called from nowhere else in the
+   package -- no dispatch target is ever also invoked as an internal helper by another
+   handler -- 0 hits.
+
+That leaves 8 non-dispatch-target functions capable of emitting the nil-disguised value:
+`handleWebACLAssociationError` (`handler_distributions.go:18`), `handleDomainAssociationError`
+(`handler_distribution_tenants.go:19`), `handleTagAPIError` (`handler_tags.go:17`),
+`marshalDistributionIDList` (`handler_distributions.go:866`), `marshalDistributionIDOwnerList`
+(`handler_distributions.go:902`), `writeDistributionList` (`handler_distributions.go:831`) --
+the six already spot-checked before this issue was filed -- plus two more this audit
+found and checked itself: `handleError` (`handler_dispatch.go:843`, the central error-to-XML
+mapper) and `dispatchStubsTenantAndCerts` (`handler_dispatch.go:703`, a dispatch
+sub-chain leaf whose `default` case falls through to `NoSuchOperation`, not a helper in
+the risky sense).
+
+**Verification, not trust.** For each of the 8, every call site in the package was
+grepped and read individually:
+
+- `handleError`: 261 call sites, all `return h.handleError(c, err)`. 0 exceptions.
+- `handleWebACLAssociationError`: 4 sites, all `return h.handleWebACLAssociationError(...)`.
+- `handleDomainAssociationError`: 1 site, `return h.handleDomainAssociationError(...)`.
+- `handleTagAPIError`: 3 sites, all `return h.handleTagAPIError(...)`.
+- `marshalDistributionIDList`: 5 sites, all `return h.marshalDistributionIDList(...)`.
+- `marshalDistributionIDOwnerList`: 1 site, `return h.marshalDistributionIDOwnerList(...)`.
+- `writeDistributionList`: 2 sites, both `return h.writeDistributionList(...)` (one via
+  `marshalDistributionList`, itself called only as `return h.marshalDistributionList(...)`
+  from its own 5 callers -- checked transitively, same result).
+- `dispatchStubsTenantAndCerts`: 1 site, `return h.dispatchStubsTenantAndCerts(...)`,
+  inside `dispatchStubsResourcePolicyAndMisc`'s own direct-return dispatch idiom.
+
+Every call site across all 8 functions uses the direct-`return` propagation shape;
+none stores the result in a variable and guards it with `if err != nil` followed by
+further work. **No instance of the broken shape exists in cloudfront.** The elasticache
+bug's precondition -- a helper whose rejection-writing return value is captured and
+checked, then followed by code that runs regardless -- does not occur anywhere in this
+package's 328 `xmlResp` call sites.
+
+No code changed as a result (a confirmed-clean audit, not a fix). Gates run to confirm
+the baseline: `golangci-lint run ./services/cloudfront/...` 0 issues; `go test -race
+-count=1 ./services/cloudfront/...` ok (1.6s); `go build ./test/integration/...` ok.
