@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v5"
+
+	"github.com/blackbirdworks/gopherstack/pkgs/devtls"
 )
 
 func TestTLSConfigFromCLI(t *testing.T) {
@@ -68,9 +70,9 @@ func TestTLSConfigFromCLI(t *testing.T) {
 func TestGenerateSelfSignedCert(t *testing.T) {
 	t.Parallel()
 
-	cert, err := generateSelfSignedCert()
+	cert, err := devtls.GenerateSelfSignedCert()
 	if err != nil {
-		t.Fatalf("generateSelfSignedCert: %v", err)
+		t.Fatalf("devtls.GenerateSelfSignedCert: %v", err)
 	}
 
 	if len(cert.Certificate) == 0 {
@@ -88,9 +90,9 @@ func TestGenerateSelfSignedCert(t *testing.T) {
 func TestServeHTTPS(t *testing.T) {
 	t.Parallel()
 
-	cert, err := generateSelfSignedCert()
+	cert, err := devtls.GenerateSelfSignedCert()
 	if err != nil {
-		t.Fatalf("generateSelfSignedCert: %v", err)
+		t.Fatalf("devtls.GenerateSelfSignedCert: %v", err)
 	}
 
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
@@ -157,9 +159,9 @@ func TestServeHTTPS(t *testing.T) {
 func TestServeHTTP_FileBasedTLS(t *testing.T) {
 	t.Parallel()
 
-	cert, err := generateSelfSignedCert()
+	cert, err := devtls.GenerateSelfSignedCert()
 	if err != nil {
-		t.Fatalf("generateSelfSignedCert: %v", err)
+		t.Fatalf("devtls.GenerateSelfSignedCert: %v", err)
 	}
 
 	dir := t.TempDir()
