@@ -15,6 +15,7 @@ import (
 
 	"github.com/blackbirdworks/gopherstack/pkgs/lockmetrics"
 	"github.com/blackbirdworks/gopherstack/pkgs/logger"
+	"github.com/blackbirdworks/gopherstack/pkgs/odatatable"
 	"github.com/blackbirdworks/gopherstack/pkgs/service"
 	"github.com/blackbirdworks/gopherstack/pkgs/telemetry"
 )
@@ -67,8 +68,15 @@ const staticRequestCharge = "1"
 // operations.
 type Handler struct {
 	Backend StorageBackend
-	srvMu   *lockmetrics.RWMutex
-	srv     *http.Server
+	// TableBackend holds Table API tables/entities -- a completely
+	// independent odatatable.InMemoryBackend instance from Backend's own
+	// database/container/document state (see table_api.go and AZURE.md
+	// section 9's M6 milestone). It is not yet included in
+	// Handler.Snapshot/Restore's persistence lifecycle -- see PARITY.md's
+	// Table API addendum.
+	TableBackend *odatatable.InMemoryBackend
+	srvMu        *lockmetrics.RWMutex
+	srv          *http.Server
 	// MasterKey is the base64-encoded master key checkAuth verifies
 	// against when ValidateAuth is true.
 	MasterKey string
@@ -87,10 +95,11 @@ type Handler struct {
 // them from Settings.
 func NewHandler(backend StorageBackend) *Handler {
 	return &Handler{
-		Backend:   backend,
-		Port:      DefaultPort,
-		MasterKey: DefaultMasterKey,
-		srvMu:     lockmetrics.New("cosmosdb.server"),
+		Backend:      backend,
+		TableBackend: odatatable.NewInMemoryBackend(),
+		Port:         DefaultPort,
+		MasterKey:    DefaultMasterKey,
+		srvMu:        lockmetrics.New("cosmosdb.server"),
 	}
 }
 
@@ -103,14 +112,22 @@ var (
 // Name returns the service name.
 func (h *Handler) Name() string { return "CosmosDB" }
 
-// GetSupportedOperations returns the list of supported Cosmos DB operations.
+// GetSupportedOperations returns the list of supported Cosmos DB operations,
+// Core/SQL and Table API combined.
 func (h *Handler) GetSupportedOperations() []string {
-	return []string{
+	coreOps := []string{
 		opGetDatabaseAccount,
 		opListDatabases, opCreateDatabase, opGetDatabase, opDeleteDatabase,
 		opListContainers, opCreateContainer, opGetContainer, opDeleteContainer,
 		opCreateDocument, opQueryDocuments, opListDocuments, opGetDocument, opReplaceDocument, opDeleteDocument,
 	}
+	tableOps := tableAPISupportedOperations()
+
+	ops := make([]string, 0, len(coreOps)+len(tableOps))
+	ops = append(ops, coreOps...)
+	ops = append(ops, tableOps...)
+
+	return ops
 }
 
 // RouteMatcher exists only to satisfy service.Registerable's interface
@@ -137,9 +154,10 @@ func (h *Handler) ExtractResource(c *echo.Context) string {
 	return strings.Trim(c.Request().URL.Path, "/")
 }
 
-// Reset clears all in-memory state.
+// Reset clears all in-memory state, Core/SQL and Table API alike.
 func (h *Handler) Reset() {
 	h.Backend.Reset()
+	h.TableBackend.Reset()
 }
 
 // Handler returns the Echo handler function for Cosmos DB operations.
@@ -157,6 +175,10 @@ func (h *Handler) Handler() echo.HandlerFunc {
 				"The input authorization token can't serve the request. Please check that the expected "+
 					"payload is built as per the protocol, and check the key being used.",
 			)
+		}
+
+		if isTableAPIPath(r.URL.Path) {
+			return h.handleTableAPI(c, strings.Trim(r.URL.Path, "/"))
 		}
 
 		kind, dbID, collID, docID := parseResourcePath(r.URL.Path)
@@ -365,6 +387,10 @@ func parseDocumentItemPath(segments []string) (resourceKind, string, string, str
 // metrics labeling. Mirrors the dispatch logic in Handler() without side
 // effects.
 func operationFor(r *http.Request) string {
+	if op, ok := tableAPIOperationFor(r); ok {
+		return op
+	}
+
 	kind, _, _, _ := parseResourcePath(r.URL.Path)
 
 	switch kind {

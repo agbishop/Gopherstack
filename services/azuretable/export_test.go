@@ -1,6 +1,10 @@
 package azuretable
 
-import "time"
+import (
+	"time"
+
+	"github.com/blackbirdworks/gopherstack/pkgs/odatatable"
+)
 
 // Exported wrappers/seams for internal state used in blackbox tests.
 
@@ -27,18 +31,21 @@ func UnquoteODataString(s string) (string, bool) {
 }
 
 // SetNowFunc replaces the backend's time provider with fn for deterministic
-// testing of Timestamp/ETag logic without real sleeps.
+// testing of Timestamp/ETag logic without real sleeps. InMemoryBackend is
+// now an alias onto pkgs/odatatable.InMemoryBackend (see store.go), so this
+// delegates to its own exported test-support hook rather than reaching into
+// an unexported field directly.
 func SetNowFunc(b *InMemoryBackend, fn func() time.Time) {
-	b.nowFunc = fn
+	odatatable.SetNowFunc(b, fn)
 }
 
 // SetETagFunc replaces the backend's ETag derivation function with fn for
 // deterministic ETag assertions.
 func SetETagFunc(b *InMemoryBackend, fn func(time.Time) string) {
-	b.etagFunc = fn
+	odatatable.SetETagFunc(b, fn)
 }
 
-// EtagFor exposes etagFor for external tests.
+// EtagFor exposes pkgs/odatatable's etagFor for external tests.
 func EtagFor(t time.Time) string {
-	return etagFor(t)
+	return odatatable.EtagFor(t)
 }
