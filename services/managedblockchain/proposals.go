@@ -22,6 +22,9 @@ const (
 	// proposalStatusExpired is the status for a proposal whose voting period
 	// ended without enough votes to approve or reject it.
 	proposalStatusExpired = "EXPIRED"
+	// proposalStatusActionFailed is the status for an approved proposal where at
+	// least one ProposalAction couldn't be carried out.
+	proposalStatusActionFailed = "ACTION_FAILED"
 	// proposalExpirationHours is the number of hours before a proposal expires.
 	proposalExpirationHours = 24
 	// percentBase is the base used to convert a vote fraction to a percentage.
@@ -409,15 +412,31 @@ func (b *InMemoryBackend) executeProposalActionsLocked(network *Network, proposa
 		b.invitations.Put(invitation)
 	}
 
+	actionFailed := false
+
 	for _, rem := range proposal.Actions.Removals {
 		memberID := rem.MemberID
 
-		if m, exists := b.members.Get(memberKey(network.ID, memberID)); exists {
-			delete(b.arnToResource, m.Arn)
-			b.members.Delete(memberKey(network.ID, memberID))
+		m, exists := b.members.Get(memberKey(network.ID, memberID))
+		if !exists {
+			// Real AWS: "ACTION_FAILED ... One or more of the specified
+			// ProposalActions in a proposal that was approved couldn't be
+			// completed because of an error." A member can leave a network on
+			// its own (DeleteMember) between proposal creation and approval,
+			// making a pending RemoveAction stale by the time it executes.
+			actionFailed = true
 
-			b.deleteNodesForMemberLocked(network.ID, memberID)
+			continue
 		}
+
+		delete(b.arnToResource, m.Arn)
+		b.members.Delete(memberKey(network.ID, memberID))
+
+		b.deleteNodesForMemberLocked(network.ID, memberID)
+	}
+
+	if actionFailed {
+		proposal.Status = proposalStatusActionFailed
 	}
 
 	deleteNetworkIfEmptyLocked(b, network)

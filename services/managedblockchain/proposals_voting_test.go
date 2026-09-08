@@ -774,3 +774,79 @@ func TestHandler_ApprovedRemovalProposalCascadeDeletesEmptyNetwork(t *testing.T)
 	assert.Equal(t, http.StatusNotFound, getRec.Code,
 		"network must be deleted once its approved removal proposal removes the last member")
 }
+
+// TestHandler_ApprovedProposalActionFailedWhenTargetMemberAlreadyGone verifies that
+// approving a removal proposal whose target member has already left the network
+// (via its own DeleteMember, independent of this proposal) lands the proposal in
+// ACTION_FAILED, not APPROVED. Real AWS (aws-sdk-go-v2 managedblockchain
+// types/types.go:938, ProposalStatus doc): ACTION_FAILED occurs when one or more
+// ProposalActions in an approved proposal couldn't be completed because of an
+// error, even if only one ProposalAction fails and other actions succeed.
+func TestHandler_ApprovedProposalActionFailedWhenTargetMemberAlreadyGone(t *testing.T) {
+	t.Parallel()
+
+	h, b := newTestHandlerWithBackend(t)
+
+	netRec := doRequest(t, h, http.MethodPost, "/networks", map[string]any{
+		"Name":                "action-failed-net",
+		"ClientRequestToken":  "tok-action-failed-net",
+		"MemberConfiguration": testMemberConfiguration("owner"),
+		"VotingPolicy": map[string]any{
+			"ApprovalThresholdPolicy": map[string]any{
+				"ThresholdComparator":     "GREATER_THAN_OR_EQUAL_TO",
+				"ThresholdPercentage":     1,
+				"ProposalDurationInHours": 24,
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, netRec.Code)
+
+	var netResp map[string]any
+	require.NoError(t, json.Unmarshal(netRec.Body.Bytes(), &netResp))
+
+	netID := netResp["NetworkId"].(string)
+	ownerID := netResp["MemberId"].(string)
+
+	target := b.AddMemberInternal(testRegion, testAccountID, netID, "target")
+
+	// Owner proposes to remove target.
+	propRec := doRequest(t, h, http.MethodPost, "/networks/"+netID+"/proposals", map[string]any{
+		"MemberId":           ownerID,
+		"ClientRequestToken": "tok-action-failed-prop",
+		"Description":        "remove target",
+		"Actions": map[string]any{
+			"Removals": []map[string]any{
+				{"MemberId": target.ID},
+			},
+		},
+	})
+	require.Equal(t, http.StatusOK, propRec.Code)
+
+	var propResp map[string]any
+	require.NoError(t, json.Unmarshal(propRec.Body.Bytes(), &propResp))
+
+	propID := propResp["ProposalId"].(string)
+
+	// Target leaves the network on its own, independent of the pending proposal --
+	// real AWS lets a member call DeleteMember on itself at any time.
+	delRec := doRequest(t, h, http.MethodDelete, "/networks/"+netID+"/members/"+target.ID, nil)
+	require.Equal(t, http.StatusNoContent, delRec.Code)
+
+	// Approve the now-stale removal proposal: its target no longer exists.
+	voteRec := doRequest(t, h, http.MethodPost,
+		fmt.Sprintf("/networks/%s/proposals/%s/votes", netID, propID),
+		map[string]any{"VoterMemberId": ownerID, "Vote": "YES"})
+	require.Equal(t, http.StatusNoContent, voteRec.Code)
+
+	getRec := doRequest(t, h, http.MethodGet, "/networks/"+netID+"/proposals/"+propID, nil)
+	require.Equal(t, http.StatusOK, getRec.Code)
+
+	var getResp map[string]any
+	require.NoError(t, json.Unmarshal(getRec.Body.Bytes(), &getResp))
+
+	proposal, ok := getResp["Proposal"].(map[string]any)
+	require.True(t, ok)
+
+	assert.Equal(t, "ACTION_FAILED", proposal["Status"],
+		"a removal action against an already-departed member must fail the proposal, not silently succeed as APPROVED")
+}
