@@ -399,3 +399,34 @@ go test -race -count=1 ./services/polly/... -> ok
 golangci-lint run ./services/polly/...   -> 0 issues
 go test -race -count=1 ./services/cloudformation/... -> ok (dependent-package check)
 ```
+
+## 2026-09-08: writeError nil-on-write fall-through audit (gopherstack-246v) -- clean
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `writeError`
+(`handler.go:638`) wraps `c.JSON`, which returns nil on a successful write, so a helper
+that rejects via `return writeError(...)` and is called by code storing and checking
+its result would get a silent nil back and fall through past the rejection.
+
+**Method (mechanical).** A `go/parser`/`go/ast` fixed-point closure over every non-test
+file in this flat package, seeded with `writeError` and `writeBackendError` (the two
+local response-writer helpers found by grepping for `func writeError`/`func .*writeError`
+in the package). The closure only added one function, `Handler` (`handler.go:123`), whose
+`echo.HandlerFunc` closure has a `return writeError(...)` fallback for an unrecognized
+route -- final sink set: `{writeError, writeBackendError, Handler}`.
+
+polly's dispatch shape differs from elasticache/cloudfront/mwaa: `Handler()`'s closure
+calls `h.dispatch(c, route)`, which returns *raw, unwritten* Go errors from every one of
+its 10 handler targets (`synthesizeSpeech`, `startSpeechSynthesisStream`, etc. -- none of
+them call `writeError`/`writeBackendError` at all, confirmed by grep: 0 hits outside
+`Handler()` and `writeBackendError` itself). `Handler()` then does
+`err := h.dispatch(...); if err == nil { return nil }; return h.writeBackendError(c, err)`
+-- a store-then-check on `err`, but a safe one: `dispatch` never itself writes a response,
+so a non-nil `err` here is always a genuine unwritten error, and the single translation to
+a written response (`h.writeBackendError`) happens exactly once, directly returned. This is
+already the sentinel-style fix pattern the issue prescribes, just pre-existing.
+
+All 10 production call sites of `{writeError, writeBackendError}` (`handler.go:127,135,
+631,635` plus none elsewhere) are `return`-direct. **No instance of the broken shape
+exists in polly.** No code changed. Gates:
+`GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/polly/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/polly/...` ok.

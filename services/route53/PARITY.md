@@ -746,3 +746,36 @@ Gates: `GOTOOLCHAIN=go1.26.6 go test -race -count=1 ./services/route53/...`
 issues). Files touched this pass: `record_sets_routing_test.go`,
 `error_path_sweep_test.go`, this `PARITY.md` entry — no production code
 changed.
+
+## 2026-09-08: xmlError/handleBackendError nil-on-write fall-through audit (gopherstack-246v) -- clean
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `xmlError`
+(`handler.go:910`) writes the XML error body and unconditionally `return nil`s.
+`handleBackendError` (`handler.go:998`) maps a backend sentinel error to a wire code via
+`backendErrorTable` and either calls `xmlError` per match or falls back to a generic
+`InternalError` — always via `return xmlError(...)`. Any helper that rejects through either
+and is called by code storing and checking the result would get a silent nil and fall
+through past the rejection.
+
+**Method (mechanical).** route53 is the second-largest service in this sweep (23k lines,
+flat package, no subdirectories). A `go/parser`/`go/ast` script computed the fixed-point
+closure seeded with `{xmlError, handleBackendError}`: find every function with a bare
+`return <sink>(...)`, add it, repeat to convergence. This folds the dispatch cross-reference
+into the same pass — `Handler` (`handler.go:790`) is route53's dispatch entry (an
+`echo.HandlerFunc` closure registered directly), and its unrecognized-action fallback is a
+direct `return xmlError(...)`, so it and every `dispatchTable()` target reachable through a
+default-case direct-return landed in the closure automatically; their own call sites were
+swept in the same pass rather than partitioned separately.
+
+The closure converged at 100 functions (the 2 seeds, `Handler`, and 97 discovered op
+handlers — `createHostedZone`, `changeResourceRecordSets`, `listHealthChecks`, etc.). Every
+call site of every one of those 100 was re-walked and classified: 331 total call sites
+(production and test). 328 are `return <fn>(...)` (direct-return, safe). The remaining 3 are
+`h.Handler()` calls in test files (`handler_paths_sdk_diff_test.go:144`,
+`handler_test.go:629`, `iam_enforcement_test.go:88`) obtaining the exported
+`echo.HandlerFunc`-returning method — a name collision with the discovered closure, not a
+stored-then-checked error from any response-writer helper.
+
+**No instance of the broken shape exists in route53.** No code changed. Gates:
+`GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/route53/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/route53/...` ok.

@@ -1675,3 +1675,36 @@ deleting a resource can cause an inconsistent state." -- is generic and
 gives no version-specific detail, and no AWS example/doc text found in
 `botocore`'s `examples-1.json` covers this case either); left unimplemented
 rather than guessed.
+
+## 2026-09-08: writeJSON/writeError/httpErr nil-on-write fall-through audit (gopherstack-246v) -- clean
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `writeJSON`
+(`handler_paths.go:1029`) writes headers/body and returns `json.Encode`'s result -- nil on
+the success path, which includes every rejection write (encoding a small error map never
+fails). `writeError` wraps it directly; `httpErr` classifies a backend sentinel error and
+either calls `writeError` per case or falls through to a default. Any helper that rejects
+via one of these and is called by code storing and checking the result would get a silent
+nil and fall through past the rejection.
+
+**Method (mechanical).** quicksight is the largest of the six services in this sweep (42k
+lines, 108 non-test files, no subdirectories). A `go/parser`/`go/ast` script computed the
+fixed-point closure seeded with `{writeJSON, writeError, httpErr}`: find every function with
+a bare `return <sink>(...)`, add it to the sink set, repeat to convergence. This closure
+folds the dispatch-vs-non-dispatch cross-reference into the same pass -- `Handler()`
+(`handler.go:1111`, registered directly with echo) is `return h.dispatch(c)`, so `dispatch`
+and, transitively, all ~40 `dispatchXxx` sub-routers and ~275 `handleXxx` op handlers they
+call are pulled into the closure wherever their own body ends in a direct-return default
+case, meaning their call sites got checked along with everything else -- no separate
+partition was needed.
+
+The closure converged at 318 functions. Every call site of every one of those 318 was then
+re-walked and classified: 1032 total call sites in the package (production and test files).
+1029 are `return <fn>(...)` (direct-return, safe). The remaining 3 are all
+`h.Handler()` -- a *different* symbol (the exported method returning `echo.HandlerFunc`,
+called from three test files to obtain the handler) that only collides by name with the
+discovered `Handler` closure-body match; not a call to any response-writer helper and not a
+stored-then-checked error.
+
+**No instance of the broken shape exists in quicksight.** No code changed. Gates:
+`GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/quicksight/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/quicksight/...` ok.

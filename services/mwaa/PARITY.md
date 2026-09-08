@@ -501,3 +501,39 @@ Path, QueryParameters}`. Read the source (handler_rest_api.go:14-26):
 forwarded whole to `h.Backend.InvokeRestAPI`. Confirmed genuine -- not a bug.
 
 Verdict: zero real bugs, safe direction only.
+
+## 2026-09-08: writeErrorResponse nil-on-write fall-through audit (gopherstack-246v) -- clean
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `writeErrorResponse`
+(`handler.go:399`) writes the JSON error body and unconditionally `return nil`s, so any
+helper that rejects via `return writeErrorResponse(...)` and is called by code doing
+`err := helper(...); if err != nil { ... }` would get a silent `nil` back and fall through
+past the rejection.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test `.go` file in
+this flat package (mwaa has no subdirectories) computed the fixed-point closure of every
+function whose body contains a bare `return writeErrorResponse(...)`: seed the sink set
+with `writeErrorResponse` itself, find every function with a direct `return <sink>(...)`,
+add its name to the sink set, repeat until no growth. This closure doubles as the
+dispatch-vs-non-dispatch cross-reference the issue asks for: `ServeHTTP` (the function
+wired as `h.Handler()`, registered directly with echo) and all seven `dispatchXxx`
+functions it calls fall into the set naturally, because each ends in a
+`return writeErrorResponse(...)` default case -- so their own call sites got checked
+alongside the rest, no separate partition needed.
+
+The closure converged at 23 functions (`writeErrorResponse` plus 22 discovered wrappers:
+`ServeHTTP`, the 7 `dispatchXxx` routers, and 14 `handleXxx`/`writeEnvironmentResult`/
+`writeEnvironmentVoidResult` handlers). Every call site of every function in that set was
+then re-walked and classified: 65 total call sites, of which 63 are `return <fn>(...)`
+(direct, safe -- includes `ServeHTTP` itself, since `Handler()` just returns it, and echo
+consumes its result directly). The remaining 2 (`handler.go:315,321`, inside
+`decodeJSONBody`) store `writeErrorResponse`'s result but explicitly discard it
+(`_ = writeErrorResponse(...)`) and signal via a `bool` return, not the discarded `error`
+-- `decodeJSONBody`'s two callers (`handleCreateEnvironment`, `handleUpdateEnvironment`,
+`handler_environments.go:16,50`) correctly check `if !decodeJSONBody(...) { return nil }`
+before touching the backend. This is the same "checked-bool-helper" shape as elasticache's
+`parsePaginationChecked`, just using `bool` instead of a sentinel error, and it is correct.
+
+**No instance of the broken shape exists in mwaa.** No code changed as a result. Gates:
+`GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/mwaa/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/mwaa/...` ok.

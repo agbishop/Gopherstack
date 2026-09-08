@@ -408,3 +408,36 @@ zero; this pass's contribution is an independent re-derivation confirming that, 
 No code changed this pass. Gates: `go build ./services/ssoadmin/...`, `go vet
 ./services/ssoadmin/...` and `go vet ./...` (repo-wide), `go test -race -count=1
 ./services/ssoadmin/...`, `golangci-lint run ./services/ssoadmin/...`.
+
+## 2026-09-08: writeJSON/writeError/handleBackendError nil-on-write fall-through audit (gopherstack-246v) -- clean
+
+Part of the sweep following the elasticache fix (gopherstack-8haq): `writeJSON`
+(`handler.go:692`) writes headers/body and unconditionally `return nil`s. `writeError`
+(`handler.go:702`) wraps it directly. `handleBackendError` (`handler.go:616`) maps a
+backend sentinel/string error to a wire type and status, always via `return writeError(...)`.
+Any helper that rejects through one of these and is called by code storing and checking the
+result would get a silent nil and fall through past the rejection.
+
+**Method (mechanical).** A `go/parser`/`go/ast` script over every non-test file in this flat
+package (16k lines, no subdirectories) computed the fixed-point closure seeded with
+`{writeJSON, writeError, handleBackendError}`: find every function with a bare
+`return <sink>(...)`, add it, repeat to convergence. `Handler` (`handler.go:405`) is
+ssoadmin's dispatch entry, registered directly with echo; its own unrecognized-action
+fallback is a direct `return writeError(...)`, and `dispatch` (`handler.go:532`) — the
+switch `Handler` calls into — likewise ends its default case in a direct return, so both,
+and every `handleXxx` op handler `dispatch` calls, were pulled into the closure
+automatically wherever their own body ends in one of these direct-return shapes; their call
+sites were checked in the same sweep rather than partitioned separately.
+
+The closure converged at 86 functions (the 3 seeds, `Handler`, `dispatch`, and 81 discovered
+`handleXxx` op handlers). Every call site of every one of those 86 was re-walked and
+classified: 299 total call sites (production and test). 294 are `return <fn>(...)`
+(direct-return, safe). The remaining 5 are `h.Handler()` calls in test files
+(`handler_sdk_route_table_test.go:171`, `handler_test.go:47,77,326`,
+`iam_enforcement_test.go:85`) obtaining the exported `echo.HandlerFunc`-returning method —
+a name collision with the discovered closure, not a stored-then-checked error from any
+response-writer helper.
+
+**No instance of the broken shape exists in ssoadmin.** No code changed. Gates:
+`GOTOOLCHAIN=go1.27.0 golangci-lint run ./services/ssoadmin/...` 0 issues;
+`GOTOOLCHAIN=go1.27.0 go test -race ./services/ssoadmin/...` ok.
