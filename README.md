@@ -690,8 +690,9 @@ Every service links to its own page with a coverage breakdown — audited operat
 | Service | Parity | PARITY Entries | Notes |
 |---|---|---|---|
 | [Azure Blob Storage](services/azureblob/README.md) | C | 8 | 8 gaps; 2 deferred |
-| [Azure Cosmos DB](services/cosmosdb/README.md) | C | 15 | 9 gaps; 5 deferred |
+| [Azure Cosmos DB](services/cosmosdb/README.md) | C | 15 | 10 gaps; 6 deferred |
 | [Azure Queue Storage](services/azurequeue/README.md) | C | 9 | 7 gaps; 1 deferred |
+| [Azure Service Bus](services/azureservicebus/README.md) | B | 17 | 4 gaps; 2 deferred |
 | [Azure Table Storage](services/azuretable/README.md) | C | 10 | 6 gaps; 3 deferred |
 
 ### Other
@@ -699,6 +700,7 @@ Every service links to its own page with a coverage breakdown — audited operat
 | Service | Parity | PARITY Entries | Notes |
 |---|---|---|---|
 | [AppStream 2.0](services/appstream/README.md) | A | 44 | clean |
+| [Azurearm](services/azurearm/README.md) | B | 12 | 6 gaps; 1 deferred |
 | [Cloudfrontkeyvaluestore](services/cloudfrontkeyvaluestore/README.md) | B | 6 | 3 gaps; 1 structural gap |
 | [Directconnect](services/directconnect/README.md) | A | 64 | 3 gaps; 8 structural gaps; 1 deferred |
 | [Grafana](services/grafana/README.md) | A | 25 | 2 gaps; 1 structural gap |

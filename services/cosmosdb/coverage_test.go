@@ -195,7 +195,10 @@ func TestHandler_ExtractOperationAndResource(t *testing.T) {
 			name: "account root", method: http.MethodGet, path: "/",
 			wantOp: "GetDatabaseAccount", wantResource: "",
 		},
-		{name: "invalid path", method: http.MethodGet, path: "/foo", wantOp: "Unknown", wantResource: "foo"},
+		// "/foo" is a single path segment, not "dbs" -- Table API territory
+		// (see table_api.go's isTableAPIPath), not an invalid Core/SQL path
+		// anymore: GET against a table-shaped entity collection is a query.
+		{name: "table api path", method: http.MethodGet, path: "/foo", wantOp: "QueryEntities", wantResource: "foo"},
 	}
 
 	for _, tt := range tests {

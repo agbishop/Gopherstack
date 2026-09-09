@@ -8,9 +8,9 @@
 | Metric | Value |
 | --- | --- |
 | PARITY entries audited | 15 (15 ok) |
-| Feature families | 10 (8 ok, 2 partial) |
-| Known gaps | 9 |
-| Deferred items | 5 |
+| Feature families | 11 (8 ok, 3 partial) |
+| Known gaps | 10 |
+| Deferred items | 6 |
 | Resource leaks | clean |
 
 ### Known gaps
@@ -23,15 +23,17 @@
 - TLS is not implemented -- plain HTTP only. Clients must connect to http://localhost:8081 (or, for SDKs that default to HTTPS against local emulators, disable SSL verification / point explicitly at plain HTTP). A self-signed cert is a documented non-goal for this milestone, per AZURE.md section 5.
 - No container-level DefaultTimeToLive (TTL) enforcement -- documents never expire, and there is deliberately no janitor.go (see provider.go's Provider doc comment).
 - Database/container ETags are static (derived from their RID, never versioned) since neither resource has an "update in place" operation in this milestone.
-- Auth verification is off by default (permissive, matching the other three Azure services); --cosmosdb-validate-auth opts into enforcing it, but even then only for requests that actually send an Authorization header -- anonymous requests are always accepted. See families.auth. All gaps above are intentional MVP scope per AZURE.md's M3 entry (see AZURE.md section 8), not oversights.
+- Auth verification is off by default (permissive, matching the other three Azure services); --cosmosdb-validate-auth opts into enforcing it, but even then only for requests that actually send an Authorization header -- anonymous requests are always accepted. See families.auth.
+- Table API state (TableBackend) is not yet included in Handler.Snapshot/Restore's persistence lifecycle -- only Core/SQL's Backend is snapshotted today. Table API tables/entities do not survive a snapshot/restore cycle. See this file's Table API addendum below. All gaps above are intentional MVP scope per AZURE.md's M3/M6 entries (see AZURE.md section 8), not oversights.
 
 ### Deferred
 
-- Cosmos's Table API surface (Cosmos DB accounts configured for the Table API, which is wire-identical to Azure Table Storage per AZURE.md section 2's reuse note) -- a natural stretch goal now that both services/azuretable and services/cosmosdb exist, explicitly called out as future work in AZURE.md section 6, not attempted this milestone.
 - Continuation-token pagination (see gaps).
 - RU accounting, TLS/self-signed cert support, and container TTL enforcement (see gaps).
 - SQL subset completeness beyond what's listed in families.sql_query (subqueries, JOIN, aggregates, built-in functions -- see gaps).
+- Table API's $batch (multipart/mixed changesets) -- matches Azure Table Storage's own M2 deferral; see this file's Table API addendum and services/azuretable/PARITY.md.
 - Initial implementation pass (2026-09-05): seeded this service from scratch per AZURE.md M3 (see AZURE.md section 8). This completes the full 4-service Azure milestone plan (Blob, Queue, Table, Cosmos); M4 (docs/polish, cross-SDK e2e) is the only unstarted item. Structurally mirrors services/azuretable's implementation and PARITY.md format; the SQL query engine borrows services/azuretable/odata_filter.go's and services/s3/select_sql_*.go's tokenizer/parser/AST/executor shape directly, per AZURE.md section 6's explicit reuse plan.
+- …and 1 more — see PARITY.md
 
 ## More
 

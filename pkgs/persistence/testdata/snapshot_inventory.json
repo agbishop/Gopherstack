@@ -2501,6 +2501,28 @@
     ],
     "version": 4
   },
+  "azurearm": {
+    "fields": [
+      "Resource.ID ResourceID",
+      "Resource.Kind string",
+      "Resource.Location string",
+      "Resource.Properties map[string]any",
+      "Resource.SKU map[string]any",
+      "Resource.Tags map[string]string",
+      "ResourceGroup.Location string `json:\"location\"`",
+      "ResourceGroup.Name string `json:\"name\"`",
+      "ResourceGroup.Tags map[string]string `json:\"tags,omitempty\"`",
+      "ResourceID.Names []string",
+      "ResourceID.Namespace string",
+      "ResourceID.ResourceGroup string",
+      "ResourceID.SubscriptionID string",
+      "ResourceID.Types []string",
+      "armSnapshot.RegisteredProviders map[string]map[string]bool `json:\"registeredProviders\"`",
+      "armSnapshot.ResourceGroups map[string]*ResourceGroup `json:\"resourceGroups\"`",
+      "armSnapshot.Resources map[string]*Resource `json:\"resources\"`"
+    ],
+    "version": 1
+  },
   "azureblob": {
     "fields": [
       "backendSnapshot.Containers map[string]*storedContainer `json:\"containers\"`",
@@ -2531,19 +2553,47 @@
     ],
     "version": 1
   },
+  "azureservicebus": {
+    "fields": [
+      "EntityConfig.DefaultMessageTTL time.Duration",
+      "EntityConfig.LockDuration time.Duration",
+      "EntityConfig.MaxDeliveryCount int",
+      "backendSnapshot.Queues map[string]*storedQueue `json:\"queues\"`",
+      "backendSnapshot.Seq int64 `json:\"seq\"`",
+      "backendSnapshot.Topics map[string]*storedTopic `json:\"topics\"`",
+      "messageQueue.DeadLetter []*storedMessage",
+      "messageQueue.Messages []*storedMessage",
+      "messageQueue.notify chan struct{}",
+      "storedMessage.Body []byte",
+      "storedMessage.ContentType string",
+      "storedMessage.CorrelationID string",
+      "storedMessage.CustomHeaders map[string]string",
+      "storedMessage.DeliveryCount int64",
+      "storedMessage.EnqueuedTime time.Time",
+      "storedMessage.ExpiresAt time.Time",
+      "storedMessage.Label string",
+      "storedMessage.LockToken string",
+      "storedMessage.LockedUntil time.Time",
+      "storedMessage.MessageID string",
+      "storedMessage.ReplyTo string",
+      "storedMessage.SequenceNumber int64",
+      "storedMessage.SessionID string",
+      "storedQueue.Config EntityConfig",
+      "storedQueue.CreatedAt time.Time",
+      "storedQueue.Name string",
+      "storedSubscription.Config EntityConfig",
+      "storedSubscription.CreatedAt time.Time",
+      "storedSubscription.Name string",
+      "storedTopic.Config EntityConfig",
+      "storedTopic.CreatedAt time.Time",
+      "storedTopic.Name string",
+      "storedTopic.Subscriptions map[string]*storedSubscription"
+    ],
+    "version": 1
+  },
   "azuretable": {
     "fields": [
-      "EntityProperty.Type EdmType",
-      "EntityProperty.Value any",
-      "backendSnapshot.Tables map[string]*storedTable `json:\"tables\"`",
-      "entityCompositeKey.PartitionKey string",
-      "entityCompositeKey.RowKey string",
-      "storedEntity.PartitionKey string",
-      "storedEntity.Properties map[string]EntityProperty",
-      "storedEntity.RowKey string",
-      "storedEntity.Timestamp time.Time",
-      "storedTable.Entities map[entityCompositeKey]*storedEntity",
-      "storedTable.Name string"
+      "azureTableSnapshot.Tables map[string]*odatatable.StoredTable `json:\"tables\"`"
     ],
     "version": 2
   },

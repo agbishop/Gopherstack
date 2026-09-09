@@ -4,127 +4,61 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/blackbirdworks/gopherstack/pkgs/logger"
-	"github.com/blackbirdworks/gopherstack/pkgs/persistence"
+	"github.com/blackbirdworks/gopherstack/pkgs/odatatable"
 )
 
-// azureTableSnapshotVersion identifies the shape of backendSnapshot. Must be
-// bumped whenever a change to storedTable/storedEntity would make an older
-// snapshot unsafe to decode as the current shape; Restore compares this
-// against the persisted value and discards (rather than partially decodes)
-// any mismatch, mirroring services/azurequeue and services/azureblob.
+// Snapshot/Restore's actual implementation (backendSnapshot,
+// InMemoryBackend.Snapshot/Restore, and their null/mismatch validation) now
+// lives in pkgs/odatatable (see interfaces.go's package doc comment for the
+// M6 extraction this package underwent). Handler.Snapshot/Restore below are
+// unchanged: they still delegate to whatever h.Backend implements, so they
+// work identically whether Backend is odatatable's InMemoryBackend or any
+// other StorageBackend implementation a test substitutes.
+
+// azureTableSnapshotVersion identifies the shape of this service's persisted
+// state. Must be bumped whenever a change to the underlying
+// odatatable.storedTable/storedEntity shape would make an older snapshot
+// unsafe to decode as the current shape -- passed into
+// odatatable.NewInMemoryBackend (see store.go), which enforces it on
+// Snapshot/Restore. This is the same value (2) this const carried when it
+// lived directly in this file, pre-M6 extraction: the shape hasn't changed,
+// only which package owns the encode/decode logic.
 //
-// Bumped from 1 to 2 for two incompatible shape changes made in the same
-// pass: (1) EntityProperty's Edm.Int64 wire value moved from a bare float64
-// JSON number (which silently lost precision above 2^53) to a decimal
-// string, and (2) storedTable.Entities' map key moved from a delimited
-// string ("partitionKey\x00rowKey") to entityCompositeKey (a struct,
-// persisted via its own MarshalText as a JSON string array) to close a
-// NUL-byte delimiter collision. Both changes decode a version-1 snapshot
-// incorrectly if not gated behind a version check -- pkgs/persistence's
-// TestSnapshotVersionGuard enforces exactly this: an incompatible retype
-// must pair with a version bump, purely additive field growth must not.
+// It is declared here, in services/azuretable's own package, rather than as
+// a single value pkgs/odatatable owns internally, specifically so
+// pkgs/persistence's snapshot-version guard (see
+// snapshotversion_guard_test.go's doc comment) keeps tracking this service's
+// persisted-state shape: the guard scans services/*/ packages only, not
+// pkgs/, so a const (and matching *Snapshot-suffixed struct, see
+// azureTableSnapshot below) living only in pkgs/odatatable would be
+// invisible to it -- exactly the coverage regression this fixes.
 const azureTableSnapshotVersion = 2
 
-// backendSnapshot is the top-level on-disk shape for the Azure Table
-// backend. Tables serialises directly (no DTO layer): storedTable/
-// storedEntity have no unexported fields, so encoding/json round-trips them
-// as-is (EntityProperty's own MarshalJSON/UnmarshalJSON handle its typed
-// Value field -- see models.go).
-type backendSnapshot struct {
-	Tables  map[string]*storedTable `json:"tables"`
-	Version int                     `json:"version"`
+// azureTableSnapshot exists purely so the snapshot-version guard has a
+// *Snapshot-suffixed struct (with an int Version field) to find and expand
+// in this package -- see azureTableSnapshotVersion's doc comment. The real
+// on-disk shape is pkgs/odatatable's own backendSnapshot; this type is never
+// constructed or marshaled here. Tables' field type names
+// odatatable.StoredTable/StoredEntity are exported aliases onto
+// odatatable's actual unexported storedTable/storedEntity (see models.go in
+// that package) purely so their names show up here -- the guard cannot see
+// past a cross-package type into its own fields (a documented blind spot,
+// see pkgs/persistence's scanServiceDir doc comment), so a nested field
+// added to storedTable/storedEntity itself is NOT automatically caught by
+// this struct; only a rename of this field, its declared type name, or a
+// bump of azureTableSnapshotVersion above is. Keep this struct's shape in
+// hand-maintained lockstep with pkgs/odatatable/persistence.go's
+// backendSnapshot whenever that one changes.
+type azureTableSnapshot struct {
+	Tables  map[string]*odatatable.StoredTable `json:"tables"`
+	Version int                                `json:"version"`
 }
 
-// Snapshot serialises the backend state to JSON. It implements
-// persistence.Persistable.
-func (b *InMemoryBackend) Snapshot(ctx context.Context) []byte {
-	b.mu.RLock("Snapshot")
-	defer b.mu.RUnlock()
-
-	snap := backendSnapshot{
-		Version: azureTableSnapshotVersion,
-		Tables:  b.tables,
-	}
-
-	return persistence.MarshalSnapshot(ctx, "azuretable", snap)
-}
-
-// Restore loads backend state from a JSON snapshot. It implements
-// persistence.Persistable.
-func (b *InMemoryBackend) Restore(ctx context.Context, data []byte) error {
-	var snap backendSnapshot
-
-	if err := persistence.UnmarshalSnapshot(ctx, "azuretable", data, &snap); err != nil {
-		return err
-	}
-
-	b.mu.Lock("Restore")
-	defer b.mu.Unlock()
-
-	if snap.Version != azureTableSnapshotVersion {
-		// An incompatible (older/newer/absent) snapshot version must never be
-		// partially decoded as the current shape -- discard cleanly and start
-		// empty instead of erroring, since this is an expected, recoverable
-		// condition (e.g. upgrading gopherstack across a snapshot-format
-		// change), not data corruption. Mirrors services/azurequeue and
-		// services/azureblob.
-		logger.Load(ctx).WarnContext(ctx,
-			"azuretable: discarding incompatible snapshot version, starting empty",
-			"gotVersion", snap.Version, "wantVersion", azureTableSnapshotVersion)
-
-		b.tables = make(map[string]*storedTable)
-
-		return nil
-	}
-
-	if snap.Tables == nil {
-		snap.Tables = make(map[string]*storedTable)
-	}
-
-	if err := validateSnapshotTables(snap.Tables); err != nil {
-		return err
-	}
-
-	b.tables = snap.Tables
-
-	return nil
-}
-
-// validateSnapshotTables rejects a snapshot whose "tables" map (or any
-// table's "Entities" map) holds a JSON null entry -- which decodes to a nil
-// pointer that would panic on first dereference if stored as-is -- or whose
-// map key disagrees with the entry's own Name field, mirroring
-// services/azurequeue's identical Restore validation. It also initializes
-// any table whose own "Entities" map is JSON `null` (legal JSON, decodes to
-// a nil Go map, not a nil pointer -- so it isn't rejected above) to an empty
-// map: a nil map is safe to range over and read from, but assigning into
-// one (as InsertEntity/ReplaceEntity/MergeEntity all do) panics. Mirrors the
-// same nil-map init this function's caller already does for a nil top-level
-// "tables" map.
-func validateSnapshotTables(tables map[string]*storedTable) error {
-	for name, t := range tables {
-		if t == nil {
-			return fmt.Errorf("%w: %q", ErrSnapshotTableNull, name)
-		}
-
-		if t.Name != name {
-			return fmt.Errorf("%w: map key %q, Name %q", ErrSnapshotTableNameMismatch, name, t.Name)
-		}
-
-		for key, e := range t.Entities {
-			if e == nil {
-				return fmt.Errorf("%w: key %v in table %q", ErrSnapshotEntityNull, key, name)
-			}
-		}
-
-		if t.Entities == nil {
-			t.Entities = make(map[entityCompositeKey]*storedEntity)
-		}
-	}
-
-	return nil
-}
+// This blank-identifier assignment references azureTableSnapshot so
+// unused-type linters don't flag it as dead code: the type exists only for
+// the snapshot-version guard's AST scan (see its own doc comment above) and
+// is otherwise never constructed.
+var _ = (*azureTableSnapshot)(nil)
 
 // Snapshot implements persistence.Persistable by delegating to the backend.
 func (h *Handler) Snapshot(ctx context.Context) []byte {

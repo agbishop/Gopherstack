@@ -33,6 +33,7 @@ families:
   persistence: {status: ok, note: "Snapshot version 1. storedDocument's Body field marshals/unmarshals through a json.RawMessage wire shape (storedDocumentWire) specifically so Restore re-decodes it with json.Decoder.UseNumber -- a derived (default) UnmarshalJSON would silently decode every JSON number as float64, corrupting any snapshot value beyond 2^53 on every restart. Restore tolerates a JSON null \"databases\"/\"Containers\"/\"Documents\" map (legal JSON, decodes to a nil Go map, not a nil pointer) by initializing it to an empty map rather than leaving it nil, which would panic the first time anything inserted into it -- this was a real M2 bug in services/azuretable and is guarded here from day one (TestBackend_Restore_NilNestedMapsAreInitialized)."}
   routing_isolation: {status: ok, note: "Runs on its own dedicated *http.Server, bound synchronously in StartWorker to a fixed port (default 8081 via --cosmosdb-port/COSMOSDB_PORT, the real Cosmos DB Local Emulator's own published default -- NOT any of Azurite's 10000/10001/10002; no fallback pool -- fails fast if unavailable). Unlike AzureBlob/AzureQueue/AzureTable, 8081 sits OUTSIDE --port-range-start/--port-range-end's own default range (10000-10100), exactly like services/iot's MQTT broker default (1883) -- but cli.go's reserveFixedServicePorts still reserves it in the shared PortAlloc pool, since a custom operator-configured range could include 8081. See cli_cosmosdb_port_reservation_test.go's table, which (unlike AzureTable's) covers both the outside-range default case and a custom in-range case."}
   observability: {status: ok, note: "StartWorker wraps its Echo handler with telemetry.WrapEchoHandler so ExtractOperation/ExtractResource feed Prometheus metrics. InMemoryBackend uses *lockmetrics.RWMutex instead of raw sync.RWMutex, matching repo convention."}
+  table_api: {status: partial, note: "Cosmos DB's Table API (AZURE.md section 9's M6 milestone): table_api.go/table_api_ops.go serve Table/entity CRUD and $filter query on this same fixed port, routed by path shape (a single path segment that isn't \"dbs\" -- see isTableAPIPath) rather than a new port, since real Cosmos disambiguates Table vs. Core/SQL the same way on one hostname. Delegates entirely to pkgs/odatatable -- the exact same entity CRUD/$filter engine services/azuretable imports -- via its own independent TableBackend (*odatatable.InMemoryBackend) instance, so Table API state is disjoint from Core/SQL's database/container/document state. Auth is Cosmos's existing master-key HMAC scheme, unchanged, applied identically to both surfaces. See this file's Table API addendum (below the deferred section) for what's shared vs. what's new, and services/azuretable/PARITY.md for the engine's own known gaps rather than duplicating that list here."}
 gaps:
   - "No RU (request unit) accounting -- x-ms-request-charge is a static \"1\" on every response, per AZURE.md section 2's explicit MVP scope note (\"MVP can return static/fake values rather than real RU accounting\")."
   - "No continuation-token pagination on List Databases/List Containers/List Documents/Query Documents -- all return every matching result in one page."
@@ -43,13 +44,15 @@ gaps:
   - "No container-level DefaultTimeToLive (TTL) enforcement -- documents never expire, and there is deliberately no janitor.go (see provider.go's Provider doc comment)."
   - "Database/container ETags are static (derived from their RID, never versioned) since neither resource has an \"update in place\" operation in this milestone."
   - "Auth verification is off by default (permissive, matching the other three Azure services); --cosmosdb-validate-auth opts into enforcing it, but even then only for requests that actually send an Authorization header -- anonymous requests are always accepted. See families.auth."
-  All gaps above are intentional MVP scope per AZURE.md's M3 entry (see AZURE.md section 8), not oversights.
+  - "Table API state (TableBackend) is not yet included in Handler.Snapshot/Restore's persistence lifecycle -- only Core/SQL's Backend is snapshotted today. Table API tables/entities do not survive a snapshot/restore cycle. See this file's Table API addendum below."
+  All gaps above are intentional MVP scope per AZURE.md's M3/M6 entries (see AZURE.md section 8), not oversights.
 deferred:
-  - "Cosmos's Table API surface (Cosmos DB accounts configured for the Table API, which is wire-identical to Azure Table Storage per AZURE.md section 2's reuse note) -- a natural stretch goal now that both services/azuretable and services/cosmosdb exist, explicitly called out as future work in AZURE.md section 6, not attempted this milestone."
   - "Continuation-token pagination (see gaps)."
   - "RU accounting, TLS/self-signed cert support, and container TTL enforcement (see gaps)."
   - "SQL subset completeness beyond what's listed in families.sql_query (subqueries, JOIN, aggregates, built-in functions -- see gaps)."
+  - "Table API's $batch (multipart/mixed changesets) -- matches Azure Table Storage's own M2 deferral; see this file's Table API addendum and services/azuretable/PARITY.md."
   - "Initial implementation pass (2026-09-05): seeded this service from scratch per AZURE.md M3 (see AZURE.md section 8). This completes the full 4-service Azure milestone plan (Blob, Queue, Table, Cosmos); M4 (docs/polish, cross-SDK e2e) is the only unstarted item. Structurally mirrors services/azuretable's implementation and PARITY.md format; the SQL query engine borrows services/azuretable/odata_filter.go's and services/s3/select_sql_*.go's tokenizer/parser/AST/executor shape directly, per AZURE.md section 6's explicit reuse plan."
+  - "M6 (Table API, see AZURE.md section 8): table_api.go/table_api_ops.go added, delegating to the newly-extracted pkgs/odatatable engine -- see this file's Table API addendum below."
 leaks: {status: clean, note: "The dedicated *http.Server started by StartWorker is stopped by Shutdown via srv.Shutdown(ctx) (falling back to srv.Close() on a graceful-shutdown error, both logged), mirroring services/azuretable and cli.go's own top-level server lifecycle. No background goroutines beyond the listener itself -- there is no janitor (see gaps)."}
 ---
 
@@ -172,7 +175,30 @@ struct (persisted via `MarshalText` as a JSON string array), never a
 delimiter-joined string, closing the same NUL-byte collision class
 `services/azuretable`'s `entityCompositeKey` closes.
 
+### Table API (M6)
+Cosmos DB's Table API (`table_api.go`/`table_api_ops.go`) is a second wire
+surface on this same fixed port (8081), added in AZURE.md section 9's M6
+milestone. It is **not** a reimplementation: it delegates entity CRUD,
+`$filter` parsing, and `$filter` evaluation entirely to `pkgs/odatatable`,
+the exact same shared engine `services/azuretable` imports (see that
+package's doc comment for the extraction this milestone performed). This
+service's own `families.table_api` entry above covers what's new here
+(routing, its own independent `TableBackend` instance, auth reuse); for the
+engine's own known gaps -- pagination, `$select`'s PartitionKey/RowKey/
+Timestamp behavior, the Edm.Double/Int32 unannotated-number ambiguity, `$batch`
+deferral, and so on -- see **`services/azuretable/PARITY.md`** directly
+rather than duplicating that list here: every gap recorded there applies
+here identically, since it's the same code.
+
+The one gap specific to *this* service's Table API integration (not the
+engine itself) is persistence: `TableBackend` is not yet wired into
+`Handler.Snapshot`/`Restore` (see this file's own `gaps` list above) --
+`pkgs/odatatable.InMemoryBackend` already implements `Snapshot`/`Restore`
+(the same methods `services/azuretable` relies on), so wiring it in is a
+follow-up, not a redesign.
+
 ## More
 
 - [Full parity audit](PARITY.md)
+- [services/azuretable/PARITY.md](../azuretable/PARITY.md) -- the shared `pkgs/odatatable` entity/$filter engine's own known gaps
 - [All services](../../README.md#services)
